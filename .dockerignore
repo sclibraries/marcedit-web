@@ -1,0 +1,15 @@
+.git
+.gitignore
+.dockerignore
+__pycache__
+*.pyc
+.pytest_cache
+.venv
+venv
+.DS_Store
+docs
+tests
+marc-diff.zip
+marc-processing.zip
+README.md
+.tickets

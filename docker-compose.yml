@@ -1,0 +1,15 @@
+services:
+  marcedit-web:
+    build: .
+    image: marcedit-web:dev
+    container_name: marcedit-web
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./marcedit_web:/app/marcedit_web:ro
+      - ./data:/app/data:ro
+      - ./.streamlit:/app/.streamlit:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=2048
+    restart: unless-stopped

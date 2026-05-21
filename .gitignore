@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+.python-version
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Source archives (large; lifted via /tmp/marcedit-inspect/)
+marc-diff.zip
+marc-processing.zip
+
+# Streamlit local state
+.streamlit/secrets.toml
+
+# Plan / scratch
+/tmp/
+
+# Playwright MCP session artifacts
+.playwright-mcp/
