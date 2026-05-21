@@ -34,11 +34,53 @@ ind1	blank	Undefined
 ind2	blank	Undefined
 	R	Undefined
 
-008	NR	FIXED-LENGTH DATA ELEMENTS--GENERAL INFORMATION
+008	NR	FIXED-LENGTH DATA ELEMENTS--GENERAL INFORMATION	####Forty positional bytes encoding fixed-format characteristics of the record. Position semantics differ by record type (leader byte 06). See the per-byte entries below for the most commonly used positions.
 length	40
 ind1	blank	Undefined
 ind2	blank	Undefined
 	NR	Undefined
+:byte	0-5	Date entered on file (YYMMDD)
+:help	Date the record was created or first added to the system, in YYMMDD format.
+:byte	6	Type of date / publication status
+:help	One character. Common values: 's' = single known date, 'm' = multiple dates, 'r' = reprint/reissue, 'c' = current continuing resource, 'd' = continuing resource ceased publication, 'q' = questionable date, 'n' = dates unknown, 'p' = distribution/release/issue date and production/recording session date differ.
+:byte	7-10	Date 1
+:help	The first (and usually most important) date for the resource. Format depends on byte 6 — usually a 4-digit year (e.g. 2025) or 'uuuu' if unknown.
+:byte	11-14	Date 2
+:help	The second date (for ranges, reprints, original publication of a republished work, etc.). Format matches Date 1.
+:byte	15-17	Place of publication, production, or execution
+:help	Three-letter MARC country code (e.g. 'cau' = California, 'enk' = England, 'xxu' = United States place unspecified).
+:byte	23	Form of item
+:help	One character. For books / serials / databases this is the online-vs-print indicator: 'o' = online, 's' = electronic, 'q' = direct electronic, ' ' (blank) = not specified / print. (For maps and visual materials this position is at byte 29 instead.)
+:byte	28	Government publication
+:help	One character. ' ' (blank) = not a government publication, 'f' = federal/national, 's' = state/provincial/territorial/dependent, 'l' = local, 'i' = international intergovernmental, 'm' = multistate, 'a' = autonomous or semi-autonomous component, 'c' = multilocal, 'o' = government publication, level undetermined, 'z' = other, 'u' = unknown.
+:byte	35-37	Language
+:help	Three-letter MARC language code (e.g. 'eng' = English, 'fre' = French, 'spa' = Spanish, 'mul' = multiple languages, 'und' = undetermined, 'zxx' = no linguistic content).
+:byte	38	Modified record
+:help	Indicates whether the record has been modified to fit the constraints of MARC: ' ' (blank) = not modified, 'd' = dashed-on information omitted, 'o' = completely romanized, 'r' = completely romanized / printed cards in script, 's' = shortened, 'x' = missing characters, '|' = no attempt to code.
+:byte	39	Cataloging source
+:help	' ' (blank) = National bibliographic agency, 'c' = Cooperative cataloging program, 'd' = Other (most cataloger-supplied records use 'd'), 'u' = Unknown.
+
+LDR	NR	LEADER	####The 24-byte leader is the first thing in every MARC record. Each byte encodes a fixed-format characteristic of the record itself — type, encoding level, bibliographic level, character set, etc. Positions are byte-indexed (0-23).
+length	24
+ind1	blank	Undefined
+ind2	blank	Undefined
+	NR	Undefined
+:byte	5	Record status
+:help	One character. 'n' = new, 'c' = corrected/revised, 'd' = deleted, 'a' = increase in encoding level, 'p' = increase in encoding level from prepublication.
+:byte	6	Type of record
+:help	One character. 'a' = language material, 'c' = notated music, 'd' = manuscript notated music, 'e' = cartographic, 'f' = manuscript cartographic, 'g' = projected medium, 'i' = non-musical sound recording, 'j' = musical sound recording, 'k' = 2D non-projectable, 'm' = computer file, 'o' = kit, 'p' = mixed materials, 'r' = 3D artifact / naturally occurring object, 't' = manuscript language material.
+:byte	7	Bibliographic level
+:help	One character. 'a' = monographic component part, 'b' = serial component part, 'c' = collection, 'd' = subunit, 'i' = integrating resource, 'm' = monograph/item, 's' = serial.
+:byte	8	Type of control
+:help	' ' (blank) = no specified type, 'a' = archival.
+:byte	9	Character coding scheme
+:help	' ' (blank) = MARC-8, 'a' = UCS/Unicode (UTF-8). Modern records are almost always 'a'.
+:byte	17	Encoding level
+:help	One character. ' ' (blank) = full level, '1' = full level material not examined, '2' = less-than-full, '3' = abbreviated, '4' = core, '5' = partial/preliminary, '7' = minimal, '8' = prepublication, 'u' = unknown, 'z' = not applicable.
+:byte	18	Descriptive cataloging form
+:help	One character. ' ' (blank) = non-ISBD, 'a' = AACR2, 'c' = ISBD punctuation omitted, 'i' = ISBD punctuation included, 'n' = non-ISBD punctuation omitted, 'u' = unknown.
+:byte	19	Multipart resource record level
+:help	' ' (blank) = not specified or not applicable, 'a' = set, 'b' = part with independent title, 'c' = part with dependent title.
 
 010	NR	LIBRARY OF CONGRESS CONTROL NUMBER
 ind1	blank	Undefined
