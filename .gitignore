@@ -34,3 +34,7 @@ marc-processing.zip
 
 # Playwright MCP session artifacts
 .playwright-mcp/
+
+# Per-user task storage (lives at runtime; not version-controlled)
+data/tasks/users/
+data/tasks/shared/

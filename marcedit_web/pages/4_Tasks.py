@@ -42,7 +42,7 @@ import pymarc
 import streamlit as st
 from streamlit_ace import st_ace
 
-from marcedit_web.lib import editor, marcedit_import, session, tasks
+from marcedit_web.lib import editor, marcedit_import, session, task_storage, tasks
 from marcedit_web.lib.errors import Issue, transform_issue
 
 logger = logging.getLogger("marcedit_web.tasks_page")
@@ -53,22 +53,16 @@ session.init()
 st.title("Tasks")
 st.caption(
     "Build, import, and run named transforms over the loaded batch. "
-    "Tasks live for the duration of this Streamlit session only."
+    "Tasks persist on disk under `data/tasks/users/<you>/` and survive "
+    "across sessions."
 )
 
 
-# --- Per-session tasks dir + state defaults --------------------------------
+# --- Per-user tasks dir + state defaults -----------------------------------
 
 
-def _session_tasks_dir() -> Path:
-    """Return (and lazily create) a per-session tasks directory."""
-    key = "tasks_dir"
-    if key not in st.session_state:
-        st.session_state[key] = tempfile.mkdtemp(prefix="marcedit-web-tasks-")
-    return Path(st.session_state[key])
-
-
-tasks_dir = _session_tasks_dir()
+current_user_id = st.session_state.get("user", "anonymous") or "anonymous"
+tasks_dir = task_storage.user_tasks_dir(current_user_id)
 
 # Editor draft state. These keys are namespaced so they don't collide with
 # any other page's state.
@@ -84,10 +78,11 @@ st.session_state.setdefault("tasks_run_results", None)
 
 
 # `load_user_tasks` is idempotent + freshness-aware: it re-execs any module
-# whose on-disk mtime is newer than the last load. That's important because
-# Save → Edit → Save flows would otherwise leave stale function refs in
-# TASK_REGISTRY.
-tasks.load_user_tasks(tasks_dir, force_reload=False)
+# whose on-disk mtime is newer than the last load. We load `shared/` first
+# then the user dir so a user-named task naturally shadows a shared one
+# (the second load re-registers the function under the same name).
+for _d in task_storage.visible_task_dirs(current_user_id):
+    tasks.load_user_tasks(_d, force_reload=False)
 registered = tasks.all_tasks()
 
 
@@ -105,16 +100,25 @@ with st.sidebar:
     else:
         st.caption("No file loaded yet.")
     st.divider()
-    st.subheader("Tasks session")
-    st.caption(f"`{len(registered)}` task(s) defined this session.")
-    if st.button("Clear all tasks"):
-        for t in registered:
+    st.subheader("Tasks")
+    user_task_files = sorted(p.stem for p in tasks_dir.glob("*.py"))
+    shared_task_files = sorted(
+        p.stem for p in task_storage.shared_tasks_dir().glob("*.py")
+    )
+    st.caption(
+        f"`{len(user_task_files)}` yours · "
+        f"`{len(shared_task_files)}` shared · "
+        f"`{len(registered)}` registered total."
+    )
+    if st.button("Clear my tasks"):
+        for fname in user_task_files:
+            name = fname.replace("_", "-")
             try:
-                editor.delete_user_task(tasks_dir, t.name)
-                tasks.TASK_REGISTRY.pop(t.name, None)
+                editor.delete_user_task(tasks_dir, name)
+                tasks.TASK_REGISTRY.pop(name, None)
             except Exception as exc:  # noqa: BLE001
-                logger.exception("delete_user_task failed for %s", t.name)
-                st.warning(f"Could not delete {t.name}: {exc}")
+                logger.exception("delete_user_task failed for %s", name)
+                st.warning(f"Could not delete {name}: {exc}")
         st.session_state["tasks_editor_open"] = False
         st.rerun()
 

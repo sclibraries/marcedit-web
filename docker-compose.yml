@@ -7,7 +7,7 @@ services:
       - "8501:8501"
     volumes:
       - ./marcedit_web:/app/marcedit_web:ro
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - ./.streamlit:/app/.streamlit:ro
       - ./tests:/app/tests:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
