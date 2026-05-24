@@ -1,10 +1,17 @@
-"""View tab — render a single record as `.mrk` with help lookup."""
+"""View tab — render a single record as `.mrk` with help lookup + search."""
 
 from __future__ import annotations
 
 import streamlit as st
 
-from marcedit_web.lib import help_lookup, rules as rules_mod, session, tooltips, viewer
+from marcedit_web.lib import (
+    help_lookup,
+    rules as rules_mod,
+    search,
+    session,
+    tooltips,
+    viewer,
+)
 
 
 def render(rule_set: rules_mod.RuleSet | None = None) -> None:
@@ -26,22 +33,70 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         from marcedit_web.render import rules_for_page
         rule_set = rules_for_page()
 
-    # Navigator state survives reruns in session_state.
-    if (
-        "view_index" not in st.session_state
-        or st.session_state["view_index"] > total
-        or st.session_state["view_index"] < 1
-    ):
-        st.session_state["view_index"] = 1
+    # --- Search bar (above the navigator) ----------------------------------
+
+    query_str = st.text_input(
+        "Search",
+        placeholder=(
+            "Try `245$a:Pistoletto`, `008/28: ` (with quotes), `LDR/6:a`, "
+            "or just plain text."
+        ),
+        key="view_search_query",
+        help=(
+            "Query syntax: `text` (any field), `tag:text`, `tag$sub:text`, "
+            "`tag/byte:text`, `tag$sub:\"exact phrase\"`. Matching is "
+            "case-insensitive."
+        ),
+    )
+
+    query = search.parse_query(query_str or "")
+    search_active = not query.is_empty()
+    match_indices: list[int] = []
+    if search_active:
+        match_indices = list(search.matching_records(store, query))
+        if not match_indices:
+            st.warning(f"No records match `{query_str}`.")
+        else:
+            st.caption(
+                f"`{len(match_indices)}` match(es) for `{query_str}`. "
+                f"Prev / Next jump between matches."
+            )
+
+    # When search is active and there's at least one match, restrict the
+    # navigator to those record indices. Otherwise it ranges over the
+    # full batch.
+    navigable = (
+        [i + 1 for i in match_indices]  # convert to 1-based for the user
+        if search_active and match_indices
+        else list(range(1, total + 1))
+    )
+
+    if not navigable:
+        # No matches and search is active — display the most recent record
+        # anyway, but disable navigation.
+        navigable = [int(st.session_state.get("view_index", 1))]
+
+    # Clamp current view_index to navigable.
+    current = int(st.session_state.get("view_index", navigable[0]))
+    if current not in navigable:
+        st.session_state["view_index"] = navigable[0]
+        current = navigable[0]
+
+    position = navigable.index(current)  # 0-based position in navigable
+    pos_total = len(navigable)
 
     def _step(delta: int) -> None:
-        current = int(st.session_state.get("view_index", 1))
-        nxt = current + delta
-        if nxt < 1:
-            nxt = 1
-        elif nxt > total:
-            nxt = total
-        st.session_state["view_index"] = nxt
+        cur = int(st.session_state.get("view_index", navigable[0]))
+        try:
+            i = navigable.index(cur)
+        except ValueError:
+            i = 0
+        nxt = i + delta
+        if nxt < 0:
+            nxt = 0
+        elif nxt >= len(navigable):
+            nxt = len(navigable) - 1
+        st.session_state["view_index"] = navigable[nxt]
 
     nav_a, nav_b, nav_c, nav_d = st.columns([1, 3, 1, 1])
     with nav_a:
@@ -49,14 +104,15 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
             "◀ Prev",
             on_click=_step,
             args=(-1,),
-            disabled=st.session_state["view_index"] <= 1,
+            disabled=position <= 0,
             use_container_width=True,
+            key="view_prev",
         )
     with nav_b:
         st.number_input(
             "Record #",
-            min_value=1,
-            max_value=total,
+            min_value=navigable[0],
+            max_value=navigable[-1],
             step=1,
             key="view_index",
             label_visibility="collapsed",
@@ -66,11 +122,15 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
             "Next ▶",
             on_click=_step,
             args=(1,),
-            disabled=st.session_state["view_index"] >= total,
+            disabled=position >= pos_total - 1,
             use_container_width=True,
+            key="view_next",
         )
     with nav_d:
-        st.caption(f"of **{total}**")
+        if search_active and match_indices:
+            st.caption(f"match {position + 1} of **{pos_total}**")
+        else:
+            st.caption(f"of **{total}**")
 
     index = int(st.session_state["view_index"])
     record = store.get(index - 1)
@@ -79,9 +139,15 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         return
     identifier = viewer.record_identifier(record)
     title = viewer.record_title(record) or "(no 245 $a)"
-    st.markdown(
-        f"**Record {index} of {total}** — `{identifier}` — {title}"
-    )
+    if search_active and match_indices:
+        st.markdown(
+            f"**Match {position + 1} of {pos_total}** "
+            f"(record #{index} of {total}) — `{identifier}` — {title}"
+        )
+    else:
+        st.markdown(
+            f"**Record {index} of {total}** — `{identifier}` — {title}"
+        )
 
     # --- Field help expander -----------------------------------------------
 
