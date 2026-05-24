@@ -18,6 +18,7 @@ import streamlit as st
 
 from marcedit_web.lib import session
 from marcedit_web.render import (
+    dedupe,
     edit,
     report,
     rules_and_warnings_for_page,
@@ -43,9 +44,15 @@ sidebar_status()
 # --- Tabs -----------------------------------------------------------------
 
 
-tab_edit, tab_view, tab_validate, tab_report, tab_tasks, tab_diff = st.tabs(
-    ["Edit", "View", "Validate", "Report", "Tasks", "Diff"]
-)
+(
+    tab_edit,
+    tab_view,
+    tab_validate,
+    tab_report,
+    tab_tasks,
+    tab_dedupe,
+    tab_diff,
+) = st.tabs(["Edit", "View", "Validate", "Report", "Tasks", "Dedupe", "Diff"])
 
 rule_set, rules_warnings = rules_and_warnings_for_page()
 
@@ -63,6 +70,9 @@ with tab_report:
 
 with tab_tasks:
     render_tasks.render()
+
+with tab_dedupe:
+    dedupe.render()
 
 with tab_diff:
     render_diff.render()
