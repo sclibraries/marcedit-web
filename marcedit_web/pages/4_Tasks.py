@@ -101,7 +101,7 @@ with st.sidebar:
     st.divider()
     if session.has_upload():
         st.caption(f"Loaded: `{session.current_filename() or '(unnamed)'}`")
-        st.caption(f"{len(session.current_records())} records")
+        st.caption(f"{session.record_count()} records")
     else:
         st.caption("No file loaded yet.")
     st.divider()
@@ -334,7 +334,8 @@ else:
         ),
     )
     if st.button("Run selected tasks", type="primary", disabled=not selection):
-        records = session.current_records()
+        store = session.current_store()
+        records = list(store.iter_records()) if store else []
         selected_fns = [tasks.TASK_REGISTRY[n].fn for n in selection]
         out_records: list[pymarc.Record] = []
         issues: list[Issue] = []

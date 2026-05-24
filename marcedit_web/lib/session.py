@@ -1,40 +1,40 @@
 """Session-state shape and upload helpers.
 
 Per-session keys live in `st.session_state`. State NEVER persists across
-sessions — that's the confirmed scope for v1. Closing the browser tab
-discards everything.
+sessions — that's the confirmed v2 scope. Closing the browser tab
+discards everything (the per-session temp dir survives until the
+container restarts but is not reattached to a new session).
 
-State keys (see the plan for the full design):
+State keys:
 
     user                  identity from REMOTE_USER/eppn, or "anonymous"
-    filename              original upload filename
-    raw_bytes             original upload bytes (untouched)
-    records               list[pymarc.Record] (parsed on upload)
-    malformed_count       int (records pymarc couldn't decode)
+    store                 RecordStore | None (replaces v1's records list)
     issues_cache          dict[str, list[Issue]]
-                          e.g. {"preflight": [...], "rules": [...]}
     editor_text           str | None (set when MarcEditor dirties)
     editor_dirty          bool
     tasks_palette_state   list[Operation] (form-builder rows)
 
+In v1 we held the parsed records in `records: list[pymarc.Record]` and
+the raw bytes in `raw_bytes`. v2 replaces both with a single
+:class:`RecordStore` that disk-backs the raw bytes and lazy-parses
+individual records on access — this is what fixes the 100K-record crash.
+
 The Diff page namespaces its own session keys under the `diff_` prefix
 so it can run independently of the rest of the app state.
-
-The parsing logic is split out into `parse_uploaded_bytes` (pure) so it
-can be unit-tested without a Streamlit runtime context. The Streamlit-
-flavored helpers (`init`, `handle_upload`, `download_button`) are thin
-wrappers around that.
 """
 
 from __future__ import annotations
 
-import io
 import logging
-from typing import Any
+import tempfile
+import warnings
+from pathlib import Path
+from typing import Any, Optional
 
-from pymarc import MARCReader, Record
+from pymarc import Record
 
 from .identity import current_user
+from .record_store import RecordStore
 
 logger = logging.getLogger("marcedit_web.session")
 
@@ -42,38 +42,12 @@ logger = logging.getLogger("marcedit_web.session")
 # to its default below; later code reads them via `st.session_state[…]`.
 STATE_DEFAULTS: dict[str, Any] = {
     "user": "",
-    "filename": None,
-    "raw_bytes": None,
-    "records": [],
-    "malformed_count": 0,
+    "store": None,
     "issues_cache": {},
     "editor_text": None,
     "editor_dirty": False,
     "tasks_palette_state": [],
 }
-
-
-def parse_uploaded_bytes(data: bytes) -> tuple[list[Record], int]:
-    """Parse a raw `.mrc` byte blob into records + malformed count.
-
-    Pure function: never touches `st.session_state`, never logs PII.
-    Uses pymarc in permissive mode so a single bad record doesn't abort
-    the whole upload — instead the parse stays on the rails and the bad
-    record is counted as malformed and dropped.
-
-    Returns `(records, malformed_count)`.
-    """
-    if not data:
-        return [], 0
-    records: list[Record] = []
-    malformed = 0
-    reader = MARCReader(io.BytesIO(data), to_unicode=True, permissive=True)
-    for record in reader:
-        if record is None:
-            malformed += 1
-            continue
-        records.append(record)
-    return records, malformed
 
 
 def init() -> None:
@@ -96,6 +70,16 @@ def init() -> None:
         st.session_state["user"] = current_user()
 
 
+def _session_records_dir() -> Path:
+    """Return (and lazily create) the per-session temp dir for record bytes."""
+    import streamlit as st
+
+    key = "records_tmp_dir"
+    if key not in st.session_state:
+        st.session_state[key] = tempfile.mkdtemp(prefix="marcedit-web-records-")
+    return Path(st.session_state[key])
+
+
 def handle_upload(uploaded_file) -> dict:
     """Read `uploaded_file` from a Streamlit uploader and update state.
 
@@ -110,21 +94,20 @@ def handle_upload(uploaded_file) -> dict:
     import streamlit as st
 
     if uploaded_file is None:
-        st.session_state["filename"] = None
-        st.session_state["raw_bytes"] = None
-        st.session_state["records"] = []
-        st.session_state["malformed_count"] = 0
+        st.session_state["store"] = None
         st.session_state["issues_cache"] = {}
         st.session_state["editor_text"] = None
         st.session_state["editor_dirty"] = False
         return {"filename": None, "total": 0, "malformed": 0}
 
     raw = uploaded_file.getvalue()
-    records, malformed = parse_uploaded_bytes(raw)
-    st.session_state["filename"] = uploaded_file.name
-    st.session_state["raw_bytes"] = raw
-    st.session_state["records"] = records
-    st.session_state["malformed_count"] = malformed
+    tmp_dir = _session_records_dir()
+    store = RecordStore.from_bytes(
+        raw,
+        tmp_dir=tmp_dir,
+        filename=uploaded_file.name,
+    )
+    st.session_state["store"] = store
     # Reset derived state — anything the previous file populated is now
     # stale and would mislead later pages.
     st.session_state["issues_cache"] = {}
@@ -132,13 +115,13 @@ def handle_upload(uploaded_file) -> dict:
     st.session_state["editor_dirty"] = False
     logger.info(
         "loaded upload: %s records, %s malformed",
-        len(records),
-        malformed,
+        store.count(),
+        store.malformed_count(),
     )
     return {
         "filename": uploaded_file.name,
-        "total": len(records),
-        "malformed": malformed,
+        "total": store.count(),
+        "malformed": store.malformed_count(),
     }
 
 
@@ -146,24 +129,59 @@ def has_upload() -> bool:
     """True when a file has been uploaded and parsed in this session."""
     import streamlit as st
 
-    return bool(st.session_state.get("records")) or bool(
-        st.session_state.get("raw_bytes")
-    )
+    store = st.session_state.get("store")
+    return store is not None and store.count() > 0
 
 
-def current_filename() -> str | None:
+def current_store() -> Optional[RecordStore]:
+    """Return the active RecordStore, or None if nothing is loaded."""
     import streamlit as st
 
-    return st.session_state.get("filename")
+    return st.session_state.get("store")
+
+
+def current_filename() -> Optional[str]:
+    store = current_store()
+    return store.filename if store is not None else None
+
+
+def record_count() -> int:
+    """Number of live records, or 0 if nothing loaded.
+
+    Used by sidebar status lines on every page — cheap and never
+    materializes records.
+    """
+    store = current_store()
+    return store.count() if store is not None else 0
 
 
 def current_records() -> list[Record]:
-    import streamlit as st
+    """Backward-compat shim: materialize all records as a list.
 
-    return list(st.session_state.get("records") or [])
+    Deprecated. New code should use `current_store().iter_records()`
+    to avoid loading the whole batch into memory. Kept here so any
+    surviving v1 caller still works while we migrate.
+    """
+    store = current_store()
+    if store is None:
+        return []
+    warnings.warn(
+        "session.current_records() materializes the entire batch; "
+        "use session.current_store() and store.iter_records() instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return list(store.iter_records())
 
 
-def current_raw_bytes() -> bytes | None:
-    import streamlit as st
+def current_raw_bytes() -> Optional[bytes]:
+    """Serialize the current store back to MARC bytes, or None if empty.
 
-    return st.session_state.get("raw_bytes")
+    In v1 this returned the original upload bytes verbatim. In v2 it
+    serializes via :py:meth:`RecordStore.to_mrc_bytes` so the download
+    reflects any edits applied via MarcEditor / Tasks since upload.
+    """
+    store = current_store()
+    if store is None:
+        return None
+    return store.to_mrc_bytes()

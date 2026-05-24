@@ -37,7 +37,7 @@ with st.sidebar:
     st.divider()
     if session.has_upload():
         st.caption(f"Loaded: `{session.current_filename() or '(unnamed)'}`")
-        st.caption(f"{len(session.current_records())} records")
+        st.caption(f"{session.record_count()} records")
     else:
         st.caption("No file loaded yet.")
 
@@ -53,9 +53,10 @@ if not session.has_upload():
     st.stop()
 
 
-records = session.current_records()
+store = session.current_store()
+records = list(store.iter_records()) if store else []
 total = len(records)
-malformed = int(st.session_state.get("malformed_count", 0))
+malformed = store.malformed_count() if store else 0
 
 
 # --- Snapshot pass (one walk over the batch) ------------------------------

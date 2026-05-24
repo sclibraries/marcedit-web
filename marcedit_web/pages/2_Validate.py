@@ -43,7 +43,7 @@ with st.sidebar:
     st.divider()
     if session.has_upload():
         st.caption(f"Loaded: `{session.current_filename() or '(unnamed)'}`")
-        st.caption(f"{len(session.current_records())} records")
+        st.caption(f"{session.record_count()} records")
     else:
         st.caption("No file loaded yet.")
 
@@ -83,8 +83,9 @@ rule_set, rules_warnings = _parse_rules_for_page()
 # --- Run validations -------------------------------------------------------
 
 
-records = session.current_records()
-malformed = st.session_state.get("malformed_count", 0)
+store = session.current_store()
+records = list(store.iter_records()) if store else []
+malformed = store.malformed_count() if store else 0
 
 preflight_issues = preflight.run_preflight(
     records=records, malformed=malformed,
@@ -126,7 +127,7 @@ issue_rows = [
         "severity": i.severity,
         "scope": i.scope,
         "code": i.code,
-        "record": i.record_index if i.record_index else "—",
+        "record": str(i.record_index) if i.record_index else "—",
         "identifier": i.identifier or "—",
         "message": i.message,
         "suggestion": i.suggestion or "",
@@ -155,11 +156,12 @@ if severities:
 if codes:
     filtered = filtered[filtered["code"].isin(codes)]
 if record_filter.strip():
+    needle = record_filter.strip()
     try:
-        idx = int(record_filter.strip())
-        filtered = filtered[filtered["record"] == idx]
+        int(needle)
+        filtered = filtered[filtered["record"] == needle]
     except ValueError:
-        st.warning(f"Ignoring non-numeric record filter {record_filter!r}.")
+        st.warning(f"Ignoring non-numeric record filter {needle!r}.")
 
 st.caption(f"{len(filtered)} of {len(df)} issues shown.")
 st.dataframe(

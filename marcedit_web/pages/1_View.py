@@ -32,7 +32,7 @@ with st.sidebar:
     st.divider()
     if session.has_upload():
         st.caption(f"Loaded: `{session.current_filename() or '(unnamed)'}`")
-        st.caption(f"{len(session.current_records())} records")
+        st.caption(f"{session.record_count()} records")
     else:
         st.caption("No file loaded yet.")
 
@@ -48,8 +48,8 @@ if not session.has_upload():
     st.stop()
 
 
-records = session.current_records()
-total = len(records)
+store = session.current_store()
+total = store.count() if store else 0
 if total == 0:
     st.warning("The loaded file produced no parseable records.")
     st.stop()
@@ -112,7 +112,10 @@ with nav_d:
 
 
 index = int(st.session_state["view_index"])
-record = records[index - 1]
+record = store.get(index - 1)
+if record is None:
+    st.warning(f"Record {index} not found.")
+    st.stop()
 identifier = viewer.record_identifier(record)
 title = viewer.record_title(record) or "(no 245 $a)"
 st.markdown(

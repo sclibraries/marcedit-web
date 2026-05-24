@@ -297,7 +297,7 @@ with st.sidebar:
     st.divider()
     if session.has_upload():
         st.caption(f"Home batch: `{session.current_filename() or '(unnamed)'}`")
-        st.caption(f"{len(session.current_records())} records (not used here)")
+        st.caption(f"{session.record_count()} records (not used here)")
     else:
         st.caption("No file loaded on Home (Diff uses its own uploads).")
     st.divider()

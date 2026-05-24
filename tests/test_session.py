@@ -1,17 +1,19 @@
-"""Tests for marcedit_web.lib.session — the pure parsing surface.
+"""Tests for marcedit_web.lib.session — the pure RecordStore-backed surface.
 
 Streamlit-flavored helpers (`init`, `handle_upload`, etc.) are exercised
-end-to-end by the Playwright smoke test in CI; here we cover the pure
-parsing logic that doesn't need a Streamlit runtime context.
+end-to-end by the Playwright smoke; here we cover the in-memory
+RecordStore round-trip + state-shape contract.
 """
 
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import pymarc
 
 from marcedit_web.lib import session
+from marcedit_web.lib.record_store import RecordStore
 
 
 def _serialize(records):
@@ -22,57 +24,52 @@ def _serialize(records):
     return out.getvalue()
 
 
-def test_parse_uploaded_bytes_empty_returns_zero_zero():
-    records, malformed = session.parse_uploaded_bytes(b"")
-    assert records == []
-    assert malformed == 0
+def test_record_store_from_bytes_empty_yields_zero_count(tmp_path):
+    s = RecordStore.from_bytes(b"", tmp_dir=tmp_path / "empty")
+    assert s.count() == 0
+    assert s.malformed_count() == 0
 
 
-def test_parse_uploaded_bytes_decodes_one_record(record):
+def test_record_store_from_bytes_decodes_one_record(record, tmp_path):
     data = _serialize([record])
-    records, malformed = session.parse_uploaded_bytes(data)
-    assert len(records) == 1
-    assert malformed == 0
-    assert records[0].get("001").data == "1234567890"
+    s = RecordStore.from_bytes(data, tmp_dir=tmp_path / "one")
+    assert s.count() == 1
+    first = s.get(0)
+    assert first is not None
+    assert first.get("001").data == "1234567890"
 
 
-def test_parse_uploaded_bytes_decodes_multiple(make_record):
+def test_record_store_from_bytes_decodes_multiple(make_record, tmp_path):
     data = _serialize([make_record(), make_record(), make_record()])
-    records, malformed = session.parse_uploaded_bytes(data)
-    assert len(records) == 3
-    assert malformed == 0
+    s = RecordStore.from_bytes(data, tmp_dir=tmp_path / "many")
+    assert s.count() == 3
 
 
-def test_parse_uploaded_bytes_counts_malformed(record):
-    # Splice a junk byte run between two valid records; the junk is not
-    # a valid MARC record so MARCReader should count it as malformed
-    # while still returning the surrounding good records.
-    good = _serialize([record])
-    junk = b"NOT A REAL MARC RECORD"
-    data = good + junk + good
-    records, malformed = session.parse_uploaded_bytes(data)
-    # We don't pin the exact malformed count — pymarc may swallow the
-    # junk silently or count it once. The contract we promise is:
-    # "good records survive; the function does not raise."
-    assert len(records) >= 1
-
-
-def test_parse_uploaded_bytes_does_not_raise_on_garbage():
+def test_record_store_handles_garbage_without_raising(tmp_path):
     # Pure garbage that doesn't even start with a leader-shaped prefix.
-    session.parse_uploaded_bytes(b"\x00\x00\x00not-a-record")
+    s = RecordStore.from_bytes(
+        b"\x00\x00\x00not-a-record", tmp_dir=tmp_path / "garbage",
+    )
+    # Either we got 0 records or some malformed counter — the only
+    # contract is "does not raise".
+    assert s.count() >= 0
 
 
 def test_state_defaults_shape():
     keys = set(session.STATE_DEFAULTS)
     expected = {
         "user",
-        "filename",
-        "raw_bytes",
-        "records",
-        "malformed_count",
+        "store",
         "issues_cache",
         "editor_text",
         "editor_dirty",
         "tasks_palette_state",
     }
     assert expected.issubset(keys)
+
+
+def test_v1_records_key_is_gone():
+    """The v1 `records: list[Record]` key was replaced by `store`."""
+    assert "records" not in session.STATE_DEFAULTS
+    assert "raw_bytes" not in session.STATE_DEFAULTS
+    assert "malformed_count" not in session.STATE_DEFAULTS

@@ -68,7 +68,7 @@ with st.sidebar:
     st.divider()
     if session.has_upload():
         st.caption(f"Loaded: `{session.current_filename() or '(unnamed)'}`")
-        st.caption(f"{len(session.current_records())} records")
+        st.caption(f"{session.record_count()} records")
     else:
         st.caption("No file loaded yet.")
 
@@ -83,8 +83,8 @@ if not session.has_upload():
     )
     st.stop()
 
-records = session.current_records()
-total = len(records)
+store = session.current_store()
+total = store.count() if store else 0
 if total == 0:
     st.warning("The loaded file produced no parseable records.")
     st.stop()
@@ -109,9 +109,7 @@ if over_cap:
 
 # Cache the initial .mrk text in session_state so flipping between pages
 # doesn't re-render thousands of records every visit. The cache is keyed
-# on STABLE identifiers (filename + record count); `id()` of the records
-# list isn't stable across reruns because `session.current_records()`
-# returns a fresh list copy each call.
+# on STABLE identifiers (filename + record count).
 _MRK_KEY = "marc_editor_text"
 _MRK_SOURCE_KEY = "marc_editor_source_id"
 source_id = (session.current_filename(), total)
@@ -120,7 +118,15 @@ if (
     _MRK_KEY not in st.session_state
     or st.session_state.get(_MRK_SOURCE_KEY) != source_id
 ):
-    st.session_state[_MRK_KEY] = mrk_writer.render_records_mrk(records)
+    if over_cap:
+        # Above the cap we don't render the batch at all; the page falls
+        # back to read-only with the banner above. Stuffing 100K records
+        # of .mrk into st_ace is what crashed v1.
+        st.session_state[_MRK_KEY] = ""
+    else:
+        st.session_state[_MRK_KEY] = mrk_writer.render_records_mrk(
+            store.iter_records()
+        )
     st.session_state[_MRK_SOURCE_KEY] = source_id
     # Reset derived state — the cache identity changed.
     st.session_state.pop("marc_editor_parse", None)
@@ -153,13 +159,16 @@ rule_set = _rules_for_page()
 col_a, col_b, col_c = st.columns([1, 1, 4])
 reload_clicked = col_a.button(
     "Reload from records",
+    disabled=over_cap,
     help=(
-        "Re-render the editor text from `st.session_state.records`. "
+        "Re-render the editor text from the loaded batch. "
         "Discards any unapplied edits in the editor."
     ),
 )
 if reload_clicked:
-    st.session_state[_MRK_KEY] = mrk_writer.render_records_mrk(records)
+    st.session_state[_MRK_KEY] = mrk_writer.render_records_mrk(
+        store.iter_records()
+    )
     st.session_state.pop("marc_editor_parse", None)
     st.rerun()
 
@@ -336,16 +345,11 @@ else:
 
 if save_clicked and parse_state is not None and fatal == 0:
     record_objs = parse_state["records"]
-    buf = io.BytesIO()
-    writer = pymarc.MARCWriter(buf)
-    for r in record_objs:
-        writer.write(r)
-    out_bytes = buf.getvalue()
-
-    # Push the edited records back into the shared session.
-    st.session_state["records"] = list(record_objs)
-    st.session_state["raw_bytes"] = out_bytes
-    st.session_state["malformed_count"] = 0
+    # Push the edited records back into the active RecordStore. This
+    # makes the edits visible to View / Validate / Report / Diff on
+    # the next page visit.
+    store.replace_all(list(record_objs))
+    out_bytes = store.to_mrc_bytes()
     st.session_state["issues_cache"] = {}
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -399,7 +403,7 @@ if parse_state is not None and (parse_state["line_errors"] or parse_state["issue
                     {
                         "severity": i["severity"],
                         "code": i["code"],
-                        "record": i["record_index"] or "—",
+                        "record": str(i["record_index"]) if i["record_index"] else "—",
                         "message": i["message"],
                     }
                     for i in parse_state["issues"]

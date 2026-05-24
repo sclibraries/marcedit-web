@@ -55,7 +55,7 @@ with st.sidebar:
     if session.has_upload():
         filename = session.current_filename() or "(unnamed)"
         st.caption(f"Loaded: `{filename}`")
-        st.caption(f"{len(session.current_records())} records")
+        st.caption(f"{session.record_count()} records")
     else:
         st.caption("No file loaded yet.")
 
@@ -88,8 +88,9 @@ if session.has_upload():
     st.subheader("Loaded batch")
     col_a, col_b, col_c = st.columns(3)
     col_a.metric("Filename", session.current_filename() or "—")
-    col_b.metric("Records", len(session.current_records()))
-    col_c.metric("Malformed", st.session_state.get("malformed_count", 0))
+    col_b.metric("Records", session.record_count())
+    store = session.current_store()
+    col_c.metric("Malformed", store.malformed_count() if store else 0)
 
     raw = session.current_raw_bytes()
     if raw is not None:
