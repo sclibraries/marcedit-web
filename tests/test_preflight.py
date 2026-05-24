@@ -141,3 +141,50 @@ def test_smith_specific_preflight_helpers_are_gone():
         "_eds_filename_operation_missing_issue",
     ):
         assert not hasattr(preflight, name), f"{name} should be gone"
+
+
+# ---------------------------------------------------------------------------
+# Stage 16: streaming-iterator parity
+# ---------------------------------------------------------------------------
+
+
+def test_run_preflight_accepts_generator(record):
+    """Passing a generator (not a list) must produce the same issues."""
+    def gen():
+        yield record
+
+    issues = preflight.run_preflight(records=gen(), malformed=0)
+    codes = {i.code for i in issues}
+    # Same fixture as test_run_preflight_with_records_returns_record_count_info
+    # but driven through a single-shot generator.
+    assert "record-count" in codes
+
+
+def test_run_preflight_generator_matches_list_output(make_record):
+    """Generator and list inputs yield identical issue sequences."""
+    records = [make_record(), make_record(), make_record()]
+    from_list = preflight.run_preflight(records=list(records), malformed=0)
+
+    def gen():
+        for r in records:
+            yield r
+
+    from_gen = preflight.run_preflight(records=gen(), malformed=0)
+    # Same codes in the same order — a strong "behavior unchanged" guarantee.
+    assert [i.code for i in from_list] == [i.code for i in from_gen]
+
+
+def test_run_preflight_empty_generator_yields_no_records_error():
+    issues = preflight.run_preflight(records=iter([]), malformed=0)
+    codes = {i.code for i in issues}
+    assert "no-records" in codes
+
+
+def test_run_preflight_generator_with_expected_count_mismatch(make_record):
+    """expected_count is still honored when records arrive as a generator."""
+    issues = preflight.run_preflight(
+        records=iter([make_record()]),
+        expected_count=5,
+    )
+    codes = {i.code for i in issues}
+    assert "record-count-mismatch" in codes

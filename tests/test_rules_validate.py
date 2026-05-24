@@ -214,3 +214,31 @@ def test_issue_carries_record_index_and_identifier(basic_rules):
         (1, "AAA"),
         (2, "BBB"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Stage 16: streaming-iterator parity
+# ---------------------------------------------------------------------------
+
+
+def test_validate_records_accepts_generator(basic_rules):
+    """Driving via a generator yields identical issues to driving via a list."""
+    r1 = _rec_with_fields(
+        _ctrl("001", "AAA"),
+        _ctrl("008", "180706s2013    nyu     ob    001 0 eng d"),
+    )
+    r2 = _rec_with_fields(
+        _ctrl("001", "BBB"),
+        _ctrl("008", "180706s2013    nyu     ob    001 0 eng d"),
+    )
+    list_issues = rules_validate.validate_records([r1, r2], basic_rules)
+
+    def gen():
+        yield r1
+        yield r2
+
+    gen_issues = rules_validate.validate_records(gen(), basic_rules)
+    assert [i.code for i in list_issues] == [i.code for i in gen_issues]
+    assert [i.record_index for i in list_issues] == [
+        i.record_index for i in gen_issues
+    ]

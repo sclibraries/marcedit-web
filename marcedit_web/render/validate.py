@@ -26,15 +26,25 @@ def render(
         rule_set, rules_warnings = rules_and_warnings_for_page()
 
     store = session.current_store()
-    records = list(store.iter_records()) if store else []
     malformed = store.malformed_count() if store else 0
+    record_count = store.count() if store else 0
 
-    preflight_issues = preflight.run_preflight(records=records, malformed=malformed)
-    rule_issues = rules_validate.validate_records(records, rule_set)
+    # Stage 16: stream records through preflight + rules in two separate
+    # iterator passes. The RecordStore parses each record on demand and
+    # releases it after each pass, so memory stays bounded by O(records ×
+    # offsets) instead of O(records × pymarc.Record).
+    preflight_issues = preflight.run_preflight(
+        records=store.iter_records() if store else iter([]),
+        malformed=malformed,
+    )
+    rule_issues = rules_validate.validate_records(
+        store.iter_records() if store else iter([]),
+        rule_set,
+    )
     all_issues: list[Issue] = preflight_issues + rule_issues
 
     col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric("Records", len(records))
+    col_a.metric("Records", record_count)
     col_b.metric("Errors", sum(1 for i in all_issues if i.severity == "error"))
     col_c.metric("Warnings", sum(1 for i in all_issues if i.severity == "warning"))
     col_d.metric("Info", sum(1 for i in all_issues if i.severity == "info"))

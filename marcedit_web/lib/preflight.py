@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 import logging
 from pathlib import Path
+from typing import Iterable
 
 from pymarc import MARCReader
 
@@ -36,7 +37,7 @@ logger = logging.getLogger("marcedit_web.preflight")
 def run_preflight(
     input_path: Path | None = None,
     *,
-    records: list | None = None,
+    records: Iterable | None = None,
     malformed: int = 0,
     expected_count: int | None = None,
 ) -> list[Issue]:
@@ -51,16 +52,22 @@ def run_preflight(
     propagates up so callers can decide whether to log+exit or wrap into
     a `PreflightError`.
 
-    Pre-parsed fast path: pass `records=` and `malformed=` to skip the
-    file-read and re-parse. When neither `input_path` nor `records` is
-    supplied, returns an empty list.
+    Pre-parsed fast path: pass `records=` (any iterable, including a
+    generator) and `malformed=` to skip the file-read and re-parse.
+    When neither `input_path` nor `records` is supplied, returns an
+    empty list.
+
+    Stage 16: ``records`` may be a generator. The function streams over
+    it once, accumulating Counter / dict state inline; nothing else
+    holds a reference to the full record list.
     """
-    issues: list[Issue] = []
+    file_issues: list[Issue] = []
+    record_issues: list[Issue] = []
 
     pre_parsed = records is not None
 
     if not pre_parsed and input_path is None:
-        return issues
+        return []
 
     # --- File-scope checks --------------------------------------------------
     # Skipped when the caller has already parsed: existence, read, and
@@ -98,79 +105,35 @@ def run_preflight(
             )]
 
     # --- Parse records ------------------------------------------------------
-    # On the pre-parsed fast path, the caller has already done this work and
-    # passed both the records list and the malformed count in.
+    # On the pre-parsed fast path the caller has already done this work and
+    # passed both an iterable of records and the malformed count.
     if not pre_parsed:
         assert raw_bytes is not None
-        records = []
+        # We materialize here (it's the file-reading path used by tests
+        # and by future CLI integrations). The Streamlit pages all take
+        # the streaming branch via `records=store.iter_records()`.
+        records_list: list = []
         malformed = 0
         reader = MARCReader(io.BytesIO(raw_bytes), to_unicode=True, permissive=True)
         for record in reader:
             if record is None:
                 malformed += 1
                 continue
-            records.append(record)
-
-    if not records and malformed == 0:
-        file_path_str = str(input_path) if input_path is not None else None
-        name = input_path.name if input_path is not None else "input"
-        issues.append(Issue(
-            severity="error",
-            scope="file",
-            code="no-records",
-            message=f"no parseable records in {name}",
-            suggestion="confirm the file is a binary .mrc and not a .mrk/.txt export",
-            file_path=file_path_str,
-        ))
-        return issues
+            records_list.append(record)
+        records = records_list
 
     file_path_str = str(input_path) if input_path is not None else None
 
-    if malformed > 0:
-        issues.append(Issue(
-            severity="warning",
-            scope="file",
-            code="malformed-records",
-            message=(
-                f"{malformed} record{'s' if malformed != 1 else ''} could not "
-                f"be parsed and will be skipped"
-            ),
-            suggestion=(
-                "if the count is unexpectedly high, the file may be truncated "
-                "or use a different MARC dialect"
-            ),
-            file_path=file_path_str,
-        ))
-
-    # Record-count info — useful in the report tab.
-    issues.append(Issue(
-        severity="info",
-        scope="file",
-        code="record-count",
-        message=f"{len(records)} parseable record{'s' if len(records) != 1 else ''}",
-        file_path=file_path_str,
-    ))
-
-    if expected_count is not None and len(records) != expected_count:
-        issues.append(Issue(
-            severity="warning",
-            scope="file",
-            code="record-count-mismatch",
-            message=(
-                f"expected {expected_count} record"
-                f"{'s' if expected_count != 1 else ''}, "
-                f"found {len(records)} parseable"
-            ),
-            suggestion="confirm the manifest figure; if the input is truncated, re-export",
-            file_path=file_path_str,
-        ))
-
-    # --- Per-record checks --------------------------------------------------
+    # --- Streaming per-record pass -----------------------------------------
+    # We iterate ``records`` exactly once. Total count is tracked here
+    # rather than via ``len(...)`` so generators work the same as lists.
     seen_001: dict[str, list[int]] = {}
     seen_oclc: dict[str, list[int]] = {}
     seen_lccn: dict[str, list[int]] = {}
+    record_count = 0
 
     for i, record in enumerate(records, start=1):
+        record_count += 1
         identifier = _identifier(record)
 
         # Leader length: should always be 24. pymarc enforces this on parse,
@@ -181,7 +144,7 @@ def run_preflight(
         except Exception:  # noqa: BLE001 - bad leader can't be stringified
             leader_str = ""
         if len(leader_str) != 24:
-            issues.append(_record_issue(
+            record_issues.append(_record_issue(
                 "error", "leader-length-invalid",
                 f"leader is {len(leader_str)} bytes (expected 24)",
                 "review this record; the leader may be corrupt",
@@ -189,14 +152,14 @@ def run_preflight(
             ))
 
         if record.get("001") is None:
-            issues.append(_record_issue(
+            record_issues.append(_record_issue(
                 "warning", "missing-001",
                 "no 001 control field",
                 "001 is the system control number; many downstream systems require it",
                 i, identifier,
             ))
         if record.get("245") is None:
-            issues.append(_record_issue(
+            record_issues.append(_record_issue(
                 "warning", "missing-245",
                 "no 245 title field",
                 "discovery match relies on 245; review before upload",
@@ -205,7 +168,7 @@ def run_preflight(
 
         f856_list = record.get_fields("856")
         if not f856_list:
-            issues.append(_record_issue(
+            record_issues.append(_record_issue(
                 "warning", "missing-856",
                 "no 856 access URL field",
                 "electronic-resource loads need at least one 856 with a usable $u",
@@ -215,7 +178,7 @@ def run_preflight(
             for f in f856_list:
                 u_values = f.get_subfields("u")
                 if any(not (u or "").strip() for u in u_values):
-                    issues.append(_record_issue(
+                    record_issues.append(_record_issue(
                         "warning", "empty-856-u",
                         "856 has an empty $u",
                         "review the access URL before upload",
@@ -232,12 +195,62 @@ def run_preflight(
         for lccn in _lccn_values(record):
             seen_lccn.setdefault(lccn, []).append(i)
 
-    # --- Cross-record duplicate checks --------------------------------------
-    issues.extend(_duplicate_issues(seen_001, "duplicate-001", "001 control field"))
-    issues.extend(_duplicate_issues(seen_oclc, "duplicate-oclc-035", "OCLC 035 $a"))
-    issues.extend(_duplicate_issues(seen_lccn, "duplicate-lccn-010", "LCCN 010 $a"))
+    # --- File-scope summary issues (need the final count) ------------------
+    if record_count == 0 and malformed == 0:
+        name = input_path.name if input_path is not None else "input"
+        return [Issue(
+            severity="error",
+            scope="file",
+            code="no-records",
+            message=f"no parseable records in {name}",
+            suggestion="confirm the file is a binary .mrc and not a .mrk/.txt export",
+            file_path=file_path_str,
+        )]
 
-    return issues
+    if malformed > 0:
+        file_issues.append(Issue(
+            severity="warning",
+            scope="file",
+            code="malformed-records",
+            message=(
+                f"{malformed} record{'s' if malformed != 1 else ''} could not "
+                f"be parsed and will be skipped"
+            ),
+            suggestion=(
+                "if the count is unexpectedly high, the file may be truncated "
+                "or use a different MARC dialect"
+            ),
+            file_path=file_path_str,
+        ))
+
+    file_issues.append(Issue(
+        severity="info",
+        scope="file",
+        code="record-count",
+        message=f"{record_count} parseable record{'s' if record_count != 1 else ''}",
+        file_path=file_path_str,
+    ))
+
+    if expected_count is not None and record_count != expected_count:
+        file_issues.append(Issue(
+            severity="warning",
+            scope="file",
+            code="record-count-mismatch",
+            message=(
+                f"expected {expected_count} record"
+                f"{'s' if expected_count != 1 else ''}, "
+                f"found {record_count} parseable"
+            ),
+            suggestion="confirm the manifest figure; if the input is truncated, re-export",
+            file_path=file_path_str,
+        ))
+
+    # --- Cross-record duplicate checks -------------------------------------
+    record_issues.extend(_duplicate_issues(seen_001, "duplicate-001", "001 control field"))
+    record_issues.extend(_duplicate_issues(seen_oclc, "duplicate-oclc-035", "OCLC 035 $a"))
+    record_issues.extend(_duplicate_issues(seen_lccn, "duplicate-lccn-010", "LCCN 010 $a"))
+
+    return file_issues + record_issues
 
 
 # ---------------------------------------------------------------------------

@@ -21,19 +21,40 @@ def render() -> None:
         return
 
     store = session.current_store()
-    records = list(store.iter_records()) if store else []
-    total = len(records)
     malformed = store.malformed_count() if store else 0
 
-    snapshots = [RecordSnapshot.of(r, i) for i, r in enumerate(records, start=1)]
-
+    # Stage 16: stream the batch once. We build the aggregates AND the
+    # slim per-record dicts in a single pass so a 100K-record batch never
+    # materializes 100K pymarc.Record objects all at the same time.
     format_counter: Counter = Counter()
     tag_counter: Counter = Counter()
     url_domain_counter: Counter = Counter()
-    for snap in snapshots:
-        format_counter[snap.format_label] += 1
-        tag_counter.update(snap.tags_present)
-        url_domain_counter.update(snap.url_domains)
+    # Per-tag "how many records have this tag at least once" — drives the
+    # missing-field rollup below without keeping each snapshot in memory.
+    tag_record_presence: Counter = Counter()
+    per_record_rows: list[dict] = []
+
+    total = 0
+    if store is not None:
+        for i, record in enumerate(store.iter_records(), start=1):
+            total = i
+            snap = RecordSnapshot.of(record, i)
+            format_counter[snap.format_label] += 1
+            tag_counter.update(snap.tags_present)
+            url_domain_counter.update(snap.url_domains)
+            tag_record_presence.update(snap.tags_present.keys())
+            per_record_rows.append({
+                "index": snap.index,
+                "identifier": snap.identifier or "—",
+                "OCLC #": snap.oclc_number or "",
+                "title": (snap.title or "")[:120],
+                "format": snap.format_label,
+                "ldr 06": snap.leader_06,
+                "ldr 07": snap.leader_07,
+                "tag count": sum(snap.tags_present.values()),
+            })
+            # Snapshot drops out of scope on next iteration — no list of
+            # snapshots is retained.
 
     st.subheader("Across the batch")
 
@@ -77,9 +98,10 @@ def render() -> None:
     if check_tags:
         rows = []
         for tag in check_tags:
-            missing = sum(
-                1 for snap in snapshots if snap.tags_present.get(tag, 0) == 0
-            )
+            # `tag_record_presence[tag]` counts records that had the tag at
+            # least once. Missing = total - present, which dodges the
+            # per-record snapshot list the v1 code held in memory.
+            missing = total - tag_record_presence.get(tag, 0)
             rows.append({
                 "tag": tag,
                 "missing": missing,
@@ -124,21 +146,7 @@ def render() -> None:
     st.divider()
     st.subheader("Per record")
 
-    per_record_df = pd.DataFrame(
-        [
-            {
-                "index": snap.index,
-                "identifier": snap.identifier or "—",
-                "OCLC #": snap.oclc_number or "",
-                "title": (snap.title or "")[:120],
-                "format": snap.format_label,
-                "ldr 06": snap.leader_06,
-                "ldr 07": snap.leader_07,
-                "tag count": sum(snap.tags_present.values()),
-            }
-            for snap in snapshots
-        ]
-    )
+    per_record_df = pd.DataFrame(per_record_rows)
 
     st.dataframe(
         per_record_df,

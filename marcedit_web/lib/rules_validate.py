@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from typing import Iterable
 
 from pymarc import Record
 
@@ -35,13 +36,16 @@ logger = logging.getLogger("marcedit_web.rules_validate")
 
 
 def validate_records(
-    records: list[Record], rules: RuleSet
+    records: Iterable[Record], rules: RuleSet
 ) -> list[Issue]:
     """Apply ``rules`` to ``records`` and return all violations.
 
     Order: per-record issues in input order, grouped by record_index; no
     file-scope rule issues are emitted yet (the cross-record dedup check
     is deferred — see module docstring).
+
+    Stage 16: ``records`` is any iterable, not just a list, so callers
+    can stream over ``store.iter_records()`` without materializing.
     """
     issues: list[Issue] = []
     for i, record in enumerate(records, start=1):
