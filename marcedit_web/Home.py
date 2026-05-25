@@ -18,7 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-session.init()
+session.init_page()
 
 
 # --- Upload widget (handled FIRST so the sidebar reads fresh state) --------
@@ -41,6 +41,11 @@ uploaded = st.file_uploader(
 upload_summary = None
 if uploaded is not None:
     upload_summary = session.handle_upload(uploaded)
+    if upload_summary.get("error"):
+        st.error(
+            f"Upload rejected: {upload_summary['error']}. Contact ops if "
+            "you need a higher limit for this batch."
+        )
 
 
 # --- Sidebar ---------------------------------------------------------------
@@ -63,7 +68,7 @@ with st.sidebar:
 # --- Inline upload feedback ------------------------------------------------
 
 
-if upload_summary is not None:
+if upload_summary is not None and not upload_summary.get("error"):
     if upload_summary["total"] == 0 and upload_summary["malformed"] == 0:
         st.error("No records found in the uploaded file.")
     else:

@@ -285,12 +285,37 @@ class RecordStore:
     # ------------------------------------------------------------------ output
 
     def to_mrc_bytes(self) -> bytes:
-        """Serialize the live sequence to a fresh ``.mrc`` blob."""
+        """Serialize the live sequence to a fresh ``.mrc`` blob.
+
+        Holds the whole batch in memory; prefer :py:meth:`write_mrc_to`
+        for any path that doesn't need a bytes return (the Tasks /
+        Dedupe pages stream to disk via that helper).
+        """
         buf = io.BytesIO()
         writer = pymarc.MARCWriter(buf)
         for record in self.iter_records():
             writer.write(record)
         return buf.getvalue()
+
+    def write_mrc_to(self, path: Path) -> int:
+        """Stream the live record sequence to ``path``; return byte count.
+
+        Avoids the full-batch ``io.BytesIO`` materialization that
+        :py:meth:`to_mrc_bytes` does. At 100K records this drops peak
+        memory by ~the size of the MRC blob (typically 50–200 MB).
+        Callers that need bytes downstream should use
+        :py:meth:`to_mrc_bytes`; callers that hand the file to another
+        process (sandbox) or seek-read it (dedupe per-record render)
+        should prefer this.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        with path.open("wb") as fh:
+            writer = pymarc.MARCWriter(fh)
+            for record in self.iter_records():
+                writer.write(record)
+        written = path.stat().st_size
+        return written
 
     # ------------------------------------------------------------------ helpers
 

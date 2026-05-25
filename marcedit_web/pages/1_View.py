@@ -13,7 +13,7 @@ from marcedit_web.lib import session
 from marcedit_web.render import rules_for_page, sidebar_status, view
 
 st.set_page_config(page_title="View · marcedit-web", layout="wide")
-session.init()
+session.init_page()
 
 st.title("View")
 st.caption("MarcEdit-style `.mrk` rendering of the loaded batch.")

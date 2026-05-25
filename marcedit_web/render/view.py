@@ -1,4 +1,10 @@
-"""View tab — render a single record as `.mrk` with help lookup + search."""
+"""View tab — render a single record as `.mrk` with help lookup + search.
+
+Also the 100K-safe inline-edit surface: any record can be opened in an
+Ace `.mrk` editor for single-record mutation. The inline editor itself
+lives in :mod:`marcedit_web.render.single_record_edit` (shared with
+the Workspace Edit tab's over-cap branch).
+"""
 
 from __future__ import annotations
 
@@ -12,15 +18,12 @@ from marcedit_web.lib import (
     tooltips,
     viewer,
 )
+from marcedit_web.render import single_record_edit
 
 
 def render(rule_set: rules_mod.RuleSet | None = None) -> None:
     """Render the View tab into the current Streamlit container."""
-    if not session.has_upload():
-        st.info(
-            "Upload a `.mrc` file on **Home** to view records here. "
-            "View reads records already in this session."
-        )
+    if not session.require_upload("view records here"):
         return
 
     store = session.current_store()
@@ -256,5 +259,13 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
     elif not show_leader:
         tag_filter = {f.tag for f in record.fields}
 
-    text = viewer.render_record(record, fields=tag_filter)
+    text = viewer.render_record_human(record, fields=tag_filter)
     st.code(text, language="text")
+
+    single_record_edit.render_inline_edit(
+        store=store,
+        index=index,
+        record=record,
+        rule_set=rule_set,
+        key_prefix="view_edit",
+    )

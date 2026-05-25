@@ -39,7 +39,9 @@ def test_render_delete_tag_emits_op_marker_and_call():
         [Operation(kind="delete-tag", params={"tag": "029"})]
     )
     assert "# OP: delete-tag" in out["body"]
-    assert 'delete_tags(record, "029")' in out["body"]
+    # Stage 18: codegen now uses ast.unparse-style single-quoted
+    # literals via codegen_safety.lit().
+    assert "delete_tags(record, '029')" in out["body"]
     assert any("from marcedit_web.lib.transforms import" in i for i in out["imports"])
 
 

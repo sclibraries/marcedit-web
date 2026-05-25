@@ -8,7 +8,7 @@ from marcedit_web.lib import session
 from marcedit_web.render import report, sidebar_status
 
 st.set_page_config(page_title="Report · marcedit-web", layout="wide")
-session.init()
+session.init_page()
 
 st.title("Report")
 st.caption("Aggregate counts across the loaded batch plus a per-record table.")

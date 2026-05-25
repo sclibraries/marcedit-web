@@ -20,13 +20,110 @@ Workflow:
 from __future__ import annotations
 
 import io
+import logging
+import mmap
+import re
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
 import pymarc
 import streamlit as st
 
-from marcedit_web.lib import marc_diff, session
+from marcedit_web.lib import marc_diff, quotas, session
+from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.marc_diff import FieldSpec, OCOLC_SPEC
+
+logger = logging.getLogger("marcedit_web.diff")
+
+
+_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9_.@-]+")
+
+
+def _safe_filename(name: str) -> str:
+    """Best-effort safe basename for an uploaded filename.
+
+    Replaces every run of non-portable characters with ``_`` so the
+    path can't escape the per-session diff workdir. Keeps the original
+    extension visible.
+    """
+    safe = _FILENAME_SAFE_RE.sub("_", name).strip("._")
+    return safe or "upload.mrc"
+
+
+def _diff_workdir(side: str) -> Path:
+    """Per-session disk staging directory for diff uploads.
+
+    One subdir per side keeps old/new filenames isolated even when the
+    cataloger uploads a file with the same name on both sides.
+    """
+    key = "diff_workdir_root"
+    if key not in st.session_state:
+        st.session_state[key] = tempfile.mkdtemp(prefix="marcedit-web-diff-")
+    p = Path(st.session_state[key]) / side
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+class _MappedFile:
+    """Owning wrapper around a file handle + mmap pair.
+
+    Marc_diff's API consumes anything that supports byte-slicing; mmap
+    objects fit the contract. We keep the file handle on the instance
+    so it survives until the mmap is closed (Python's GC will reap
+    both together).
+    """
+
+    __slots__ = ("path", "_fh", "mm")
+
+    def __init__(self, path: str | Path):
+        self.path = str(path)
+        self._fh = open(self.path, "rb")
+        try:
+            self.mm = mmap.mmap(self._fh.fileno(), 0, access=mmap.ACCESS_READ)
+        except ValueError:
+            # Empty file — mmap doesn't accept zero-size maps. Fall
+            # back to an empty bytes view so downstream walkers
+            # gracefully report "no records."
+            self._fh.close()
+            self.mm = b""
+
+    def close(self) -> None:
+        try:
+            if isinstance(self.mm, mmap.mmap):
+                self.mm.close()
+        except (BufferError, ValueError):
+            pass
+        try:
+            if not self._fh.closed:
+                self._fh.close()
+        except OSError:
+            pass
+
+    def __del__(self) -> None:
+        self.close()
+
+
+def _open_buffers(paths_list: list[tuple[str, str]]) -> dict[str, _MappedFile]:
+    """Open each (name, path) entry as an mmap-backed bytes-like view.
+
+    Returns a name -> ``_MappedFile`` dict. Callers that pass the
+    result into marc_diff helpers should access ``.mm`` on each
+    entry, since marc_diff expects a bytes-like object. The wrapper
+    keeps the file handle alive until GC runs.
+    """
+    return {name: _MappedFile(path) for name, path in paths_list}
+
+
+def _as_sources(opened: dict[str, _MappedFile]):
+    """Project ``_MappedFile`` values to their mmap views.
+
+    The marc_diff API takes either ``dict[str, bytes]`` or any
+    bytes-like. mmap.mmap implements the buffer protocol and supports
+    slicing identically to bytes, so passing the ``.mm`` view is a
+    drop-in replacement that pages in only the bytes actually read.
+    """
+    return {name: mb.mm for name, mb in opened.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +218,59 @@ def _all_specs_or_errors(
     return specs, []
 
 
-def _read_uploaded(files) -> list[tuple[str, bytes]]:
-    return [(f.name, f.getvalue()) for f in (files or [])]
+def _read_uploaded(files, side: str) -> list[tuple[str, str]]:
+    """Stream each uploaded file to a per-session diff temp dir.
+
+    Returns ``list[(name, path_str)]`` — the actual MARC bytes live on
+    disk in ``st.session_state["diff_workdir_root"]/<side>/<name>`` and
+    are mmap'd on demand by :func:`_open_buffers`. This drops Python
+    memory pressure for multi-GB diffs (the original marc-diff CLI's
+    streaming model), and removes the need for the per-side aggregate
+    cap that previously blocked real cataloger workloads.
+
+    Per-file cap still applies via ``MARCEDIT_WEB_MAX_DIFF_BYTES``
+    (default 2 GB). Audit events are recorded per file as before.
+    Rejected files drop out of the returned list so the rest of the
+    page treats them as if they were never uploaded.
+    """
+    user = st.session_state.get("user", "anonymous") or "anonymous"
+    workdir = _diff_workdir(side)
+    accepted: list[tuple[str, str]] = []
+    for f in (files or []):
+        size = f.getbuffer().nbytes
+        try:
+            quotas.check_upload(size, kind="diff")
+        except quotas.QuotaExceeded as exc:
+            audit_event(
+                "upload-rejected",
+                user=user,
+                source="diff",
+                side=side,
+                filename=f.name,
+                size=size,
+                reason=exc.kind,
+                limit=exc.limit,
+            )
+            st.error(f"`{f.name}` rejected: {exc}")
+            continue
+        target = workdir / _safe_filename(f.name)
+        # Avoid rewriting on every Streamlit rerun if the file is
+        # already present at the expected size. The widget keeps
+        # the upload object alive across reruns; we'd otherwise
+        # re-stream the same bytes on every page refresh.
+        if not target.exists() or target.stat().st_size != size:
+            with target.open("wb") as out:
+                out.write(f.getbuffer())
+        accepted.append((f.name, str(target)))
+        audit_event(
+            "upload-accepted",
+            user=user,
+            source="diff",
+            side=side,
+            filename=f.name,
+            size=size,
+        )
+    return accepted
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +424,7 @@ def _dialog_diff(
 
 
 st.set_page_config(page_title="Diff · marcedit-web", layout="wide")
-session.init()
+session.init_page()
 _init_diff_state()
 
 st.title("Diff")
@@ -327,27 +475,59 @@ with col_right:
     )
 
 if old_files:
-    st.session_state["diff_old_buffers"] = _read_uploaded(old_files)
+    st.session_state["diff_old_buffers"] = _read_uploaded(old_files, side="old")
 if new_files:
-    st.session_state["diff_new_buffers"] = _read_uploaded(new_files)
+    st.session_state["diff_new_buffers"] = _read_uploaded(new_files, side="new")
 
 old_bufs = st.session_state["diff_old_buffers"]
 new_bufs = st.session_state["diff_new_buffers"]
 
+
+def _disk_size_mb(paths_list) -> float:
+    """Sum the on-disk size of each path in MB.
+
+    ``paths_list`` is the post-Stage-27 shape: ``list[(name, path_str)]``.
+    Reads the stat, doesn't open the file.
+    """
+    total = 0
+    for _, path in (paths_list or []):
+        try:
+            total += Path(path).stat().st_size
+        except OSError:
+            pass
+    return total / 1e6
+
+
 if old_bufs:
     st.write(
         f"**Original:** {len(old_bufs)} file(s), "
-        f"{sum(len(d) for _, d in old_bufs) / 1e6:,.0f} MB"
+        f"{_disk_size_mb(old_bufs):,.0f} MB"
     )
 if new_bufs:
     st.write(
         f"**New:** {len(new_bufs)} file(s), "
-        f"{sum(len(d) for _, d in new_bufs) / 1e6:,.0f} MB"
+        f"{_disk_size_mb(new_bufs):,.0f} MB"
     )
 
 if not (old_bufs and new_bufs):
     st.info("Upload at least one original file and one new file to continue.")
     st.stop()
+
+
+# Open both sides as memory-mapped bytes-like views. Each file is mapped
+# once and reused across the rest of the page render — the OS pages in
+# only the bytes marc_diff actually touches (directory entries, fields
+# extracted for match keys). Python GC closes the mmaps + file handles
+# when ``_diff_open_handles`` falls out of scope at script end.
+_diff_open_handles: list = []
+_old_opened = _open_buffers(old_bufs)
+_new_opened = _open_buffers(new_bufs)
+_diff_open_handles.extend(_old_opened.values())
+_diff_open_handles.extend(_new_opened.values())
+old_pairs = [(name, mf.mm) for name, mf in _old_opened.items()]
+new_pairs = [(name, mf.mm) for name, mf in _new_opened.items()]
+old_sources_mm = _as_sources(_old_opened)
+new_sources_mm = _as_sources(_new_opened)
 
 
 # ----- Step 3: suggestions -------------------------------------------------
@@ -366,7 +546,7 @@ if st.button("Scan a sample for suggestions") or (
         with st.spinner("Sampling records on both sides..."):
             st.session_state["diff_combined_suggestions"] = (
                 marc_diff.combined_field_suggestions(
-                    old_bufs, new_bufs, sample_size=500
+                    old_pairs, new_pairs, sample_size=500
                 )
             )
 
@@ -462,7 +642,7 @@ if st.button("Find sample matching records"):
     else:
         with st.spinner("Indexing both sides and finding matches..."):
             st.session_state["diff_preview_matches"] = marc_diff.sample_matches(
-                old_bufs, new_bufs, specs, limit=20
+                old_pairs, new_pairs, specs, limit=20
             )
             st.session_state["diff_preview_specs"] = specs
 
@@ -476,8 +656,6 @@ if preview is not None:
         )
     else:
         st.success(f"Found {len(preview)} matching record(s). Click any to inspect.")
-        old_sources_dict = dict(old_bufs)
-        new_sources_dict = dict(new_bufs)
         for key, old_loc, new_loc in preview:
             c1, c2 = st.columns([4, 1])
             c1.markdown(f"`{key}`")
@@ -486,8 +664,8 @@ if preview is not None:
                     key,
                     old_loc,
                     new_loc,
-                    old_sources_dict,
-                    new_sources_dict,
+                    old_sources_mm,
+                    new_sources_mm,
                 )
 
 
@@ -530,9 +708,9 @@ if st.button("Run diff", type="primary"):
     exclude_tags |= {s.tag for s in specs}
 
     with st.spinner("Indexing original..."):
-        old_idx = marc_diff.index_buffers(old_bufs, specs)
+        old_idx = marc_diff.index_buffers(old_pairs, specs)
     with st.spinner("Indexing new..."):
-        new_idx = marc_diff.index_buffers(new_bufs, specs)
+        new_idx = marc_diff.index_buffers(new_pairs, specs)
 
     diff = marc_diff.compute_diff(old_idx, new_idx)
 
@@ -544,8 +722,8 @@ if st.button("Run diff", type="primary"):
             changed = marc_diff.detect_changes(
                 old_idx,
                 new_idx,
-                dict(old_bufs),
-                dict(new_bufs),
+                old_sources_mm,
+                new_sources_mm,
                 diff.common_ids,
                 exclude_tags=frozenset(exclude_tags),
             )
@@ -594,8 +772,8 @@ if dr:
     )
 
     sources_by_side = {
-        "Original": (old_idx, dict(old_bufs)),
-        "New": (new_idx, dict(new_bufs)),
+        "Original": (old_idx, old_sources_mm),
+        "New": (new_idx, new_sources_mm),
     }
     for side, (idx, sources) in sources_by_side.items():
         if idx.missing_key_count:
@@ -673,8 +851,6 @@ if dr:
             "changed", len(changed_list), per_page=10
         )
         page_keys = changed_list[start:end]
-        old_sources_dict = dict(old_bufs)
-        new_sources_dict = dict(new_bufs)
         for key in page_keys:
             c1, c2 = st.columns([4, 1])
             c1.markdown(f"`{key}`")
@@ -683,8 +859,8 @@ if dr:
                     key,
                     old_idx.locations[key],
                     new_idx.locations[key],
-                    old_sources_dict,
-                    new_sources_dict,
+                    old_sources_mm,
+                    new_sources_mm,
                 )
 
     # ----- Step 7+8: generate + download -----
@@ -703,11 +879,11 @@ if dr:
 
         with st.spinner("Building adds..."):
             adds_bytes = marc_diff.write_subset_to_bytes(
-                adds_locations, dict(new_bufs)
+                adds_locations, new_sources_mm
             )
         with st.spinner("Building deletes..."):
             deletes_bytes = marc_diff.write_subset_to_bytes(
-                deletes_locations, dict(old_bufs)
+                deletes_locations, old_sources_mm
             )
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

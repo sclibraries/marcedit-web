@@ -53,3 +53,35 @@ def test_no_logging_of_user(caplog):
 
 def test_anonymous_constant_is_exported():
     assert identity.ANONYMOUS == "anonymous"
+
+
+# ---------------------------------------------------------------------------
+# Stage 21: prod-mode + anonymity predicates
+# ---------------------------------------------------------------------------
+
+
+def test_is_prod_false_when_env_unset(monkeypatch):
+    monkeypatch.delenv("MARCEDIT_WEB_PROD", raising=False)
+    assert identity.is_prod() is False
+
+
+def test_is_prod_truthy_for_each_accepted_value(monkeypatch):
+    for v in ("1", "true", "TRUE", "Yes", "on"):
+        monkeypatch.setenv("MARCEDIT_WEB_PROD", v)
+        assert identity.is_prod() is True, f"expected {v!r} to be truthy"
+
+
+def test_is_prod_falsy_for_unrelated_values(monkeypatch):
+    for v in ("0", "false", "no", "off", "  ", "random"):
+        monkeypatch.setenv("MARCEDIT_WEB_PROD", v)
+        assert identity.is_prod() is False, f"expected {v!r} to be falsy"
+
+
+def test_is_anonymous_recognizes_sentinel():
+    assert identity.is_anonymous(ANONYMOUS) is True
+    assert identity.is_anonymous("") is True
+    assert identity.is_anonymous(None) is True
+
+
+def test_is_anonymous_false_for_real_user():
+    assert identity.is_anonymous("alice@example.edu") is False

@@ -21,6 +21,7 @@ import copy
 import io
 import json
 import logging
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -32,17 +33,44 @@ from streamlit_ace import st_ace
 from marcedit_web.lib import (
     editor,
     marcedit_import,
+    quotas,
     sandbox,
     session,
     task_admin,
     task_builder,
+    task_diff,
     task_storage,
     tasks,
 )
+from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.errors import Issue, transform_issue
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
 
 logger = logging.getLogger("marcedit_web.render.tasks")
+
+
+# ---------------------------------------------------------------------------
+# Session-state keys (Stage 22)
+#
+# Single source of truth for every ``tasks_*`` key the editor flow writes
+# into ``st.session_state``. A typo at a callsite now becomes an
+# ImportError / AttributeError instead of a silent state-leak bug where
+# the editor reads from one key and writes to another. Widget ``key=``
+# arguments use the same constants so a future rename is one find.
+# ---------------------------------------------------------------------------
+
+K_EDITOR_OPEN = "tasks_editor_open"
+K_EDITOR_MODE = "tasks_editor_mode"
+K_EDITOR_NAME = "tasks_editor_name"
+K_EDITOR_DESCRIPTION = "tasks_editor_description"
+K_EDITOR_BODY = "tasks_editor_body"
+K_EDITOR_OPS = "tasks_editor_ops"
+K_EDITOR_ORIGINAL_NAME = "tasks_editor_original_name"
+K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
+K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
+K_RUN_RESULTS = "tasks_run_results"
+K_SAVE_ERROR = "tasks_save_error"
+K_SAVE_SUCCESS = "tasks_save_success"
 
 
 def render() -> None:
@@ -52,14 +80,14 @@ def render() -> None:
     tasks_dir = task_storage.user_tasks_dir(current_user_id)
 
     # Editor draft state — namespaced.
-    st.session_state.setdefault("tasks_editor_open", False)
-    st.session_state.setdefault("tasks_editor_mode", "form")  # "form" | "code"
-    st.session_state.setdefault("tasks_editor_name", "")
-    st.session_state.setdefault("tasks_editor_description", "")
-    st.session_state.setdefault("tasks_editor_body", "")
-    st.session_state.setdefault("tasks_editor_ops", [])  # list[dict] — Operation.to_dict()
-    st.session_state.setdefault("tasks_editor_original_name", None)
-    st.session_state.setdefault("tasks_run_results", None)
+    st.session_state.setdefault(K_EDITOR_OPEN, False)
+    st.session_state.setdefault(K_EDITOR_MODE, "form")  # "form" | "code"
+    st.session_state.setdefault(K_EDITOR_NAME, "")
+    st.session_state.setdefault(K_EDITOR_DESCRIPTION, "")
+    st.session_state.setdefault(K_EDITOR_BODY, "")
+    st.session_state.setdefault(K_EDITOR_OPS, [])  # list[dict] — Operation.to_dict()
+    st.session_state.setdefault(K_EDITOR_ORIGINAL_NAME, None)
+    st.session_state.setdefault(K_RUN_RESULTS, None)
 
     # Load shared first then user — user-named tasks shadow shared ones.
     for _d in task_storage.visible_task_dirs(current_user_id):
@@ -85,7 +113,7 @@ def render() -> None:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("delete_user_task failed for %s", name)
                 st.warning(f"Could not delete {name}: {exc}")
-        st.session_state["tasks_editor_open"] = False
+        st.session_state[K_EDITOR_OPEN] = False
         st.rerun()
 
     if not is_admin:
@@ -114,6 +142,11 @@ def render() -> None:
             if cols[3].button("Delete", key=f"del_{entry.name}"):
                 editor.delete_user_task(tasks_dir, entry.name)
                 tasks.TASK_REGISTRY.pop(entry.name, None)
+                audit_event(
+                    "task-deleted",
+                    user=current_user_id,
+                    task_name=entry.name,
+                )
                 st.rerun()
 
     # --- New / import controls --------------------------------------------
@@ -136,7 +169,7 @@ def render() -> None:
 
     # --- Editor (form or code) --------------------------------------------
 
-    if st.session_state["tasks_editor_open"]:
+    if st.session_state[K_EDITOR_OPEN]:
         _render_editor(tasks_dir, is_admin)
 
     # --- Run on loaded batch (sandbox path) -------------------------------
@@ -145,6 +178,11 @@ def render() -> None:
     st.subheader("Run on loaded batch")
 
     if not session.has_upload():
+        # Don't use session.require_upload() here — the standard banner
+        # says "this feature reads records already in this session,"
+        # but Tasks can be *authored* without a loaded batch (we want
+        # the user to keep building/importing tasks even pre-upload).
+        # A bespoke message is the right call.
         st.info(
             "Upload a `.mrc` file on the **Home** page to run tasks "
             "against it. Tasks can be built and imported without a "
@@ -165,11 +203,11 @@ def render() -> None:
 
 def _open_editor_for_new() -> None:
     """Open the editor for a brand-new task in form mode."""
-    st.session_state["tasks_editor_open"] = True
-    st.session_state["tasks_editor_mode"] = "form"
-    st.session_state["tasks_editor_name"] = ""
-    st.session_state["tasks_editor_description"] = ""
-    st.session_state["tasks_editor_body"] = (
+    st.session_state[K_EDITOR_OPEN] = True
+    st.session_state[K_EDITOR_MODE] = "form"
+    st.session_state[K_EDITOR_NAME] = ""
+    st.session_state[K_EDITOR_DESCRIPTION] = ""
+    st.session_state[K_EDITOR_BODY] = (
         "# `record` is a pymarc.Record. Mutate it in place; do not return.\n"
         "# Example: delete every 029 field.\n"
         "#\n"
@@ -177,8 +215,8 @@ def _open_editor_for_new() -> None:
         "# delete_tags(record, \"029\")\n"
         "pass\n"
     )
-    st.session_state["tasks_editor_ops"] = []
-    st.session_state["tasks_editor_original_name"] = None
+    st.session_state[K_EDITOR_OPS] = []
+    st.session_state[K_EDITOR_ORIGINAL_NAME] = None
 
 
 def _open_editor_for_existing(
@@ -193,35 +231,65 @@ def _open_editor_for_existing(
         st.error(f"Could not open {entry.name}: {exc}")
         return
 
-    st.session_state["tasks_editor_open"] = True
-    st.session_state["tasks_editor_name"] = parsed["name"]
-    st.session_state["tasks_editor_description"] = parsed["description"]
-    st.session_state["tasks_editor_body"] = parsed["body"]
-    st.session_state["tasks_editor_original_name"] = parsed["name"]
+    st.session_state[K_EDITOR_OPEN] = True
+    st.session_state[K_EDITOR_NAME] = parsed["name"]
+    st.session_state[K_EDITOR_DESCRIPTION] = parsed["description"]
+    st.session_state[K_EDITOR_BODY] = parsed["body"]
+    st.session_state[K_EDITOR_ORIGINAL_NAME] = parsed["name"]
 
     parse_result = task_builder.parse_ops_from_source(parsed["body"])
     if parse_result["form_editable"]:
-        st.session_state["tasks_editor_mode"] = "form"
-        st.session_state["tasks_editor_ops"] = [
+        st.session_state[K_EDITOR_MODE] = "form"
+        st.session_state[K_EDITOR_OPS] = [
             op.to_dict() for op in parse_result["ops"]
         ]
     else:
         # Hand-written: code mode if admin, else read-only-style notice.
-        st.session_state["tasks_editor_mode"] = "code" if is_admin else "form"
-        st.session_state["tasks_editor_ops"] = []
+        st.session_state[K_EDITOR_MODE] = "code" if is_admin else "form"
+        st.session_state[K_EDITOR_OPS] = []
 
 
 def _do_marcedit_import(upl, tasks_dir: Path) -> None:
     """Import a MarcEdit `.tasksfile` or `.task` archive into tasks_dir."""
+    user = st.session_state.get("user", "anonymous") or "anonymous"
+    raw = upl.getvalue()
+    is_archive = upl.name.lower().endswith(".task")
+    # Tasksfiles are text → 1 MB cap. Archives can be larger because
+    # they bundle multiple inner txt entries, but each inner entry is
+    # gated again inside convert_task_archive.
+    quota_kind = "upload" if is_archive else "tasksfile"
     try:
-        if upl.name.lower().endswith(".task"):
+        quotas.check_upload(len(raw), kind=quota_kind)
+    except quotas.QuotaExceeded as exc:
+        audit_event(
+            "tasksfile-rejected" if not is_archive else "archive-rejected",
+            user=user,
+            filename=upl.name,
+            size=len(raw),
+            reason=exc.kind,
+            limit=exc.limit,
+        )
+        st.error(f"Import rejected: {exc}")
+        return
+
+    try:
+        if is_archive:
             tmp_path = tasks_dir / f".__import__{upl.name}"
-            tmp_path.write_bytes(upl.getvalue())
+            tmp_path.write_bytes(raw)
             archive = marcedit_import.convert_task_archive(tmp_path)
             tmp_path.unlink(missing_ok=True)
             if archive.archive_errors:
                 for err in archive.archive_errors:
                     st.error(err)
+                audit_event(
+                    "archive-rejected",
+                    user=user,
+                    filename=upl.name,
+                    size=len(raw),
+                    reason="archive-errors",
+                    detail=archive.archive_errors[:3],
+                )
+                return
             imported = 0
             for er in archive.entries:
                 if er.success and er.conversion is not None:
@@ -232,10 +300,18 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                 elif er.error:
                     st.warning(f"{er.entry_name}: {er.error}")
             st.success(f"Imported {imported} task(s) from `{upl.name}`.")
+            audit_event(
+                "archive-imported",
+                user=user,
+                filename=upl.name,
+                size=len(raw),
+                imported=imported,
+                entries=len(archive.entries),
+            )
         else:
             name = marcedit_import._derive_name_from_filename(upl.name)
             conv = marcedit_import.convert_tasksfile_text(
-                upl.getvalue().decode("utf-8"),
+                raw.decode("utf-8"),
                 name=name,
                 description_fallback=f"Imported from {upl.name}",
             )
@@ -243,6 +319,14 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
             path = editor.task_file_path(tasks_dir, conv.name)
             path.write_text(content)
             st.success(f"Imported `{conv.name}` from `{upl.name}`.")
+            audit_event(
+                "tasksfile-imported",
+                user=user,
+                filename=upl.name,
+                size=len(raw),
+                task_name=conv.name,
+                unsupported_lines=len(conv.unsupported),
+            )
             if conv.unsupported:
                 st.warning(
                     f"{len(conv.unsupported)} source line(s) were not "
@@ -252,6 +336,14 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("MarcEdit import failed")
         st.error(f"Import failed: {exc}")
+        audit_event(
+            "tasksfile-rejected" if not is_archive else "archive-rejected",
+            user=user,
+            filename=upl.name,
+            size=len(raw),
+            reason="exception",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -261,9 +353,9 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
 
 def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
     st.divider()
-    is_edit = st.session_state["tasks_editor_original_name"] is not None
+    is_edit = st.session_state[K_EDITOR_ORIGINAL_NAME] is not None
     st.subheader(
-        f"Edit `{st.session_state['tasks_editor_original_name']}`"
+        f"Edit `{st.session_state[K_EDITOR_ORIGINAL_NAME]}`"
         if is_edit
         else "New task"
     )
@@ -273,7 +365,7 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         mode = st.radio(
             "Editor mode",
             options=["form", "code"],
-            index=0 if st.session_state["tasks_editor_mode"] == "form" else 1,
+            index=0 if st.session_state[K_EDITOR_MODE] == "form" else 1,
             horizontal=True,
             key="tasks_editor_mode_radio",
             help=(
@@ -282,24 +374,24 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
                 "sandbox at execution time."
             ),
         )
-        st.session_state["tasks_editor_mode"] = mode
+        st.session_state[K_EDITOR_MODE] = mode
     else:
         # Standard users are pinned to form view regardless of state.
-        st.session_state["tasks_editor_mode"] = "form"
+        st.session_state[K_EDITOR_MODE] = "form"
 
-    st.session_state["tasks_editor_name"] = st.text_input(
+    st.session_state[K_EDITOR_NAME] = st.text_input(
         "Task name (lowercase, digits, hyphens)",
-        value=st.session_state["tasks_editor_name"],
+        value=st.session_state[K_EDITOR_NAME],
         help="Used in the @task(...) decorator. Must be unique.",
-        key="tasks_editor_name_input",
+        key=K_EDITOR_NAME_INPUT,
     )
-    st.session_state["tasks_editor_description"] = st.text_input(
+    st.session_state[K_EDITOR_DESCRIPTION] = st.text_input(
         "Description (one sentence)",
-        value=st.session_state["tasks_editor_description"],
-        key="tasks_editor_description_input",
+        value=st.session_state[K_EDITOR_DESCRIPTION],
+        key=K_EDITOR_DESCRIPTION_INPUT,
     )
 
-    if st.session_state["tasks_editor_mode"] == "form":
+    if st.session_state[K_EDITOR_MODE] == "form":
         _render_form_editor()
     else:
         _render_code_editor()
@@ -319,10 +411,10 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
     )
 
     # Display any pending success/error from the last save attempt.
-    if st.session_state.get("tasks_save_error"):
-        st.error(st.session_state.pop("tasks_save_error"))
-    if st.session_state.get("tasks_save_success"):
-        st.success(st.session_state.pop("tasks_save_success"))
+    if st.session_state.get(K_SAVE_ERROR):
+        st.error(st.session_state.pop(K_SAVE_ERROR))
+    if st.session_state.get(K_SAVE_SUCCESS):
+        st.success(st.session_state.pop(K_SAVE_SUCCESS))
 
 
 def _render_code_editor() -> None:
@@ -332,7 +424,7 @@ def _render_code_editor() -> None:
         "as needed."
     )
     new_body = st_ace(
-        value=st.session_state["tasks_editor_body"],
+        value=st.session_state[K_EDITOR_BODY],
         language="python",
         theme="github",
         keybinding="vscode",
@@ -346,13 +438,13 @@ def _render_code_editor() -> None:
         key="tasks_editor_ace",
     )
     if new_body is not None:
-        st.session_state["tasks_editor_body"] = new_body
+        st.session_state[K_EDITOR_BODY] = new_body
 
 
 def _render_form_editor() -> None:
     """Render the operation-palette form editor.
 
-    The op list lives in ``st.session_state["tasks_editor_ops"]`` as a
+    The op list lives in ``st.session_state[K_EDITOR_OPS]`` as a
     list of dicts (``Operation.to_dict()`` shape). Save converts it
     back to Python via ``task_builder.render_ops_to_python``.
     """
@@ -362,8 +454,24 @@ def _render_form_editor() -> None:
         "expander for what each does."
     )
 
-    ops = st.session_state["tasks_editor_ops"]
+    is_admin = task_admin.is_admin(
+        st.session_state.get("user", "anonymous") or "anonymous"
+    )
+    ops = st.session_state[K_EDITOR_OPS]
     to_remove: list[int] = []
+
+    # Non-admin users mustn't be able to author raw Python through the
+    # custom-op textarea. We filter `custom` out of the *add* dropdown
+    # below, but an imported/pre-existing task may already carry one;
+    # warn the cataloger so they understand the editor is read-only on
+    # that op.
+    if not is_admin and any(op.get("kind") == "custom" for op in ops):
+        st.warning(
+            "This task contains a **`custom`** op with raw Python. You're "
+            "not an admin, so its code is shown read-only. Save will "
+            "preserve the existing code unchanged; to edit it ask an "
+            "admin or use a typed op above."
+        )
 
     for i, op in enumerate(ops):
         with st.container():
@@ -379,7 +487,10 @@ def _render_form_editor() -> None:
                 # Render each param.
                 params = op.setdefault("params", {})
                 for param in palette_entry["params"]:
-                    _render_param_input(param, params, key_prefix=f"op_{i}")
+                    _render_param_input(
+                        param, params, key_prefix=f"op_{i}",
+                        is_admin=is_admin,
+                    )
 
             row = st.columns([1, 1, 6])
             if row[0].button("↑", key=f"op_up_{i}", disabled=i == 0):
@@ -397,10 +508,6 @@ def _render_form_editor() -> None:
             ops.pop(i)
         st.rerun()
 
-    # Add-operation control.
-    is_admin = task_admin.is_admin(
-        st.session_state.get("user", "anonymous") or "anonymous"
-    )
     add_options = [op["kind"] for op in OPERATIONS_PALETTE]
     if not is_admin:
         add_options = [k for k in add_options if k != "custom"]
@@ -449,8 +556,17 @@ def _default_params_for(kind: str) -> dict:
     return out
 
 
-def _render_param_input(param: dict, params: dict, *, key_prefix: str) -> None:
-    """Render one form widget for one operation parameter."""
+def _render_param_input(
+    param: dict, params: dict, *, key_prefix: str, is_admin: bool = False
+) -> None:
+    """Render one form widget for one operation parameter.
+
+    ``is_admin`` gates the ``code`` ptype: for non-admins, the textarea
+    is replaced by a read-only ``st.code`` block. This protects the
+    "form-builder only for standard users" trust model against imported
+    tasks that already carry a ``custom`` op — the existing code is
+    visible, but the cataloger can't modify it from the form editor.
+    """
     name = param["name"]
     label = param["label"]
     ptype = param["type"]
@@ -513,14 +629,24 @@ def _render_param_input(param: dict, params: dict, *, key_prefix: str) -> None:
             key=key,
         )
     elif ptype == "code":
-        # Only reached for the `custom` op, which is admin-only via the
-        # add-op dropdown filter above.
-        params[name] = st.text_area(
-            label, value=str(current or ""),
-            help=help_text or "Raw Python; runs in the sandbox.",
-            key=key,
-            height=200,
-        )
+        # Reached for the `custom` op. Add-op dropdown filters this out
+        # for non-admins, but imported tasks (e.g. via MarcEdit
+        # tasksfile import that fell through to `custom`) can still
+        # carry one. For non-admins we render read-only so the existing
+        # code stays visible but can't be mutated. ``params[name]``
+        # is intentionally left unchanged in that branch.
+        if is_admin:
+            params[name] = st.text_area(
+                label, value=str(current or ""),
+                help=help_text or "Raw Python; runs in the sandbox.",
+                key=key,
+                height=200,
+            )
+        else:
+            st.caption(
+                f"**{label}** — read-only (admin Code-view required to edit)"
+            )
+            st.code(str(current or "# (empty)"), language="python")
     else:
         st.warning(f"Unsupported param type `{ptype}` for {name}.")
 
@@ -534,26 +660,26 @@ def _save_callback(tasks_dir: Path) -> None:
     """on_click callback for Save. Runs BEFORE Streamlit's iteration phase
     so mutations of TASK_REGISTRY / session_state don't trip the
     dict-changed-size error in `_call_callbacks`."""
-    name = (st.session_state.get("tasks_editor_name_input")
-            or st.session_state.get("tasks_editor_name") or "").strip()
+    name = (st.session_state.get(K_EDITOR_NAME_INPUT)
+            or st.session_state.get(K_EDITOR_NAME) or "").strip()
     description = (
-        st.session_state.get("tasks_editor_description_input")
-        or st.session_state.get("tasks_editor_description")
+        st.session_state.get(K_EDITOR_DESCRIPTION_INPUT)
+        or st.session_state.get(K_EDITOR_DESCRIPTION)
         or ""
     ).strip()
-    original = st.session_state.get("tasks_editor_original_name")
-    mode = st.session_state.get("tasks_editor_mode", "form")
+    original = st.session_state.get(K_EDITOR_ORIGINAL_NAME)
+    mode = st.session_state.get(K_EDITOR_MODE, "form")
 
     if mode == "form":
         ops = [
             Operation.from_dict(op)
-            for op in st.session_state.get("tasks_editor_ops", [])
+            for op in st.session_state.get(K_EDITOR_OPS, [])
         ]
         rendered = task_builder.render_ops_to_python(ops)
         body = rendered["body"]
         extra_imports = rendered["imports"]
     else:
-        body = st.session_state.get("tasks_editor_body", "")
+        body = st.session_state.get(K_EDITOR_BODY, "")
         extra_imports = None
 
     try:
@@ -566,20 +692,40 @@ def _save_callback(tasks_dir: Path) -> None:
             extra_imports=extra_imports,
         )
     except ValueError as exc:
-        st.session_state["tasks_save_error"] = str(exc)
+        st.session_state[K_SAVE_ERROR] = str(exc)
         return
 
     if original and original != name:
         tasks.TASK_REGISTRY.pop(original, None)
     tasks.TASK_REGISTRY.pop(name, None)
     tasks.load_user_tasks(tasks_dir, force_reload=True)
-    st.session_state["tasks_editor_open"] = False
-    st.session_state["tasks_save_success"] = f"Saved `{name}`."
+    st.session_state[K_EDITOR_OPEN] = False
+    st.session_state[K_SAVE_SUCCESS] = f"Saved `{name}`."
+    user = st.session_state.get("user", "anonymous") or "anonymous"
+    is_admin = task_admin.is_admin(user)
+    audit_event(
+        "task-saved",
+        user=user,
+        task_name=name,
+        original=original,
+        mode=mode,
+        is_admin=is_admin,
+        body_bytes=len(body or ""),
+    )
+    if mode == "code" and is_admin:
+        # Admin Code-view save is the highest-trust path — surfaces a
+        # second audit line so ops can filter on `admin-action` alone.
+        audit_event(
+            "admin-action",
+            user=user,
+            action="code-view-save",
+            task_name=name,
+        )
 
 
 def _cancel_callback() -> None:
     """on_click callback for Cancel. Mirrors the on_click pattern of Save."""
-    st.session_state["tasks_editor_open"] = False
+    st.session_state[K_EDITOR_OPEN] = False
 
 
 # ---------------------------------------------------------------------------
@@ -600,6 +746,11 @@ def _render_run_panel(registered, tasks_dir: Path) -> None:
             "time limits."
         ),
         key="tasks_run_selection",
+    )
+    st.caption(
+        "ℹ️ Runs apply in the sandbox, which has CPU / memory / wall-"
+        "clock limits. Large batches may take up to 30 seconds — "
+        "**leave this tab open until the status below reports Done**."
     )
     if st.button(
         "Run selected tasks",
@@ -633,9 +784,65 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             imports=[],  # imports already baked into the saved file
         ))
 
-    record_bytes = store.to_mrc_bytes()
-    with st.spinner("Running tasks in sandbox..."):
-        result = sandbox.run_tasks_subprocess(specs, record_bytes)
+    user = st.session_state.get("user", "anonymous") or "anonymous"
+    # Stage 20: stream the live records to a temp file instead of
+    # materializing the whole batch as bytes in this process. The
+    # sandbox driver opens it lazily via MARCReader and pages through.
+    sandbox_workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-sandbox-"))
+    sandbox_input = sandbox_workdir / "input.mrc"
+    # Progress UI: a prominent in-page status block instead of the
+    # top-right spinner. We can't show per-record progress (Streamlit
+    # blocks on subprocess.run; no concurrent UI update path), so the
+    # lines we DO emit fire at clearly-defined phase boundaries.
+    with st.status(
+        "Running tasks…",
+        expanded=True,
+    ) as status:
+        st.write(f"📥 Reading **{store.count():,}** records from upload")
+        input_bytes_written = store.write_mrc_to(sandbox_input)
+        st.write(
+            f"⚙️ Running {len(specs)} task(s) in the sandbox: "
+            + ", ".join(f"`{s.name}`" for s in specs)
+        )
+        result = sandbox.run_tasks_subprocess(
+            specs,
+            input_path=sandbox_input,
+            tmp_dir=sandbox_workdir,
+        )
+        if result.timed_out:
+            status.update(
+                label="⚠️ Run hit the wall-clock limit",
+                state="error",
+                expanded=False,
+            )
+        elif result.returncode != 0:
+            status.update(
+                label=f"⚠️ Sandbox exited with code {result.returncode}",
+                state="error",
+                expanded=False,
+            )
+        else:
+            st.write("✅ Sandbox finished cleanly")
+            status.update(
+                label="✅ Done — review changes below before downloading",
+                state="complete",
+                expanded=False,
+            )
+    if result.timed_out:
+        audit_event(
+            "sandbox-timeout",
+            user=user,
+            tasks=list(selection),
+            input_bytes=input_bytes_written,
+        )
+    elif result.returncode != 0:
+        audit_event(
+            "sandbox-nonzero-exit",
+            user=user,
+            tasks=list(selection),
+            returncode=result.returncode,
+            stderr_excerpt=(result.stderr or "")[:512],
+        )
 
     # Re-count what we got back.
     try:
@@ -657,7 +864,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             RuntimeError(f"[{err['code']}] {err['message']}"),
         ))
 
-    st.session_state["tasks_run_results"] = {
+    st.session_state[K_RUN_RESULTS] = {
         "issues": issues,
         "out_bytes": result.records_bytes,
         "out_filename": _stamped_filename(session.current_filename()),
@@ -666,11 +873,15 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         "ran_tasks": list(selection),
         "timed_out": result.timed_out,
         "sandbox_returncode": result.returncode,
+        # Path to the streaming-input file so the diff renderer can
+        # walk it again. The sandbox workdir survives until container
+        # restart; that's good enough for the post-run review window.
+        "sandbox_input_path": str(sandbox_input),
     }
 
 
 def _render_run_results() -> None:
-    results = st.session_state.get("tasks_run_results")
+    results = st.session_state.get(K_RUN_RESULTS)
     if results is None:
         return
     st.divider()
@@ -712,6 +923,11 @@ def _render_run_results() -> None:
             use_container_width=True,
         )
 
+    # Pre-download diff review — surfaces what actually changed so the
+    # cataloger can verify the task did the expected work before
+    # exporting.
+    _render_diff_review(results)
+
     st.download_button(
         label=f"Download {results['out_filename']}",
         data=results["out_bytes"],
@@ -719,6 +935,159 @@ def _render_run_results() -> None:
         mime="application/marc",
         key="tasks_download",
     )
+
+
+def _render_diff_review(results: dict) -> None:
+    """Render the post-run diff review (summary + per-record drill-down).
+
+    Computation is lazy — the diff is built on first render and cached
+    in session_state under the run-results key so re-renders (after a
+    pagination click, say) reuse the same TaskDiffSummary.
+    """
+    input_path_str = results.get("sandbox_input_path")
+    out_bytes = results.get("out_bytes") or b""
+    if not input_path_str or not out_bytes:
+        return
+    input_path = Path(input_path_str)
+    if not input_path.exists():
+        # Sandbox workdir was cleaned out (container restart, ops
+        # cleanup). Nothing we can do — the user can re-run.
+        return
+
+    summary = results.get("_diff_summary")
+    if summary is None:
+        with st.spinner("Building diff…"):
+            summary = task_diff.compute_task_diff(input_path, out_bytes)
+        # Stash on the in-memory dict; survives reruns within the
+        # session until a new run replaces K_RUN_RESULTS wholesale.
+        results["_diff_summary"] = summary
+
+    st.divider()
+    st.markdown("**Review changes before download**")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Changed records", summary.changed_count)
+    c2.metric("Unchanged records", summary.unchanged_count)
+    c3.metric(
+        "Tags touched",
+        len(
+            set(summary.per_tag_added)
+            | set(summary.per_tag_deleted)
+            | set(summary.per_tag_modified)
+        ),
+    )
+
+    _render_per_tag_summary_table(summary)
+
+    if summary.changed_count == 0:
+        st.info(
+            "The tasks ran without modifying any records — verify the "
+            "task body matches the records you expected to touch."
+        )
+        return
+
+    cap_note = ""
+    if summary.cap_triggered:
+        cap_note = (
+            f" — showing first **{len(summary.per_record_diffs)}** of "
+            f"**{summary.changed_count}** (rest summarized above)"
+        )
+    with st.expander(
+        f"Show per-record diffs ({summary.changed_count} record"
+        f"{'s' if summary.changed_count != 1 else ''}){cap_note}",
+        expanded=False,
+    ):
+        _render_per_record_diffs(summary)
+
+
+def _render_per_tag_summary_table(summary: task_diff.TaskDiffSummary) -> None:
+    """Tag / Added / Deleted / Modified rollup table."""
+    tags = sorted(
+        set(summary.per_tag_added)
+        | set(summary.per_tag_deleted)
+        | set(summary.per_tag_modified)
+    )
+    if not tags:
+        return
+    df = pd.DataFrame(
+        [
+            {
+                "Tag": t,
+                "Added": summary.per_tag_added.get(t, 0),
+                "Deleted": summary.per_tag_deleted.get(t, 0),
+                "Modified": summary.per_tag_modified.get(t, 0),
+            }
+            for t in tags
+        ]
+    )
+    st.dataframe(df, hide_index=True, use_container_width=True)
+
+
+_DIFF_PAGE_KEY = "tasks_diff_page"
+_DIFF_PER_PAGE = 5
+
+
+def _render_per_record_diffs(summary: task_diff.TaskDiffSummary) -> None:
+    """Paginated side-by-side per-record diff cards."""
+    diffs = summary.per_record_diffs
+    total = len(diffs)
+    pages = max(1, (total + _DIFF_PER_PAGE - 1) // _DIFF_PER_PAGE)
+    page = st.session_state.get(_DIFF_PAGE_KEY, 0)
+    page = max(0, min(page, pages - 1))
+
+    nav_a, nav_b, nav_c = st.columns([1, 2, 1])
+    if nav_a.button("◀ Prev", key="tasks_diff_prev", disabled=page == 0):
+        st.session_state[_DIFF_PAGE_KEY] = page - 1
+        st.rerun()
+    nav_b.caption(f"Page {page + 1} of {pages} — {total} changed records")
+    if nav_c.button("Next ▶", key="tasks_diff_next", disabled=page >= pages - 1):
+        st.session_state[_DIFF_PAGE_KEY] = page + 1
+        st.rerun()
+
+    start = page * _DIFF_PER_PAGE
+    end = min(total, start + _DIFF_PER_PAGE)
+    for diff in diffs[start:end]:
+        st.markdown(
+            f"**Record {diff.record_index + 1}** "
+            + (f"— `001 = {diff.identifier}`" if diff.identifier else "")
+        )
+        _render_diff_rows(diff.rows)
+        st.divider()
+
+
+_STATUS_SYMBOL = {
+    "unchanged": "  ",
+    "added":     "+ ",
+    "removed":   "- ",
+    "changed":   "~ ",
+}
+
+
+def _render_diff_rows(
+    rows: list[tuple[str, str, "marc_diff.DiffStatus"]],  # noqa: F821
+) -> None:
+    """Side-by-side rendering of one record's aligned diff.
+
+    Uses a code block per side to preserve monospaced field-line
+    alignment. Status markers (+, -, ~, " ") on each line make
+    skim-reading easy without needing colors.
+    """
+    left_lines: list[str] = []
+    right_lines: list[str] = []
+    for old, new, status in rows:
+        sym = _STATUS_SYMBOL[status]
+        # Show the symbol on the side(s) where it makes sense.
+        left_lines.append(
+            f"{sym if status in ('removed', 'changed') else '  '}{old}"
+        )
+        right_lines.append(
+            f"{sym if status in ('added', 'changed') else '  '}{new}"
+        )
+    col_old, col_new = st.columns(2)
+    col_old.caption("Before")
+    col_old.code("\n".join(left_lines), language="text")
+    col_new.caption("After")
+    col_new.code("\n".join(right_lines), language="text")
 
 
 def _stamped_filename(orig: str | None) -> str:

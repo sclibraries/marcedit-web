@@ -26,6 +26,8 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from marcedit_web.lib.codegen_safety import lit
+
 logger = logging.getLogger("marcedit_web.marcedit_import")
 
 
@@ -207,7 +209,8 @@ def _emit_add(parts: list[str]) -> HandlerEmission:
         f"({code!r}, {value!r})" for code, value in subfields
     )
     add_expr = (
-        f'record.add_ordered_field(make_field("{tag}", "{ind1}", "{ind2}", {sf_args}))'
+        f"record.add_ordered_field(make_field({lit(tag)}, {lit(ind1)}, "
+        f"{lit(ind2)}, {sf_args}))"
     )
     expr, supported = _translate_condition(condition)
     form_key = _form_condition_key(condition)
@@ -267,13 +270,13 @@ def _emit_delete(parts: list[str]) -> HandlerEmission:
     find = parts[2].strip() if len(parts) > 2 else ""
     if not find:
         return HandlerEmission(
-            code=f'delete_tags(record, "{tag}")',
+            code=f"delete_tags(record, {lit(tag)})",
             imports={"delete_tags"},
             op_kind="delete-tag",
             op_params={"tag": tag},
         )
     return HandlerEmission(
-        code=f'delete_fields_matching_subfield(record, "{tag}", None, "{find}")',
+        code=f"delete_fields_matching_subfield(record, {lit(tag)}, None, {lit(find)})",
         imports={"delete_fields_matching_subfield"},
         op_kind="delete-by-subfield",
         op_params={"tag": tag, "match": find},
@@ -351,10 +354,10 @@ def _emit_subfield_edit(parts: list[str]) -> HandlerEmission:
     find = parts[3]
     replace = parts[4]
     body = (
-        f'for f in record.get_fields("{tag}"):\n'
+        f"for f in record.get_fields({lit(tag)}):\n"
         f"    f.subfields = [\n"
-        f"        Subfield(sf.code, sf.value.replace({find!r}, {replace!r}))\n"
-        f'        if sf.code == "{code}" else sf\n'
+        f"        Subfield(sf.code, sf.value.replace({lit(find)}, {lit(replace)}))\n"
+        f"        if sf.code == {lit(code)} else sf\n"
         f"        for sf in f.subfields\n"
         f"    ]"
     )
@@ -501,7 +504,12 @@ def convert_tasksfile_text(
     )
 
 
-def convert_task_archive(path: Path) -> ArchiveConversionResult:
+def convert_task_archive(
+    path: Path,
+    *,
+    max_total_decompressed: int = 50 * 1024 * 1024,
+    max_entries: int = 256,
+) -> ArchiveConversionResult:
     """Open a MarcEdit `.task` ZIP archive and convert every inner *.txt entry.
 
     Each inner entry runs through `convert_tasksfile_text` (no intermediate
@@ -513,6 +521,16 @@ def convert_task_archive(path: Path) -> ArchiveConversionResult:
     File-scope errors (not a zip, no .txt entries inside, can't be opened)
     populate `archive_errors` and produce an empty `entries` list. The
     GUI shows this as a banner failure rather than partial success.
+
+    The two caps protect against zip-bomb-shaped archives:
+
+    * ``max_total_decompressed`` — running sum of decompressed inner-entry
+      bytes. Default 50 MB.
+    * ``max_entries`` — count of inner *.txt entries actually decoded.
+      Default 256.
+
+    Either cap firing populates `archive_errors` and returns early so
+    the GUI / audit can flag the rejection.
     """
     archive_name = path.name
     if not zipfile.is_zipfile(path):
@@ -549,10 +567,54 @@ def convert_task_archive(path: Path) -> ArchiveConversionResult:
                 ],
             )
 
+        # Reject early on entry-count blow-out — looking up info objects
+        # is cheap and avoids paying any decompression cost first.
+        if len(txt_entries) > max_entries:
+            return ArchiveConversionResult(
+                archive_name=archive_name,
+                archive_errors=[
+                    f"archive {archive_name!r} has {len(txt_entries)} .txt "
+                    f"entries — refusing past {max_entries}. Split the "
+                    f"archive or raise the cap."
+                ],
+            )
+
+        # Pre-flight on declared (uncompressed) sizes — file_size is
+        # read straight from the central directory, so an attacker
+        # crafting a deliberately tiny header still trips the cap
+        # because the actual stream size will match it during read().
+        declared_total = sum(zf.getinfo(n).file_size for n in txt_entries)
+        if declared_total > max_total_decompressed:
+            return ArchiveConversionResult(
+                archive_name=archive_name,
+                archive_errors=[
+                    f"archive {archive_name!r} would decompress to "
+                    f"{declared_total} bytes — refusing past "
+                    f"{max_total_decompressed}. Trim the archive or "
+                    f"raise the cap."
+                ],
+            )
+
         entries: list[EntryResult] = []
+        decompressed_so_far = 0
         for entry_name in txt_entries:
             try:
                 raw = zf.read(entry_name)
+                # Running cap on actually-decompressed bytes — the
+                # declared-size check above blocks the typical case;
+                # this catches a zip that lies in its central directory.
+                decompressed_so_far += len(raw)
+                if decompressed_so_far > max_total_decompressed:
+                    entries.append(EntryResult(
+                        entry_name=entry_name,
+                        success=False,
+                        error=(
+                            f"decompressed size exceeded "
+                            f"{max_total_decompressed} bytes; remaining "
+                            "entries skipped."
+                        ),
+                    ))
+                    break
                 # MarcEdit emits UTF-8 today; fall back to latin-1 (which never
                 # raises) for any older / weird-encoding artifacts.
                 try:
@@ -654,7 +716,6 @@ def build_full_task_file(result: ConversionResult) -> str:
     fn_name = result.name.replace("-", "_")
     if fn_name and fn_name[0].isdigit():
         fn_name = "_" + fn_name
-    desc = result.description.replace("\\", "\\\\").replace('"', '\\"')
     imports = "\n".join(result.imports)
     body = result.body or "pass"
     indented_body = "\n".join(
@@ -666,7 +727,7 @@ def build_full_task_file(result: ConversionResult) -> str:
         f"from marcedit_web.lib.tasks import task\n"
         + (imports + "\n" if imports else "")
         + "\n\n"
-        + f'@task("{result.name}", description="{desc}")\n'
+        + f"@task({lit(result.name)}, description={lit(result.description)})\n"
         + f"def {fn_name}(record):\n"
         + (indented_body if indented_body else "    pass")
         + "\n"

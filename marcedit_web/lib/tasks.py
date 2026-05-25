@@ -1,13 +1,24 @@
 """Task registry: named transforms over MARC records.
 
-A **task** is an atomic unit of MARC transformation — a Python function that
-takes a `pymarc.Record` and mutates it in place. Tasks are decorator-
-registered into the module-level `TASK_REGISTRY` so that the Tasks page
-can list and run them by name.
+A **task** is an atomic unit of MARC transformation — a Python function
+body that takes a `pymarc.Record` and mutates it in place.
 
-To add a task, drop a Python file under the configured tasks directory.
-`load_user_tasks()` imports those modules, and their `@task(...)`
-decorators register into `TASK_REGISTRY`. A new task only needs:
+Two registration paths:
+
+* **In-tree built-ins**: the legacy ``@task(...)`` decorator runs at
+  Python import time and writes a fully-callable :class:`Task` (with a
+  live ``fn``) into ``TASK_REGISTRY``. Used for tasks that ship with
+  the package and are imported by the test suite.
+* **User task files**: ``load_user_tasks(tasks_dir)`` discovers
+  ``tasks/*.py`` files via :func:`editor.parse_user_task_file`, which
+  reads each file with ``ast.parse`` and **never executes** module-
+  level statements. The registered :class:`Task` carries name +
+  description + source path; ``fn`` is ``None`` because the body runs
+  inside the subprocess sandbox at run time, not in this process. See
+  TASK-029 (security review High 2) for rationale.
+
+A user-authored task file still looks the same — drop a Python file
+under the configured tasks directory:
 
     from marcedit_web.lib.tasks import task
 
@@ -22,17 +33,19 @@ decorators register into `TASK_REGISTRY`. A new task only needs:
         record.remove_fields("856")
         for f in keep:
             record.add_ordered_field(f)
+
+`load_user_tasks` lifts the name + description out of the decorator
+AST node; the function body is read and shipped to the sandbox via
+:func:`editor.parse_user_task_file` again from the run path.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from pymarc import Record
@@ -44,21 +57,29 @@ TaskFn = Callable[["Record"], None]
 
 @dataclass(frozen=True)
 class Task:
-    """One registered transform."""
+    """One registered transform.
+
+    ``fn`` is set when the task was registered via the ``@task(...)``
+    decorator during in-process import (the legacy path, retained for
+    in-tree built-in tasks). User tasks loaded via the AST-only
+    discovery path (TASK-029 / High 2) leave ``fn=None`` — execution
+    goes through the subprocess sandbox via the saved body text, so
+    no callable is needed.
+    """
     name: str
     description: str
-    fn: TaskFn
+    fn: Optional[TaskFn]
     source: str  # human-readable origin (e.g. module path or filesystem path)
 
 
 TASK_REGISTRY: dict[str, Task] = {}
 
 
-# Track which task names each module registered. Used by `load_user_tasks`
-# during the freshness-reload path: before we re-exec a changed module,
-# we drop every task name it previously registered so a rename (e.g.
+# Track which task names each file registered. Used by `load_user_tasks`
+# during the freshness-reload path: before we re-parse a changed file we
+# drop every task name it previously registered, so a rename (e.g.
 # `@task("foo")` → `@task("bar")`) doesn't leave the old name orphaned
-# in TASK_REGISTRY with a stale function reference.
+# in TASK_REGISTRY pointing at the stale source path.
 _MODULE_TASK_NAMES: dict[str, set[str]] = {}
 
 
@@ -96,32 +117,38 @@ def all_tasks() -> list[Task]:
 # failures to be the canonical record.
 LAST_LOAD_ISSUES: list = []
 
-# Track when each user task module was last successfully loaded. A file
-# whose on-disk mtime is newer than its recorded load time gets re-exec'd
+# Track when each user task file was last successfully parsed. A file
+# whose on-disk mtime is newer than its recorded load time gets re-parsed
 # even when `force_reload=False`, so outside-the-GUI edits to a task are
 # picked up the next time the cataloger triggers a run.
 _MODULE_LOAD_MTIMES: dict[str, float] = {}
 
 
 def load_user_tasks(tasks_dir: Path, *, force_reload: bool = False) -> int:
-    """Import every .py module in `tasks_dir`, triggering `@task` registration.
+    """Discover user task files via AST parsing — never exec the modules.
 
-    Files starting with `_` are skipped (so users can keep helper modules
-    private or have an `__init__.py` without it being treated as a task
-    module). Returns the count of modules **newly loaded** (already-loaded
-    modules are skipped to avoid re-registering tasks on every call).
+    User task files are arbitrary Python that the cataloger (or the
+    MarcEdit importer, or a sandboxed task that escapes its workdir)
+    might author. Running ``spec.loader.exec_module(module)`` here, as
+    the v1/v2 path did, would execute every module-level statement in
+    the parent Streamlit process — outside the subprocess sandbox.
+    TASK-029 (security review High 2) closed that gap by switching
+    discovery to ``editor.parse_user_task_file``, which only does
+    ``ast.parse`` + AST node walks. The actual task body still ships
+    to the sandbox at run time via ``editor.parse_user_task_file``
+    again from the run path.
 
-    Per-file failures are captured in `LAST_LOAD_ISSUES` as structured
-    `Issue` objects (see `errors.task_load_issue`) so the CLI/GUI can
-    surface actionable messages. The loop continues past failures — one
-    broken task file should not hide the rest.
+    Files starting with ``_`` are skipped (helper modules, __init__).
+    Returns the count of files **newly registered** in this call.
+    Per-file failures land in ``LAST_LOAD_ISSUES``; the loop continues
+    past failures so one broken file doesn't hide the rest.
 
-    Set `force_reload=True` to re-execute modules even if they're in
-    `sys.modules`. This intentionally fires the "task is being re-registered"
-    warning so it's not the default — use it when a user has edited a task
-    file and wants the changes picked up without restarting the process.
+    The ``force_reload`` flag re-reads every task file from disk, even
+    those whose mtime hasn't changed. Used when the cataloger has
+    just saved an edit and wants the rest of the page to see it.
     """
     # Local import to avoid a circular dependency at module-import time.
+    from . import editor
     from .errors import task_load_issue
     LAST_LOAD_ISSUES.clear()
     if not tasks_dir.exists():
@@ -130,50 +157,40 @@ def load_user_tasks(tasks_dir: Path, *, force_reload: bool = False) -> int:
     for path in sorted(tasks_dir.glob("*.py")):
         if path.name.startswith("_"):
             continue
+        # Module-name slot kept stable so the freshness map +
+        # task-name tracking still keys on it; nothing ever exec'd.
         mod_name = f"marcedit_web_user_tasks.{path.stem}"
         try:
             current_mtime = path.stat().st_mtime
         except OSError:
             current_mtime = 0.0
-        # Freshness check: if the on-disk file is newer than the last
-        # successful load, re-exec the module even without explicit
-        # force_reload. Outside-the-GUI edits become visible without a
-        # restart, which is the whole point of the freshness check.
         stale = current_mtime > _MODULE_LOAD_MTIMES.get(mod_name, 0.0)
-        if mod_name in sys.modules and not force_reload and not stale:
+        if mod_name in _MODULE_LOAD_MTIMES and not force_reload and not stale:
             continue
-        spec = importlib.util.spec_from_file_location(mod_name, path)
-        if spec is None or spec.loader is None:
-            logger.warning("could not load %s — bad module spec", path)
-            LAST_LOAD_ISSUES.append(task_load_issue(
-                str(path), RuntimeError("bad module spec — file may be unreadable")
-            ))
-            continue
-        # Before re-executing a module that was previously loaded, drop
-        # every task name it had registered. Otherwise a rename in the
-        # source (e.g. `@task("foo")` → `@task("bar")`) leaves "foo" in
-        # TASK_REGISTRY pointing at the stale function — silent zombie.
-        is_reload = mod_name in sys.modules
-        if is_reload:
-            for stale_name in _MODULE_TASK_NAMES.pop(mod_name, set()):
-                TASK_REGISTRY.pop(stale_name, None)
-        module = importlib.util.module_from_spec(spec)
-        # Register in sys.modules so any relative imports inside the
-        # module behave normally.
-        sys.modules[mod_name] = module
+        # On reload, drop names this file previously registered so a
+        # renamed task doesn't leave a zombie entry in the registry.
+        for stale_name in _MODULE_TASK_NAMES.pop(mod_name, set()):
+            TASK_REGISTRY.pop(stale_name, None)
         try:
-            spec.loader.exec_module(module)
-            _MODULE_LOAD_MTIMES[mod_name] = current_mtime
-            loaded += 1
-        except Exception as exc:  # noqa: BLE001 - we want the CLI to keep running
-            logger.error("failed to load user task module %s: %s", path, exc)
+            parsed = editor.parse_user_task_file(path)
+        except ValueError as exc:
+            logger.error("failed to parse user task file %s: %s", path, exc)
             LAST_LOAD_ISSUES.append(task_load_issue(str(path), exc))
-            # Don't leave a stub module in sys.modules — a later force_reload
-            # would skip it under the "already loaded" guard and the user
-            # wouldn't see the same error again on retry.
-            sys.modules.pop(mod_name, None)
             _MODULE_LOAD_MTIMES.pop(mod_name, None)
-            _MODULE_TASK_NAMES.pop(mod_name, None)
+            continue
+        name = parsed["name"]
+        description = parsed["description"]
+        if name in TASK_REGISTRY and TASK_REGISTRY[name].source != str(path):
+            logger.warning(
+                "task %r is being re-registered (was %s, now %s)",
+                name, TASK_REGISTRY[name].source, path,
+            )
+        TASK_REGISTRY[name] = Task(
+            name=name, description=description, fn=None, source=str(path),
+        )
+        _MODULE_TASK_NAMES.setdefault(mod_name, set()).add(name)
+        _MODULE_LOAD_MTIMES[mod_name] = current_mtime
+        loaded += 1
     return loaded
 
 

@@ -26,6 +26,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from marcedit_web.lib.codegen_safety import lit
+
 logger = logging.getLogger("marcedit_web.task_builder")
 
 
@@ -245,7 +247,7 @@ def _format_subfield_args(subfields: list) -> str:
     if not subfields:
         return ""
     return ", ".join(
-        f"({sf[0]!r}, {sf[1]!r})" for sf in subfields
+        f"({lit(sf[0])}, {lit(sf[1])})" for sf in subfields
     )
 
 
@@ -282,13 +284,13 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
     p = op.params
     if op.kind == "delete-tag":
         tag = str(p.get("tag", "")).strip()
-        return ([f'delete_tags(record, "{tag}")'], {"delete_tags"}, False)
+        return ([f"delete_tags(record, {lit(tag)})"], {"delete_tags"}, False)
 
     if op.kind == "delete-by-subfield":
         tag = str(p.get("tag", "")).strip()
         match = str(p.get("match", ""))
         return (
-            [f'delete_fields_matching_subfield(record, "{tag}", None, {match!r})'],
+            [f"delete_fields_matching_subfield(record, {lit(tag)}, None, {lit(match)})"],
             {"delete_fields_matching_subfield"},
             False,
         )
@@ -296,7 +298,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
     if op.kind == "delete-856-url-contains":
         match = str(p.get("match", ""))
         return (
-            [f"delete_856_fields_matching_url(record, {match!r})"],
+            [f"delete_856_fields_matching_url(record, {lit(match)})"],
             {"delete_856_fields_matching_url"},
             False,
         )
@@ -308,7 +310,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         ignore_case = bool(p.get("ignore_case", True))
         return (
             [
-                f"delete_856_fields_matching_url_regex(record, {pattern!r}, "
+                f"delete_856_fields_matching_url_regex(record, {lit(pattern)}, "
                 f"ignore_case={ignore_case})"
             ],
             {"delete_856_fields_matching_url_regex"},
@@ -322,7 +324,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         subfields = list(p.get("subfields") or [])
         sf_args = _format_subfield_args(subfields)
         prefix = "add_field_if_absent" if p.get("if_absent") else "record.add_ordered_field"
-        make_call = f'make_field("{tag}", "{ind1}", "{ind2}", {sf_args})'
+        make_call = f"make_field({lit(tag)}, {lit(ind1)}, {lit(ind2)}, {sf_args})"
         if p.get("if_absent"):
             stmt = f"add_field_if_absent(record, {make_call})"
             imports = {"add_field_if_absent", "make_field"}
@@ -353,7 +355,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         if not tokens:
             sf_args = _format_subfield_args(subfields)
             make_call = (
-                f'make_field("{tag}", "{ind1}", "{ind2}", {sf_args})'
+                f"make_field({lit(tag)}, {lit(ind1)}, {lit(ind2)}, {sf_args})"
             )
             if p.get("if_absent"):
                 stmt = f"add_field_if_absent(record, {make_call})"
@@ -374,7 +376,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         # is a prefix of another, making the replace order irrelevant.
         imports |= {"control_value"}
         lookup_lines = [
-            f'_t_{tok} = control_value(record, "{tok}")' for tok in tokens
+            f"_t_{tok} = control_value(record, {lit(tok)})" for tok in tokens
         ]
         guard = " and ".join(f"_t_{tok} is not None" for tok in tokens)
         sf_items: list[str] = []
@@ -382,15 +384,15 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             value_str = str(value)
             if re.search(r"\{\d{3}\}", value_str):
                 replace_chain = "".join(
-                    f'.replace("{{{tok}}}", _t_{tok})'
+                    f".replace({lit('{' + tok + '}')}, _t_{tok})"
                     for tok in tokens
                     if f"{{{tok}}}" in value_str
                 )
-                sf_items.append(f"({code!r}, {value!r}{replace_chain})")
+                sf_items.append(f"({lit(code)}, {lit(value)}{replace_chain})")
             else:
-                sf_items.append(f"({code!r}, {value!r})")
+                sf_items.append(f"({lit(code)}, {lit(value)})")
         sf_args = ", ".join(sf_items)
-        make_call = f'make_field("{tag}", "{ind1}", "{ind2}", {sf_args})'
+        make_call = f"make_field({lit(tag)}, {lit(ind1)}, {lit(ind2)}, {sf_args})"
         if p.get("if_absent"):
             add_stmt = f"add_field_if_absent(record, {make_call})"
             imports |= {"add_field_if_absent"}
@@ -417,10 +419,10 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         replace = str(p.get("replace", ""))
         return (
             [
-                f'for f in record.get_fields("{tag}"):',
+                f"for f in record.get_fields({lit(tag)}):",
                 "    f.subfields = [",
-                f"        Subfield(sf.code, sf.value.replace({find!r}, {replace!r}))",
-                f'        if sf.code == "{code}" else sf',
+                f"        Subfield(sf.code, sf.value.replace({lit(find)}, {lit(replace)}))",
+                f"        if sf.code == {lit(code)} else sf",
                 "        for sf in f.subfields",
                 "    ]",
             ],

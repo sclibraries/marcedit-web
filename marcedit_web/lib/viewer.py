@@ -1,18 +1,36 @@
 """MARC record viewer helpers.
 
-Records are rendered as MarcEdit-style `.mrk` text (which is what `str(record)`
-produces in pymarc). The Streamlit View page displays the result in a
-monospace `<pre>` block so subfield delimiters and indicator columns line up.
+Two record-rendering shapes live here:
 
-This module exposes only the rendering and small parsing helpers. The
-file-walking and CLI-print paths from the original marc-processing viewer
-have been dropped — Streamlit pages work from records already parsed in
-`st.session_state`.
+* :func:`render_record_human` walks the raw MARC bytes for **display**.
+  Spaces stay spaces, pipes stay pipes (they're real MARC fill chars,
+  not encoding artifacts), and the subfield delimiter byte 0x1F is
+  rendered as ``‡`` so it's visually distinct from `$` or `|`
+  characters that legitimately appear in field values. This is what
+  the Streamlit View page shows.
+
+* :func:`render_record` produces MarcEdit-style ``.mrk`` text via
+  ``str(record)`` — the round-trippable shape the inline editor and
+  the ``.mrk`` parser exchange. Spaces in control fields render as
+  ``\\`` per MarcEdit convention. Kept for the Ace editor pre-fill
+  path and any test that pins the .mrk shape.
+
+The Streamlit page displays each result in a monospace ``<pre>``
+block so subfield delimiters and indicator columns line up.
 """
 
 from __future__ import annotations
 
 from pymarc import Record
+
+from . import marc_diff
+
+
+# MARC subfield delimiter byte. Rendered as the double-dagger glyph in
+# the human-readable view because it's visually unambiguous against
+# subfield values that may legitimately contain ``$`` or ``|``.
+_SUBFIELD_DELIM = "\x1f"
+_SUBFIELD_DISPLAY = "‡"
 
 
 # --- index / field filtering -------------------------------------------------
@@ -71,6 +89,43 @@ def render_record(record: Record, *, fields: set[str] | None = None) -> str:
         if f.tag in fields:
             out.append(str(f))
     return "\n".join(out)
+
+
+def render_record_human(
+    record: Record, *, fields: set[str] | None = None
+) -> str:
+    """Return a human-readable rendering of ``record`` for display.
+
+    Walks the raw MARC bytes (via :func:`Record.as_marc`) so the output
+    reflects the actual MARC content rather than MarcEdit's
+    ``.mrk`` escape conventions. Concretely:
+
+    * Spaces in control fields (008 / 006 / 007 etc.) render as actual
+      spaces — no ``\\`` substitution. Catalogers can count byte
+      positions directly.
+    * Pipe characters (``|``) are MARC fill chars and render as
+      themselves.
+    * The MARC subfield-delimiter byte (0x1F) renders as ``‡`` so it
+      stays visible in a monospace block and never collides with a
+      ``$`` or ``|`` that appears legitimately in subfield values.
+
+    ``fields`` filters by 3-char tag (or ``"LDR"`` for the leader),
+    same contract as :func:`render_record`.
+    """
+    raw = record.as_marc()
+    lines: list[str] = []
+    leader_text = raw[:marc_diff.LEADER_LEN].decode("utf-8", errors="replace")
+    if fields is None or "LDR" in fields:
+        lines.append(f"=LDR  {leader_text}")
+    for tag_bytes, length, start in marc_diff._iter_directory(raw):
+        tag = tag_bytes.decode("utf-8", errors="replace")
+        if fields is not None and tag not in fields:
+            continue
+        data = marc_diff._field_bytes(raw, length, start).decode(
+            "utf-8", errors="replace"
+        ).replace(_SUBFIELD_DELIM, _SUBFIELD_DISPLAY)
+        lines.append(f"={tag}  {data}")
+    return "\n".join(lines)
 
 
 def record_title(record: Record) -> str:

@@ -33,7 +33,9 @@ from typing import Any, Optional
 
 from pymarc import Record
 
-from .identity import current_user
+from . import quotas
+from .audit import audit_event
+from .identity import ANONYMOUS, current_user, is_anonymous, is_prod
 from .record_store import RecordStore
 
 logger = logging.getLogger("marcedit_web.session")
@@ -47,6 +49,7 @@ STATE_DEFAULTS: dict[str, Any] = {
     "editor_text": None,
     "editor_dirty": False,
     "tasks_palette_state": [],
+    "upload_bytes_total": 0,
 }
 
 
@@ -68,6 +71,89 @@ def init() -> None:
                 st.session_state[key] = default
     if not st.session_state.get("user"):
         st.session_state["user"] = current_user()
+
+
+def init_page() -> None:
+    """Combined per-page bootstrap: state defaults + prod-auth gate.
+
+    Every page's top-of-script should call this *before* any other
+    Streamlit calls. In prod mode (``MARCEDIT_WEB_PROD=1``) without a
+    Shibboleth identity header, this short-circuits the render and
+    shows the login-needed banner via :func:`enforce_auth`.
+    """
+    init()
+    enforce_auth()
+
+
+def enforce_auth() -> None:
+    """Refuse anonymous traffic in prod mode.
+
+    Behavior matrix:
+
+    * dev mode (``MARCEDIT_WEB_PROD`` unset) — no-op.
+    * prod mode + authenticated user — no-op.
+    * prod mode + anonymous user — emit
+      ``anonymous-action-refused`` audit event, render the friendly
+      banner, and ``st.stop()``.
+
+    The banner explains what the cataloger needs to do (refresh after
+    completing the institutional login) and surfaces a support link.
+    Pages below the call never run, so individual action endpoints
+    (save, run, upload, download) don't need their own auth check.
+    """
+    if not is_prod():
+        return
+    user = _current_user_for_enforcement()
+    if not is_anonymous(user):
+        return
+
+    import streamlit as st
+
+    audit_event(
+        "anonymous-action-refused",
+        user=ANONYMOUS,
+        page=_page_label(),
+    )
+    st.error(
+        "**Sign-in required.** This deployment requires a Smith / "
+        "InCommon login before catalogers can upload or transform "
+        "MARC records. "
+        "If you just signed in and still see this page, refresh "
+        "the browser tab. Otherwise contact your library systems team."
+    )
+    st.caption(
+        "Server-side action refusal is logged. No request data was "
+        "processed."
+    )
+    st.stop()
+
+
+def _current_user_for_enforcement() -> str:
+    """Return the current user, preferring session_state if init() ran."""
+    import streamlit as st
+
+    cached = st.session_state.get("user")
+    if cached:
+        return cached
+    return current_user()
+
+
+def _page_label() -> str:
+    """Best-effort current-page identifier for the audit record.
+
+    Streamlit doesn't expose a stable "current page name" API. The
+    closest is the script run context's main script path; if that
+    fails we degrade gracefully to "unknown" — the audit row still
+    captures the refusal, just without the page hint.
+    """
+    try:
+        import streamlit as st  # local import: keeps this module testable
+        ctx = st.runtime.scriptrunner.get_script_run_ctx()
+        if ctx and ctx.main_script_path:
+            return Path(ctx.main_script_path).name
+    except Exception:
+        pass
+    return "unknown"
 
 
 def _session_records_dir() -> Path:
@@ -101,6 +187,31 @@ def handle_upload(uploaded_file) -> dict:
         return {"filename": None, "total": 0, "malformed": 0}
 
     raw = uploaded_file.getvalue()
+    user = st.session_state.get("user", "anonymous")
+    size = len(raw)
+
+    try:
+        quotas.check_upload(size, kind="upload")
+        new_total = quotas.check_session_aggregate(
+            st.session_state.get("upload_bytes_total", 0),
+            size,
+        )
+    except quotas.QuotaExceeded as exc:
+        audit_event(
+            "upload-rejected",
+            user=user,
+            filename=uploaded_file.name,
+            size=size,
+            reason=exc.kind,
+            limit=exc.limit,
+        )
+        return {
+            "filename": uploaded_file.name,
+            "total": 0,
+            "malformed": 0,
+            "error": str(exc),
+        }
+
     tmp_dir = _session_records_dir()
     store = RecordStore.from_bytes(
         raw,
@@ -108,6 +219,7 @@ def handle_upload(uploaded_file) -> dict:
         filename=uploaded_file.name,
     )
     st.session_state["store"] = store
+    st.session_state["upload_bytes_total"] = new_total
     # Reset derived state — anything the previous file populated is now
     # stale and would mislead later pages.
     st.session_state["issues_cache"] = {}
@@ -117,6 +229,14 @@ def handle_upload(uploaded_file) -> dict:
         "loaded upload: %s records, %s malformed",
         store.count(),
         store.malformed_count(),
+    )
+    audit_event(
+        "upload-accepted",
+        user=user,
+        filename=uploaded_file.name,
+        size=size,
+        records=store.count(),
+        malformed=store.malformed_count(),
     )
     return {
         "filename": uploaded_file.name,
@@ -131,6 +251,30 @@ def has_upload() -> bool:
 
     store = st.session_state.get("store")
     return store is not None and store.count() > 0
+
+
+def require_upload(blurb: str) -> bool:
+    """Shared "upload required" gate for the render modules.
+
+    Returns True iff a file is already loaded. Otherwise renders the
+    standard banner ("Upload a `.mrc` file on **Home** to {blurb}.")
+    and returns False, so the caller can short-circuit:
+
+        if not session.require_upload("validate records"):
+            return
+
+    ``blurb`` is the feature-specific tail — keep it lowercase and
+    verb-led ("dedupe within the loaded batch", not "Dedupe").
+    """
+    if has_upload():
+        return True
+    import streamlit as st
+
+    st.info(
+        f"Upload a `.mrc` file on **Home** to {blurb}. "
+        "This feature reads records already in this session."
+    )
+    return False
 
 
 def current_store() -> Optional[RecordStore]:

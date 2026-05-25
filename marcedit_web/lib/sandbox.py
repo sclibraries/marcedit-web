@@ -20,8 +20,22 @@ rlimits or escapes via a CPython bug can still cause damage. The goal
 is to bound the blast radius of accidental or buggy user task code
 to "this one execution can't take down the Streamlit server."
 
-Stage 21 will add per-process cgroup isolation when the container is
-hardened.
+What it does NOT enforce:
+
+* No restricted import / blocked-modules policy. ``subprocess``,
+  ``socket``, ``os.system``, ``ctypes``, etc. all load normally in
+  the child. A task body that calls ``subprocess.run(["/bin/sh",
+  "-c", "true"])`` succeeds.
+* No filesystem chroot. The child can read or write any path the
+  ``marcedit`` container user can — TASK-029 / Stage Medium 1
+  tightened that to ``/app/data`` only, but ``/etc``, ``/tmp``,
+  etc. remain reachable.
+* No network namespace. Outbound TCP works unless the deployment's
+  network policy blocks it.
+
+Stage 21 added the non-root container user. Future hardening
+(seccomp, network namespace, restricted-Python policy) would
+strengthen the boundary further but is out of scope today.
 """
 
 from __future__ import annotations
@@ -200,12 +214,24 @@ def _preexec_set_limits() -> None:
 
 def run_tasks_subprocess(
     tasks: Iterable[TaskSpec],
-    record_bytes: bytes,
+    record_bytes: Optional[bytes] = None,
     *,
+    input_path: Optional[Path] = None,
     timeout: float = 30.0,
     tmp_dir: Optional[Path] = None,
 ) -> SandboxResult:
-    """Apply ``tasks`` (in order) to every record in ``record_bytes``.
+    """Apply ``tasks`` (in order) to every record in the input.
+
+    Two ways to supply the input MARC:
+
+    * ``record_bytes`` — the existing API, fine for unit tests where
+      the corpus is small enough to fit in memory.
+    * ``input_path`` — a path to a pre-written ``.mrc`` file. The
+      Tasks page uses :py:meth:`RecordStore.write_mrc_to` to stream
+      records to a temp file, then hands the path here so neither
+      side has to hold the full batch in memory.
+
+    Supplying both is a ``ValueError``; supplying neither is the same.
 
     Spawns a child Python with rlimits, hands it the inputs via temp
     files, captures the MARC output + JSON error log. Never raises on
@@ -213,6 +239,11 @@ def run_tasks_subprocess(
     ``RuntimeError`` only on launcher-level problems (can't write the
     temp files, can't spawn python at all).
     """
+    if (record_bytes is None) == (input_path is None):
+        raise ValueError(
+            "exactly one of record_bytes or input_path is required"
+        )
+
     tasks_list = [
         {"name": t.name, "body": t.body, "imports": list(t.imports)}
         for t in tasks
@@ -224,19 +255,25 @@ def run_tasks_subprocess(
         else Path(tempfile.mkdtemp(prefix="marcedit-web-sandbox-"))
     )
     workdir.mkdir(parents=True, exist_ok=True)
-    input_path = workdir / "input.mrc"
+    if input_path is None:
+        sandbox_input_path = workdir / "input.mrc"
+        sandbox_input_path.write_bytes(record_bytes or b"")
+    else:
+        # Caller has already written the file (typically via
+        # RecordStore.write_mrc_to). Use it directly — skipping the
+        # write avoids holding the batch bytes in this process.
+        sandbox_input_path = input_path
+
     tasks_path = workdir / "tasks.json"
     output_path = workdir / "output.mrc"
     errors_path = workdir / "errors.json"
-
-    input_path.write_bytes(record_bytes)
     tasks_path.write_text(json.dumps(tasks_list))
 
     cmd = [
         sys.executable,
         "-c",
         _DRIVER_SCRIPT,
-        "--input", str(input_path),
+        "--input", str(sandbox_input_path),
         "--tasks", str(tasks_path),
         "--output", str(output_path),
         "--errors", str(errors_path),

@@ -28,3 +28,7 @@ include = ["marcedit_web*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# /app is root-owned and read-only at runtime (TASK-029 fs hardening).
+# Pytest's default ``.pytest_cache`` location under the project root
+# isn't writable for the marcedit user. /tmp is.
+cache_dir = "/tmp/pytest_cache"

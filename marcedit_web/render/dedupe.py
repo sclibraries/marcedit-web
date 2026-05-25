@@ -8,6 +8,9 @@ materializes a chosen subset to a ``.mrc`` blob.
 
 from __future__ import annotations
 
+import mmap
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -18,13 +21,34 @@ from marcedit_web.lib import marc_diff, session
 from marcedit_web.lib.marc_diff import FieldSpec, OCOLC_SPEC
 
 
+@contextmanager
+def _open_mmap(path: Path):
+    """Yield a read-only mmap view of ``path`` (or empty bytes if empty).
+
+    Same pattern as the Diff page (TASK-027): OS pages in only the
+    bytes ``marc_diff`` actually reads, so indexing a multi-GB buffer
+    doesn't materialize the file in Python memory.
+    """
+    fh = open(path, "rb")
+    try:
+        try:
+            mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+        except ValueError:
+            # Zero-size file — mmap rejects it. Yield empty bytes so
+            # downstream walkers report "no records" cleanly.
+            yield b""
+            return
+        try:
+            yield mm
+        finally:
+            mm.close()
+    finally:
+        fh.close()
+
+
 def render() -> None:
     """Render the Dedupe tab into the current Streamlit container."""
-    if not session.has_upload():
-        st.info(
-            "Upload a `.mrc` file on **Home** to dedupe within it. Dedupe "
-            "uses the records currently loaded in this session."
-        )
+    if not session.require_upload("dedupe within the loaded batch"):
         return
 
     store = session.current_store()
@@ -87,21 +111,31 @@ def render() -> None:
         if spec is None:
             st.session_state.pop("dedupe_result", None)
             return
-        raw_bytes = store.to_mrc_bytes()
+        # Stage 20: stream the live record set to a session-tmp file
+        # so we never hold the full batch in Python memory.
+        # Stage 28: index via mmap so the indexing pass also stays
+        # disk-resident — the OS pages in only the bytes marc_diff
+        # touches (directory entries + match-key fields), not the
+        # full record bodies. Indexing a 1.5 GB buffer no longer
+        # spikes RSS by 1.5 GB.
+        buf_path = _ensure_dedupe_buffer_path()
+        store.write_mrc_to(buf_path)
         try:
-            idx_result = marc_diff.index_buffer("loaded", raw_bytes, [spec])
+            with _open_mmap(buf_path) as mm:
+                idx_result = marc_diff.index_buffer("loaded", mm, [spec])
         except Exception as exc:  # noqa: BLE001
             st.error(f"Indexing failed: {exc}")
             return
         st.session_state["dedupe_result"] = idx_result
-        st.session_state["dedupe_buffer"] = raw_bytes
+        st.session_state["dedupe_buffer_path"] = str(buf_path)
         st.session_state["dedupe_spec_label"] = spec.label()
         st.session_state.pop("dedupe_export_bytes", None)
 
     result = st.session_state.get("dedupe_result")
-    buffer_bytes = st.session_state.get("dedupe_buffer")
-    if result is None or buffer_bytes is None:
+    buffer_path_str = st.session_state.get("dedupe_buffer_path")
+    if result is None or not buffer_path_str:
         return
+    buffer_path = Path(buffer_path_str)
 
     # --- Summary metrics --------------------------------------------------
 
@@ -164,20 +198,25 @@ def render() -> None:
             )
             st.session_state[keeper_state_key] = choice
 
-            for off in offsets:
-                length = int(buffer_bytes[off:off + 5])
-                record = pymarc.Record(
-                    data=buffer_bytes[off:off + length]
-                )
-                marker = (
-                    "✅ keeper"
-                    if off == choice
-                    else "🗑 will be exported as a delete"
-                )
-                st.markdown(
-                    f"**Offset {off:,}** — {marker}"
-                )
-                st.code(str(record), language="text")
+            # Open the buffer file ONCE per group; seek-read each
+            # record without slurping the whole batch.
+            with buffer_path.open("rb") as fh:
+                for off in offsets:
+                    fh.seek(off)
+                    head = fh.read(5)
+                    length = int(head)
+                    fh.seek(off)
+                    chunk = fh.read(length)
+                    record = pymarc.Record(data=chunk)
+                    marker = (
+                        "✅ keeper"
+                        if off == choice
+                        else "🗑 will be exported as a delete"
+                    )
+                    st.markdown(
+                        f"**Offset {off:,}** — {marker}"
+                    )
+                    st.code(str(record), language="text")
 
     # --- Export deletes ---------------------------------------------------
 
@@ -205,9 +244,14 @@ def render() -> None:
                 if o != keeper:
                     delete_locations.append(("loaded", o))
         try:
-            deletes_bytes = marc_diff.write_subset_to_bytes(
-                delete_locations, {"loaded": buffer_bytes}
-            )
+            # Stage 28: mmap the buffer instead of reading the full
+            # bytes. ``write_subset_to_bytes`` walks only the records
+            # being exported (the keepers are skipped), so only the
+            # touched OS pages get loaded.
+            with _open_mmap(buffer_path) as mm:
+                deletes_bytes = marc_diff.write_subset_to_bytes(
+                    delete_locations, {"loaded": mm}
+                )
         except Exception as exc:  # noqa: BLE001
             st.error(f"Build failed: {exc}")
             return
@@ -231,6 +275,22 @@ def render() -> None:
             mime="application/marc",
             key="dedupe_download_btn",
         )
+
+
+def _ensure_dedupe_buffer_path() -> Path:
+    """Return (and lazily create) the per-session path for the dedupe buffer.
+
+    Reused across reruns of the same session so the buffer file isn't
+    rewritten unnecessarily. Re-clicking "Find duplicates" overwrites
+    the contents in place — what we care about is that the path is
+    stable, not the bytes.
+    """
+    import streamlit as st
+
+    key = "dedupe_buffer_dir"
+    if key not in st.session_state:
+        st.session_state[key] = tempfile.mkdtemp(prefix="marcedit-web-dedupe-")
+    return Path(st.session_state[key]) / "dedupe_buffer.mrc"
 
 
 def _build_spec(

@@ -214,6 +214,55 @@ def test_to_mrc_bytes_round_trips_mixed_edits(store):
 
 
 # ---------------------------------------------------------------------------
+# Stage 20: write_mrc_to streaming output
+# ---------------------------------------------------------------------------
+
+
+def test_write_mrc_to_round_trips_unchanged_batch(fixture_bytes, tmp_path):
+    """Streaming write reads back as the same N records via MARCReader."""
+    s = RecordStore.from_bytes(fixture_bytes, tmp_dir=tmp_path / "wm")
+    out_path = tmp_path / "out.mrc"
+    written = s.write_mrc_to(out_path)
+    assert written > 0
+    assert out_path.stat().st_size == written
+    with out_path.open("rb") as fh:
+        reread = list(pymarc.MARCReader(fh, to_unicode=True, permissive=True))
+    assert len(reread) == 7
+    original = list(pymarc.MARCReader(io.BytesIO(fixture_bytes), to_unicode=True, permissive=True))
+    assert [r.get("001").data for r in reread] == [r.get("001").data for r in original]
+
+
+def test_write_mrc_to_reflects_edits(store, tmp_path):
+    """Live edits (replace, delete, append) flow through write_mrc_to."""
+    edited = pymarc.Record()
+    edited.leader = pymarc.Leader("00000nam a2200000 a 4500")
+    edited.add_field(pymarc.Field(tag="001", data="EDITED-0"))
+    store.replace(0, edited)
+    store.delete(2)
+    appended = pymarc.Record()
+    appended.leader = pymarc.Leader("00000nam a2200000 a 4500")
+    appended.add_field(pymarc.Field(tag="001", data="APPENDED"))
+    store.append(appended)
+
+    out_path = tmp_path / "edited.mrc"
+    store.write_mrc_to(out_path)
+    with out_path.open("rb") as fh:
+        reread = list(pymarc.MARCReader(fh, to_unicode=True, permissive=True))
+    ids = [r.get("001").data for r in reread]
+    assert ids[0] == "EDITED-0"
+    assert ids[-1] == "APPENDED"
+    assert len(ids) == 7
+
+
+def test_write_mrc_to_creates_parent_dir(fixture_bytes, tmp_path):
+    """Missing parent directories are created on demand."""
+    s = RecordStore.from_bytes(fixture_bytes, tmp_dir=tmp_path / "wm2")
+    out_path = tmp_path / "newdir" / "subdir" / "out.mrc"
+    s.write_mrc_to(out_path)
+    assert out_path.exists()
+
+
+# ---------------------------------------------------------------------------
 # RecordLocation
 # ---------------------------------------------------------------------------
 

@@ -17,7 +17,9 @@ from marcedit_web.lib import (
     rules as rules_mod,
     rules_validate,
     session,
+    viewer,
 )
+from marcedit_web.render import single_record_edit
 
 logger = logging.getLogger("marcedit_web.render.edit")
 
@@ -29,13 +31,77 @@ def _is_fatal_code(code: str) -> bool:
     return code in {"missing-leader", "ldr-length", "bad-line", "encoding"}
 
 
+_K_PICK_INDEX = "edit_pick_index"
+
+
+def _render_single_record_picker(store, total: int, rule_set) -> None:
+    """Render a record-number picker + per-record inline editor.
+
+    The over-cap fallback for the Edit tab: instead of going read-only,
+    let the cataloger jump to any record by number and edit just that
+    one. Same shared inline-edit helper the View page uses, namespaced
+    under ``workspace_edit_*`` keys so it doesn't collide with View's
+    ``view_edit_*`` state.
+    """
+    st.session_state.setdefault(_K_PICK_INDEX, 1)
+
+    nav_a, nav_b, nav_c, _ = st.columns([1, 3, 1, 1])
+
+    def _step(delta: int) -> None:
+        cur = int(st.session_state.get(_K_PICK_INDEX, 1))
+        nxt = max(1, min(total, cur + delta))
+        st.session_state[_K_PICK_INDEX] = nxt
+
+    nav_a.button(
+        "◀ Prev",
+        on_click=_step,
+        args=(-1,),
+        disabled=int(st.session_state[_K_PICK_INDEX]) <= 1,
+        use_container_width=True,
+        key="edit_pick_prev",
+    )
+    nav_b.number_input(
+        "Record #",
+        min_value=1,
+        max_value=total,
+        step=1,
+        key=_K_PICK_INDEX,
+        label_visibility="collapsed",
+    )
+    nav_c.button(
+        "Next ▶",
+        on_click=_step,
+        args=(1,),
+        disabled=int(st.session_state[_K_PICK_INDEX]) >= total,
+        use_container_width=True,
+        key="edit_pick_next",
+    )
+
+    index = int(st.session_state[_K_PICK_INDEX])
+    record = store.get(index - 1)
+    if record is None:
+        st.warning(f"Record {index} not found.")
+        return
+
+    identifier = viewer.record_identifier(record)
+    title = viewer.record_title(record) or "(no 245 $a)"
+    st.markdown(
+        f"**Record {index:,} of {total:,}** — `{identifier}` — {title}"
+    )
+    st.code(viewer.render_record_human(record), language="text")
+
+    single_record_edit.render_inline_edit(
+        store=store,
+        index=index,
+        record=record,
+        rule_set=rule_set,
+        key_prefix="workspace_edit",
+    )
+
+
 def render(rule_set: rules_mod.RuleSet | None = None) -> None:
     """Render the MarcEditor tab into the current Streamlit container."""
-    if not session.has_upload():
-        st.info(
-            "Upload a `.mrc` file on **Home** first. The MarcEditor edits "
-            "records already in this session."
-        )
+    if not session.require_upload("edit records in MarcEditor"):
         return
 
     store = session.current_store()
@@ -50,13 +116,15 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
 
     over_cap = total > MAX_EDITOR_RECORDS
     if over_cap:
-        st.warning(
-            f"This batch contains **{total}** records, above the editor's "
-            f"`{MAX_EDITOR_RECORDS}`-record cap. The text below is read-only "
-            "so parse-on-Apply doesn't stall the page. Use the **Tasks** page "
-            "to apply transforms to the full batch, then come back here to "
-            "review a subset."
+        st.info(
+            f"This batch contains **{total:,}** records, above the "
+            f"`{MAX_EDITOR_RECORDS:,}`-record cap for the full-batch "
+            "text editor. **Per-record inline editing is enabled below** — "
+            "pick a record by number to edit it. For bulk transforms "
+            "across all records, use the **Tasks** page."
         )
+        _render_single_record_picker(store, total, rule_set)
+        return
 
     _MRK_KEY = "marc_editor_text"
     _MRK_SOURCE_KEY = "marc_editor_source_id"

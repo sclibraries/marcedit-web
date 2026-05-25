@@ -8,7 +8,7 @@ from marcedit_web.lib import session
 from marcedit_web.render import rules_and_warnings_for_page, sidebar_status, validate
 
 st.set_page_config(page_title="Validate · marcedit-web", layout="wide")
-session.init()
+session.init_page()
 
 st.title("Validate")
 st.caption("Structural preflight + rules from `data/marc-rules.txt`.")

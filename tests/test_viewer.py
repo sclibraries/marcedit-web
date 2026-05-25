@@ -83,3 +83,97 @@ def test_cli_paths_are_gone():
     assert not hasattr(viewer, "view")
     assert not hasattr(viewer, "diff")
     assert not hasattr(viewer, "_GREEN")
+
+
+# ---------------------------------------------------------------------------
+# render_record_human — TASK-026 human-readable display
+# ---------------------------------------------------------------------------
+
+
+def test_render_record_human_uses_real_spaces_in_control_fields(record):
+    """008 spaces render as spaces, not `\\`.
+
+    The fixture's 008 is exactly 40 bytes including real spaces; the
+    .mrk renderer would have substituted each space with ``\\``.
+    """
+    text = viewer.render_record_human(record)
+    # The 008 in the fixture is "180706s2013    nyu     ob    001 0 eng d"
+    # — runs of real spaces around the place code and material fields.
+    assert "=008  180706s2013    nyu     ob    001 0 eng d" in text
+
+
+def test_render_record_human_preserves_pipes(record):
+    """Pipe characters (`|` is MARC fill) come through verbatim."""
+    import pymarc
+
+    record.remove_fields("007")
+    record.add_field(pymarc.Field(tag="007", data="cr|mn|||||||||"))
+    text = viewer.render_record_human(record)
+    assert "=007  cr|mn|||||||||" in text
+
+
+def test_render_record_human_uses_double_dagger_for_subfield_delim(record):
+    """Subfield delimiter (byte 0x1F) renders as `‡`, not `$`."""
+    text = viewer.render_record_human(record)
+    # The fixture's 245 has $a "Test title."
+    assert "‡aTest title." in text
+    # And `$` MUST NOT appear in the 245 line as a subfield delim — only
+    # ‡ should be the delimiter glyph there.
+    line_245 = next(
+        line for line in text.splitlines() if line.startswith("=245")
+    )
+    # Indicators are "1" + "0" + "‡a..." — the dollar sign should be
+    # absent unless the subfield value itself contained one.
+    assert "$" not in line_245
+
+
+def test_render_record_human_does_not_escape_blank_indicators(record):
+    """Blank indicators render as actual spaces, not `\\`.
+
+    The fixture's 506 has both indicators blank. In the .mrk shape
+    that's ``=506  \\\\$a...``; in the human shape it's just two
+    spaces between the tag and the subfield delim.
+    """
+    text = viewer.render_record_human(record)
+    line_506 = next(
+        line for line in text.splitlines() if line.startswith("=506")
+    )
+    # The `=506  ` prefix is 6 characters (tag + 2 spaces). Then the
+    # two blank indicators are 2 actual spaces. Then ‡a.
+    assert line_506.startswith("=506    ‡a")
+    assert "\\" not in line_506
+
+
+def test_render_record_human_filter_excludes_unwanted_tags(record):
+    text = viewer.render_record_human(record, fields={"245", "856"})
+    assert "=245" in text
+    assert "=856" in text
+    assert "=001" not in text
+    assert "=029" not in text
+
+
+def test_render_record_human_leader_renders_cleanly(record):
+    text = viewer.render_record_human(record, fields={"LDR"})
+    assert text.startswith("=LDR  ")
+    # Single line when filtered to just the leader.
+    assert "\n" not in text
+
+
+def test_render_record_human_subfield_value_with_dollar_sign_is_unambiguous(record):
+    """A `$` inside subfield data doesn't get treated as a delimiter."""
+    import pymarc
+
+    record.remove_fields("020")
+    record.add_field(pymarc.Field(
+        tag="020",
+        indicators=[" ", " "],
+        subfields=[pymarc.Subfield("a", "price $19.99")],
+    ))
+    text = viewer.render_record_human(record)
+    line_020 = next(
+        line for line in text.splitlines() if line.startswith("=020")
+    )
+    # Exactly one `‡` (the delim before `a`); the `$` inside the value
+    # stays as a `$` and is not confused for another subfield.
+    assert line_020.count("‡") == 1
+    assert "$19.99" in line_020

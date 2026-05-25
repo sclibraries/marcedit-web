@@ -14,11 +14,7 @@ def render(
     rules_warnings: list | None = None,
 ) -> None:
     """Render the Validate tab into the current Streamlit container."""
-    if not session.has_upload():
-        st.info(
-            "Upload a `.mrc` file on **Home** to validate records. Validate "
-            "runs against records already in this session."
-        )
+    if not session.require_upload("validate records"):
         return
 
     if rule_set is None or rules_warnings is None:

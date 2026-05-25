@@ -13,11 +13,7 @@ from marcedit_web.lib.reporting import RecordSnapshot
 
 def render() -> None:
     """Render the Report tab into the current Streamlit container."""
-    if not session.has_upload():
-        st.info(
-            "Upload a `.mrc` file on **Home** to see reports. Report walks "
-            "records already in this session."
-        )
+    if not session.require_upload("see reports"):
         return
 
     store = session.current_store()

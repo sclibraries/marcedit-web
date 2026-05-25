@@ -14,9 +14,32 @@ the UI sidebar.
 
 from __future__ import annotations
 
+import os
 from typing import Mapping
 
 ANONYMOUS = "anonymous"
+
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def is_prod() -> bool:
+    """True when the app is running in production-auth mode.
+
+    Set via ``MARCEDIT_WEB_PROD=1`` in the container environment.
+    Production mode requires every request to carry a Shibboleth
+    identity header (``REMOTE_USER`` or ``eppn``); anonymous sessions
+    are refused with a friendly banner + audit entry.
+
+    Dev mode is the default (env var unset) and lets anonymous users
+    in for local testing.
+    """
+    return os.environ.get("MARCEDIT_WEB_PROD", "").strip().lower() in _TRUTHY
+
+
+def is_anonymous(user: str | None) -> bool:
+    """True when ``user`` is unset or the anonymous sentinel."""
+    return not user or user == ANONYMOUS
 
 
 def current_user(headers: Mapping[str, str] | None = None) -> str:

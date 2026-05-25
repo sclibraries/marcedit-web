@@ -38,3 +38,13 @@ marc-processing.zip
 # Per-user task storage (lives at runtime; not version-controlled)
 data/tasks/users/
 data/tasks/shared/
+
+# Runtime audit logs (JSONL, one file per UTC day)
+data/audit/
+
+# Ad-hoc Playwright screenshots dropped at the project root by
+# ``browser_take_screenshot`` during dev verification. Promote any
+# you want kept into ``docs/`` explicitly.
+/*.png
+/*.jpg
+/*.jpeg

@@ -244,3 +244,69 @@ def test_empty_task_list_passes_records_through(one_record_bytes):
     reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
                                     to_unicode=True, permissive=True))
     assert len(reread) == 1
+
+
+# ---------------------------------------------------------------------------
+# Stage 20: input_path streaming entry point
+# ---------------------------------------------------------------------------
+
+
+def test_input_path_supplies_records_without_in_memory_bytes(
+    one_record_bytes, tmp_path
+):
+    """The streaming entry point uses an existing file as sandbox input.
+
+    A path-based call mirrors the bytes-based call: same record in,
+    same record out. Tasks page uses this to avoid materializing the
+    whole batch in the parent process.
+    """
+    in_path = tmp_path / "input.mrc"
+    in_path.write_bytes(one_record_bytes)
+    result = run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        input_path=in_path,
+    )
+    assert result.returncode == 0
+    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
+                                    to_unicode=True, permissive=True))
+    assert len(reread) == 1
+    assert reread[0].get("001").data == "1234567890"
+
+
+def test_input_path_and_record_bytes_are_mutually_exclusive(
+    one_record_bytes, tmp_path
+):
+    """Supplying both inputs is a programming error — raise loudly."""
+    in_path = tmp_path / "input.mrc"
+    in_path.write_bytes(one_record_bytes)
+    with pytest.raises(ValueError):
+        run_tasks_subprocess(
+            [TaskSpec(name="noop", body="pass")],
+            one_record_bytes,
+            input_path=in_path,
+        )
+
+
+def test_neither_input_supplied_raises():
+    with pytest.raises(ValueError):
+        run_tasks_subprocess([TaskSpec(name="noop", body="pass")])
+
+
+def test_input_path_is_used_directly_no_copy(one_record_bytes, tmp_path):
+    """Verify the sandbox doesn't write a second copy into its workdir.
+
+    With ``input_path=p``, the workdir should NOT contain an ``input.mrc``
+    that's separate from ``p`` — the sandbox uses ``p`` as the
+    ``--input`` arg directly.
+    """
+    in_path = tmp_path / "elsewhere" / "preflight.mrc"
+    in_path.parent.mkdir()
+    in_path.write_bytes(one_record_bytes)
+    workdir = tmp_path / "sandbox-work"
+    workdir.mkdir()
+    run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        input_path=in_path,
+        tmp_dir=workdir,
+    )
+    assert not (workdir / "input.mrc").exists()

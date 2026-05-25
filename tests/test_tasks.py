@@ -83,3 +83,81 @@ def test_load_user_tasks_records_syntax_errors(tmp_path):
 
 def test_auto_load_shipped_tasks_is_gone():
     assert not hasattr(tasks, "_auto_load_shipped_tasks")
+
+
+# ---------------------------------------------------------------------------
+# TASK-029 / Security review High 2: AST-only discovery
+# ---------------------------------------------------------------------------
+
+
+def test_load_user_tasks_does_not_exec_module_level_code(tmp_path):
+    """Discovery must NOT run module-level statements.
+
+    Pre-TASK-029 the loader called ``spec.loader.exec_module(...)``,
+    which would run the side-effect line below. The AST-only
+    discovery path reads the file but never executes it.
+    """
+    side_effect_marker = tmp_path / "SIDE_EFFECT_RAN"
+    p = tmp_path / "evil.py"
+    p.write_text(
+        '"""doc"""\n'
+        f"from pathlib import Path\n"
+        f"Path({str(side_effect_marker)!r}).write_text('boom')\n"
+        "from marcedit_web.lib.tasks import task\n"
+        "\n"
+        "@task('innocent', description='look like a normal task')\n"
+        "def innocent(record):\n"
+        "    pass\n"
+    )
+    loaded = tasks.load_user_tasks(tmp_path)
+    assert loaded == 1
+    assert "innocent" in tasks.TASK_REGISTRY
+    assert not side_effect_marker.exists(), (
+        "Module-level statement executed during discovery — "
+        "AST-only discovery is broken."
+    )
+
+
+def test_load_user_tasks_sets_fn_none(tmp_path):
+    """User tasks loaded via the AST path don't have a Python callable.
+
+    Execution goes through the subprocess sandbox via the saved body
+    text, so ``Task.fn`` is allowed to be None.
+    """
+    p = tmp_path / "ast_only.py"
+    p.write_text(
+        '"""doc"""\n'
+        "from marcedit_web.lib.tasks import task\n"
+        "@task('quiet', description='no exec')\n"
+        "def quiet(record):\n"
+        "    pass\n"
+    )
+    tasks.load_user_tasks(tmp_path)
+    assert tasks.TASK_REGISTRY["quiet"].fn is None
+    assert tasks.TASK_REGISTRY["quiet"].description == "no exec"
+
+
+def test_load_user_tasks_rerun_picks_up_renamed_decorator(tmp_path):
+    """Old task name is dropped when the file's @task name changes."""
+    p = tmp_path / "named.py"
+    p.write_text(
+        '"""doc"""\n'
+        "from marcedit_web.lib.tasks import task\n"
+        "@task('first-name')\n"
+        "def fn(record):\n"
+        "    pass\n"
+    )
+    tasks.load_user_tasks(tmp_path)
+    assert "first-name" in tasks.TASK_REGISTRY
+
+    # Rename and force-reload.
+    p.write_text(
+        '"""doc"""\n'
+        "from marcedit_web.lib.tasks import task\n"
+        "@task('second-name')\n"
+        "def fn(record):\n"
+        "    pass\n"
+    )
+    tasks.load_user_tasks(tmp_path, force_reload=True)
+    assert "second-name" in tasks.TASK_REGISTRY
+    assert "first-name" not in tasks.TASK_REGISTRY
