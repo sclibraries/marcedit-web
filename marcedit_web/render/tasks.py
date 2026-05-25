@@ -867,6 +867,25 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             RuntimeError(f"[{err['code']}] {err['message']}"),
         ))
 
+    # TASK-035: compute the diff eagerly here, instead of lazily in
+    # _render_diff_review. Same streaming cost either way; doing it
+    # at run-completion means the audit row and TaskRunRecord carry
+    # an accurate ``changed_count`` from the moment they're written.
+    sandbox_output_path = sandbox_workdir / "output.mrc"
+    try:
+        sandbox_output_path.write_bytes(result.records_bytes or b"")
+    except OSError as exc:
+        logger.warning("could not write history output snapshot: %s", exc)
+
+    diff_summary = None
+    if result.returncode == 0 and not result.timed_out:
+        try:
+            diff_summary = task_diff.compute_task_diff(
+                sandbox_input, result.records_bytes or b"",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not build task diff summary: %s", exc)
+
     st.session_state[K_RUN_RESULTS] = {
         "issues": issues,
         "out_bytes": result.records_bytes,
@@ -880,17 +899,13 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         # walk it again. The sandbox workdir survives until container
         # restart; that's good enough for the post-run review window.
         "sandbox_input_path": str(sandbox_input),
+        # Pre-computed diff summary so _render_diff_review reuses it
+        # instead of rebuilding.
+        "_diff_summary": diff_summary,
     }
 
-    # TASK-034: append to the per-session run history. Write the
-    # output to a file inside the sandbox workdir so re-download
-    # buttons in the history expander can read bytes lazily (instead
-    # of pinning every prior run's bytes in session_state).
-    sandbox_output_path = sandbox_workdir / "output.mrc"
-    try:
-        sandbox_output_path.write_bytes(result.records_bytes or b"")
-    except OSError as exc:
-        logger.warning("could not write history output snapshot: %s", exc)
+    # TASK-034 + TASK-035: append to per-session run history with
+    # the real changed_count threaded in from the eager diff above.
     _record_run_in_history(
         user=user,
         store=store,
@@ -898,6 +913,8 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         result=result,
         out_records_count=len(out_records),
         errors_count=len(issues),
+        changed_count=(diff_summary.changed_count
+                       if diff_summary is not None else 0),
         sandbox_workdir=sandbox_workdir,
         sandbox_input_path=sandbox_input,
         sandbox_output_path=sandbox_output_path,
@@ -912,6 +929,7 @@ def _record_run_in_history(
     result,
     out_records_count: int,
     errors_count: int,
+    changed_count: int,
     sandbox_workdir: Path,
     sandbox_input_path: Path,
     sandbox_output_path: Path,
@@ -924,10 +942,7 @@ def _record_run_in_history(
         task_names=list(selection),
         input_record_count=store.count() if store is not None else 0,
         output_record_count=out_records_count,
-        # changed_count fills in when the diff review computes a
-        # summary; left at 0 here because the diff is built lazily
-        # by the run-results renderer.
-        changed_count=0,
+        changed_count=changed_count,
         error_count=errors_count,
         timed_out=bool(result.timed_out),
         sandbox_returncode=int(result.returncode or 0),
@@ -946,6 +961,7 @@ def _record_run_in_history(
         tasks=record.task_names,
         input_records=record.input_record_count,
         output_records=record.output_record_count,
+        changed_count=record.changed_count,
         error_count=record.error_count,
         timed_out=record.timed_out,
         returncode=record.sandbox_returncode,
@@ -1084,13 +1100,19 @@ def _offer_history_download(
     *,
     key: str,
 ) -> None:
-    """Render a download button that reads bytes from a path lazily.
+    """Render a two-step prepare → download for a historical file.
 
-    Streamlit's ``download_button`` materializes the ``data`` argument
-    eagerly — passing the entire file's bytes here would defeat the
-    "read on click" goal. We accept that compromise: if the file is
-    present, read once at render time. If it isn't (workdir gone),
-    show a disabled button with the reason in the help text.
+    TASK-035 fix: Streamlit's ``download_button`` materializes its
+    ``data`` argument eagerly, and Streamlit re-runs expander
+    contents even when collapsed. Reading every history row's bytes
+    on every Tasks-page render would pin hundreds of MB for a
+    long-running session.
+
+    The fix: the first render shows a "Prepare download" button.
+    Clicking it sets a per-row ready flag in session_state; the next
+    render reads the file's bytes once and renders the actual
+    ``download_button``. If the workdir is gone (container restart,
+    cleanup), the row degrades to a disabled button explaining why.
     """
     if not path_str:
         column.caption("(no file recorded)")
@@ -1103,6 +1125,22 @@ def _offer_history_download(
             key=f"{key}_missing",
         )
         return
+
+    ready_key = f"{key}_ready"
+    if not st.session_state.get(ready_key):
+        if column.button(
+            f"Prepare {label}",
+            key=f"{key}_prepare",
+            help=(
+                "Loads the file from disk and offers a download "
+                "button. Two-step gate avoids re-reading large "
+                "historical files on every page refresh."
+            ),
+        ):
+            st.session_state[ready_key] = True
+            st.rerun()
+        return
+
     column.download_button(
         label,
         data=path.read_bytes(),

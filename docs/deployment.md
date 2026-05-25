@@ -127,10 +127,14 @@ services:
 
 Event kinds emitted today:
 
-* `upload-accepted`, `upload-rejected` (Home, Diff sides)
+* `upload-accepted`, `upload-rejected` (Home, Diff sides, Marc Tools)
 * `tasksfile-imported`, `tasksfile-rejected`
 * `archive-imported`, `archive-rejected` (MarcEdit `.task` zip)
 * `task-saved`, `task-deleted`
+* `task-run-completed` (per Tasks run; task names, in/out/changed
+  /error counts, returncode, timed_out)
+* `conversion-issued` (Marc Tools conversion completed; kind, source
+  bytes, output bytes)
 * `admin-action` (admin Code-view save)
 * `sandbox-timeout`, `sandbox-nonzero-exit`
 * `anonymous-action-refused` (prod mode only)

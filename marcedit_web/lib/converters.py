@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import dataclass, field
 from typing import Iterator
 
@@ -153,11 +154,22 @@ def to_binary_from_marcxml(xml_text: str | bytes) -> ConversionResult:
 
     Accepts either text or bytes. Malformed XML raises ``ValueError``
     — the page surfaces this as a user-facing error.
+
+    TASK-035 hardening: reject documents that declare a ``<!DOCTYPE``
+    or any ``<!ENTITY`` before handing the bytes to pymarc's stdlib
+    SAX parser. This blocks billion-laughs entity expansion and XXE
+    by refusing to parse the shapes that need them. A full
+    ``defusedxml`` boundary would be stricter still; the byte-scan
+    is the cheap defense that covers the cataloger workload without
+    a new dependency.
     """
     if isinstance(xml_text, str):
         xml_bytes = xml_text.encode("utf-8")
     else:
         xml_bytes = xml_text
+
+    _reject_unsafe_xml(xml_bytes)
+
     try:
         records = marcxml.parse_xml_to_array(io.BytesIO(xml_bytes))
     except Exception as exc:  # noqa: BLE001 — pymarc raises a mix of types
@@ -168,6 +180,42 @@ def to_binary_from_marcxml(xml_text: str | bytes) -> ConversionResult:
         record_count=len(records),
         malformed_count=0,
     )
+
+
+# Full-document scan via ``re`` so we don't materialize a
+# lowercase copy (a 2 GB ``.lower()`` would allocate another 2 GB).
+# The regex engine handles case folding internally. ``DOTALL`` isn't
+# needed — the patterns are pure literals — but ``IGNORECASE`` is
+# what makes the check resilient to ``<!DocType`` etc.
+_DOCTYPE_RE = re.compile(rb"<!doctype", re.IGNORECASE)
+_ENTITY_RE = re.compile(rb"<!entity", re.IGNORECASE)
+
+
+def _reject_unsafe_xml(xml_bytes: bytes) -> None:
+    """Raise ``ValueError`` if ``xml_bytes`` declares a DTD or ENTITY.
+
+    Full-document case-insensitive scan. A hostile file could prepend
+    arbitrary XML prolog / comment padding before ``<!DOCTYPE``, so
+    a head-only scan would miss it. Scanning the whole input via the
+    ``re`` engine costs O(n) bytes scanned with no extra allocation,
+    bounded by the per-file upload cap.
+
+    MARCXML emitted by pymarc / OCLC / standard cataloging clients
+    never contains these declarations, so this is safe to enforce as
+    a hard rule.
+    """
+    if _DOCTYPE_RE.search(xml_bytes):
+        raise ValueError(
+            "MARCXML with a <!DOCTYPE declaration is refused — "
+            "billion-laughs / XXE attack surface. Strip the DTD "
+            "from the source file and retry."
+        )
+    if _ENTITY_RE.search(xml_bytes):
+        raise ValueError(
+            "MARCXML with an <!ENTITY declaration is refused — "
+            "external/parameter entity attack surface. Strip the "
+            "entity declarations from the source file and retry."
+        )
 
 
 # ---------------------------------------------------------------------------

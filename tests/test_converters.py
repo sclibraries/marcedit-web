@@ -140,6 +140,57 @@ def test_to_binary_from_marcxml_rejects_garbage():
         converters.to_binary_from_marcxml("<not xml at all")
 
 
+def test_to_binary_from_marcxml_rejects_doctype():
+    """TASK-035: DTD declarations are refused (billion-laughs / XXE)."""
+    payload = (
+        '<?xml version="1.0"?>\n'
+        '<!DOCTYPE collection [\n'
+        '  <!ELEMENT collection ANY>\n'
+        ']>\n'
+        '<collection xmlns="http://www.loc.gov/MARC21/slim"></collection>'
+    )
+    with pytest.raises(ValueError) as exc:
+        converters.to_binary_from_marcxml(payload)
+    assert "DOCTYPE" in str(exc.value)
+
+
+def test_to_binary_from_marcxml_rejects_entity_declaration():
+    """TASK-035: ENTITY declarations are refused even without DOCTYPE wrapper."""
+    payload = (
+        '<?xml version="1.0"?>\n'
+        '<!ENTITY xxe SYSTEM "file:///etc/passwd">\n'
+        '<collection xmlns="http://www.loc.gov/MARC21/slim"></collection>'
+    )
+    with pytest.raises(ValueError) as exc:
+        converters.to_binary_from_marcxml(payload)
+    assert "ENTITY" in str(exc.value)
+
+
+def test_to_binary_from_marcxml_doctype_check_is_case_insensitive():
+    """Lowercase ``<!doctype`` and uppercase ``<!DOCTYPE`` both rejected."""
+    payload = (
+        '<?xml version="1.0"?>\n'
+        '<!doctype collection>\n'
+        '<collection xmlns="http://www.loc.gov/MARC21/slim"></collection>'
+    )
+    with pytest.raises(ValueError):
+        converters.to_binary_from_marcxml(payload)
+
+
+def test_to_binary_from_marcxml_rejects_doctype_buried_after_long_prolog():
+    """A hostile file can pad with comments before <!DOCTYPE — still rejected."""
+    padding = "<!-- " + ("x" * 10000) + " -->\n"  # >> the old 4 KB head scan
+    payload = (
+        '<?xml version="1.0"?>\n'
+        + padding
+        + '<!DOCTYPE collection>\n'
+        + '<collection xmlns="http://www.loc.gov/MARC21/slim"></collection>'
+    )
+    with pytest.raises(ValueError) as exc:
+        converters.to_binary_from_marcxml(payload)
+    assert "DOCTYPE" in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # CSV
 # ---------------------------------------------------------------------------

@@ -12,9 +12,10 @@ so the security log captures what data left the box in which shape.
 from __future__ import annotations
 
 import io
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import pandas as pd
 import pymarc
@@ -22,6 +23,30 @@ import streamlit as st
 
 from marcedit_web.lib import converters, quotas, session
 from marcedit_web.lib.audit import audit_event
+
+
+@dataclass
+class _Source:
+    """Deferred-materialize source for a Marc Tools conversion.
+
+    ``materialize()`` is only called inside the Convert button block,
+    so:
+
+    * the session batch isn't serialized to bytes just because the
+      cataloger opened the Marc Tools page (TASK-035 fix);
+    * the ``upload-accepted`` audit event fires once per conversion
+      attempt, not once per Streamlit rerun (TASK-035 fix).
+
+    For ``kind == "upload"``, materialize hands back the bytes
+    Streamlit already holds AND emits the audit event. For ``kind ==
+    "session"``, materialize streams the live :class:`RecordStore` to
+    bytes inside the click handler.
+    """
+
+    kind: str           # "upload" or "session"
+    name: str           # filename or "session-batch"
+    size: int           # bytes count (precomputed cheaply for both)
+    materialize: Callable[[], bytes]
 
 
 _TARGETS: list[tuple[str, str]] = [
@@ -66,10 +91,13 @@ def render() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _binary_source(*, key_prefix: str) -> bytes | None:
+def _binary_source(*, key_prefix: str) -> _Source | None:
     """File uploader for binary .mrc + session-batch radio.
 
-    Returns the source bytes, or None when nothing's available yet.
+    Returns a deferred-materialize :class:`_Source`. The actual
+    serialization (for session) or in-memory hand-back (for upload)
+    runs only when ``materialize()`` is called inside the convert
+    handler's button block.
     """
     use_session = _session_radio(key_prefix)
     if use_session == "session":
@@ -77,11 +105,22 @@ def _binary_source(*, key_prefix: str) -> bytes | None:
         if store is None:
             st.info("No file loaded on **Home**. Switch to upload above.")
             return None
-        bio = io.BytesIO()
-        writer = pymarc.MARCWriter(bio)
-        for r in store.iter_records():
-            writer.write(r)
-        return bio.getvalue()
+
+        def materialize_session() -> bytes:
+            # Streams to BytesIO inside the click handler — no
+            # serialization on page render.
+            bio = io.BytesIO()
+            writer = pymarc.MARCWriter(bio)
+            for r in store.iter_records():
+                writer.write(r)
+            return bio.getvalue()
+
+        return _Source(
+            kind="session",
+            name=session.current_filename() or "session-batch",
+            size=0,  # unknown until materialized; UI shows "(session)" instead
+            materialize=materialize_session,
+        )
 
     upload = st.file_uploader(
         "MARC binary file (.mrc / .marc)",
@@ -91,22 +130,16 @@ def _binary_source(*, key_prefix: str) -> bytes | None:
     return _check_upload(upload, kind="upload")
 
 
-def _mrk_source(*, key_prefix: str) -> str | None:
+def _mrk_source(*, key_prefix: str) -> _Source | None:
     upload = st.file_uploader(
         "MarcEdit .mrk text file",
         type=["mrk", "txt"],
         key=f"{key_prefix}_uploader",
     )
-    raw = _check_upload(upload, kind="upload")
-    if raw is None:
-        return None
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1")
+    return _check_upload(upload, kind="upload")
 
 
-def _xml_source(*, key_prefix: str) -> bytes | None:
+def _xml_source(*, key_prefix: str) -> _Source | None:
     upload = st.file_uploader(
         "MARCXML file (.xml)",
         type=["xml"],
@@ -137,38 +170,62 @@ def _session_radio(key_prefix: str) -> str:
     )
 
 
-def _check_upload(upload, *, kind: str) -> bytes | None:
-    """Run an uploaded file through the quota gate; return bytes or None.
+def _check_upload(upload, *, kind: str) -> _Source | None:
+    """Validate the uploaded file at render time; defer accept-audit.
 
-    Mirrors the per-feature audit contract from Home / Diff: every
-    accept and reject lands in the audit log.
+    Render-time work:
+
+    * Run the per-feature size cap (``quotas.check_upload``). A
+      rejection still emits ``upload-rejected`` immediately + shows
+      the user a visible error — the cataloger needs that feedback
+      before they click Convert.
+
+    Deferred to ``materialize()`` (i.e. Convert click):
+
+    * The ``upload-accepted`` audit event. Streamlit reruns the page
+      script on every interaction; emitting accept here would add an
+      audit row per radio toggle / target switch, swamping the log.
+      The convert handler invokes ``materialize()`` exactly once per
+      conversion attempt, which is the natural granularity for an
+      audit row.
     """
     if upload is None:
         return None
-    raw = upload.getvalue()
+    raw = upload.getvalue()  # Streamlit already holds these bytes
+    size = len(raw)
+    name = upload.name
     user = st.session_state.get("user", "anonymous") or "anonymous"
     try:
-        quotas.check_upload(len(raw), kind=kind)
+        quotas.check_upload(size, kind=kind)
     except quotas.QuotaExceeded as exc:
         audit_event(
             "upload-rejected",
             user=user,
             source="marc-tools",
-            filename=upload.name,
-            size=len(raw),
+            filename=name,
+            size=size,
             reason=exc.kind,
             limit=exc.limit,
         )
-        st.error(f"`{upload.name}` rejected: {exc}")
+        st.error(f"`{name}` rejected: {exc}")
         return None
-    audit_event(
-        "upload-accepted",
-        user=user,
-        source="marc-tools",
-        filename=upload.name,
-        size=len(raw),
+
+    def materialize_upload() -> bytes:
+        audit_event(
+            "upload-accepted",
+            user=user,
+            source="marc-tools",
+            filename=name,
+            size=size,
+        )
+        return raw
+
+    return _Source(
+        kind="upload",
+        name=name,
+        size=size,
+        materialize=materialize_upload,
     )
-    return raw
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +239,8 @@ def _convert_to_mrk() -> None:
     if src is None:
         return
     if st.button("Convert to .mrk", type="primary", key="tools_to_mrk_btn"):
-        result = converters.to_mrk_text(src)
+        raw = src.materialize()  # serialize / audit happens here, not on render
+        result = converters.to_mrk_text(raw)
         _show_preflight(result)
         if isinstance(result.output, str) and result.output:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -194,7 +252,7 @@ def _convert_to_mrk() -> None:
                 mime="text/plain",
                 key="tools_dl_mrk",
             )
-            _audit_conversion("mrc_to_mrk", len(src),
+            _audit_conversion("mrc_to_mrk", len(raw),
                               len(result.output.encode("utf-8")))
 
 
@@ -215,28 +273,33 @@ def _convert_to_binary() -> None:
             return
         if st.button("Convert to .mrc", type="primary",
                      key="tools_mrk_to_mrc_btn"):
-            result = converters.to_binary_from_mrk(src)
+            raw = src.materialize()
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("latin-1")
+            result = converters.to_binary_from_mrk(text)
             _show_preflight(result)
             _show_line_errors(result.line_errors)
             if result.output:
-                _offer_download_binary(result.output, len(src.encode("utf-8")))
-                _audit_conversion("mrk_to_mrc", len(src.encode("utf-8")),
-                                  len(result.output))
+                _offer_download_binary(result.output, len(raw))
+                _audit_conversion("mrk_to_mrc", len(raw), len(result.output))
     else:
         src = _xml_source(key_prefix="tools_xml_to_mrc")
         if src is None:
             return
         if st.button("Convert to .mrc", type="primary",
                      key="tools_xml_to_mrc_btn"):
+            raw = src.materialize()
             try:
-                result = converters.to_binary_from_marcxml(src)
+                result = converters.to_binary_from_marcxml(raw)
             except ValueError as exc:
                 st.error(f"MARCXML parse error: {exc}")
                 return
             _show_preflight(result)
             if result.output:
-                _offer_download_binary(result.output, len(src))
-                _audit_conversion("xml_to_mrc", len(src), len(result.output))
+                _offer_download_binary(result.output, len(raw))
+                _audit_conversion("xml_to_mrc", len(raw), len(result.output))
 
 
 def _convert_to_xml() -> None:
@@ -245,7 +308,8 @@ def _convert_to_xml() -> None:
     if src is None:
         return
     if st.button("Convert to MARCXML", type="primary", key="tools_to_xml_btn"):
-        result = converters.to_marcxml(src)
+        raw = src.materialize()
+        result = converters.to_marcxml(raw)
         _show_preflight(result)
         if result.output:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -257,7 +321,7 @@ def _convert_to_xml() -> None:
                 mime="application/xml",
                 key="tools_dl_xml",
             )
-            _audit_conversion("mrc_to_xml", len(src), len(result.output))
+            _audit_conversion("mrc_to_xml", len(raw), len(result.output))
 
 
 def _render_csv() -> None:
@@ -270,7 +334,8 @@ def _render_csv() -> None:
     if src is None:
         return
     if st.button("Build CSV", type="primary", key="tools_csv_btn"):
-        records, malformed = converters._read_binary(src)
+        raw = src.materialize()
+        records, malformed = converters._read_binary(raw)
         rows = converters.records_to_csv_rows(iter(records))
         col_names = [c for c, _t, _s in converters.DEFAULT_CSV_COLUMNS]
         st.caption(
@@ -293,7 +358,7 @@ def _render_csv() -> None:
             mime="text/csv",
             key="tools_dl_csv",
         )
-        _audit_conversion("mrc_to_csv", len(src), len(csv_text.encode("utf-8")))
+        _audit_conversion("mrc_to_csv", len(raw), len(csv_text.encode("utf-8")))
 
 
 # ---------------------------------------------------------------------------

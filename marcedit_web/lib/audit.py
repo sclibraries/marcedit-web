@@ -9,11 +9,16 @@ header plus arbitrary event-specific fields.
 Event categories the app emits today (kept aligned with the actual
 ``audit_event(...)`` callsites):
 
-* ``upload-accepted`` / ``upload-rejected`` (Home, Diff sides)
+* ``upload-accepted`` / ``upload-rejected`` (Home, Diff sides,
+  Marc Tools)
 * ``tasksfile-imported`` / ``tasksfile-rejected``
 * ``archive-imported`` / ``archive-rejected`` (MarcEdit zip path)
 * ``sandbox-timeout`` / ``sandbox-nonzero-exit``
 * ``task-saved`` / ``task-deleted``
+* ``task-run-completed`` (TASK-034 — carries task names,
+  in/out/changed/error counts, returncode, timed_out)
+* ``conversion-issued`` (TASK-032 — Marc Tools conversion completed;
+  kind, source bytes, output bytes)
 * ``admin-action`` (Code-view save while ``task_admin.is_admin()``)
 * ``anonymous-action-refused`` (prod mode, missing identity header)
 
