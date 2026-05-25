@@ -210,6 +210,167 @@ def control_value(record: Record, tag: str) -> str | None:
     return field.data
 
 
+# --- TASK-030: Task Builder ops expansion ------------------------------------
+#
+# Helpers added in lockstep with new entries in
+# ``task_builder.OPERATIONS_PALETTE``. Each is a pure
+# ``(record, ...) -> None`` mutation; the form-builder emits a call
+# to one of these via ``codegen_safety.lit`` for every user-supplied
+# value, so a malicious tag/value can't escape its string literal.
+
+
+def copy_field(record: Record, src_tag: str, dst_tag: str) -> None:
+    """Duplicate every ``src_tag`` field as a new ``dst_tag`` field.
+
+    Same indicators + same subfields. The original ``src_tag`` field
+    stays; use :func:`move_field` to re-tag in place.
+    """
+    if not src_tag or not dst_tag:
+        return
+    sources = list(record.get_fields(src_tag))
+    for field in sources:
+        if field.is_control_field():
+            # Control fields have ``.data`` instead of indicators +
+            # subfields. Copy that shape.
+            record.add_ordered_field(Field(tag=dst_tag, data=field.data))
+            continue
+        record.add_ordered_field(Field(
+            tag=dst_tag,
+            indicators=list(field.indicators),
+            subfields=[Subfield(code=sf.code, value=sf.value)
+                       for sf in field.subfields],
+        ))
+
+
+def move_field(record: Record, src_tag: str, dst_tag: str) -> None:
+    """Re-tag every ``src_tag`` field as ``dst_tag``.
+
+    Equivalent to :func:`copy_field` followed by ``record.remove_fields(src_tag)``.
+    """
+    if not src_tag or not dst_tag or src_tag == dst_tag:
+        return
+    copy_field(record, src_tag, dst_tag)
+    record.remove_fields(src_tag)
+
+
+def add_subfield_to_fields(
+    record: Record,
+    tag: str,
+    code: str,
+    value: str,
+    *,
+    position: str = "end",
+) -> None:
+    """Append (or prepend) a subfield to every variable field with ``tag``.
+
+    ``position`` is ``"end"`` (default) or ``"start"``. Control fields
+    don't have subfields and are skipped silently.
+    """
+    if not tag or not code:
+        return
+    for field in record.get_fields(tag):
+        if field.is_control_field():
+            continue
+        new_sf = Subfield(code=code, value=value)
+        if position == "start":
+            field.subfields.insert(0, new_sf)
+        else:
+            field.subfields.append(new_sf)
+
+
+def delete_subfields(record: Record, tag: str, *codes: str) -> None:
+    """Remove subfields with any of the listed codes from every ``tag`` field.
+
+    Control fields have no subfields and are skipped silently. Empty
+    code list is a no-op.
+    """
+    if not tag or not codes:
+        return
+    drop = {c for c in codes if c}
+    for field in record.get_fields(tag):
+        if field.is_control_field():
+            continue
+        field.subfields = [sf for sf in field.subfields if sf.code not in drop]
+
+
+def copy_subfield_within_field(
+    record: Record, tag: str, src_code: str, dst_code: str
+) -> None:
+    """Within each ``tag`` field, append ``$dst_code`` for every existing
+    ``$src_code``, carrying the value over.
+
+    Useful for invalidating-in-place patterns ($a → $z on ISBN, for
+    example): copy the value, then a separate ``delete-subfield`` op
+    drops the original.
+    """
+    if not tag or not src_code or not dst_code:
+        return
+    for field in record.get_fields(tag):
+        if field.is_control_field():
+            continue
+        # Snapshot first so we don't iterate the list we're appending to.
+        sources = [sf for sf in field.subfields if sf.code == src_code]
+        for sf in sources:
+            field.subfields.append(Subfield(code=dst_code, value=sf.value))
+
+
+def set_indicators(
+    record: Record,
+    tag: str,
+    *,
+    ind1: str | None = None,
+    ind2: str | None = None,
+) -> None:
+    """Override one or both indicators on every variable field with ``tag``.
+
+    ``None`` leaves the existing indicator alone. Pass a space (``" "``)
+    to set blank. Control fields have no indicators and are skipped.
+
+    Note: pymarc 5's :class:`Field.indicators` is an immutable
+    :class:`Indicators` tuple, so we reconstruct the pair and assign it
+    wholesale rather than indexing in.
+    """
+    if not tag or (ind1 is None and ind2 is None):
+        return
+    for field in record.get_fields(tag):
+        if field.is_control_field():
+            continue
+        existing = list(field.indicators)
+        new_ind1 = existing[0] if ind1 is None else ind1
+        new_ind2 = existing[1] if ind2 is None else ind2
+        field.indicators = [new_ind1, new_ind2]
+
+
+def regex_replace_field_data(
+    record: Record,
+    tag: str,
+    pattern: str,
+    replacement: str,
+    *,
+    ignore_case: bool = False,
+) -> None:
+    """Apply ``re.sub(pattern, replacement, …)`` across every ``tag`` field.
+
+    Control fields edit ``.data``; variable fields rebuild each
+    subfield with the replaced value (pymarc 5's :class:`Subfield` is
+    a frozen NamedTuple, so we reconstruct the list rather than
+    mutating in place). Compile errors raise ``re.error`` before any
+    field is mutated.
+    """
+    if not tag or not pattern:
+        return
+    flags = re.IGNORECASE if ignore_case else 0
+    compiled = re.compile(pattern, flags)
+    for field in record.get_fields(tag):
+        if field.is_control_field():
+            field.data = compiled.sub(replacement, field.data)
+            continue
+        field.subfields = [
+            Subfield(code=sf.code, value=compiled.sub(replacement, sf.value))
+            for sf in field.subfields
+        ]
+
+
 # --- 035 dedup (generic; non-OCLC-specific) ----------------------------------
 
 

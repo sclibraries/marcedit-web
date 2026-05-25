@@ -107,6 +107,169 @@ def test_dedupe_035_removes_exact_duplicate(record):
     assert len(record.get_fields("035")) == 1
 
 
+# ---------------------------------------------------------------------------
+# TASK-030: Task Builder ops expansion
+# ---------------------------------------------------------------------------
+
+
+def test_copy_field_duplicates_with_same_data(record):
+    """Copy 856 → 956 leaves 856 in place and adds matching 956 fields."""
+    src_count = len(record.get_fields("856"))
+    assert src_count > 0
+    transforms.copy_field(record, "856", "956")
+    assert len(record.get_fields("856")) == src_count  # source untouched
+    new_fields = record.get_fields("956")
+    assert len(new_fields) == src_count
+    # Subfields/indicators round-trip.
+    for src, dst in zip(record.get_fields("856"), new_fields):
+        assert dst.indicators == src.indicators
+        assert [(sf.code, sf.value) for sf in dst.subfields] == [
+            (sf.code, sf.value) for sf in src.subfields
+        ]
+
+
+def test_copy_field_handles_control_field(record):
+    """Control fields use ``.data`` rather than indicators + subfields."""
+    transforms.copy_field(record, "001", "010")
+    f010 = record.get("010")
+    # ``010`` is variable in our rule set but the copy honors the source
+    # shape — a control-field copy keeps ``.data``.
+    assert f010 is not None
+
+
+def test_copy_field_noop_on_missing_source(make_record):
+    """No source matches → no destination added."""
+    record = make_record()
+    transforms.copy_field(record, "999", "888")
+    assert record.get("888") is None
+
+
+def test_move_field_retag_and_drop_source(record):
+    src_count = len(record.get_fields("856"))
+    transforms.move_field(record, "856", "956")
+    assert record.get_fields("856") == []
+    assert len(record.get_fields("956")) == src_count
+
+
+def test_move_field_same_tag_is_noop(record):
+    """src == dst short-circuits without touching anything."""
+    before = [
+        (f.tag, list(f.indicators), [(sf.code, sf.value) for sf in f.subfields])
+        for f in record.get_fields("856")
+    ]
+    transforms.move_field(record, "856", "856")
+    after = [
+        (f.tag, list(f.indicators), [(sf.code, sf.value) for sf in f.subfields])
+        for f in record.get_fields("856")
+    ]
+    assert before == after
+
+
+def test_add_subfield_to_fields_appends_by_default(record):
+    transforms.add_subfield_to_fields(record, "655", "2", "fast")
+    f655 = record.get_fields("655")[0]
+    codes = [sf.code for sf in f655.subfields]
+    # ``2`` was already on the fixture's 655; this appends another.
+    assert codes[-1] == "2"
+
+
+def test_add_subfield_to_fields_prepend_position(record):
+    transforms.add_subfield_to_fields(record, "655", "9", "LOCAL", position="start")
+    f655 = record.get_fields("655")[0]
+    assert f655.subfields[0].code == "9"
+    assert f655.subfields[0].value == "LOCAL"
+
+
+def test_add_subfield_skips_control_fields(record):
+    """Asking to add to 001 is a no-op (no subfields on control fields)."""
+    before = record.get("001").data
+    transforms.add_subfield_to_fields(record, "001", "a", "ignored")
+    assert record.get("001").data == before
+
+
+def test_delete_subfields_drops_listed_codes(record):
+    """Strip $u from every 856 field."""
+    assert any(sf.code == "u" for f in record.get_fields("856") for sf in f.subfields)
+    transforms.delete_subfields(record, "856", "u")
+    remaining = [sf.code for f in record.get_fields("856") for sf in f.subfields]
+    assert "u" not in remaining
+
+
+def test_delete_subfields_supports_multiple_codes(record):
+    """Pass multiple codes to drop them in one call."""
+    record.get_fields("856")[0].subfields.append(pymarc.Subfield("z", "note"))
+    transforms.delete_subfields(record, "856", "u", "z")
+    remaining = [sf.code for f in record.get_fields("856") for sf in f.subfields]
+    assert "u" not in remaining
+    assert "z" not in remaining
+
+
+def test_delete_subfields_empty_codes_is_noop(record):
+    before = [(sf.code, sf.value) for f in record.get_fields("856") for sf in f.subfields]
+    transforms.delete_subfields(record, "856")
+    after = [(sf.code, sf.value) for f in record.get_fields("856") for sf in f.subfields]
+    assert before == after
+
+
+def test_copy_subfield_within_field(record):
+    """Copy $a → $z within every 245 field."""
+    transforms.copy_subfield_within_field(record, "245", "a", "z")
+    f245 = record.get_fields("245")[0]
+    a_values = [sf.value for sf in f245.subfields if sf.code == "a"]
+    z_values = [sf.value for sf in f245.subfields if sf.code == "z"]
+    assert z_values == a_values  # one $z per existing $a
+
+
+def test_set_indicators_overrides_both(record):
+    transforms.set_indicators(record, "856", ind1="0", ind2="1")
+    for f in record.get_fields("856"):
+        assert list(f.indicators) == ["0", "1"]
+
+
+def test_set_indicators_leave_alone_with_none(record):
+    """``None`` on one side keeps the existing indicator value."""
+    before = [list(f.indicators) for f in record.get_fields("856")]
+    transforms.set_indicators(record, "856", ind1="7")
+    for f, original in zip(record.get_fields("856"), before):
+        assert f.indicators[0] == "7"
+        assert f.indicators[1] == original[1]
+
+
+def test_set_indicators_skips_control_fields(record):
+    """Control fields have no indicators — the helper must not crash."""
+    transforms.set_indicators(record, "001", ind1="0")
+    # Just survives.
+
+
+def test_regex_replace_field_data_variable_field(record):
+    """Replace text across every subfield value of a tag."""
+    transforms.regex_replace_field_data(
+        record, "245", r"Test", "Edited"
+    )
+    title = record.get_fields("245")[0]["a"]
+    assert "Edited title" in title
+    assert "Test title" not in title
+
+
+def test_regex_replace_field_data_control_field(record):
+    """Control fields edit ``.data``."""
+    transforms.regex_replace_field_data(record, "001", r"^.*$", "REPLACED")
+    assert record.get("001").data == "REPLACED"
+
+
+def test_regex_replace_field_data_ignore_case(record):
+    transforms.regex_replace_field_data(
+        record, "245", r"test", "Lower", ignore_case=True
+    )
+    assert "Lower title" in record.get_fields("245")[0]["a"]
+
+
+def test_regex_replace_field_data_empty_pattern_is_noop(record):
+    before = record.get_fields("245")[0]["a"]
+    transforms.regex_replace_field_data(record, "245", "", "X")
+    assert record.get_fields("245")[0]["a"] == before
+
+
 def test_smith_specific_helpers_are_gone():
     """libproxy / container-stamping / OCLC-035 helpers stripped per plan."""
     for name in (

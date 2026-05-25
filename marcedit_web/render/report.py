@@ -28,6 +28,11 @@ def render() -> None:
     # Per-tag "how many records have this tag at least once" — drives the
     # missing-field rollup below without keeping each snapshot in memory.
     tag_record_presence: Counter = Counter()
+    # TASK-033 aggregates — same single-pass model.
+    subfield_counter: Counter = Counter()   # keyed by (tag, code)
+    language_counter: Counter = Counter()    # 008 bytes 35–37
+    date_counter: Counter = Counter()        # 008 bytes 07–10
+    local_tag_counter: Counter = Counter()   # 900–999
     per_record_rows: list[dict] = []
 
     total = 0
@@ -49,6 +54,28 @@ def render() -> None:
                 "ldr 07": snap.leader_07,
                 "tag count": sum(snap.tags_present.values()),
             })
+            # TASK-033 streaming aggregates — walk fields once,
+            # update every counter. The Record stays in scope only
+            # for this loop iteration so 100K records still work.
+            for f in record.fields:
+                tag = f.tag
+                if "900" <= tag <= "999":
+                    local_tag_counter[tag] += 1
+                if f.is_control_field():
+                    continue
+                for sf in f.subfields:
+                    subfield_counter[(tag, sf.code)] += 1
+            field_008 = record.get("008")
+            if field_008 is not None and field_008.data:
+                data = field_008.data
+                if len(data) >= 11:
+                    date = data[7:11].strip()
+                    if date:
+                        date_counter[date] += 1
+                if len(data) >= 38:
+                    lang = data[35:38].strip()
+                    if lang:
+                        language_counter[lang] += 1
             # Snapshot drops out of scope on next iteration — no list of
             # snapshots is retained.
 
@@ -72,6 +99,8 @@ def render() -> None:
             hide_index=True,
             use_container_width=True,
         )
+        _csv_download(format_df, "format_breakdown",
+                      key="report_csv_format")
     else:
         st.caption("No format data available.")
 
@@ -104,11 +133,14 @@ def render() -> None:
                 "of total": total,
                 "missing %": f"{(missing / total * 100):.1f}%" if total else "—",
             })
+        missing_df = pd.DataFrame(rows)
         st.dataframe(
-            pd.DataFrame(rows),
+            missing_df,
             hide_index=True,
             use_container_width=True,
         )
+        _csv_download(missing_df, "missing_fields",
+                      key="report_csv_missing")
     else:
         st.caption("Select one or more tags to see the missing-field counts.")
 
@@ -123,6 +155,7 @@ def render() -> None:
             st.dataframe(
                 top_tags, hide_index=True, use_container_width=True, height=280,
             )
+            _csv_download(top_tags, "top_tags", key="report_csv_tags")
         else:
             st.caption("No tags found in this batch.")
 
@@ -136,6 +169,7 @@ def render() -> None:
             st.dataframe(
                 url_df, hide_index=True, use_container_width=True, height=280,
             )
+            _csv_download(url_df, "url_domains", key="report_csv_urls")
         else:
             st.caption("No 856 URLs found in this batch.")
 
@@ -158,4 +192,116 @@ def render() -> None:
             "ldr 07": st.column_config.TextColumn("LDR 07", width="small"),
             "tag count": st.column_config.NumberColumn("Tags", width="small"),
         },
+    )
+    _csv_download(per_record_df, "per_record", key="report_csv_per_record")
+
+    # --- TASK-033 expanders ---------------------------------------------
+
+    st.divider()
+    st.subheader("More reports")
+    st.caption(
+        "Additional pre-edit audit views. Each section can be exported "
+        "to CSV for spreadsheet review or stakeholder sign-off."
+    )
+
+    with st.expander(
+        f"Subfield frequency ({len(subfield_counter):,} distinct (tag, code) pairs)",
+        expanded=False,
+    ):
+        if subfield_counter:
+            sub_rows = [
+                {"tag": tag, "subfield": code, "count": count}
+                for (tag, code), count in sorted(
+                    subfield_counter.items(),
+                    key=lambda kv: (-kv[1], kv[0][0], kv[0][1]),
+                )
+            ]
+            sub_df = pd.DataFrame(sub_rows)
+            st.dataframe(sub_df, hide_index=True, use_container_width=True,
+                         height=320)
+            _csv_download(sub_df, "subfield_frequency",
+                          key="report_csv_subfield")
+        else:
+            st.caption("No subfields found in this batch.")
+
+    with st.expander(
+        f"Publication date distribution ({len(date_counter):,} distinct dates)",
+        expanded=False,
+    ):
+        if date_counter:
+            date_rows = sorted(date_counter.items(), key=lambda kv: kv[0])
+            date_df = pd.DataFrame(date_rows, columns=["date", "records"])
+            chart_col, table_col = st.columns([2, 1])
+            chart_col.bar_chart(
+                date_df.set_index("date"),
+                height=240,
+            )
+            table_col.dataframe(
+                date_df.sort_values("records", ascending=False),
+                hide_index=True, use_container_width=True, height=240,
+            )
+            _csv_download(date_df, "pub_date_distribution",
+                          key="report_csv_dates")
+        else:
+            st.caption(
+                "No publishable dates found in 008 bytes 07–10 across this batch."
+            )
+
+    with st.expander(
+        f"Language distribution ({len(language_counter):,} distinct codes)",
+        expanded=False,
+    ):
+        if language_counter:
+            lang_rows = sorted(
+                language_counter.items(),
+                key=lambda kv: (-kv[1], kv[0]),
+            )
+            lang_df = pd.DataFrame(lang_rows, columns=["lang code", "records"])
+            st.dataframe(lang_df, hide_index=True, use_container_width=True,
+                         height=240)
+            _csv_download(lang_df, "language_distribution",
+                          key="report_csv_languages")
+        else:
+            st.caption(
+                "No language codes found in 008 bytes 35–37 across this batch."
+            )
+
+    with st.expander(
+        f"Local tags 9XX ({len(local_tag_counter):,} distinct tags)",
+        expanded=False,
+    ):
+        if local_tag_counter:
+            local_rows = sorted(
+                local_tag_counter.items(),
+                key=lambda kv: (-kv[1], kv[0]),
+            )
+            local_df = pd.DataFrame(local_rows, columns=["tag", "count"])
+            st.dataframe(local_df, hide_index=True,
+                         use_container_width=True, height=240)
+            st.caption(
+                "9XX tags are typically institution-local. Review before "
+                "exporting to vendors / discovery services."
+            )
+            _csv_download(local_df, "local_tags_9XX",
+                          key="report_csv_local")
+        else:
+            st.caption("No 9XX local tags found in this batch.")
+
+
+def _csv_download(df: pd.DataFrame, section: str, *, key: str) -> None:
+    """Render a ``Download <section>.csv`` button for a report dataframe.
+
+    The CSV is materialized only when the button is clicked
+    (``df.to_csv`` is cheap), but the button widget itself eagerly
+    builds the payload — small report DataFrames make this fine.
+    """
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname = f"report_{section}_{stamp}.csv"
+    st.download_button(
+        f"⬇ Download {fname}",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=fname,
+        mime="text/csv",
+        key=key,
     )

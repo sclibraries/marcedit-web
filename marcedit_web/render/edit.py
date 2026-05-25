@@ -19,7 +19,7 @@ from marcedit_web.lib import (
     session,
     viewer,
 )
-from marcedit_web.render import single_record_edit
+from marcedit_web.render import fixed_field_helper, single_record_edit
 
 logger = logging.getLogger("marcedit_web.render.edit")
 
@@ -96,6 +96,13 @@ def _render_single_record_picker(store, total: int, rule_set) -> None:
         record=record,
         rule_set=rule_set,
         key_prefix="workspace_edit",
+    )
+
+    fixed_field_helper.render_008_helper(
+        store=store,
+        index=index,
+        record=record,
+        key_prefix="workspace_008",
     )
 
 

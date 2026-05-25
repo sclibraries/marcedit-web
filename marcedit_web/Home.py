@@ -53,7 +53,8 @@ if uploaded is not None:
 
 with st.sidebar:
     st.header("marcedit-web")
-    st.caption("v0.1.0")
+    from marcedit_web import __version__
+    st.caption(f"v{__version__}")
     user = st.session_state.get("user", "anonymous")
     st.caption(f"Signed in as **{user}**")
     st.divider()

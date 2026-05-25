@@ -34,6 +34,7 @@ from marcedit_web.lib import (
     editor,
     marcedit_import,
     quotas,
+    run_history,
     sandbox,
     session,
     task_admin,
@@ -43,6 +44,7 @@ from marcedit_web.lib import (
     tasks,
 )
 from marcedit_web.lib.audit import audit_event
+from marcedit_web.lib.run_history import TaskRunRecord
 from marcedit_web.lib.errors import Issue, transform_issue
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
 
@@ -194,6 +196,7 @@ def render() -> None:
         _render_run_panel(registered, tasks_dir)
 
     _render_run_results()
+    _render_run_history()
 
 
 # ---------------------------------------------------------------------------
@@ -879,6 +882,75 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         "sandbox_input_path": str(sandbox_input),
     }
 
+    # TASK-034: append to the per-session run history. Write the
+    # output to a file inside the sandbox workdir so re-download
+    # buttons in the history expander can read bytes lazily (instead
+    # of pinning every prior run's bytes in session_state).
+    sandbox_output_path = sandbox_workdir / "output.mrc"
+    try:
+        sandbox_output_path.write_bytes(result.records_bytes or b"")
+    except OSError as exc:
+        logger.warning("could not write history output snapshot: %s", exc)
+    _record_run_in_history(
+        user=user,
+        store=store,
+        selection=list(selection),
+        result=result,
+        out_records_count=len(out_records),
+        errors_count=len(issues),
+        sandbox_workdir=sandbox_workdir,
+        sandbox_input_path=sandbox_input,
+        sandbox_output_path=sandbox_output_path,
+    )
+
+
+def _record_run_in_history(
+    *,
+    user: str,
+    store,
+    selection: list[str],
+    result,
+    out_records_count: int,
+    errors_count: int,
+    sandbox_workdir: Path,
+    sandbox_input_path: Path,
+    sandbox_output_path: Path,
+) -> None:
+    """Append a TaskRunRecord; evict oldest, clean evicted workdirs."""
+    record = TaskRunRecord(
+        timestamp=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        user=user,
+        input_filename=session.current_filename(),
+        task_names=list(selection),
+        input_record_count=store.count() if store is not None else 0,
+        output_record_count=out_records_count,
+        # changed_count fills in when the diff review computes a
+        # summary; left at 0 here because the diff is built lazily
+        # by the run-results renderer.
+        changed_count=0,
+        error_count=errors_count,
+        timed_out=bool(result.timed_out),
+        sandbox_returncode=int(result.returncode or 0),
+        input_path=str(sandbox_input_path),
+        output_path=str(sandbox_output_path),
+        workdir=str(sandbox_workdir),
+    )
+    history = st.session_state.get("task_run_history") or []
+    new_history, evicted = run_history.append_run(history, record)
+    st.session_state["task_run_history"] = new_history
+    run_history.cleanup_workdirs(evicted)
+
+    audit_event(
+        "task-run-completed",
+        user=user,
+        tasks=record.task_names,
+        input_records=record.input_record_count,
+        output_records=record.output_record_count,
+        error_count=record.error_count,
+        timed_out=record.timed_out,
+        returncode=record.sandbox_returncode,
+    )
+
 
 def _render_run_results() -> None:
     results = st.session_state.get(K_RUN_RESULTS)
@@ -934,6 +1006,109 @@ def _render_run_results() -> None:
         file_name=results["out_filename"],
         mime="application/marc",
         key="tasks_download",
+    )
+
+
+def _render_run_history() -> None:
+    """Render the per-session Tasks run history (TASK-034).
+
+    Collapsed expander listing the last :data:`run_history.DEFAULT_HISTORY_CAP`
+    runs (newest first). Each entry shows summary metadata + two
+    download buttons that read input/output bytes from disk on click,
+    so a long session with several 100K-batch runs doesn't pin all
+    that data in Python memory.
+    """
+    history: list[TaskRunRecord] = st.session_state.get(
+        "task_run_history"
+    ) or []
+    if not history:
+        return
+
+    with st.expander(
+        f"Run history (last {len(history)} of "
+        f"{run_history.DEFAULT_HISTORY_CAP})",
+        expanded=False,
+    ):
+        st.caption(
+            "Per-session log of Tasks runs. Closing the tab discards it; "
+            "see the audit log for the durable record."
+        )
+        # Newest first.
+        for record in reversed(history):
+            _render_history_entry(record)
+
+
+def _render_history_entry(record: TaskRunRecord) -> None:
+    """Render one TaskRunRecord row in the history expander."""
+    status_emoji = (
+        "⚠️" if record.timed_out or record.sandbox_returncode != 0 else "✅"
+    )
+    tasks_label = ", ".join(f"`{n}`" for n in record.task_names) or "(none)"
+    st.markdown(
+        f"{status_emoji} **{record.timestamp}** — "
+        f"`{record.input_filename or 'no-file'}` — {tasks_label}"
+    )
+
+    cols = st.columns(4)
+    cols[0].metric("In", record.input_record_count)
+    cols[1].metric("Out", record.output_record_count)
+    cols[2].metric("Errors", record.error_count)
+    cols[3].metric(
+        "Exit",
+        "timeout" if record.timed_out else str(record.sandbox_returncode),
+    )
+
+    btn_cols = st.columns(2)
+    _offer_history_download(
+        btn_cols[0],
+        record.input_path,
+        f"⬇ Re-download input ({record.timestamp})",
+        f"input_{record.timestamp.replace(':', '')}.mrc",
+        key=f"history_in_{record.timestamp}",
+    )
+    _offer_history_download(
+        btn_cols[1],
+        record.output_path,
+        f"⬇ Re-download output ({record.timestamp})",
+        f"output_{record.timestamp.replace(':', '')}.mrc",
+        key=f"history_out_{record.timestamp}",
+    )
+    st.divider()
+
+
+def _offer_history_download(
+    column,
+    path_str: str | None,
+    label: str,
+    file_name: str,
+    *,
+    key: str,
+) -> None:
+    """Render a download button that reads bytes from a path lazily.
+
+    Streamlit's ``download_button`` materializes the ``data`` argument
+    eagerly — passing the entire file's bytes here would defeat the
+    "read on click" goal. We accept that compromise: if the file is
+    present, read once at render time. If it isn't (workdir gone),
+    show a disabled button with the reason in the help text.
+    """
+    if not path_str:
+        column.caption("(no file recorded)")
+        return
+    path = Path(path_str)
+    if not path.exists():
+        column.button(
+            label, disabled=True,
+            help="Sandbox workdir is gone — input/output is no longer available.",
+            key=f"{key}_missing",
+        )
+        return
+    column.download_button(
+        label,
+        data=path.read_bytes(),
+        file_name=file_name,
+        mime="application/marc",
+        key=key,
     )
 
 

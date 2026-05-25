@@ -114,6 +114,66 @@ def test_multiple_tasks_run_in_order(one_record_bytes):
     assert reread[0].get("891") is None
 
 
+def test_task_030_new_ops_combined_smoke(one_record_bytes):
+    """End-to-end: form-built bodies of the new typed ops apply cleanly.
+
+    Renders one op of each new kind via the form-builder, then runs the
+    combined body through the sandbox driver. The sandbox driver
+    pre-exposes every public ``transforms`` helper at the namespace top
+    level (see ``sandbox._DRIVER_SCRIPT``), so the form-emitted bodies
+    work without explicit imports.
+    """
+    from marcedit_web.lib import task_builder
+    from marcedit_web.lib.task_builder import Operation
+
+    rendered = task_builder.render_ops_to_python([
+        Operation(kind="copy-field",
+                  params={"src_tag": "856", "dst_tag": "956"}),
+        Operation(kind="add-subfield",
+                  params={"tag": "655", "code": "9", "value": "LOCAL",
+                          "position": "end"}),
+        Operation(kind="delete-subfield",
+                  params={"tag": "856", "codes": "u"}),
+        Operation(kind="edit-indicators",
+                  params={"tag": "245", "ind1": "0", "ind2": "0"}),
+        Operation(kind="replace-field-data-by-regex",
+                  params={"tag": "245", "pattern": "Test",
+                          "replacement": "Edited", "ignore_case": False}),
+    ])
+    result = run_tasks_subprocess(
+        [TaskSpec(name="task030-combined", body=rendered["body"])],
+        one_record_bytes,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert result.errors == [], f"errors: {result.errors}"
+
+    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
+                                    to_unicode=True, permissive=True))
+    rec = reread[0]
+    # copy-field added a 956 mirror of every 856.
+    assert len(rec.get_fields("956")) == len(
+        list(field for field in rec.fields if field.tag == "856")
+    ) + len(rec.get_fields("956")) - len(rec.get_fields("956"))  # sanity
+    assert rec.get_fields("956"), "copy-field didn't run"
+    # add-subfield put a $9 LOCAL on every 655.
+    assert any(
+        sf.code == "9" and sf.value == "LOCAL"
+        for f in rec.get_fields("655")
+        for sf in f.subfields
+    )
+    # delete-subfield stripped $u from 856.
+    assert not any(
+        sf.code == "u"
+        for f in rec.get_fields("856")
+        for sf in f.subfields
+    )
+    # edit-indicators set both indicators on 245 to '0'.
+    f245 = rec.get_fields("245")[0]
+    assert list(f245.indicators) == ["0", "0"]
+    # regex_replace_field_data swapped "Test" → "Edited" in 245 subfield values.
+    assert "Edited title" in f245["a"]
+
+
 # ---------------------------------------------------------------------------
 # Malicious / runaway task bodies
 # ---------------------------------------------------------------------------

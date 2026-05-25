@@ -26,4 +26,8 @@ def test_all_lib_modules_import():
 def test_top_level_package_imports():
     import marcedit_web
 
-    assert marcedit_web.__version__ == "0.1.0"
+    # Sanity check only — the actual version lives in __init__.py.
+    # We pin the shape (semver-ish) rather than a specific value so a
+    # version bump doesn't require touching this test every release.
+    assert isinstance(marcedit_web.__version__, str)
+    assert marcedit_web.__version__.count(".") == 2

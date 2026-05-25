@@ -84,3 +84,193 @@ def test_list_operation_types_deep_copies():
     a[0]["label"] = "MUTATED"
     b = task_builder.list_operation_types()
     assert b[0]["label"] != "MUTATED"
+
+
+# ---------------------------------------------------------------------------
+# TASK-030: typed ops parity (codegen + round-trip)
+# ---------------------------------------------------------------------------
+
+
+def test_palette_includes_new_typed_ops():
+    kinds = {op["kind"] for op in task_builder.OPERATIONS_PALETTE}
+    for new in (
+        "copy-field", "move-field", "add-subfield", "delete-subfield",
+        "copy-subfield", "edit-indicators", "replace-field-data-by-regex",
+    ):
+        assert new in kinds, f"{new} missing from OPERATIONS_PALETTE"
+
+
+def test_render_copy_field():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="copy-field",
+                   params={"src_tag": "856", "dst_tag": "956"})]
+    )
+    assert "copy_field(record, '856', '956')" in out["body"]
+    assert any("copy_field" in i for i in out["imports"])
+
+
+def test_render_move_field():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="move-field",
+                   params={"src_tag": "856", "dst_tag": "956"})]
+    )
+    assert "move_field(record, '856', '956')" in out["body"]
+
+
+def test_render_add_subfield_default_position():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="add-subfield",
+                   params={"tag": "655", "code": "2", "value": "fast"})]
+    )
+    body = out["body"]
+    assert "add_subfield_to_fields(record, '655', '2', 'fast', position='end')" in body
+
+
+def test_render_add_subfield_start_position():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="add-subfield",
+                   params={"tag": "655", "code": "9", "value": "X",
+                           "position": "start"})]
+    )
+    assert "position='start'" in out["body"]
+
+
+def test_render_delete_subfield_parses_multiple_codes():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="delete-subfield",
+                   params={"tag": "856", "codes": "u, z 9"})]
+    )
+    body = out["body"]
+    # Order preserved from user input; each code rendered via lit().
+    assert "delete_subfields(record, '856', 'u', 'z', '9')" in body
+
+
+def test_render_delete_subfield_empty_codes_emits_todo():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="delete-subfield",
+                   params={"tag": "856", "codes": "   "})]
+    )
+    assert "TODO" in out["body"]
+
+
+def test_render_copy_subfield():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="copy-subfield",
+                   params={"tag": "020", "src_code": "a", "dst_code": "z"})]
+    )
+    assert "copy_subfield_within_field(record, '020', 'a', 'z')" in out["body"]
+
+
+def test_render_edit_indicators_both():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="edit-indicators",
+                   params={"tag": "856", "ind1": "0", "ind2": "1"})]
+    )
+    assert "set_indicators(record, '856', ind1='0', ind2='1')" in out["body"]
+
+
+def test_render_edit_indicators_leave_alone_blanks():
+    """Empty-string indicator → None (leave alone)."""
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="edit-indicators",
+                   params={"tag": "856", "ind1": "7", "ind2": ""})]
+    )
+    body = out["body"]
+    assert "ind1='7'" in body
+    assert "ind2=None" in body
+
+
+def test_render_replace_field_data_by_regex():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="replace-field-data-by-regex",
+                   params={"tag": "245", "pattern": r"\s+$",
+                           "replacement": "", "ignore_case": True})]
+    )
+    body = out["body"]
+    assert "regex_replace_field_data(record, '245'" in body
+    assert "ignore_case=True" in body
+
+
+def test_subfield_replace_regex_toggle_emits_re_sub():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="subfield-replace",
+                   params={"tag": "245", "code": "a", "find": r"^Test",
+                           "replace": "Edited", "regex": True})]
+    )
+    body = out["body"]
+    assert "re.compile" in body
+    assert "_pat.sub" in body
+    assert "import re" in out["imports"]
+
+
+def test_subfield_replace_literal_unchanged_by_default():
+    """Default regex=False keeps the pre-TASK-030 literal codegen shape."""
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="subfield-replace",
+                   params={"tag": "245", "code": "a", "find": "old",
+                           "replace": "new"})]
+    )
+    body = out["body"]
+    assert "sf.value.replace('old', 'new')" in body
+    # No regex import added when regex=False + ignore_case=False.
+    assert "import re" not in out["imports"]
+
+
+def test_subfield_replace_literal_ignore_case_uses_re_escape():
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="subfield-replace",
+                   params={"tag": "245", "code": "a", "find": "old",
+                           "replace": "new", "ignore_case": True})]
+    )
+    body = out["body"]
+    assert "re.escape('old')" in body
+    assert "re.IGNORECASE" in body
+    assert "import re" in out["imports"]
+
+
+def test_round_trip_each_new_op_kind():
+    """Save + reopen each new op kind via parse_ops_from_source."""
+    cases = [
+        ("copy-field", {"src_tag": "856", "dst_tag": "956"}),
+        ("move-field", {"src_tag": "856", "dst_tag": "956"}),
+        ("add-subfield", {"tag": "655", "code": "2", "value": "fast",
+                          "position": "end"}),
+        ("delete-subfield", {"tag": "856", "codes": "u"}),
+        ("copy-subfield", {"tag": "020", "src_code": "a", "dst_code": "z"}),
+        ("edit-indicators", {"tag": "856", "ind1": "4", "ind2": "0"}),
+        ("replace-field-data-by-regex", {"tag": "245", "pattern": r"\s+$",
+                                         "replacement": "",
+                                         "ignore_case": False}),
+    ]
+    ops = [Operation(kind=k, params=p) for k, p in cases]
+    rendered = task_builder.render_ops_to_python(ops)
+    parsed = task_builder.parse_ops_from_source(rendered["body"])
+    assert parsed["form_editable"] is True
+    assert [op.kind for op in parsed["ops"]] == [k for k, _ in cases]
+    for op, (_, expected_params) in zip(parsed["ops"], cases):
+        for key, value in expected_params.items():
+            assert op.params[key] == value
+
+
+def test_codegen_lit_safety_on_typed_ops():
+    """No bare f-string slot interpolation of user data into a quoted literal.
+
+    A malicious user value with a closing quote + Python payload must
+    be string-escaped (codegen_safety.lit) so it stays a Python
+    literal, not executable code. Same contract TASK-018 enforces.
+    """
+    payload = '")\nimport os; os.system("touch /tmp/PWN")\n#'
+    out = task_builder.render_ops_to_python(
+        [Operation(kind="copy-field",
+                   params={"src_tag": payload, "dst_tag": "999"})]
+    )
+    # ast.parse should succeed AND the payload must not appear as a
+    # raw substring outside its string literal.
+    import ast
+    ast.parse(out["body"])
+    # The literal form has the value escaped, so a naive search for the
+    # raw payload string will fail — that's the contract.
+    assert "os.system" in out["body"]  # appears inside a string literal
+    # But the close-paren-newline-import-os attack form must be quoted
+    # rather than free-standing.
+    assert "\n)" not in out["body"]

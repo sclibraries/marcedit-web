@@ -191,12 +191,141 @@ OPERATIONS_PALETTE: list[dict] = [
     {
         "kind": "subfield-replace",
         "label": "Find & replace in subfield",
-        "summary": "Replace text inside a specific subfield code on a tag.",
+        "summary": (
+            "Replace text inside a specific subfield code on a tag. "
+            "Toggle **Treat Find as regex** for pattern-based finds; "
+            "leave it off for literal text."
+        ),
         "params": [
             {"name": "tag", "label": "Tag", "type": "text", "required": True},
             {"name": "code", "label": "Subfield code", "type": "subfield_code", "required": True},
             {"name": "find", "label": "Find", "type": "text", "required": True},
             {"name": "replace", "label": "Replace with", "type": "text"},
+            {"name": "regex", "label": "Treat Find as regex", "type": "bool", "default": False},
+            {"name": "ignore_case", "label": "Case-insensitive", "type": "bool", "default": False},
+        ],
+    },
+    # --- TASK-030 new ops ---------------------------------------------------
+    {
+        "kind": "copy-field",
+        "label": "Copy field",
+        "summary": (
+            "Duplicate every field with the source tag as a new field "
+            "with the destination tag. The original stays in place."
+        ),
+        "params": [
+            {"name": "src_tag", "label": "Source tag", "type": "text", "required": True},
+            {"name": "dst_tag", "label": "Destination tag", "type": "text", "required": True},
+        ],
+    },
+    {
+        "kind": "move-field",
+        "label": "Move (re-tag) field",
+        "summary": (
+            "Re-tag every field with the source tag as the destination "
+            "tag. Same as Copy field followed by Delete tag, but in one "
+            "atomic op."
+        ),
+        "params": [
+            {"name": "src_tag", "label": "Source tag", "type": "text", "required": True},
+            {"name": "dst_tag", "label": "Destination tag", "type": "text", "required": True},
+        ],
+    },
+    {
+        "kind": "add-subfield",
+        "label": "Add subfield to existing fields",
+        "summary": (
+            "Append (or prepend) a subfield to every variable field "
+            "with the given tag. Control fields (00X) are skipped."
+        ),
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {"name": "code", "label": "Subfield code", "type": "subfield_code", "required": True},
+            {"name": "value", "label": "Value", "type": "text", "required": True},
+            {
+                "name": "position", "label": "Position",
+                "type": "select",
+                "options": [
+                    {"value": "end", "label": "Append (end of field)"},
+                    {"value": "start", "label": "Prepend (start of field)"},
+                ],
+                "default": "end",
+            },
+        ],
+    },
+    {
+        "kind": "delete-subfield",
+        "label": "Delete subfields by code",
+        "summary": (
+            "Strip the listed subfield codes from every field with the "
+            "given tag. Multiple codes are comma- or space-separated."
+        ),
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {
+                "name": "codes",
+                "label": "Subfield codes (comma- or space-separated)",
+                "type": "text", "required": True,
+                "placeholder": "e.g. 5, 9",
+            },
+        ],
+    },
+    {
+        "kind": "copy-subfield",
+        "label": "Copy subfield within field",
+        "summary": (
+            "Within each matching field, copy each existing source "
+            "subfield's value into a new subfield with the destination "
+            "code. Useful for invalidating in place ($a → $z)."
+        ),
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {"name": "src_code", "label": "Source subfield code", "type": "subfield_code", "required": True},
+            {"name": "dst_code", "label": "Destination subfield code", "type": "subfield_code", "required": True},
+        ],
+    },
+    {
+        "kind": "edit-indicators",
+        "label": "Set indicators",
+        "summary": (
+            "Override one or both indicators on every field with the "
+            "given tag. Leave an indicator blank to keep the existing "
+            "value (use a space to set blank)."
+        ),
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {
+                "name": "ind1", "label": "Indicator 1 (empty = leave alone)",
+                "type": "text",
+                "placeholder": "single char, or space for blank",
+            },
+            {
+                "name": "ind2", "label": "Indicator 2 (empty = leave alone)",
+                "type": "text",
+                "placeholder": "single char, or space for blank",
+            },
+        ],
+    },
+    {
+        "kind": "replace-field-data-by-regex",
+        "label": "Replace field data by regex",
+        "summary": (
+            "Apply a regex find/replace across every field with the "
+            "given tag. Control fields edit `.data`; variable fields "
+            "edit each subfield value."
+        ),
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {
+                "name": "pattern", "label": "Regex pattern",
+                "type": "text", "required": True,
+                "placeholder": r"e.g. \s+$  to strip trailing whitespace",
+            },
+            {"name": "replacement", "label": "Replacement", "type": "text"},
+            {
+                "name": "ignore_case", "label": "Case-insensitive",
+                "type": "bool", "default": False,
+            },
         ],
     },
     {
@@ -417,17 +546,161 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         code = str(p.get("code", "")).strip()
         find = str(p.get("find", ""))
         replace = str(p.get("replace", ""))
+        use_regex = bool(p.get("regex", False))
+        ignore_case = bool(p.get("ignore_case", False))
+        if use_regex:
+            # Regex path emits one ``re.sub`` per subfield value.
+            # ``re`` is imported by the rendered task file (we mark
+            # the special ``_re_import`` marker that the file
+            # renderer translates into ``import re``).
+            flags_expr = "re.IGNORECASE" if ignore_case else "0"
+            return (
+                [
+                    f"_pat = re.compile({lit(find)}, {flags_expr})",
+                    f"for f in record.get_fields({lit(tag)}):",
+                    "    f.subfields = [",
+                    f"        Subfield(sf.code, _pat.sub({lit(replace)}, sf.value))",
+                    f"        if sf.code == {lit(code)} else sf",
+                    "        for sf in f.subfields",
+                    "    ]",
+                ],
+                {"_re_import"},
+                True,  # needs Subfield import from pymarc
+            )
+        # Literal path — preserves the pre-TASK-030 behavior bit-for-bit
+        # so saved tasks with regex=False keep emitting the same code.
+        replace_call = f"sf.value.replace({lit(find)}, {lit(replace)})"
+        if ignore_case:
+            # Literal + case-insensitive emulates "find any
+            # case-folded occurrence" by lower-casing for the match
+            # only. Use ``re.sub(re.escape(find), ..., re.IGNORECASE)``
+            # so we don't roll our own walker.
+            replace_call = (
+                f"re.sub(re.escape({lit(find)}), {lit(replace)}, sf.value, "
+                f"flags=re.IGNORECASE)"
+            )
+            return (
+                [
+                    f"for f in record.get_fields({lit(tag)}):",
+                    "    f.subfields = [",
+                    f"        Subfield(sf.code, {replace_call})",
+                    f"        if sf.code == {lit(code)} else sf",
+                    "        for sf in f.subfields",
+                    "    ]",
+                ],
+                {"_re_import"},
+                True,
+            )
         return (
             [
                 f"for f in record.get_fields({lit(tag)}):",
                 "    f.subfields = [",
-                f"        Subfield(sf.code, sf.value.replace({lit(find)}, {lit(replace)}))",
+                f"        Subfield(sf.code, {replace_call})",
                 f"        if sf.code == {lit(code)} else sf",
                 "        for sf in f.subfields",
                 "    ]",
             ],
             set(),
             True,  # needs Subfield import from pymarc
+        )
+
+    # --- TASK-030: typed ops parity --------------------------------------
+
+    if op.kind == "copy-field":
+        src = str(p.get("src_tag", "")).strip()
+        dst = str(p.get("dst_tag", "")).strip()
+        return (
+            [f"copy_field(record, {lit(src)}, {lit(dst)})"],
+            {"copy_field"},
+            False,
+        )
+
+    if op.kind == "move-field":
+        src = str(p.get("src_tag", "")).strip()
+        dst = str(p.get("dst_tag", "")).strip()
+        return (
+            [f"move_field(record, {lit(src)}, {lit(dst)})"],
+            {"move_field"},
+            False,
+        )
+
+    if op.kind == "add-subfield":
+        tag = str(p.get("tag", "")).strip()
+        code = str(p.get("code", "")).strip()
+        value = str(p.get("value", ""))
+        position = str(p.get("position", "end")).strip() or "end"
+        return (
+            [
+                f"add_subfield_to_fields(record, {lit(tag)}, {lit(code)}, "
+                f"{lit(value)}, position={lit(position)})"
+            ],
+            {"add_subfield_to_fields"},
+            False,
+        )
+
+    if op.kind == "delete-subfield":
+        tag = str(p.get("tag", "")).strip()
+        # Accept comma- or space-separated codes; normalize to a list
+        # of single-char strings. Empty / whitespace-only entries drop
+        # out so a trailing comma doesn't render an empty arg.
+        raw_codes = str(p.get("codes", ""))
+        codes = [c.strip() for c in re.split(r"[,\s]+", raw_codes) if c.strip()]
+        code_args = ", ".join(lit(c) for c in codes) if codes else ""
+        if not code_args:
+            return (
+                [f"# TODO: delete-subfield op {tag!r} has no codes — fill in to enable"],
+                set(),
+                False,
+            )
+        return (
+            [f"delete_subfields(record, {lit(tag)}, {code_args})"],
+            {"delete_subfields"},
+            False,
+        )
+
+    if op.kind == "copy-subfield":
+        tag = str(p.get("tag", "")).strip()
+        src_code = str(p.get("src_code", "")).strip()
+        dst_code = str(p.get("dst_code", "")).strip()
+        return (
+            [
+                f"copy_subfield_within_field(record, {lit(tag)}, "
+                f"{lit(src_code)}, {lit(dst_code)})"
+            ],
+            {"copy_subfield_within_field"},
+            False,
+        )
+
+    if op.kind == "edit-indicators":
+        tag = str(p.get("tag", "")).strip()
+        # Empty-string ind means "leave alone" → pass None. A single
+        # space means "set blank" → pass " ".
+        raw_ind1 = p.get("ind1")
+        raw_ind2 = p.get("ind2")
+        ind1_arg = lit(None) if raw_ind1 in (None, "") else lit(str(raw_ind1)[:1])
+        ind2_arg = lit(None) if raw_ind2 in (None, "") else lit(str(raw_ind2)[:1])
+        return (
+            [
+                f"set_indicators(record, {lit(tag)}, "
+                f"ind1={ind1_arg}, ind2={ind2_arg})"
+            ],
+            {"set_indicators"},
+            False,
+        )
+
+    if op.kind == "replace-field-data-by-regex":
+        tag = str(p.get("tag", "")).strip()
+        pattern = str(p.get("pattern", ""))
+        replacement = str(p.get("replacement", ""))
+        ignore_case = bool(p.get("ignore_case", False))
+        return (
+            [
+                f"regex_replace_field_data(record, {lit(tag)}, "
+                f"{lit(pattern)}, {lit(replacement)}, "
+                f"ignore_case={lit(ignore_case)})"
+            ],
+            {"regex_replace_field_data"},
+            False,
         )
 
     if op.kind == "sort-fields":
@@ -454,12 +727,21 @@ def render_ops_to_python(ops: list[Operation]) -> dict:
     body_lines: list[str] = []
     transforms_needed: set[str] = set()
     needs_subfield_import = False
+    needs_re_import = False
     for op in ops:
         marker = f"{_OP_MARKER_PREFIX} {op.kind} {json.dumps(op.params, sort_keys=True)}"
         body_lines.append(marker)
         lines, needed, needs_sf = _render_one(op)
         body_lines.extend(lines)
         body_lines.append("")  # blank separator between ops
+        # ``_re_import`` is a special marker (not a transforms name)
+        # used by ops that emit ``re.compile(...)`` or ``re.sub(...)``
+        # in their body. We lift it out before resolving the
+        # transforms import set so it doesn't try to import a
+        # non-existent ``_re_import`` helper.
+        if "_re_import" in needed:
+            needs_re_import = True
+            needed = needed - {"_re_import"}
         transforms_needed |= needed
         needs_subfield_import = needs_subfield_import or needs_sf
 
@@ -468,6 +750,8 @@ def render_ops_to_python(ops: list[Operation]) -> dict:
         body_lines.pop()
 
     imports: list[str] = []
+    if needs_re_import:
+        imports.append("import re")
     if transforms_needed:
         imports.append(
             "from marcedit_web.lib.transforms import "

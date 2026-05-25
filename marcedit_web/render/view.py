@@ -18,7 +18,7 @@ from marcedit_web.lib import (
     tooltips,
     viewer,
 )
-from marcedit_web.render import single_record_edit
+from marcedit_web.render import fixed_field_helper, single_record_edit
 
 
 def render(rule_set: rules_mod.RuleSet | None = None) -> None:
@@ -268,4 +268,11 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         record=record,
         rule_set=rule_set,
         key_prefix="view_edit",
+    )
+
+    fixed_field_helper.render_008_helper(
+        store=store,
+        index=index,
+        record=record,
+        key_prefix="view_008",
     )
