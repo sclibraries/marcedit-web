@@ -31,6 +31,7 @@ import streamlit as st
 from streamlit_ace import st_ace
 
 from marcedit_web.lib import (
+    batch_replace,
     editor,
     marcedit_import,
     quotas,
@@ -44,6 +45,7 @@ from marcedit_web.lib import (
     tasks,
 )
 from marcedit_web.lib.audit import audit_event
+from marcedit_web.lib.batch_replace import BatchReplaceRequest
 from marcedit_web.lib.run_history import TaskRunRecord
 from marcedit_web.lib.errors import Issue, transform_issue
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
@@ -197,6 +199,7 @@ def render() -> None:
 
     _render_run_results()
     _render_run_history()
+    _render_quick_find_replace()
 
 
 # ---------------------------------------------------------------------------
@@ -1309,3 +1312,198 @@ def _stamped_filename(orig: str | None) -> str:
         return f"transformed_{stamp}.mrc"
     p = Path(orig)
     return f"{p.stem}_{stamp}{p.suffix or '.mrc'}"
+
+
+# ---------------------------------------------------------------------------
+# TASK-036: Quick find/replace wizard
+# ---------------------------------------------------------------------------
+
+
+_K_BR_PREVIEW = "batch_replace_preview"
+
+
+def _render_quick_find_replace() -> None:
+    """Render the one-shot find/replace wizard.
+
+    Mounted below the saved-tasks run panel. Cataloger fills the
+    form, clicks Preview, reviews the diff, clicks Apply.
+    The wizard never persists a task file; the body lives only
+    inside the sandbox driver's exec call.
+    """
+    if not session.has_upload():
+        return  # nothing to find against
+
+    st.divider()
+    with st.expander(
+        "✨ Quick find/replace (no saved task)",
+        expanded=False,
+    ):
+        st.caption(
+            "Run a one-shot find/replace across the loaded batch. "
+            "Preview first; apply after you've reviewed the diff. "
+            "Nothing is saved to your task list."
+        )
+
+        c1, c2 = st.columns([2, 1])
+        tag = c1.text_input(
+            "Tag (required)",
+            value=st.session_state.get("br_tag", ""),
+            max_chars=3,
+            placeholder="245",
+            key="br_tag",
+        )
+        subfield = c2.text_input(
+            "Subfield (optional)",
+            value=st.session_state.get("br_subfield", ""),
+            max_chars=1,
+            placeholder="a",
+            help=(
+                "Restrict the replace to one subfield code. Leave blank "
+                "to replace across every subfield value of the tag."
+            ),
+            key="br_subfield",
+        )
+
+        find_text = st.text_input(
+            "Find",
+            value=st.session_state.get("br_find", ""),
+            key="br_find",
+        )
+        replace_text = st.text_input(
+            "Replace with",
+            value=st.session_state.get("br_replace", ""),
+            key="br_replace",
+        )
+
+        opt_a, opt_b = st.columns(2)
+        regex = opt_a.checkbox(
+            "Treat Find as regex",
+            value=st.session_state.get("br_regex", False),
+            key="br_regex",
+        )
+        ignore_case = opt_b.checkbox(
+            "Case-insensitive",
+            value=st.session_state.get("br_ignore_case", False),
+            key="br_ignore_case",
+        )
+
+        request = BatchReplaceRequest(
+            tag=(tag or "").strip(),
+            subfield=(subfield or None) or None,
+            find=find_text or "",
+            replace=replace_text or "",
+            regex=bool(regex),
+            ignore_case=bool(ignore_case),
+        )
+
+        btn_preview, btn_reset, _ = st.columns([1, 1, 4])
+        if btn_preview.button(
+            "Preview", type="primary", key="br_preview_btn",
+        ):
+            _build_and_store_preview(request)
+        if btn_reset.button("Reset", key="br_reset_btn"):
+            st.session_state.pop(_K_BR_PREVIEW, None)
+            st.rerun()
+
+        preview = st.session_state.get(_K_BR_PREVIEW)
+        if preview is not None:
+            _render_quick_preview(preview)
+
+
+def _build_and_store_preview(request: BatchReplaceRequest) -> None:
+    """Validate, run the sandbox preview, stash the result in session_state."""
+    err = batch_replace.validate_request(request)
+    if err:
+        st.error(err)
+        return
+
+    store = session.current_store()
+    if store is None:
+        st.error("No loaded batch — upload a `.mrc` on Home first.")
+        return
+
+    with st.spinner("Building preview…"):
+        try:
+            preview = batch_replace.build_preview(store, request)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+
+    st.session_state[_K_BR_PREVIEW] = preview
+
+
+def _render_quick_preview(preview) -> None:
+    st.divider()
+    if preview.error:
+        st.error(preview.error)
+        return
+    if preview.is_empty:
+        st.info(
+            f"No records matched the find criteria "
+            f"(tag={preview.request.tag!r}, "
+            f"subfield={preview.request.subfield!r}, "
+            f"find={preview.request.find!r})."
+        )
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Matched", len(preview.matched_indices))
+    c2.metric("Changed", preview.changed_count)
+    c3.metric("Unchanged", len(preview.matched_indices) - preview.changed_count)
+
+    if preview.diff_summary is not None and preview.diff_summary.per_record_diffs:
+        # Reuse the existing per-tag rollup + per-record drill-down
+        # used by the saved-task run results so the cataloger sees a
+        # familiar review surface.
+        _render_per_tag_summary_table(preview.diff_summary)
+        with st.expander(
+            f"Show per-record diffs ({preview.changed_count} changed records)",
+            expanded=False,
+        ):
+            _render_per_record_diffs(preview.diff_summary)
+
+    apply_col, _, _ = st.columns([1, 1, 4])
+    if apply_col.button(
+        "Apply to batch", type="primary", key="br_apply_btn",
+    ):
+        _apply_quick_preview(preview)
+
+
+def _apply_quick_preview(preview) -> None:
+    """Run apply, audit, refresh derived caches."""
+    store = session.current_store()
+    if store is None:
+        st.error("No loaded batch — upload one on Home first.")
+        return
+    result = batch_replace.apply_preview(store, preview)
+    if result.error:
+        st.error(result.error)
+        if result.stale_indices:
+            st.caption(
+                "Stale indices (1-based): "
+                + ", ".join(str(i + 1) for i in result.stale_indices)
+            )
+        return
+
+    user = st.session_state.get("user", "anonymous") or "anonymous"
+    audit_event(
+        "batch-replace-applied",
+        user=user,
+        filename=session.current_filename(),
+        tag=preview.request.tag,
+        subfield=preview.request.subfield,
+        regex=preview.request.regex,
+        ignore_case=preview.request.ignore_case,
+        matched_count=len(preview.matched_indices),
+        changed_count=preview.changed_count,
+        applied_count=len(result.applied_indices),
+    )
+    # Stale derived state — Validate / Report / etc. cached the
+    # pre-apply numbers.
+    st.session_state["issues_cache"] = {}
+    st.session_state.pop(_K_BR_PREVIEW, None)
+    st.success(
+        f"Applied to {len(result.applied_indices)} record(s). "
+        "Other records are unchanged."
+    )
+    st.rerun()
