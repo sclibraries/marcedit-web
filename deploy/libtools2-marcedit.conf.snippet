@@ -1,0 +1,53 @@
+# deploy/libtools2-marcedit.conf.snippet
+#
+# Copy-paste this block INTO the existing libtools2.smith.edu :443 vhost
+# (likely /etc/httpd/conf.d/libtools2.conf or similar — ITS knows the path).
+# Then: systemctl reload httpd.
+#
+# Requires these Apache modules already loaded:
+#   mod_proxy, mod_proxy_http, mod_proxy_wstunnel,
+#   mod_headers, mod_rewrite, mod_ssl, mod_shib.
+#
+# Order matters: the RewriteRule that upgrades WebSocket connections
+# MUST come before the ProxyPass lines, or Streamlit's live-rerun loop
+# breaks silently.
+
+# 1. WebSocket upgrade for Streamlit's live reruns.
+RewriteEngine On
+RewriteCond %{HTTP:Upgrade}    websocket [NC]
+RewriteCond %{HTTP:Connection} upgrade   [NC]
+RewriteRule ^/marcedit-web/(.*) "ws://127.0.0.1:8501/marcedit-web/$1" [P,L]
+
+# 2. Shibboleth-protected location.
+<Location /marcedit-web>
+    AuthType shibboleth
+    ShibRequestSetting requireSession 1
+    Require shib-session
+
+    # Scrub client-supplied identity headers BEFORE Shib populates them.
+    # Without these, a malicious caller could forge REMOTE_USER if they
+    # ever bypassed Shib.
+    RequestHeader unset REMOTE_USER early
+    RequestHeader unset eppn        early
+
+    # Forward authenticated identity to Streamlit. The app reads these
+    # in marcedit_web/lib/identity.py to identify the cataloger.
+    #
+    # NOTE for ITS: if the installed mod_shib version is older 3.0.x,
+    # this syntax may need to change to:
+    #     RequestHeader set REMOTE_USER %{REMOTE_USER}e
+    #     RequestHeader set eppn        %{eppn}e
+    # Test by curl'ing /marcedit-web/ after install — the app sidebar
+    # should show the eppn, not "anonymous".
+    RequestHeader set REMOTE_USER "expr=%{REMOTE_USER}"
+    RequestHeader set eppn        "expr=%{HTTP_EPPN}"
+</Location>
+
+# 3. HTTP reverse proxy to Streamlit. Must come after the WebSocket rule.
+ProxyPass        /marcedit-web/ http://127.0.0.1:8501/marcedit-web/
+ProxyPassReverse /marcedit-web/ http://127.0.0.1:8501/marcedit-web/
+
+# 4. Streamlit websockets can idle for minutes between user actions;
+#    raise the proxy timeout so they don't get dropped during a quiet
+#    cataloging session.
+ProxyTimeout 600
