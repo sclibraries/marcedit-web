@@ -1,0 +1,30 @@
+[Unit]
+Description=marcedit-web Streamlit app
+Documentation=https://github.com/smith-libraries/marcedit-web
+After=network.target
+
+[Service]
+Type=simple
+User=marcedit
+Group=marcedit
+WorkingDirectory=/var/www/html/marcedit-web
+EnvironmentFile=/var/www/html/marcedit-web/.env
+ExecStart=/var/www/html/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py \
+    --server.address=127.0.0.1 \
+    --server.port=8501 \
+    --server.headless=true \
+    --server.baseUrlPath=marcedit-web \
+    --server.enableXsrfProtection=true
+Restart=on-failure
+RestartSec=5
+
+# Recreate the container-side hardening (TASK-029) at the systemd layer:
+# read-only filesystem except for the data dir; no privilege escalation.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/www/html/marcedit-web/data
+
+[Install]
+WantedBy=multi-user.target
