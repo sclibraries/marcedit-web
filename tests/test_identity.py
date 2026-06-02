@@ -85,3 +85,124 @@ def test_is_anonymous_recognizes_sentinel():
 
 def test_is_anonymous_false_for_real_user():
     assert identity.is_anonymous("alice@example.edu") is False
+
+
+# ---------------------------------------------------------------------------
+# TASK-047: Google OAuth identity (st.user) coexisting with Shibboleth
+# ---------------------------------------------------------------------------
+
+
+class _FakeUser:
+    """Minimal stand-in for Streamlit's ``st.user`` proxy."""
+
+    def __init__(self, *, is_logged_in=False, email=None):
+        self.is_logged_in = is_logged_in
+        self.email = email
+
+
+class _BoomUser:
+    """``st.user`` proxy that raises on every attribute access.
+
+    Mirrors Streamlit's real behavior when ``[auth]`` is absent from
+    secrets — the proxy raises ``StreamlitAuthError`` instead of
+    returning a falsy ``is_logged_in``.
+    """
+
+    def __getattr__(self, name):
+        raise RuntimeError("simulated Streamlit auth-not-configured")
+
+
+def _install_fake_user(monkeypatch, fake):
+    """Make ``import streamlit as st; st.user`` return ``fake``."""
+    import streamlit as st
+
+    monkeypatch.setattr(st, "user", fake, raising=False)
+
+
+def test_oauth_user_returns_email_when_logged_in(monkeypatch):
+    _install_fake_user(
+        monkeypatch, _FakeUser(is_logged_in=True, email="alice@example.edu")
+    )
+    assert identity.oauth_user() == "alice@example.edu"
+
+
+def test_oauth_user_returns_none_when_not_logged_in(monkeypatch):
+    _install_fake_user(monkeypatch, _FakeUser(is_logged_in=False, email=None))
+    assert identity.oauth_user() is None
+
+
+def test_oauth_user_swallows_streamlit_errors(monkeypatch):
+    """st.user access raises when [auth] isn't in secrets — must not bubble."""
+    _install_fake_user(monkeypatch, _BoomUser())
+    assert identity.oauth_user() is None
+
+
+def test_oauth_user_strips_whitespace(monkeypatch):
+    _install_fake_user(
+        monkeypatch,
+        _FakeUser(is_logged_in=True, email="  alice@example.edu  "),
+    )
+    assert identity.oauth_user() == "alice@example.edu"
+
+
+def test_oauth_user_treats_blank_email_as_none(monkeypatch):
+    _install_fake_user(monkeypatch, _FakeUser(is_logged_in=True, email="   "))
+    assert identity.oauth_user() is None
+
+
+def test_current_user_prefers_oauth_over_remote_user(monkeypatch):
+    _install_fake_user(
+        monkeypatch, _FakeUser(is_logged_in=True, email="alice@example.edu")
+    )
+    # Shibboleth header is present — OAuth must still win.
+    assert (
+        current_user(headers={"REMOTE_USER": "shib-user@example.edu"})
+        == "alice@example.edu"
+    )
+
+
+def test_current_user_falls_back_to_headers_when_not_logged_in(monkeypatch):
+    _install_fake_user(monkeypatch, _FakeUser(is_logged_in=False, email=None))
+    assert (
+        current_user(headers={"REMOTE_USER": "shib-user@example.edu"})
+        == "shib-user@example.edu"
+    )
+
+
+def test_current_user_falls_back_to_anonymous_when_neither(monkeypatch):
+    _install_fake_user(monkeypatch, _FakeUser(is_logged_in=False, email=None))
+    assert current_user(headers={}) == ANONYMOUS
+
+
+def test_is_oauth_configured_true_when_auth_in_secrets(monkeypatch):
+    import streamlit as st
+
+    class _FakeSecrets:
+        def __contains__(self, key):
+            return key == "auth"
+
+    monkeypatch.setattr(st, "secrets", _FakeSecrets(), raising=False)
+    assert identity.is_oauth_configured() is True
+
+
+def test_is_oauth_configured_false_when_auth_missing(monkeypatch):
+    import streamlit as st
+
+    class _FakeSecrets:
+        def __contains__(self, key):
+            return False
+
+    monkeypatch.setattr(st, "secrets", _FakeSecrets(), raising=False)
+    assert identity.is_oauth_configured() is False
+
+
+def test_is_oauth_configured_swallows_secrets_errors(monkeypatch):
+    """Secrets file missing entirely → access raises; we return False."""
+    import streamlit as st
+
+    class _BoomSecrets:
+        def __contains__(self, key):
+            raise RuntimeError("secrets.toml missing")
+
+    monkeypatch.setattr(st, "secrets", _BoomSecrets(), raising=False)
+    assert identity.is_oauth_configured() is False

@@ -4,10 +4,20 @@ Kept separate from :mod:`help_lookup` so the resolver stays
 Streamlit-free and unit-testable. This module is imported only by
 the View page (Stage 7) and, later, by the MarcEditor's Ace
 integration (Stage 11, v1.5).
+
+Trust model (TASK-054): the HelpEntry fields come from
+``data/marc-rules.txt``, an operator-controlled file shipped with
+the project (or customized at deploy time). It is NOT user-uploaded
+content — catalogers cannot influence it. The page renders this
+output via ``st.markdown(..., unsafe_allow_html=True)`` because
+help bodies legitimately contain Markdown + a small set of safe
+HTML tags (``<sub>`` for citations). Plain-text fields (title,
+source) still get HTML-escaped here for defense in depth.
 """
 
 from __future__ import annotations
 
+from html import escape as _html_escape
 from typing import Iterable
 
 from .help_lookup import HelpEntry
@@ -25,10 +35,15 @@ def render_help_entry(entry: HelpEntry | None) -> str:
     """Return a markdown blob suitable for `st.markdown(...)`."""
     if entry is None:
         return _NO_ENTRY_MARKDOWN
+    # title + source are plain-text labels; escape them in case the
+    # rules file ever sources a stray '<' character. body is allowed
+    # to contain Markdown/HTML by design.
+    safe_title = _html_escape(entry.title or "")
+    safe_source = _html_escape(entry.source or "")
     return (
-        f"**{entry.title}**\n\n"
+        f"**{safe_title}**\n\n"
         f"{entry.body}\n\n"
-        f"<sub>{entry.source}</sub>"
+        f"<sub>{safe_source}</sub>"
     )
 
 

@@ -52,6 +52,12 @@ class BatchReplaceRequest:
     ignore_case: bool = False
 
 
+# TASK-046: preview only sandbox-runs the first N matches so a broad
+# query on a 100K-record batch doesn't hang for minutes. Apply still
+# runs over the full matched set; the cap is preview-only.
+MAX_PREVIEW_MATCHES = 500
+
+
 @dataclass
 class BatchReplacePreview:
     """Outcome of a non-mutating preview pass."""
@@ -63,6 +69,17 @@ class BatchReplacePreview:
     output_records: list[pymarc.Record] = field(default_factory=list)
     sandbox_workdir: Optional[str] = None
     error: Optional[str] = None
+    # TASK-046: snapshot of which loaded batch this preview was built
+    # against. Apply refuses if the cataloger swapped the active file
+    # between Preview and Apply (cataloger sees a clear "batch
+    # changed" message instead of a fingerprint-accidentally-matches
+    # mutation).
+    batch_identity: Optional[tuple[str, int]] = None  # (filename, count)
+    # TASK-046: True when the sandbox-side preview was capped at
+    # MAX_PREVIEW_MATCHES. Apply still operates on the full matched
+    # set; the UI surfaces "previewing first N of M" to keep the
+    # cataloger honest about what they reviewed.
+    preview_cap_triggered: bool = False
 
     @property
     def changed_count(self) -> int:
@@ -229,6 +246,22 @@ def _write_subset(store, indices: list[int], path: Path) -> None:
                 writer.write(rec)
 
 
+def _batch_identity(store) -> Optional[tuple[str, int]]:
+    """Return a stable ``(filename, count)`` snapshot of the active batch.
+
+    Used by build_preview to record which batch a preview was built
+    against; apply_preview rejects if the identity has changed.
+    """
+    if store is None:
+        return None
+    filename = getattr(store, "filename", None) or "(unnamed)"
+    try:
+        count = store.count()
+    except Exception:  # noqa: BLE001 — defensive in callsite context
+        count = -1
+    return (filename, count)
+
+
 def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
     """Run the request on matched records in the sandbox; return the preview.
 
@@ -236,10 +269,18 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
     request shape (bad regex, empty tag, etc.); sandbox / parse errors
     land on the returned preview's ``error`` field so the wizard can
     surface them in the UI.
+
+    TASK-046: the sandbox preview is capped at
+    :data:`MAX_PREVIEW_MATCHES`. The cataloger reviews the diff for
+    that subset; Apply re-runs the transform against the **full**
+    matched set. The cap is a guardrail against the page hanging on
+    a query that incidentally matches every record in a 100K batch.
     """
     err = validate_request(request)
     if err is not None:
         raise ValueError(err)
+
+    batch_id = _batch_identity(store)
 
     matched = matched_indices_for(store, request)
     if not matched:
@@ -247,12 +288,19 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
             request=request,
             matched_indices=[],
             fingerprints={},
+            batch_identity=batch_id,
         )
+
+    # Sandbox-run only the first N matches when the set is large.
+    # Apply re-runs against the full matched list — preview is just
+    # the cataloger's sample.
+    cap_triggered = len(matched) > MAX_PREVIEW_MATCHES
+    preview_indices = matched[:MAX_PREVIEW_MATCHES] if cap_triggered else matched
 
     fingerprints = _fingerprints_for(store, matched)
     workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-batch-replace-"))
     subset_path = workdir / "subset.mrc"
-    _write_subset(store, matched, subset_path)
+    _write_subset(store, preview_indices, subset_path)
 
     rendered = task_builder.render_ops_to_python([_operation_for(request)])
     spec = sandbox.TaskSpec(
@@ -270,6 +318,8 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
             matched_indices=matched,
             fingerprints=fingerprints,
             sandbox_workdir=str(workdir),
+            batch_identity=batch_id,
+            preview_cap_triggered=cap_triggered,
             error=(
                 "Sandbox timed out — try fewer matches."
                 if sandbox_result.timed_out
@@ -289,6 +339,8 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
             matched_indices=matched,
             fingerprints=fingerprints,
             sandbox_workdir=str(workdir),
+            batch_identity=batch_id,
+            preview_cap_triggered=cap_triggered,
             error=f"Could not parse sandbox output: {exc}",
         )
 
@@ -296,19 +348,20 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
     output_records = [r for r in output_records if r is not None]
 
     # Pair count check — sandbox preserves order and writes one
-    # output per input even on per-record exception, so the counts
-    # should match. If they don't, something subtle went wrong;
-    # surface as an error rather than silently truncate.
-    if len(output_records) != len(matched):
+    # output per input even on per-record exception, so counts
+    # should match the SUBSET we sandbox-ran (preview_indices).
+    if len(output_records) != len(preview_indices):
         return BatchReplacePreview(
             request=request,
             matched_indices=matched,
             fingerprints=fingerprints,
             sandbox_workdir=str(workdir),
+            batch_identity=batch_id,
+            preview_cap_triggered=cap_triggered,
             error=(
                 f"Sandbox returned {len(output_records)} records for "
-                f"{len(matched)} matched inputs — refusing to apply a "
-                "mismatched batch."
+                f"{len(preview_indices)} sandboxed inputs — refusing to "
+                "apply a mismatched batch."
             ),
         )
 
@@ -320,6 +373,8 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
         diff_summary=summary,
         output_records=output_records,
         sandbox_workdir=str(workdir),
+        batch_identity=batch_id,
+        preview_cap_triggered=cap_triggered,
     )
 
 
@@ -329,24 +384,48 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
 
 
 def apply_preview(store, preview: BatchReplacePreview) -> BatchReplaceResult:
-    """Commit ``preview.output_records`` back to ``store`` at the matched indices.
+    """Commit the transform back to ``store`` at the matched indices.
 
-    Refuses (with a stale-indices list) if any matched record's
-    on-disk fingerprint has changed since the preview was built —
-    the cataloger probably edited a matched record in another tab
-    and the preview no longer reflects what they'd actually be
-    overwriting.
+    Defenses in order:
+
+    1. **Preview error state** — refuse outright.
+    2. **Empty matched set** — refuse with a clarifying message.
+    3. **Batch identity drift** (TASK-046) — if the loaded file
+       changed since Preview, the matched indices may now point at
+       different records. Refuse and force a fresh preview.
+    4. **Record fingerprint drift** — even with the same batch
+       loaded, if any matched record was edited (inline editor, a
+       different task run, etc.) between Preview and Apply, refuse
+       so the cataloger doesn't overwrite work they didn't see.
+    5. **Preview was capped** (TASK-046) — when the preview only
+       sandbox-ran the first N of M matches, run a fresh sandbox
+       over the full matched set before committing.
+
+    Returns a :class:`BatchReplaceResult` indicating success
+    (``applied_indices`` populated, ``stale_indices`` empty) or
+    refusal (``error`` populated; ``stale_indices`` may carry the
+    drifted index list).
     """
     if preview.error:
         return BatchReplaceResult(error=f"Preview is in error state: {preview.error}")
     if preview.is_empty:
         return BatchReplaceResult(error="No matched records to apply.")
-    if len(preview.output_records) != len(preview.matched_indices):
+
+    # TASK-046 #2: batch-identity check.
+    current_id = _batch_identity(store)
+    if preview.batch_identity is not None and current_id != preview.batch_identity:
+        prev_name, prev_count = preview.batch_identity
+        curr_name, curr_count = current_id or ("(none)", 0)
         return BatchReplaceResult(
-            error="Preview output is inconsistent with matched indices — "
-                  "rebuild the preview and try again.",
+            error=(
+                f"Batch changed since the preview was built — preview was "
+                f"against `{prev_name}` ({prev_count} records); current is "
+                f"`{curr_name}` ({curr_count} records). Rebuild the preview "
+                "before applying."
+            ),
         )
 
+    # Fingerprint drift detection — covers the in-place-edited case.
     stale: list[int] = []
     for idx, expected_fp in preview.fingerprints.items():
         rec = store.get(idx)
@@ -365,9 +444,77 @@ def apply_preview(store, preview: BatchReplacePreview) -> BatchReplaceResult:
             ),
         )
 
-    for idx, new_record in zip(preview.matched_indices, preview.output_records):
+    # TASK-046 #1: when the preview was capped, sandbox-run the full
+    # matched set before committing.
+    if preview.preview_cap_triggered:
+        full_records = _run_sandbox_over_matched(store, preview)
+        if isinstance(full_records, str):
+            return BatchReplaceResult(error=full_records)
+        records_for_apply = full_records
+    else:
+        if len(preview.output_records) != len(preview.matched_indices):
+            return BatchReplaceResult(
+                error="Preview output is inconsistent with matched indices — "
+                      "rebuild the preview and try again.",
+            )
+        records_for_apply = preview.output_records
+
+    for idx, new_record in zip(preview.matched_indices, records_for_apply):
         store.replace(idx, new_record)
     return BatchReplaceResult(
         applied_indices=list(preview.matched_indices),
         stale_indices=[],
     )
+
+
+def _run_sandbox_over_matched(
+    store, preview: BatchReplacePreview,
+) -> "list[pymarc.Record] | str":
+    """Sandbox-run the preview's request over the full matched index set.
+
+    Used at Apply time when the preview-pass capped at
+    :data:`MAX_PREVIEW_MATCHES`. Returns a list of output records
+    parallel to ``preview.matched_indices`` on success, or an error
+    string on failure (sandbox timeout / non-zero exit / output
+    parse failure / cardinality mismatch).
+    """
+    workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-batch-replace-apply-"))
+    subset_path = workdir / "subset.mrc"
+    _write_subset(store, preview.matched_indices, subset_path)
+
+    rendered = task_builder.render_ops_to_python(
+        [_operation_for(preview.request)]
+    )
+    spec = sandbox.TaskSpec(
+        name="batch-find-replace-apply",
+        body=rendered["body"],
+        imports=list(rendered["imports"]),
+    )
+    sandbox_result = sandbox.run_tasks_subprocess(
+        [spec], input_path=subset_path, tmp_dir=workdir,
+    )
+
+    if sandbox_result.timed_out:
+        return "Sandbox timed out during apply — try a narrower query."
+    if sandbox_result.returncode != 0:
+        return (
+            f"Sandbox exited with code {sandbox_result.returncode}: "
+            f"{(sandbox_result.stderr or '').strip()[:300]}"
+        )
+
+    try:
+        records = list(pymarc.MARCReader(
+            io.BytesIO(sandbox_result.records_bytes),
+            to_unicode=True, permissive=True,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        return f"Could not parse sandbox output during apply: {exc}"
+
+    records = [r for r in records if r is not None]
+    if len(records) != len(preview.matched_indices):
+        return (
+            f"Apply sandbox returned {len(records)} records for "
+            f"{len(preview.matched_indices)} matched inputs — refusing to "
+            "commit a mismatched batch."
+        )
+    return records

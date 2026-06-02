@@ -14,6 +14,11 @@ dependencies = [
     "streamlit>=1.37,<2",
     "pymarc>=5.1.2,<6",
     "streamlit-ace>=0.1.1,<0.2",
+    # Required for st.login / st.user OAuth flow (TASK-047). Pinned to
+    # the 1.3.x line: Authlib 1.4+ added a session[key]= write on the
+    # cache branch of set_state_data, but Streamlit 1.50 passes
+    # session=None there, so 1.4+ crashes the sign-in callback.
+    "Authlib>=1.3.2,<1.4",
 ]
 
 [project.optional-dependencies]

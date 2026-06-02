@@ -234,13 +234,14 @@ def _check_upload(upload, *, kind: str) -> _Source | None:
 
 
 def _convert_to_mrk() -> None:
-    st.subheader("Convert binary `.mrc` → MarcEdit `.mrk`")
+    st.header("Convert binary `.mrc` → MarcEdit `.mrk`")
     src = _binary_source(key_prefix="tools_mrc_to_mrk")
     if src is None:
         return
     if st.button("Convert to .mrk", type="primary", key="tools_to_mrk_btn"):
         raw = src.materialize()  # serialize / audit happens here, not on render
-        result = converters.to_mrk_text(raw)
+        with st.spinner("Converting to .mrk…"):
+            result = converters.to_mrk_text(raw)
         _show_preflight(result)
         if isinstance(result.output, str) and result.output:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -257,7 +258,7 @@ def _convert_to_mrk() -> None:
 
 
 def _convert_to_binary() -> None:
-    st.subheader("Convert to MARC binary `.mrc`")
+    st.header("Convert to MARC binary `.mrc`")
     sub_target = st.radio(
         "From",
         options=["mrk", "xml"],
@@ -278,7 +279,8 @@ def _convert_to_binary() -> None:
                 text = raw.decode("utf-8")
             except UnicodeDecodeError:
                 text = raw.decode("latin-1")
-            result = converters.to_binary_from_mrk(text)
+            with st.spinner("Converting .mrk → .mrc…"):
+                result = converters.to_binary_from_mrk(text)
             _show_preflight(result)
             _show_line_errors(result.line_errors)
             if result.output:
@@ -292,7 +294,8 @@ def _convert_to_binary() -> None:
                      key="tools_xml_to_mrc_btn"):
             raw = src.materialize()
             try:
-                result = converters.to_binary_from_marcxml(raw)
+                with st.spinner("Converting MARCXML → .mrc…"):
+                    result = converters.to_binary_from_marcxml(raw)
             except ValueError as exc:
                 st.error(f"MARCXML parse error: {exc}")
                 return
@@ -303,13 +306,14 @@ def _convert_to_binary() -> None:
 
 
 def _convert_to_xml() -> None:
-    st.subheader("Convert binary `.mrc` → MARCXML")
+    st.header("Convert binary `.mrc` → MARCXML")
     src = _binary_source(key_prefix="tools_mrc_to_xml")
     if src is None:
         return
     if st.button("Convert to MARCXML", type="primary", key="tools_to_xml_btn"):
         raw = src.materialize()
-        result = converters.to_marcxml(raw)
+        with st.spinner("Converting to MARCXML…"):
+            result = converters.to_marcxml(raw)
         _show_preflight(result)
         if result.output:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -325,7 +329,7 @@ def _convert_to_xml() -> None:
 
 
 def _render_csv() -> None:
-    st.subheader("CSV preview + export")
+    st.header("CSV preview + export")
     st.caption(
         "Flatten records to a tabular view for spreadsheets / audit. "
         "This is one-way — the CSV doesn't round-trip back to MARC."
@@ -335,8 +339,9 @@ def _render_csv() -> None:
         return
     if st.button("Build CSV", type="primary", key="tools_csv_btn"):
         raw = src.materialize()
-        records, malformed = converters._read_binary(raw)
-        rows = converters.records_to_csv_rows(iter(records))
+        with st.spinner("Flattening records to CSV…"):
+            records, malformed = converters._read_binary(raw)
+            rows = converters.records_to_csv_rows(iter(records))
         col_names = [c for c, _t, _s in converters.DEFAULT_CSV_COLUMNS]
         st.caption(
             f"**{len(records)}** record(s) flattened to "

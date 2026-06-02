@@ -305,3 +305,63 @@ def test_compound_short_circuits_on_failing_clause(store):
         "245$a:Pistoletto AND 245$a:^Z-NEVER-MATCHES"
     )
     assert list(search.matching_records_compound(store, queries)) == []
+
+
+# ---------------------------------------------------------------------------
+# TASK-046: byte-range syntax for control-field positions
+# ---------------------------------------------------------------------------
+
+
+def test_parse_byte_range_simple():
+    """``008/35-37:eng`` parses to byte_position=35, byte_end=37."""
+    q = parse_query("008/35-37:eng")
+    assert q.tag == "008"
+    assert q.byte_position == 35
+    assert q.byte_end == 37
+    assert q.text == "eng"
+
+
+def test_parse_byte_single_keeps_byte_end_none():
+    """Backward compat: ``008/28:i`` still parses with byte_end=None."""
+    q = parse_query("008/28:i")
+    assert q.tag == "008"
+    assert q.byte_position == 28
+    assert q.byte_end is None
+
+
+def test_parse_byte_range_inverted_falls_back_to_text():
+    """``008/37-35`` (end < start) is malformed → fall back to text mode."""
+    q = parse_query("008/37-35:eng")
+    # Parser falls back to plain-text search with the full input as text.
+    assert q.tag is None
+    assert q.byte_position is None
+
+
+def test_byte_range_matches_full_slice(store):
+    """``008/35-37:eng`` matches records whose 008 bytes 35–37 == 'eng'."""
+    indices = list(matching_records(store, parse_query("008/35-37:eng")))
+    # Every fixture record has 008 35-37 = "eng".
+    assert indices == list(range(store.count()))
+
+
+def test_byte_range_rejects_wrong_length_needle(store):
+    """``008/35-37`` requires a 3-char needle; ``en`` (2 chars) misses."""
+    indices = list(matching_records(store, parse_query("008/35-37:en")))
+    assert indices == []
+
+
+def test_byte_range_rejects_non_matching_slice(store):
+    """Range slice must equal needle exactly."""
+    indices = list(matching_records(store, parse_query("008/35-37:fre")))
+    assert indices == []
+
+
+def test_compound_with_byte_range(store):
+    """Compound AND honors range syntax for the byte clause."""
+    queries = search.parse_compound_query(
+        "245$a:Pistoletto AND 008/35-37:eng"
+    )
+    via_compound = set(search.matching_records_compound(store, queries))
+    pistoletto = set(matching_records(store, parse_query("245$a:Pistoletto")))
+    english = set(matching_records(store, parse_query("008/35-37:eng")))
+    assert via_compound == (pistoletto & english)

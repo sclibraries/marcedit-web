@@ -65,6 +65,9 @@ class SearchQuery:
     tag: Optional[str] = None              # None = any tag
     subfield: Optional[str] = None         # None = any subfield (variable fields)
     byte_position: Optional[int] = None    # control fields only
+    # TASK-046: inclusive end byte for range syntax (``008/35-37:eng``).
+    # None means a single-byte lookup at ``byte_position``.
+    byte_end: Optional[int] = None
     case_sensitive: bool = False
     mode: SearchMode = "contains"
     parse_error: Optional[str] = None
@@ -100,10 +103,11 @@ def parse_query(s: str) -> SearchQuery:
     if not s:
         return SearchQuery()
 
-    # Find the prefix colon. The prefix can be at most 8 characters
-    # (`245$a/99` is 8). A colon further right is part of the text.
+    # Find the prefix colon. The prefix can be at most 11 chars
+    # (``245$a/99-99`` is 11; range syntax was added in TASK-046).
+    # A colon further right is part of the text.
     prefix_end = -1
-    for i in range(min(len(s), 9)):
+    for i in range(min(len(s), 12)):
         if s[i] == ":":
             prefix_end = i
             break
@@ -118,11 +122,22 @@ def parse_query(s: str) -> SearchQuery:
     tag: Optional[str] = None
     sub: Optional[str] = None
     byte_pos: Optional[int] = None
+    byte_end: Optional[int] = None
 
     if "/" in prefix:
         tag_part, byte_str = prefix.split("/", 1)
+        # TASK-046: ``N-M`` is the inclusive range form. ``008/35-37:eng``
+        # tests bytes 35–37 against ``eng``. Single ``N`` keeps the
+        # original one-byte semantics.
         try:
-            byte_pos = int(byte_str)
+            if "-" in byte_str:
+                lo, hi = byte_str.split("-", 1)
+                byte_pos = int(lo)
+                byte_end = int(hi)
+                if byte_end < byte_pos:
+                    raise ValueError("end < start")
+            else:
+                byte_pos = int(byte_str)
         except ValueError:
             text, mode, err = _interpret_value(s)
             return SearchQuery(text=text, mode=mode, parse_error=err)
@@ -146,6 +161,7 @@ def parse_query(s: str) -> SearchQuery:
         tag=tag,
         subfield=sub,
         byte_position=byte_pos,
+        byte_end=byte_end,
         text=text,
         mode=mode,
         parse_error=err,
@@ -300,7 +316,8 @@ def _record_matches(record, query: SearchQuery, needle) -> bool:
         if not query.case_sensitive:
             raw = raw.lower()
         return _byte_position_matches(
-            record, query.tag, query.byte_position, raw, query.case_sensitive
+            record, query.tag, query.byte_position, raw,
+            query.case_sensitive, byte_end=query.byte_end,
         )
     if query.subfield is not None:
         return _subfield_value_matches(
@@ -369,13 +386,18 @@ def _subfield_value_matches(
 
 def _byte_position_matches(
     record, tag: str, pos: int, needle: str, case_sensitive: bool,
+    *, byte_end: Optional[int] = None,
 ) -> bool:
-    """Check whether the bytes at ``pos`` of ``tag`` start with ``needle``.
+    """Check whether the bytes at ``pos`` (or ``pos..byte_end``) match ``needle``.
 
-    ``needle`` is matched as a prefix at the given byte offset. This
-    handles both single-character lookups (``008/28:i``) and short
-    range lookups (``008/35-37:eng`` would need explicit length —
-    but we keep it simple: ``needle`` must fit at ``pos``).
+    Two modes:
+
+    * Single byte: ``byte_end`` is ``None``. ``needle`` must equal
+      ``data[pos:pos + len(needle)]`` — a prefix match at the offset.
+    * Range: ``byte_end`` is a 0-based inclusive end. ``needle`` must
+      equal ``data[pos:byte_end + 1]`` exactly. This is what TASK-046
+      surfaces as ``008/35-37:eng`` — the cataloger expects the three
+      bytes at 35–37 to spell out ``eng``.
     """
     if tag == "LDR":
         data = str(record.leader) if record.leader else ""
@@ -384,6 +406,16 @@ def _byte_position_matches(
         if f is None:
             return False
         data = getattr(f, "data", None) or ""
+
+    if byte_end is not None:
+        if pos < 0 or byte_end + 1 > len(data):
+            return False
+        slice_ = data[pos:byte_end + 1]
+        # Range mode requires the needle length to match the slice.
+        if len(slice_) != len(needle):
+            return False
+        return _norm(slice_, case_sensitive) == needle
+
     if pos < 0 or pos + len(needle) > len(data):
         return False
     return _norm(data[pos:pos + len(needle)], case_sensitive) == needle

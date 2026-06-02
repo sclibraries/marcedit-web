@@ -29,7 +29,6 @@ from marcedit_web.render import (
 )
 from marcedit_web.render import diff as render_diff
 
-st.set_page_config(page_title="Workspace · marcedit-web", layout="wide")
 session.init_page()
 
 st.title("Workspace")

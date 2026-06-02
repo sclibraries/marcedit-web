@@ -81,9 +81,29 @@ def render() -> None:
     if submit:
         _run_search(store, query_text)
 
+    # TASK-046: drop cached results when the active batch changes.
+    # Without this, switching to a different uploaded file could
+    # render results that point at records in the previous batch.
+    current_id = _batch_identity(store)
     results = st.session_state.get(_K_RESULTS)
+    if results is not None and results.get("batch_identity") != current_id:
+        st.session_state.pop(_K_RESULTS, None)
+        results = None
+
     if results is not None and results["query_text"] == query_text:
         _render_results(store, results)
+
+
+def _batch_identity(store) -> tuple[str, int]:
+    """Stable ``(filename, count)`` snapshot of the active batch.
+
+    Used to invalidate cached results when the cataloger swaps the
+    loaded file between searches.
+    """
+    return (
+        getattr(store, "filename", None) or "(unnamed)",
+        store.count(),
+    )
 
 
 def _run_search(store, query_text: str) -> None:
@@ -101,37 +121,42 @@ def _run_search(store, query_text: str) -> None:
         # bad regex, so the search can still proceed. Cataloger sees
         # the warning AND the (now-degraded) results.
 
-    indices = list(search.matching_records_compound(store, queries))
+    # Index walk + snippet collection both scale with batch size.
+    # Wrap both in one spinner so the user sees activity through the
+    # whole search and not just the index pass.
+    with st.spinner("Searching…"):
+        indices = list(search.matching_records_compound(store, queries))
 
-    # Pull display snippets for the table. We pull only what shows
-    # in the table — 001, 245$a, and a match-snippet pulled from the
-    # first matching haystack across the clauses. Cap snippet pulls
-    # at the visible page later.
-    rows = []
-    for idx in indices:
-        record = store.get(idx)
-        if record is None:
-            continue
-        identifier = ""
-        f001 = record.get("001")
-        if f001 is not None:
-            identifier = (f001.data or "")[:48]
-        title = ""
-        f245 = record.get("245")
-        if f245 is not None and not f245.is_control_field():
-            title = (f245.get("a") or "")[:80]
-        match_snippet = _snippet_for(record, queries)
-        rows.append({
-            "#": idx + 1,
-            "001": identifier,
-            "245$a": title,
-            "match": match_snippet,
-        })
+        # Pull display snippets for the table. We pull only what shows
+        # in the table — 001, 245$a, and a match-snippet pulled from the
+        # first matching haystack across the clauses. Cap snippet pulls
+        # at the visible page later.
+        rows = []
+        for idx in indices:
+            record = store.get(idx)
+            if record is None:
+                continue
+            identifier = ""
+            f001 = record.get("001")
+            if f001 is not None:
+                identifier = (f001.data or "")[:48]
+            title = ""
+            f245 = record.get("245")
+            if f245 is not None and not f245.is_control_field():
+                title = (f245.get("a") or "")[:80]
+            match_snippet = _snippet_for(record, queries)
+            rows.append({
+                "#": idx + 1,
+                "001": identifier,
+                "245$a": title,
+                "match": match_snippet,
+            })
 
     st.session_state[_K_RESULTS] = {
         "query_text": query_text,
         "indices": indices,
         "rows": rows,
+        "batch_identity": _batch_identity(store),
     }
     st.session_state[_K_PAGE] = 0
 
@@ -216,16 +241,29 @@ def _render_results(store, results: dict) -> None:
 
     start = page * _PAGE_SIZE
     end = min(len(rows), start + _PAGE_SIZE)
-    st.dataframe(
-        pd.DataFrame(rows[start:end]),
+    page_df = pd.DataFrame(rows[start:end])
+    event = st.dataframe(
+        page_df,
         hide_index=True,
         use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="find_table",
         column_config={
             "#": st.column_config.NumberColumn("Rec #", width="small"),
             "001": st.column_config.TextColumn("001", width="medium"),
             "245$a": st.column_config.TextColumn("Title (245$a)", width="large"),
             "match": st.column_config.TextColumn("Match", width="large"),
         },
+    )
+    from marcedit_web.render._record_modal import selection_view_button
+    selection_view_button(
+        df=page_df,
+        event=event,
+        record_column="#",
+        button_label_template="View record #{n}",
+        button_key="find_view_btn",
+        store=store,
     )
 
     st.divider()

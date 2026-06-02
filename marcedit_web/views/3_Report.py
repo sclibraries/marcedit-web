@@ -7,7 +7,6 @@ import streamlit as st
 from marcedit_web.lib import session
 from marcedit_web.render import report, sidebar_status
 
-st.set_page_config(page_title="Report · marcedit-web", layout="wide")
 session.init_page()
 
 st.title("Report")

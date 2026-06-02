@@ -6,5 +6,11 @@ runOnSave = false
 [browser]
 gatherUsageStats = false
 
+[client]
+# Hide Streamlit's Deploy / dev toolbar — this is a cataloger-facing
+# app, not a developer playground. The ≡ menu remains accessible
+# (it's framework-level, not toolbar-level).
+toolbarMode = "minimal"
+
 [theme]
 base = "light"

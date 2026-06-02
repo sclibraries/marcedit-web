@@ -1,4 +1,12 @@
 streamlit>=1.37,<2
 pymarc>=5.1.2,<6
 streamlit-ace>=0.1.1,<0.2
+# Streamlit native OAuth (st.login) is built on Authlib; without it
+# st.login("google") raises at request time even with secrets set.
+# Upper bound is intentional: Authlib 1.4+ added a session[key] write
+# inside FrameworkIntegration.set_state_data's cache branch, but
+# Streamlit (1.50) passes session=None on that path, so 1.4+ crashes
+# with "'NoneType' object does not support item assignment" at sign-in.
+# Stay on 1.3.x until Streamlit catches up.
+Authlib>=1.3.2,<1.4
 pytest>=8,<9

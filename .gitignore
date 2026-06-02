@@ -35,12 +35,25 @@ marc-processing.zip
 # Playwright MCP session artifacts
 .playwright-mcp/
 
+# Worktree directories created by superpowers:using-git-worktrees
+.claude/
+
 # Per-user task storage (lives at runtime; not version-controlled)
 data/tasks/users/
 data/tasks/shared/
 
 # Runtime audit logs (JSONL, one file per UTC day)
 data/audit/
+
+# SQLite database (TASK-049) — runtime state, never version-controlled.
+# Covers the main file + WAL/SHM side-files.
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Persisted uploads (TASK-051) — per-user MARC bytes that survive
+# refresh. Runtime state; never committed.
+data/uploads/
 
 # Ad-hoc Playwright screenshots dropped at the project root by
 # ``browser_take_screenshot`` during dev verification. Promote any

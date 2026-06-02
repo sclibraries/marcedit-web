@@ -22,7 +22,7 @@ from typing import Any
 import streamlit as st
 from streamlit_ace import st_ace
 
-from marcedit_web.lib import mrk_writer, view_edit
+from marcedit_web.lib import mrk_annotations, mrk_writer, view_edit
 
 
 def render_inline_edit(
@@ -93,8 +93,21 @@ def render_inline_edit(
         "save and surface inline below."
     )
 
+    # Validate the current buffer ONCE before st_ace so the result can
+    # drive both the Ace gutter annotations (inline next to the
+    # offending line) and the expander below. ``auto_update=False`` on
+    # st_ace means the buffer in session_state lags one Apply behind
+    # what the user is typing — same lag the prior expander-only path
+    # had, just now visible in the gutter too.
+    current_text = st.session_state.get(k_text, "")
+    live_result = (
+        view_edit.parse_and_validate_single_record(current_text, rule_set)
+        if current_text.strip() else None
+    )
+    annotations = mrk_annotations.build_annotations(current_text, live_result)
+
     new_text = st_ace(
-        value=st.session_state.get(k_text, ""),
+        value=current_text,
         language="text",
         theme="github",
         keybinding="vscode",
@@ -104,6 +117,7 @@ def render_inline_edit(
         show_gutter=True,
         show_print_margin=False,
         auto_update=False,
+        annotations=annotations,
         min_lines=12,
         height=320,
         key=f"{key_prefix}_ace_{index}",
@@ -128,6 +142,10 @@ def render_inline_edit(
         return
 
     if save_clicked:
+        # Re-validate against the freshest buffer (st_ace may have
+        # returned a new value above this rerun). ``live_result`` was
+        # computed BEFORE the st_ace call so it can be one Apply behind
+        # the editor — we don't trust it for the save decision.
         text = st.session_state.get(k_text, "")
         result = view_edit.parse_and_validate_single_record(text, rule_set)
         if not result.can_save:
@@ -149,12 +167,10 @@ def render_inline_edit(
         st.rerun()
         return
 
-    # Live validation feedback for whatever's in the editor right now,
-    # so the cataloger sees issues as they type instead of only on save.
-    text = st.session_state.get(k_text, "")
-    if text.strip():
-        result = view_edit.parse_and_validate_single_record(text, rule_set)
-        _render_validation_feedback(result)
+    # Expander fallback below the buttons — same data as the gutter
+    # annotations, in a form the cataloger can scan as a list.
+    if live_result is not None:
+        _render_validation_feedback(live_result)
 
 
 def _clear_state(*keys: str) -> None:

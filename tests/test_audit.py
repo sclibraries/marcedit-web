@@ -98,3 +98,69 @@ def test_audit_event_swallows_io_errors(monkeypatch, caplog):
     # Restore (not strictly needed for monkeypatch but keep tidy).
     monkeypatch.setattr(audit, "_audit_dir", original_audit_dir)
     assert any("audit-write failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# TASK-049 — SQL mirror of audit events
+# ---------------------------------------------------------------------------
+
+from marcedit_web.lib import db  # noqa: E402 — kept near the SQL-mirror tests
+
+
+def test_audit_event_writes_sql_row(tmp_path, monkeypatch):
+    """Each audit_event call must produce one matching SQL row."""
+    monkeypatch.setenv("MARCEDIT_WEB_AUDIT_DIR", str(tmp_path))
+    audit.audit_event("upload-accepted", user="alice@example.edu", size=2048)
+
+    with db.connect() as conn:
+        rows = list(conn.execute(
+            "SELECT ts, user_email, kind, payload_json FROM audit_events"
+        ))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["kind"] == "upload-accepted"
+    assert row["user_email"] == "alice@example.edu"
+    assert row["ts"].endswith("Z")
+    payload = json.loads(row["payload_json"])
+    # ts/kind/user live in indexed columns; payload_json carries
+    # only the event-specific extras.
+    assert payload == {"size": 2048}
+
+
+def test_audit_event_sql_and_jsonl_stay_in_sync(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARCEDIT_WEB_AUDIT_DIR", str(tmp_path))
+    audit.audit_event("upload-accepted", user="a", size=1)
+    audit.audit_event("task-saved", user="b", task_name="t")
+    audit.audit_event("conversion-issued", user="c", kind_label="utf8")
+
+    jsonl_rows = _read_lines(list(tmp_path.glob("audit-*.log"))[0])
+    with db.connect() as conn:
+        sql_rows = list(conn.execute(
+            "SELECT ts, user_email, kind FROM audit_events ORDER BY id"
+        ))
+
+    assert len(jsonl_rows) == len(sql_rows) == 3
+    for j, s in zip(jsonl_rows, sql_rows):
+        assert j["ts"] == s["ts"]
+        assert j["kind"] == s["kind"]
+        assert j["user"] == s["user_email"]
+
+
+def test_audit_event_sql_failure_does_not_block_jsonl(tmp_path, monkeypatch, caplog):
+    """If the DB is broken, the JSONL line still lands and the action returns."""
+    monkeypatch.setenv("MARCEDIT_WEB_AUDIT_DIR", str(tmp_path))
+    # Point at an impossible DB path — parent is a regular file, so
+    # mkdir(parents=True) fails and connect() raises.
+    bad_file = tmp_path / "not-a-dir.txt"
+    bad_file.write_text("x")
+    monkeypatch.setenv("MARCEDIT_WEB_DB_PATH", str(bad_file / "child.db"))
+    db.reset_for_tests()
+
+    with caplog.at_level("WARNING", logger="marcedit_web.audit"):
+        audit.audit_event("upload-accepted", user="x", size=1)
+
+    jsonl_rows = _read_lines(list(tmp_path.glob("audit-*.log"))[0])
+    assert len(jsonl_rows) == 1
+    assert any(
+        "audit-sql-write failed" in r.message for r in caplog.records
+    )

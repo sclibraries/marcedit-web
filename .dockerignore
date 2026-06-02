@@ -13,3 +13,9 @@ marc-diff.zip
 marc-processing.zip
 README.md
 .tickets
+data/audit
+data/tasks/users
+data/tasks/shared
+*.png
+*.jpg
+*.jpeg

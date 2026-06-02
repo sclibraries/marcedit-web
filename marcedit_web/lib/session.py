@@ -33,7 +33,7 @@ from typing import Any, Optional
 
 from pymarc import Record
 
-from . import quotas
+from . import quotas, upload_persistence
 from .audit import audit_event
 from .identity import ANONYMOUS, current_user, is_anonymous, is_prod
 from .record_store import RecordStore
@@ -58,6 +58,10 @@ def init() -> None:
 
     Safe to call from any page's top-of-script. The `user` key is set
     once per session — re-running the script doesn't overwrite it.
+    After identity is captured, ``restore_active_upload`` rehydrates
+    the loaded batch from the SQL ``uploads`` table for OAuth-signed
+    users whose ``session_state["store"]`` is missing (typical after
+    a hard browser refresh).
     """
     import streamlit as st
 
@@ -71,6 +75,60 @@ def init() -> None:
                 st.session_state[key] = default
     if not st.session_state.get("user"):
         st.session_state["user"] = current_user()
+    restore_active_upload()
+
+
+def restore_active_upload() -> None:
+    """Reattach the active SQL upload row to ``session_state["store"]``.
+
+    No-op when:
+      * The current user is anonymous (anonymous users get no SQL
+        row by design; refresh loses their upload).
+      * ``session_state["store"]`` already holds something (we never
+        clobber an in-flight session's store).
+      * The user has no active upload row.
+      * The active row's on-disk file vanished — the row is cleared
+        in that case so the next refresh isn't stuck in a loop.
+
+    Successful restore audits ``upload-restored`` once.
+    """
+    import streamlit as st
+
+    if st.session_state.get("store") is not None:
+        return
+    user = st.session_state.get("user") or ""
+    if is_anonymous(user):
+        return
+    row = upload_persistence.get_active_upload(user)
+    if row is None:
+        return
+    path = Path(row["file_path"])
+    if not path.exists():
+        logger.info(
+            "active upload row for %s points at missing %s; clearing",
+            user, path,
+        )
+        upload_persistence.clear_active_upload(user)
+        return
+    try:
+        store = RecordStore.from_path(path)
+    except Exception as exc:  # noqa: BLE001 — corrupt file shouldn't crash boot
+        logger.warning(
+            "failed to restore upload from %s: %s", path, exc
+        )
+        upload_persistence.clear_active_upload(user)
+        return
+    # Restore the filename from the SQL row (RecordStore.from_path
+    # would otherwise set it to "upload.mrc", the on-disk name).
+    store._filename = row["filename"]
+    st.session_state["store"] = store
+    audit_event(
+        "upload-restored",
+        user=user,
+        filename=row["filename"],
+        records=row["record_count"],
+        size=row["file_bytes"],
+    )
 
 
 def init_page() -> None:
@@ -175,19 +233,28 @@ def handle_upload(uploaded_file) -> dict:
       `{filename, total, malformed}`.
 
     When no file is supplied (or the bytes are empty) we clear the
-    previous upload's state so the page doesn't lie about what's loaded.
+    previous upload's state so the page doesn't lie about what's
+    loaded. For OAuth-identified users, "clear" also wipes the
+    persisted upload row so the next refresh doesn't rehydrate it.
+
+    TASK-051: for non-anonymous users the bytes are also written to a
+    stable per-user path under ``data/uploads/<slug>/upload.mrc`` and
+    a SQL row records the active upload. On refresh, ``init()`` calls
+    ``restore_active_upload()`` to reattach.
     """
     import streamlit as st
+
+    user = st.session_state.get("user", "anonymous")
 
     if uploaded_file is None:
         st.session_state["store"] = None
         st.session_state["issues_cache"] = {}
         st.session_state["editor_text"] = None
         st.session_state["editor_dirty"] = False
+        upload_persistence.clear_active_upload(user)
         return {"filename": None, "total": 0, "malformed": 0}
 
     raw = uploaded_file.getvalue()
-    user = st.session_state.get("user", "anonymous")
     size = len(raw)
 
     try:
@@ -212,12 +279,28 @@ def handle_upload(uploaded_file) -> dict:
             "error": str(exc),
         }
 
-    tmp_dir = _session_records_dir()
+    # Pick the storage dir based on identity:
+    #   * anonymous → per-session tmp (wiped on container restart;
+    #     not retained across refresh — by design)
+    #   * signed-in → stable per-user dir under data/uploads/
+    if is_anonymous(user):
+        store_dir = _session_records_dir()
+    else:
+        store_dir = upload_persistence.persisted_upload_dir(user)
+
     store = RecordStore.from_bytes(
         raw,
-        tmp_dir=tmp_dir,
+        tmp_dir=store_dir,
         filename=uploaded_file.name,
     )
+    if not is_anonymous(user):
+        upload_persistence.record_upload(
+            user=user,
+            filename=uploaded_file.name,
+            file_path=store.path,
+            record_count=store.count(),
+            file_bytes=size,
+        )
     st.session_state["store"] = store
     st.session_state["upload_bytes_total"] = new_total
     # Reset derived state — anything the previous file populated is now

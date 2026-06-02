@@ -3,6 +3,11 @@
 The cataloger uploads a `.mrc` file here. We parse it once on upload and
 hold the parsed records in `st.session_state` so every other page reads
 from the same in-memory source. Closing the tab discards everything.
+
+TASK-045: this used to live at ``marcedit_web/Home.py`` (the Docker
+entrypoint). It moved here when the entrypoint became a pure
+``st.navigation`` host. ``st.set_page_config`` lives in the entrypoint
+now — only one call per render is allowed.
 """
 
 from __future__ import annotations
@@ -10,13 +15,6 @@ from __future__ import annotations
 import streamlit as st
 
 from marcedit_web.lib import session
-
-st.set_page_config(
-    page_title="marcedit-web",
-    page_icon="\N{BOOKS}",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
 
 session.init_page()
 
@@ -26,7 +24,8 @@ session.init_page()
 
 st.title("marcedit-web")
 st.caption("MARC21 viewer, validator, editor, and diff — in your browser.")
-st.subheader("Upload a MARC file")
+# h2 — heading ladder must step h1 → h2 → h3 without gaps (TASK-054).
+st.header("Upload a MARC file")
 
 uploaded = st.file_uploader(
     "Choose a .mrc file",
@@ -40,7 +39,11 @@ uploaded = st.file_uploader(
 
 upload_summary = None
 if uploaded is not None:
-    upload_summary = session.handle_upload(uploaded)
+    # Parsing a large .mrc can take several seconds; without a spinner
+    # the page appears frozen and the cataloger doesn't know whether
+    # to wait or refresh.
+    with st.spinner(f"Parsing {uploaded.name}…"):
+        upload_summary = session.handle_upload(uploaded)
     if upload_summary.get("error"):
         st.error(
             f"Upload rejected: {upload_summary['error']}. Contact ops if "
@@ -91,7 +94,7 @@ if upload_summary is not None and not upload_summary.get("error"):
 
 if session.has_upload():
     st.divider()
-    st.subheader("Loaded batch")
+    st.header("Loaded batch")
     col_a, col_b, col_c = st.columns(3)
     col_a.metric("Filename", session.current_filename() or "—")
     col_b.metric("Records", session.record_count())
@@ -106,15 +109,17 @@ if session.has_upload():
             file_name=session.current_filename() or "current.mrc",
             mime="application/marc",
             help=(
-                "Stage 3: returns the original upload bytes. "
-                "Later stages will re-encode edited records before download."
+                "Returns the current in-session record bytes. Edits from "
+                "MarcEditor / Tasks / Quick find/replace are reflected."
             ),
         )
 
     st.divider()
     st.markdown(
-        "**Next steps:** open the View, Validate, Report, Tasks, MarcEditor, "
-        "or Diff pages from the sidebar. They're added in later stages."
+        "**Next steps:** pick a page from the sidebar — **Inspect** for "
+        "viewing / validation / reports, **Edit** for the .mrk editor "
+        "and Tasks transforms, **Reconcile** for Diff / Dedupe / format "
+        "conversion."
     )
 else:
     st.info(

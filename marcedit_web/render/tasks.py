@@ -11,8 +11,11 @@ v3 changes:
   / ``task_builder.render_ops_to_python`` plumbing. Form-built tasks
   carry ``# OP:`` markers so re-opening them returns to form view.
 
-Storage is still per-user filesystem (Stage 12); tasks survive across
-sessions under ``data/tasks/users/<safe-eppn>/``.
+TASK-050: tasks are stored in the SQLite ``tasks`` table with a
+private/shared visibility flag. Files on disk are still the
+loader's contract; ``task_db.materialize_to_dir`` writes each
+visible task to a per-session ``/tmp/marcedit-web-tasks-<sid>/``
+on every render. Save / delete / visibility writes go to SQL.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import io
 import json
 import logging
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -40,8 +44,8 @@ from marcedit_web.lib import (
     session,
     task_admin,
     task_builder,
+    task_db,
     task_diff,
-    task_storage,
     tasks,
 )
 from marcedit_web.lib.audit import audit_event
@@ -70,18 +74,52 @@ K_EDITOR_DESCRIPTION = "tasks_editor_description"
 K_EDITOR_BODY = "tasks_editor_body"
 K_EDITOR_OPS = "tasks_editor_ops"
 K_EDITOR_ORIGINAL_NAME = "tasks_editor_original_name"
+K_EDITOR_VISIBILITY = "tasks_editor_visibility"
 K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
 K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
 K_RUN_RESULTS = "tasks_run_results"
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
+K_MATERIALIZED_DIR = "tasks_materialized_dir"
+
+
+def _materialized_dir(user: str) -> Path:
+    """Per-session tmp dir holding the user's visible tasks as .py files.
+
+    Created lazily once per Streamlit session. The dir is re-populated
+    on every page render by ``task_db.materialize_to_dir`` — cheap,
+    because that helper only rewrites files whose content changed.
+
+    Lifecycle: tied to ``st.session_state``; reclaimed when the
+    session ends (the OS cleans ``/tmp`` on container restart, and a
+    long-lived container can be swept via the standard ``find /tmp
+    -name 'marcedit-web-*' -mtime +2`` cron documented in deployment.md).
+    """
+    if K_MATERIALIZED_DIR not in st.session_state:
+        sid = uuid.uuid4().hex[:8]
+        st.session_state[K_MATERIALIZED_DIR] = (
+            Path(tempfile.gettempdir()) / f"marcedit-web-tasks-{sid}"
+        )
+    target = st.session_state[K_MATERIALIZED_DIR]
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _refresh_tasks_for(user: str) -> Path:
+    """Materialize visible tasks for ``user`` and return the dir.
+
+    Call this before reading the task registry. Idempotent.
+    """
+    target = _materialized_dir(user)
+    task_db.materialize_to_dir(user, target)
+    return target
 
 
 def render() -> None:
     """Render the Tasks tab into the current Streamlit container."""
     current_user_id = st.session_state.get("user", "anonymous") or "anonymous"
     is_admin = task_admin.is_admin(current_user_id)
-    tasks_dir = task_storage.user_tasks_dir(current_user_id)
+    tasks_dir = _refresh_tasks_for(current_user_id)
 
     # Editor draft state — namespaced.
     st.session_state.setdefault(K_EDITOR_OPEN, False)
@@ -91,32 +129,29 @@ def render() -> None:
     st.session_state.setdefault(K_EDITOR_BODY, "")
     st.session_state.setdefault(K_EDITOR_OPS, [])  # list[dict] — Operation.to_dict()
     st.session_state.setdefault(K_EDITOR_ORIGINAL_NAME, None)
+    st.session_state.setdefault(K_EDITOR_VISIBILITY, "private")
     st.session_state.setdefault(K_RUN_RESULTS, None)
 
-    # Load shared first then user — user-named tasks shadow shared ones.
-    for _d in task_storage.visible_task_dirs(current_user_id):
-        tasks.load_user_tasks(_d, force_reload=False)
+    # Load the materialized dir so the importer sees the user's tasks.
+    tasks.load_user_tasks(tasks_dir, force_reload=False)
     registered = tasks.all_tasks()
 
     # --- Counts banner + admin badge --------------------------------------
 
-    user_task_files = sorted(p.stem for p in tasks_dir.glob("*.py"))
-    shared_task_files = sorted(
-        p.stem for p in task_storage.shared_tasks_dir().glob("*.py")
-    )
+    counts = task_db.count_visible(current_user_id)
+    own_tasks = task_db.list_own_tasks(current_user_id)
     cnt_a, cnt_b, cnt_c, cnt_d = st.columns([2, 2, 2, 2])
-    cnt_a.metric("Yours", len(user_task_files))
-    cnt_b.metric("Shared", len(shared_task_files))
+    cnt_a.metric("Yours", counts["own"])
+    cnt_b.metric("Shared with you", counts["shared_from_others"])
     cnt_c.metric("Registered", len(registered))
     if cnt_d.button("Clear my tasks", key="tasks_clear_mine"):
-        for fname in user_task_files:
-            name = fname.replace("_", "-")
+        for t in own_tasks:
             try:
-                editor.delete_user_task(tasks_dir, name)
-                tasks.TASK_REGISTRY.pop(name, None)
+                task_db.delete_task(current_user_id, t["name"])
+                tasks.TASK_REGISTRY.pop(t["name"], None)
             except Exception as exc:  # noqa: BLE001
-                logger.exception("delete_user_task failed for %s", name)
-                st.warning(f"Could not delete {name}: {exc}")
+                logger.exception("delete_task failed for %s", t["name"])
+                st.warning(f"Could not delete {t['name']}: {exc}")
         st.session_state[K_EDITOR_OPEN] = False
         st.rerun()
 
@@ -130,28 +165,54 @@ def render() -> None:
     # --- Existing tasks list ----------------------------------------------
 
     st.subheader("Existing tasks")
-    if not registered:
+    visible = task_db.list_visible_tasks(current_user_id)
+    if not visible:
         st.info(
             "No tasks defined yet. Use **+ New task** below or **Import "
             "from MarcEdit** to convert an existing `.tasksfile`."
         )
     else:
-        for entry in registered:
-            cols = st.columns([3, 5, 1, 1])
-            cols[0].markdown(f"**`{entry.name}`**")
-            cols[1].caption(entry.description or "_(no description)_")
-            if cols[2].button("Edit", key=f"edit_{entry.name}"):
-                _open_editor_for_existing(entry, tasks_dir, is_admin)
-                st.rerun()
-            if cols[3].button("Delete", key=f"del_{entry.name}"):
-                editor.delete_user_task(tasks_dir, entry.name)
-                tasks.TASK_REGISTRY.pop(entry.name, None)
-                audit_event(
-                    "task-deleted",
-                    user=current_user_id,
-                    task_name=entry.name,
-                )
-                st.rerun()
+        for row in visible:
+            owned = row["owner_email"] == current_user_id
+            cols = st.columns([3, 4, 1, 1, 1])
+            label = f"**`{row['name']}`**"
+            if row["visibility"] == "shared":
+                label += " &nbsp; :material/share: shared"
+            if not owned:
+                label += f" &nbsp; _by {row['owner_email']}_"
+            cols[0].markdown(label, unsafe_allow_html=False)
+            cols[1].caption(row["description"] or "_(no description)_")
+            if owned:
+                if cols[2].button("Edit", key=f"edit_{row['name']}"):
+                    _open_editor_for_existing_row(row, is_admin)
+                    st.rerun()
+                # Toggle visibility in-place.
+                new_vis = "shared" if row["visibility"] == "private" else "private"
+                vis_label = "Share" if new_vis == "shared" else "Unshare"
+                if cols[3].button(vis_label, key=f"vis_{row['name']}"):
+                    task_db.set_visibility(current_user_id, row["name"], new_vis)
+                    audit_event(
+                        "task-visibility-changed",
+                        user=current_user_id,
+                        task_name=row["name"],
+                        from_visibility=row["visibility"],
+                        to_visibility=new_vis,
+                    )
+                    st.rerun()
+                if cols[4].button("Delete", key=f"del_{row['name']}"):
+                    task_db.delete_task(current_user_id, row["name"])
+                    tasks.TASK_REGISTRY.pop(row["name"], None)
+                    audit_event(
+                        "task-deleted",
+                        user=current_user_id,
+                        task_name=row["name"],
+                    )
+                    st.rerun()
+            else:
+                # Shared task by someone else — runnable, not editable.
+                cols[2].caption("_read-only_")
+                cols[3].empty()
+                cols[4].empty()
 
     # --- New / import controls --------------------------------------------
 
@@ -223,27 +284,26 @@ def _open_editor_for_new() -> None:
     )
     st.session_state[K_EDITOR_OPS] = []
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
+    st.session_state[K_EDITOR_VISIBILITY] = "private"
 
 
-def _open_editor_for_existing(
-    entry, tasks_dir: Path, is_admin: bool,
-) -> None:
-    """Open the editor pre-populated from an on-disk task file."""
-    try:
-        parsed = editor.parse_user_task_file(
-            editor.task_file_path(tasks_dir, entry.name)
-        )
-    except ValueError as exc:
-        st.error(f"Could not open {entry.name}: {exc}")
-        return
+def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
+    """Open the editor pre-populated from a SQL task row.
 
+    ``row`` is a dict from ``task_db.list_visible_tasks`` /
+    ``task_db.get_task`` — has ``name``, ``description``, ``body``,
+    ``visibility``. Form vs code mode is chosen by re-parsing the
+    body via ``task_builder.parse_ops_from_source`` (same logic as
+    the legacy file-based path).
+    """
     st.session_state[K_EDITOR_OPEN] = True
-    st.session_state[K_EDITOR_NAME] = parsed["name"]
-    st.session_state[K_EDITOR_DESCRIPTION] = parsed["description"]
-    st.session_state[K_EDITOR_BODY] = parsed["body"]
-    st.session_state[K_EDITOR_ORIGINAL_NAME] = parsed["name"]
+    st.session_state[K_EDITOR_NAME] = row["name"]
+    st.session_state[K_EDITOR_DESCRIPTION] = row["description"]
+    st.session_state[K_EDITOR_BODY] = row["body"]
+    st.session_state[K_EDITOR_ORIGINAL_NAME] = row["name"]
+    st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
 
-    parse_result = task_builder.parse_ops_from_source(parsed["body"])
+    parse_result = task_builder.parse_ops_from_source(row["body"])
     if parse_result["form_editable"]:
         st.session_state[K_EDITOR_MODE] = "form"
         st.session_state[K_EDITOR_OPS] = [
@@ -256,7 +316,13 @@ def _open_editor_for_existing(
 
 
 def _do_marcedit_import(upl, tasks_dir: Path) -> None:
-    """Import a MarcEdit `.tasksfile` or `.task` archive into tasks_dir."""
+    """Import a MarcEdit `.tasksfile` or `.task` archive into SQL.
+
+    Imported tasks land as private rows owned by the current user.
+    Operators can re-share via the visibility toggle. ``tasks_dir`` is
+    used as a scratch path for archive extraction; the persistent
+    storage is the SQLite ``tasks`` table.
+    """
     user = st.session_state.get("user", "anonymous") or "anonymous"
     raw = upl.getvalue()
     is_archive = upl.name.lower().endswith(".task")
@@ -299,9 +365,15 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
             imported = 0
             for er in archive.entries:
                 if er.success and er.conversion is not None:
-                    content = marcedit_import.build_full_task_file(er.conversion)
-                    path = editor.task_file_path(tasks_dir, er.conversion.name)
-                    path.write_text(content)
+                    conv = er.conversion
+                    task_db.save_task(
+                        owner=user,
+                        name=conv.name,
+                        description=conv.description or "",
+                        body=conv.body,
+                        extra_imports=conv.imports,
+                        visibility="private",
+                    )
                     imported += 1
                 elif er.error:
                     st.warning(f"{er.entry_name}: {er.error}")
@@ -321,9 +393,14 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                 name=name,
                 description_fallback=f"Imported from {upl.name}",
             )
-            content = marcedit_import.build_full_task_file(conv)
-            path = editor.task_file_path(tasks_dir, conv.name)
-            path.write_text(content)
+            task_db.save_task(
+                owner=user,
+                name=conv.name,
+                description=conv.description or "",
+                body=conv.body,
+                extra_imports=conv.imports,
+                visibility="private",
+            )
             st.success(f"Imported `{conv.name}` from `{upl.name}`.")
             audit_event(
                 "tasksfile-imported",
@@ -395,6 +472,20 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         "Description (one sentence)",
         value=st.session_state[K_EDITOR_DESCRIPTION],
         key=K_EDITOR_DESCRIPTION_INPUT,
+    )
+
+    vis_default = st.session_state.get(K_EDITOR_VISIBILITY, "private")
+    st.session_state[K_EDITOR_VISIBILITY] = st.radio(
+        "Visibility",
+        options=["private", "shared"],
+        index=0 if vis_default == "private" else 1,
+        horizontal=True,
+        key="tasks_editor_visibility_radio",
+        help=(
+            "**Private** — only you see this task. "
+            "**Shared** — every signed-in user can see and run it; "
+            "only you can edit or delete."
+        ),
     )
 
     if st.session_state[K_EDITOR_MODE] == "form":
@@ -665,7 +756,11 @@ def _render_param_input(
 def _save_callback(tasks_dir: Path) -> None:
     """on_click callback for Save. Runs BEFORE Streamlit's iteration phase
     so mutations of TASK_REGISTRY / session_state don't trip the
-    dict-changed-size error in `_call_callbacks`."""
+    dict-changed-size error in `_call_callbacks`.
+
+    Writes the task to SQL via task_db, re-materializes the user's
+    visible-task dir, and reloads the importer.
+    """
     name = (st.session_state.get(K_EDITOR_NAME_INPUT)
             or st.session_state.get(K_EDITOR_NAME) or "").strip()
     description = (
@@ -675,6 +770,8 @@ def _save_callback(tasks_dir: Path) -> None:
     ).strip()
     original = st.session_state.get(K_EDITOR_ORIGINAL_NAME)
     mode = st.session_state.get(K_EDITOR_MODE, "form")
+    visibility = st.session_state.get(K_EDITOR_VISIBILITY, "private")
+    user = st.session_state.get("user", "anonymous") or "anonymous"
 
     if mode == "form":
         ops = [
@@ -688,14 +785,33 @@ def _save_callback(tasks_dir: Path) -> None:
         body = st.session_state.get(K_EDITOR_BODY, "")
         extra_imports = None
 
+    # Pre-flight: compile the to-be-saved file before we hit SQL, so
+    # a syntax error keeps the existing row intact.
     try:
-        editor.save_user_task(
-            tasks_dir,
+        preview = editor.serialize_user_task(
+            name, description, body, extra_imports=extra_imports,
+        )
+        compile(preview, f"<{name}>", "exec")
+    except (ValueError, SyntaxError) as exc:
+        st.session_state[K_SAVE_ERROR] = (
+            str(exc) if isinstance(exc, ValueError)
+            else f"task code has a syntax error: {exc.msg} (line {exc.lineno})"
+        )
+        return
+
+    try:
+        # Rename support: if the user changed the name, delete the
+        # old row before inserting the new one. Visibility carries
+        # forward unless the editor changed it.
+        if original and original != name:
+            task_db.delete_task(user, original)
+        task_db.save_task(
+            owner=user,
             name=name,
             description=description,
             body=body,
-            original_name=original,
             extra_imports=extra_imports,
+            visibility=visibility,
         )
     except ValueError as exc:
         st.session_state[K_SAVE_ERROR] = str(exc)
@@ -704,10 +820,11 @@ def _save_callback(tasks_dir: Path) -> None:
     if original and original != name:
         tasks.TASK_REGISTRY.pop(original, None)
     tasks.TASK_REGISTRY.pop(name, None)
+    # Re-materialize and reload so the running registry matches SQL.
+    task_db.materialize_to_dir(user, tasks_dir)
     tasks.load_user_tasks(tasks_dir, force_reload=True)
     st.session_state[K_EDITOR_OPEN] = False
     st.session_state[K_SAVE_SUCCESS] = f"Saved `{name}`."
-    user = st.session_state.get("user", "anonymous") or "anonymous"
     is_admin = task_admin.is_admin(user)
     audit_event(
         "task-saved",
@@ -715,6 +832,7 @@ def _save_callback(tasks_dir: Path) -> None:
         task_name=name,
         original=original,
         mode=mode,
+        visibility=visibility,
         is_admin=is_admin,
         body_bytes=len(body or ""),
     )
@@ -1448,8 +1566,21 @@ def _render_quick_preview(preview) -> None:
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Matched", len(preview.matched_indices))
-    c2.metric("Changed", preview.changed_count)
-    c3.metric("Unchanged", len(preview.matched_indices) - preview.changed_count)
+    c2.metric("Changed (in preview)", preview.changed_count)
+    c3.metric(
+        "Previewed records",
+        len(preview.output_records),
+    )
+
+    if preview.preview_cap_triggered:
+        st.info(
+            f"Sandbox preview ran against the first "
+            f"**{len(preview.output_records):,}** of "
+            f"**{len(preview.matched_indices):,}** matched records. "
+            "Apply will run a fresh sandbox over the full matched set "
+            "before committing — review the diff below to spot-check "
+            "what the transform does."
+        )
 
     if preview.diff_summary is not None and preview.diff_summary.per_record_diffs:
         # Reuse the existing per-tag rollup + per-record drill-down

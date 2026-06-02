@@ -8,7 +8,6 @@ from marcedit_web.lib import session
 from marcedit_web.render import sidebar_status
 from marcedit_web.render import tasks as render_tasks
 
-st.set_page_config(page_title="Tasks · marcedit-web", layout="wide")
 session.init_page()
 
 st.title("Tasks")

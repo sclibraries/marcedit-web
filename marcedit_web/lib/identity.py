@@ -1,15 +1,22 @@
 """Identity shim for Shibboleth-aware deployment.
 
-Prod will run behind a reverse proxy (nginx + mod_shib) that injects
-`REMOTE_USER` and `eppn` HTTP headers on the protected location. In dev,
-those headers are absent and we fall back to `"anonymous"`.
+Two identity sources coexist (TASK-047):
 
-`current_user()` reads from `st.context.headers` when called in a
-Streamlit runtime context, and accepts an explicit `headers` mapping
-for tests (and any future non-Streamlit caller).
+1. **Google OAuth** via Streamlit native ``st.login`` / ``st.user``.
+   Operators opt in by providing ``[auth.google]`` credentials in
+   ``.streamlit/secrets.toml``. Streamlit drives the OIDC flow,
+   issues a session cookie, and exposes the signed-in user via
+   ``st.user.email``.
+2. **Shibboleth** via reverse-proxy headers (``REMOTE_USER`` /
+   ``eppn``). This is the production path on the campus deployment.
 
-No PII is logged from this module — the active user is shown only in
-the UI sidebar.
+``current_user()`` prefers OAuth when a session is signed in;
+otherwise it falls back to the Shibboleth headers; otherwise it
+returns the anonymous sentinel. Both paths can be live at once —
+local-dev operators run OAuth while prod runs behind nginx+Shib.
+
+No PII is logged from this module — the active user is shown only
+in the UI sidebar.
 """
 
 from __future__ import annotations
@@ -27,9 +34,10 @@ def is_prod() -> bool:
     """True when the app is running in production-auth mode.
 
     Set via ``MARCEDIT_WEB_PROD=1`` in the container environment.
-    Production mode requires every request to carry a Shibboleth
-    identity header (``REMOTE_USER`` or ``eppn``); anonymous sessions
-    are refused with a friendly banner + audit entry.
+    Production mode requires every request to carry an authenticated
+    identity (OAuth ``st.user.email`` or a Shibboleth header);
+    anonymous sessions are refused with a friendly banner + audit
+    entry.
 
     Dev mode is the default (env var unset) and lets anonymous users
     in for local testing.
@@ -45,15 +53,24 @@ def is_anonymous(user: str | None) -> bool:
 def current_user(headers: Mapping[str, str] | None = None) -> str:
     """Return the active user identifier, or `"anonymous"` in dev.
 
-    Header precedence: `REMOTE_USER` first, then `eppn`. Both are
-    Shibboleth conventions; reverse-proxy configuration decides which
-    one (or both) lands on inbound requests.
+    Resolution order:
+      1. ``st.user.email`` when an OAuth session is logged in.
+      2. ``REMOTE_USER`` reverse-proxy header (Shibboleth).
+      3. ``eppn`` reverse-proxy header (Shibboleth fallback).
+      4. ``ANONYMOUS`` sentinel.
 
-    Pass `headers` explicitly to bypass the Streamlit lookup — useful in
-    tests and for any future non-Streamlit caller. When `headers` is
-    None, we try `st.context.headers` and fall back to an empty mapping
-    if Streamlit is not available or the context is empty.
+    Pass `headers` explicitly to bypass the Streamlit lookup — useful
+    in tests and for any future non-Streamlit caller. When `headers`
+    is None, we try `st.context.headers` and fall back to an empty
+    mapping if Streamlit is not available or the context is empty.
+    Passing an explicit `headers` mapping does NOT disable the OAuth
+    check; OAuth still wins because a signed-in operator with a
+    Shibboleth header present should be identified by their OAuth
+    email, not the proxy header.
     """
+    email = oauth_user()
+    if email:
+        return email
     if headers is None:
         headers = _streamlit_headers()
     raw = (headers.get("REMOTE_USER") or "").strip()
@@ -63,6 +80,50 @@ def current_user(headers: Mapping[str, str] | None = None) -> str:
     if raw:
         return raw
     return ANONYMOUS
+
+
+def oauth_user() -> str | None:
+    """Return the signed-in Google OAuth email, or None.
+
+    Defensive against every Streamlit-version skew we've seen:
+      * No Streamlit installed (unit-test path).
+      * ``st.user`` missing (pre-1.42 Streamlit).
+      * ``st.user.is_logged_in`` False (configured but not signed in).
+      * ``[auth]`` absent from secrets (``st.user`` raises on access).
+      * Any other access error — treated as "no OAuth identity".
+
+    Never raises. Returns the lowercased email when logged in, or
+    None otherwise. Trailing/leading whitespace is stripped.
+    """
+    try:
+        import streamlit as st  # local import: keeps this module testable
+
+        user = st.user
+        if not getattr(user, "is_logged_in", False):
+            return None
+        email = getattr(user, "email", None)
+        if not email:
+            return None
+        email = str(email).strip()
+        return email or None
+    except Exception:
+        return None
+
+
+def is_oauth_configured() -> bool:
+    """True when ``[auth]`` is present in ``st.secrets``.
+
+    Drives the sidebar sign-in UI's render decision: only show the
+    "Sign in with Google" control when OAuth is actually configured.
+    Defensive against secrets-loading errors (the file may not exist
+    in dev) — never raises.
+    """
+    try:
+        import streamlit as st
+
+        return "auth" in st.secrets
+    except Exception:
+        return False
 
 
 def _streamlit_headers() -> Mapping[str, str]:

@@ -33,6 +33,7 @@ import pymarc
 import streamlit as st
 
 from marcedit_web.lib import dedupe_strategy as ds_lib, marc_diff, session
+from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.dedupe_strategy import (
     KeeperStrategy,
     StrategyParams,
@@ -127,7 +128,7 @@ def render() -> None:
 
 
 def _render_match_config() -> None:
-    st.subheader("Match field")
+    st.header("Match field")
     st.caption(
         "Default matches on OCoLC 035 $a, which is the most common dedup "
         "key. Customize for ISBN-based matches or other identifiers."
@@ -277,10 +278,15 @@ def _render_strategy_picker(
     ):
         with st.spinner("Applying strategy…"):
             with _open_mmap(buffer_path) as mm:
-                # mmap → bytes copy is needed once; pymarc.Record can't
-                # slice an mmap when constructed via Record(data=...).
-                # For typical dedupe-buffer sizes this is fine; for
-                # the 1.5 GB case we'd revisit.
+                # TODO(TASK-046 followup): ``bytes(mm)`` copies the
+                # entire mmap buffer into Python memory because
+                # ``pymarc.Record(data=...)`` doesn't accept an mmap
+                # slice as input. Fine for typical dedupe-buffer sizes
+                # (< a few hundred MB). For 1 GB+ buffers, refactor
+                # the strategy helpers in
+                # ``lib/dedupe_strategy.py`` to take ``(path, offset,
+                # length)`` triples and seek-read per record so this
+                # full-buffer copy goes away.
                 source_bytes = bytes(mm)
                 keepers, matched = apply_strategy_to_groups(
                     dup_groups, source_bytes, strategy, params,
@@ -548,11 +554,16 @@ def _render_export(buffer_path: Path, dup_groups: dict[str, list[int]]) -> None:
     if build_clicked:
         keepers: dict[str, int] = st.session_state.get(_K_KEEPERS, {})
         delete_locations: list[tuple[str, int]] = []
+        groups_with_deletes = 0
         for key, offsets in dup_groups.items():
             keeper = keepers.get(key, offsets[0])
+            group_deletes = 0
             for off in offsets:
                 if off != keeper:
                     delete_locations.append(("loaded", off))
+                    group_deletes += 1
+            if group_deletes > 0:
+                groups_with_deletes += 1
         try:
             with _open_mmap(buffer_path) as mm:
                 deletes_bytes = marc_diff.write_subset_to_bytes(
@@ -563,6 +574,27 @@ def _render_export(buffer_path: Path, dup_groups: dict[str, list[int]]) -> None:
             return
         st.session_state[_K_EXPORT_BYTES] = deletes_bytes
         st.session_state[_K_EXPORT_COUNT] = len(delete_locations)
+
+        # TASK-046: dedupe deletes is an action workflow — a real
+        # set of records is being queued for removal from the
+        # downstream discovery service. Audit it like other
+        # action events. Strategy / per-group override are not
+        # audited individually (would be noise); the strategy
+        # name + params at the moment of export is enough to
+        # reconstruct the reasoning after the fact.
+        user = st.session_state.get("user", "anonymous") or "anonymous"
+        audit_event(
+            "dedupe-deletes-issued",
+            user=user,
+            filename=session.current_filename(),
+            strategy=st.session_state.get(
+                _K_STRATEGY, KeeperStrategy.FIRST_OCCURRENCE.value,
+            ),
+            strategy_params=st.session_state.get(_K_STRATEGY_PARAMS, {}),
+            groups_total=len(dup_groups),
+            groups_with_deletes=groups_with_deletes,
+            deletes_count=len(delete_locations),
+        )
 
     export_bytes = st.session_state.get(_K_EXPORT_BYTES)
     if export_bytes is not None:

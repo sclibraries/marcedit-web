@@ -7,7 +7,6 @@ import streamlit as st
 from marcedit_web.lib import session
 from marcedit_web.render import edit, rules_for_page, sidebar_status
 
-st.set_page_config(page_title="MarcEditor · marcedit-web", layout="wide")
 session.init_page()
 
 st.title("MarcEditor")

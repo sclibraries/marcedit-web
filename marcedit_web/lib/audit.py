@@ -11,14 +11,19 @@ Event categories the app emits today (kept aligned with the actual
 
 * ``upload-accepted`` / ``upload-rejected`` (Home, Diff sides,
   Marc Tools)
+* ``upload-restored`` (TASK-051 — refresh-resume from SQL row)
 * ``tasksfile-imported`` / ``tasksfile-rejected``
 * ``archive-imported`` / ``archive-rejected`` (MarcEdit zip path)
 * ``sandbox-timeout`` / ``sandbox-nonzero-exit``
-* ``task-saved`` / ``task-deleted``
+* ``task-saved`` / ``task-deleted`` / ``task-visibility-changed``
 * ``task-run-completed`` (TASK-034 — carries task names,
   in/out/changed/error counts, returncode, timed_out)
+* ``batch-replace-applied`` (Quick find/replace Apply; matched/applied
+    /changed counts plus field scope)
 * ``conversion-issued`` (TASK-032 — Marc Tools conversion completed;
   kind, source bytes, output bytes)
+* ``dedupe-deletes-issued`` (TASK-046 — Dedupe deletes export built;
+  strategy + params + groups total + deletes count)
 * ``admin-action`` (Code-view save while ``task_admin.is_admin()``)
 * ``anonymous-action-refused`` (prod mode, missing identity header)
 
@@ -32,6 +37,13 @@ Audit IO failures (disk full, permissions) are logged at
 user-facing operation. A missed audit line is operationally annoying
 but not unsafe; a crashed upload because the audit log is
 unwriteable would be worse.
+
+TASK-049: events also dual-write to the ``audit_events`` SQL table
+in ``data/marcedit.db``. The SQL write happens AFTER the JSONL line
+and is independently wrapped — a DB failure can't undo the disk log.
+JSONL stays the operator's tail/grep surface; SQL is for analyst
+queries. The JSONL path will go away in a future ticket once SQL
+has proven stable in operation.
 """
 
 from __future__ import annotations
@@ -43,6 +55,8 @@ import os
 import threading
 from pathlib import Path
 from typing import Any
+
+from . import db
 
 logger = logging.getLogger("marcedit_web.audit")
 
@@ -68,17 +82,18 @@ def _audit_path() -> Path:
 
 
 def audit_event(kind: str, *, user: str = "anonymous", **fields: Any) -> None:
-    """Append one JSONL event line to today's audit file.
+    """Append one JSONL event line and one SQL row for this event.
 
     Always non-blocking from the caller's perspective. The header
     fields (``ts`` UTC ISO-8601, ``kind``, ``user``) are emitted in a
     stable order so log-grep-style consumers stay simple.
+
+    Both writes (JSONL + SQL) are independently wrapped so a failure
+    in either path can't take down the user's action. JSONL is the
+    operator's tail/grep surface; SQL is the analyst's query surface.
     """
-    payload: dict[str, Any] = {
-        "ts": dt.datetime.utcnow().isoformat(timespec="seconds") + "Z",
-        "kind": kind,
-        "user": user,
-    }
+    ts = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    payload: dict[str, Any] = {"ts": ts, "kind": kind, "user": user}
     payload.update(fields)
     try:
         line = json.dumps(payload, sort_keys=True, default=str) + "\n"
@@ -87,3 +102,23 @@ def audit_event(kind: str, *, user: str = "anonymous", **fields: Any) -> None:
                 f.write(line)
     except OSError as exc:
         logger.warning("audit-write failed for %s: %s", kind, exc)
+
+    # SQL mirror — independent of JSONL so a DB hiccup can't lose
+    # the on-disk trail. ``payload_json`` carries everything except
+    # the indexed columns; that lets reporters reconstruct each
+    # event without joining tables.
+    try:
+        # Idempotent; in-process flag short-circuits after first call.
+        # Doing it here means callers that audit before App.py boots
+        # (e.g. tests, ad-hoc scripts) don't trip "no such table".
+        db.init_schema()
+        sql_fields = {k: v for k, v in payload.items() if k not in {"ts", "kind", "user"}}
+        payload_json = json.dumps(sql_fields, sort_keys=True, default=str)
+        with db.connect() as conn:
+            conn.execute(
+                "INSERT INTO audit_events(ts, user_email, kind, payload_json)"
+                " VALUES (?, ?, ?, ?)",
+                (ts, user, kind, payload_json),
+            )
+    except Exception as exc:  # noqa: BLE001 — audit must never propagate
+        logger.warning("audit-sql-write failed for %s: %s", kind, exc)

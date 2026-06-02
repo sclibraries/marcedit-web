@@ -415,6 +415,10 @@ def _dialog_diff(
         "Yellow = changed · Green = added in new · Red = removed in new · "
         "Transparent = unchanged"
     )
+    # Trust source: the rows come from parsed MARC field values; every
+    # cell is run through _escape_html before interpolation, and the
+    # `style` attribute is selected from the hardcoded _DIFF_STYLES map.
+    # Verified safe by TASK-054.
     st.markdown(_render_diff_html(rows), unsafe_allow_html=True)
 
 
@@ -423,7 +427,6 @@ def _dialog_diff(
 # ---------------------------------------------------------------------------
 
 
-st.set_page_config(page_title="Diff · marcedit-web", layout="wide")
 session.init_page()
 _init_diff_state()
 

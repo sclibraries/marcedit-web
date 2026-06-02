@@ -5,8 +5,63 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from marcedit_web.lib import preflight, rules as rules_mod, rules_validate, session
+from marcedit_web.lib import issue_tags, preflight, rules as rules_mod, rules_validate, session
 from marcedit_web.lib.errors import Issue
+from marcedit_web.render._record_modal import open_record_modal
+
+
+# Visual differentiation for the severity column. We use colored
+# circles in front of the label rather than background-color styling
+# because Streamlit's selection events ("on_select=rerun") flake out
+# when the dataframe is wrapped in a pandas Styler — the Styler
+# approach was breaking the "click row → open modal" flow.
+# Emoji + text doesn't rely on color alone (a11y).
+_SEVERITY_PREFIX = {
+    "error": "🔴 error",
+    "warning": "🟡 warning",
+    "info": "🔵 info",
+}
+
+
+def _decorate_severity(value: str) -> str:
+    return _SEVERITY_PREFIX.get(value, value)
+
+
+# Back-compat alias: ``tests/test_validate_view_button.py`` imports
+# this name. The actual logic now lives in ``lib/issue_tags`` so the
+# inline editor (TASK-057) can reuse it for Ace annotations.
+_tag_for_issue = issue_tags.tag_for_issue
+
+
+def _compute_issues(
+    rule_set: rules_mod.RuleSet | None,
+    store,
+    malformed: int,
+) -> list[Issue]:
+    """Run preflight + rules in two streaming passes, wrapped in a
+    user-visible status block so the cataloger sees progress."""
+    with st.status("Validating records…", expanded=False) as status:
+        status.update(label="Preflight pass…")
+        preflight_issues = preflight.run_preflight(
+            records=store.iter_records() if store else iter([]),
+            malformed=malformed,
+        )
+        status.update(
+            label=(
+                f"Preflight: {len(preflight_issues)} issue(s). "
+                "Applying rules…"
+            )
+        )
+        rule_issues = rules_validate.validate_records(
+            store.iter_records() if store else iter([]),
+            rule_set,
+        )
+        all_issues: list[Issue] = preflight_issues + rule_issues
+        status.update(
+            label=f"Done — {len(all_issues)} issue(s) found.",
+            state="complete",
+        )
+    return all_issues
 
 
 def render(
@@ -25,19 +80,17 @@ def render(
     malformed = store.malformed_count() if store else 0
     record_count = store.count() if store else 0
 
-    # Stage 16: stream records through preflight + rules in two separate
-    # iterator passes. The RecordStore parses each record on demand and
-    # releases it after each pass, so memory stays bounded by O(records ×
-    # offsets) instead of O(records × pymarc.Record).
-    preflight_issues = preflight.run_preflight(
-        records=store.iter_records() if store else iter([]),
-        malformed=malformed,
-    )
-    rule_issues = rules_validate.validate_records(
-        store.iter_records() if store else iter([]),
-        rule_set,
-    )
-    all_issues: list[Issue] = preflight_issues + rule_issues
+    # Memoize the preflight + rules pass across reruns so the View
+    # button (and any other widget interaction) doesn't re-trigger
+    # the visible "Validating records…" status block. The
+    # ``issues_cache`` dict is wiped by ``session.handle_upload`` and
+    # by every record-mutating call site (edit / tasks /
+    # fixed-field), so the cache stays correct for free.
+    cache = st.session_state.setdefault("issues_cache", {})
+    all_issues = cache.get("validate")
+    if all_issues is None:
+        all_issues = _compute_issues(rule_set, store, malformed)
+        cache["validate"] = all_issues
 
     col_a, col_b, col_c, col_d = st.columns(4)
     col_a.metric("Records", record_count)
@@ -45,7 +98,7 @@ def render(
     col_c.metric("Warnings", sum(1 for i in all_issues if i.severity == "warning"))
     col_d.metric("Info", sum(1 for i in all_issues if i.severity == "info"))
 
-    st.subheader("Issue table")
+    st.header("Issue table")
     if not all_issues:
         st.success("No issues found.")
         return
@@ -59,6 +112,10 @@ def render(
             "identifier": i.identifier or "—",
             "message": i.message,
             "suggestion": i.suggestion or "",
+            # Stash the derived tag on the row so the View widget
+            # can pass it to the modal without re-running the
+            # regex sweep on every selectbox change.
+            "_tag": _tag_for_issue(i) or "",
         }
         for i in all_issues
     ]
@@ -95,11 +152,21 @@ def render(
         except ValueError:
             st.warning(f"Ignoring non-numeric record filter {needle!r}.")
 
-    st.caption(f"{len(filtered)} of {len(df)} issues shown.")
+    st.caption(
+        f"{len(filtered)} of {len(df)} issues shown. "
+        "Pick an issue below and click **View** to see the full record."
+    )
+    # Display-only dataframe: the explicit View widget below drives
+    # modal-opening so we don't take a rerun + re-validation hit on
+    # every row click (TASK-055). The ``_tag`` helper column is
+    # dropped from the display.
+    display = filtered.reset_index(drop=True).copy()
+    display["severity"] = display["severity"].map(_decorate_severity)
     st.dataframe(
-        filtered,
+        display.drop(columns=["_tag"]),
         use_container_width=True,
         hide_index=True,
+        key="validate_table",
         column_config={
             "severity": st.column_config.TextColumn("Severity", width="small"),
             "scope": st.column_config.TextColumn("Scope", width="small"),
@@ -110,6 +177,63 @@ def render(
             "suggestion": st.column_config.TextColumn("Suggestion", width="large"),
         },
     )
+
+    # View widget: a selectbox of the filtered record-scope issues +
+    # a "View" button that opens the modal in a single click. Issues
+    # whose ``record`` column isn't a record number (file-scope
+    # checks like ``record-count``, ``no-records``) are excluded —
+    # they don't map to a viewable record.
+    viewable = filtered[filtered["record"].apply(lambda v: str(v).isdigit())]
+    if viewable.empty:
+        st.caption(
+            "No record-scope issues in the filtered set. Adjust the "
+            "filters above to view a specific record."
+        )
+    else:
+        view_left, view_right = st.columns([5, 1])
+        options = list(viewable.index)
+
+        def _format_choice(idx: int) -> str:
+            row = viewable.loc[idx]
+            preview = row["message"]
+            if len(preview) > 80:
+                preview = preview[:77] + "…"
+            return (
+                f"{row['severity']}  ·  Record #{row['record']}  ·  "
+                f"{row['code']}  ·  {preview}"
+            )
+
+        with view_left:
+            chosen = st.selectbox(
+                "Issue to view",
+                options=options,
+                format_func=_format_choice,
+                key="validate_view_select",
+                label_visibility="collapsed",
+            )
+        with view_right:
+            clicked = st.button(
+                "View",
+                key="validate_view_btn",
+                icon=":material/visibility:",
+                use_container_width=True,
+                type="primary",
+            )
+
+        if clicked and chosen is not None:
+            row = viewable.loc[chosen]
+            record_index = int(row["record"])
+            tag = row["_tag"] or None
+            open_record_modal(
+                record_index=record_index,
+                store=store,
+                extra_lines=[
+                    ("Message", row["message"]),
+                    ("Suggestion", row.get("suggestion", "")),
+                ],
+                highlight_tag=tag,
+                highlight_severity=row["severity"],
+            )
 
     if rules_warnings:
         with st.expander(

@@ -56,7 +56,10 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
     search_active = not query.is_empty()
     match_indices: list[int] = []
     if search_active:
-        match_indices = list(search.matching_records(store, query))
+        # Search walks every record's bytes — wrap so the cataloger
+        # sees activity on big batches instead of a frozen navigator.
+        with st.spinner("Searching…"):
+            match_indices = list(search.matching_records(store, query))
         if not match_indices:
             st.warning(f"No records match `{query_str}`.")
         else:
@@ -225,6 +228,9 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
             subfield=(help_subfield or None) if not is_control else None,
             byte=byte_position,
         )
+        # Trust source: data/marc-rules.txt (operator-controlled). Plain-text
+        # fields are HTML-escaped inside render_help_entry; body is allowed
+        # to contain markdown + safe HTML by design. See tooltips.py.
         st.markdown(tooltips.render_help_entry(entry), unsafe_allow_html=True)
 
     # --- Tag filter -------------------------------------------------------

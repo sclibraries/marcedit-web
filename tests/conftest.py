@@ -5,6 +5,31 @@ from __future__ import annotations
 import pytest
 from pymarc import Field, Leader, Record, Subfield
 
+from marcedit_web.lib import db as _db
+
+
+@pytest.fixture(autouse=True)
+def _isolated_sqlite(monkeypatch, tmp_path):
+    """Point the SQLite DB + tasks root at per-test tmp paths.
+
+    The audit module dual-writes every event to ``data/marcedit.db``
+    via ``marcedit_web.lib.db``; without isolation the test suite
+    would pollute the dev DB on every run. ``reset_for_tests()``
+    drops the cached "initialized" flag so each test's first DB
+    touch creates a fresh schema in its own tmp_path file.
+
+    Also isolates ``MARCEDIT_WEB_TASKS_ROOT`` (TASK-050) — the
+    file→SQL migration in ``init_schema`` scans this directory, and
+    without the override the test DB would inherit whatever tasks
+    happen to be in the developer's ``data/tasks/`` directory.
+    """
+    monkeypatch.setenv("MARCEDIT_WEB_DB_PATH", str(tmp_path / "test-suite.db"))
+    monkeypatch.setenv("MARCEDIT_WEB_TASKS_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "uploads"))
+    _db.reset_for_tests()
+    yield
+    _db.reset_for_tests()
+
 
 def _sample_record() -> Record:
     """A small synthetic record with a representative mix of fields.

@@ -270,3 +270,80 @@ def test_fingerprint_record_changes_when_record_changes(make_record):
     ))
     after = fingerprint_record(rec)
     assert before != after
+
+
+# ---------------------------------------------------------------------------
+# TASK-046: preview cap + batch-identity drift
+# ---------------------------------------------------------------------------
+
+
+def test_preview_records_batch_identity(store):
+    """build_preview snapshots (filename, count) on the preview."""
+    preview = build_preview(
+        store, _make_request(find="Test title.", replace="X"),
+    )
+    assert preview.batch_identity == ("synthetic.mrc", store.count())
+
+
+def test_apply_refuses_when_batch_identity_drifts(store, tmp_path, make_record):
+    """Loading a different store between preview and apply → refused."""
+    preview = build_preview(
+        store, _make_request(find="Test title.", replace="Drift-test"),
+    )
+    assert preview.matched_indices
+
+    # Build a different store (different filename) and try to Apply
+    # the preview against it — the identity check must fire BEFORE
+    # the fingerprint check.
+    other = RecordStore.from_records(
+        [make_record() for _ in range(2)],
+        tmp_dir=tmp_path / "other",
+        filename="OTHER.mrc",
+    )
+    result = apply_preview(other, preview)
+    assert not result.applied
+    assert "Batch changed" in (result.error or "")
+
+
+def test_preview_cap_triggered_for_large_match_set(monkeypatch, tmp_path, make_record):
+    """When matched > MAX_PREVIEW_MATCHES, sandbox only runs the first N."""
+    # Shrink the cap so we don't have to build a 500-record fixture.
+    monkeypatch.setattr(br, "MAX_PREVIEW_MATCHES", 3)
+    records = [make_record() for _ in range(7)]
+    store = RecordStore.from_records(
+        records, tmp_dir=tmp_path / "cap", filename="cap.mrc",
+    )
+
+    preview = build_preview(
+        store, _make_request(find="Test title.", replace="Edited"),
+    )
+    assert preview.error is None
+    assert len(preview.matched_indices) == 7
+    assert preview.preview_cap_triggered is True
+    # output_records is the SUBSET (cap-sized), not the full match list.
+    assert len(preview.output_records) == 3
+    # diff_summary covers the subset.
+    assert preview.changed_count <= 3
+
+
+def test_apply_with_capped_preview_runs_sandbox_over_full_set(
+    monkeypatch, tmp_path, make_record,
+):
+    """Capped preview → Apply re-runs sandbox and commits to ALL matched indices."""
+    monkeypatch.setattr(br, "MAX_PREVIEW_MATCHES", 3)
+    records = [make_record() for _ in range(7)]
+    store = RecordStore.from_records(
+        records, tmp_dir=tmp_path / "cap", filename="cap.mrc",
+    )
+
+    preview = build_preview(
+        store, _make_request(find="Test title.", replace="Applied"),
+    )
+    assert preview.preview_cap_triggered is True
+
+    result = apply_preview(store, preview)
+    assert result.applied
+    assert len(result.applied_indices) == 7  # full matched set committed
+    # Every live record in the store carries the new value.
+    for rec in store.iter_records():
+        assert rec.get("245")["a"] == "Applied"

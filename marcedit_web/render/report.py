@@ -37,47 +37,51 @@ def render() -> None:
 
     total = 0
     if store is not None:
-        for i, record in enumerate(store.iter_records(), start=1):
-            total = i
-            snap = RecordSnapshot.of(record, i)
-            format_counter[snap.format_label] += 1
-            tag_counter.update(snap.tags_present)
-            url_domain_counter.update(snap.url_domains)
-            tag_record_presence.update(snap.tags_present.keys())
-            per_record_rows.append({
-                "index": snap.index,
-                "identifier": snap.identifier or "—",
-                "OCLC #": snap.oclc_number or "",
-                "title": (snap.title or "")[:120],
-                "format": snap.format_label,
-                "ldr 06": snap.leader_06,
-                "ldr 07": snap.leader_07,
-                "tag count": sum(snap.tags_present.values()),
-            })
-            # TASK-033 streaming aggregates — walk fields once,
-            # update every counter. The Record stays in scope only
-            # for this loop iteration so 100K records still work.
-            for f in record.fields:
-                tag = f.tag
-                if "900" <= tag <= "999":
-                    local_tag_counter[tag] += 1
-                if f.is_control_field():
-                    continue
-                for sf in f.subfields:
-                    subfield_counter[(tag, sf.code)] += 1
-            field_008 = record.get("008")
-            if field_008 is not None and field_008.data:
-                data = field_008.data
-                if len(data) >= 11:
-                    date = data[7:11].strip()
-                    if date:
-                        date_counter[date] += 1
-                if len(data) >= 38:
-                    lang = data[35:38].strip()
-                    if lang:
-                        language_counter[lang] += 1
-            # Snapshot drops out of scope on next iteration — no list of
-            # snapshots is retained.
+        # Record-by-record walk on a 100K-batch is multi-second.
+        # The spinner keeps the page from looking frozen while the
+        # aggregates build.
+        with st.spinner("Building report…"):
+            for i, record in enumerate(store.iter_records(), start=1):
+                total = i
+                snap = RecordSnapshot.of(record, i)
+                format_counter[snap.format_label] += 1
+                tag_counter.update(snap.tags_present)
+                url_domain_counter.update(snap.url_domains)
+                tag_record_presence.update(snap.tags_present.keys())
+                per_record_rows.append({
+                    "index": snap.index,
+                    "identifier": snap.identifier or "—",
+                    "OCLC #": snap.oclc_number or "",
+                    "title": (snap.title or "")[:120],
+                    "format": snap.format_label,
+                    "ldr 06": snap.leader_06,
+                    "ldr 07": snap.leader_07,
+                    "tag count": sum(snap.tags_present.values()),
+                })
+                # TASK-033 streaming aggregates — walk fields once,
+                # update every counter. The Record stays in scope only
+                # for this loop iteration so 100K records still work.
+                for f in record.fields:
+                    tag = f.tag
+                    if "900" <= tag <= "999":
+                        local_tag_counter[tag] += 1
+                    if f.is_control_field():
+                        continue
+                    for sf in f.subfields:
+                        subfield_counter[(tag, sf.code)] += 1
+                field_008 = record.get("008")
+                if field_008 is not None and field_008.data:
+                    data = field_008.data
+                    if len(data) >= 11:
+                        date = data[7:11].strip()
+                        if date:
+                            date_counter[date] += 1
+                    if len(data) >= 38:
+                        lang = data[35:38].strip()
+                        if lang:
+                            language_counter[lang] += 1
+                # Snapshot drops out of scope on next iteration — no list of
+                # snapshots is retained.
 
     st.subheader("Across the batch")
 
@@ -178,10 +182,13 @@ def render() -> None:
 
     per_record_df = pd.DataFrame(per_record_rows)
 
-    st.dataframe(
+    event = st.dataframe(
         per_record_df,
         hide_index=True,
         use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="report_table",
         column_config={
             "index": st.column_config.NumberColumn("Record #", width="small"),
             "identifier": st.column_config.TextColumn("Identifier", width="medium"),
@@ -192,6 +199,15 @@ def render() -> None:
             "ldr 07": st.column_config.TextColumn("LDR 07", width="small"),
             "tag count": st.column_config.NumberColumn("Tags", width="small"),
         },
+    )
+    from marcedit_web.render._record_modal import selection_view_button
+    selection_view_button(
+        df=per_record_df,
+        event=event,
+        record_column="index",
+        button_label_template="View record #{n}",
+        button_key="report_view_btn",
+        store=store,
     )
     _csv_download(per_record_df, "per_record", key="report_csv_per_record")
 

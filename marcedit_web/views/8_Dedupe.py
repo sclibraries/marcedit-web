@@ -7,7 +7,6 @@ import streamlit as st
 from marcedit_web.lib import session
 from marcedit_web.render import dedupe, sidebar_status
 
-st.set_page_config(page_title="Dedupe · marcedit-web", layout="wide")
 session.init_page()
 
 st.title("Dedupe")
