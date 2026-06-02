@@ -1,39 +1,41 @@
 # marcedit-web
 
 Web-based MARC21 viewer, validator, editor, and diff. Recreates MarcEdit's
-generic editing features as a Streamlit app, deployable on a RedHat 9
-server behind a Shibboleth reverse proxy.
+generic editing features as a Streamlit app, deployed at
+https://libtools2.smith.edu/marcedit-web/ behind Apache + mod_shib on
+RHEL 8.10.
 
 See `docs/application-overview.md` for the current architecture and
 recommended speed, consistency, and hardening improvements.
 
-## Quick start from source
+## Local development
+
+Prerequisite: Python 3.9 (pinned in `pyproject.toml`). On macOS:
+`brew install python@3.9`. On Linux: use your distro's Python 3.9
+package; on RHEL: `dnf module install python39`.
 
 ```sh
-docker compose up -d --build
-open http://localhost:8501
+git clone <repo URL>
+cd marcedit-web
+
+python3.9 -m venv .venv
+source .venv/bin/activate
+
+pip install --upgrade pip
+pip install -e ".[dev]"
+
+streamlit run marcedit_web/App.py
 ```
 
-Tear down:
+The app loads at `http://localhost:8501/`. For Google OAuth in local
+dev, copy `.streamlit/secrets.toml.example` to
+`.streamlit/secrets.toml` and follow the setup notes there.
+
+Run the test suite:
 
 ```sh
-docker compose down
+pytest
 ```
-
-## Run a published image
-
-Use this path on a deployment host that should pull an image instead of
-building from source:
-
-```sh
-export MARCEDIT_WEB_IMAGE=ghcr.io/OWNER/REPO:latest
-docker compose -f docker-compose.pull.yml pull
-docker compose -f docker-compose.pull.yml up -d
-open http://localhost:8501
-```
-
-For GHCR, unauthenticated `docker pull` works only when the package is
-public. Private packages require `docker login ghcr.io` first.
 
 ## Stack
 
@@ -59,12 +61,14 @@ tests/
 
 ## Deployment docs
 
-- `docs/deployment.md` covers production environment variables,
-  Shibboleth/nginx wiring, container hardening, audit logging, and
-  pulled-image deployment.
-- `.github/workflows/docker-publish.yml` publishes multi-arch images to
-  GHCR as `ghcr.io/<owner>/<repo>` on `main`, version tags, and manual
-  dispatch.
+- `docs/deployment.md` — canonical operator reference for the
+  native-Python deploy at `libtools2.smith.edu/marcedit-web`:
+  environment variables, identity model, service management,
+  audit log, and smoke tests.
+- `docs/its-setup.md` — one-page brief for ITS covering the four
+  one-time root operations needed to onboard a new host.
+- `.github/workflows/test.yml` runs `pytest` on Python 3.9 against
+  every push and PR; required on `main`.
 
 ## Tickets
 
