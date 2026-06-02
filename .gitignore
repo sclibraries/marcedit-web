@@ -70,3 +70,6 @@ data/uploads/
 /*.png
 /*.jpg
 /*.jpeg
+
+# Production environment variables (systemd EnvironmentFile)
+.env
