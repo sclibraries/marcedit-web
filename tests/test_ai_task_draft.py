@@ -104,6 +104,41 @@ def test_wrong_param_type_is_rejected_with_specific_message():
     assert review.rejected_operations[0].reason == "param 'subfields' must be a list"
 
 
+def test_invalid_select_param_values_are_rejected():
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "add-field",
+                    "params": {
+                        "tag": "590",
+                        "subfields": [["a", "Routledge EBA record"]],
+                        "condition": "not-a-real-condition",
+                    },
+                },
+                {
+                    "kind": "add-subfield",
+                    "params": {
+                        "tag": "856",
+                        "code": "z",
+                        "value": "Connect to resource",
+                        "position": "middle",
+                    },
+                },
+            ],
+        )
+    )
+
+    assert review.operations == ()
+    assert len(review.rejected_operations) == 2
+    assert review.rejected_operations[0].reason.startswith(
+        "param 'condition' must be one of:"
+    )
+    assert review.rejected_operations[1].reason == (
+        "param 'position' must be one of: end, start"
+    )
+
+
 def test_invalid_regex_is_rejected():
     review = parse_ai_task_draft(
         _draft(
@@ -171,6 +206,35 @@ def test_record_method_values_are_rejected_as_code_shaped():
 
     assert review.operations == ()
     assert "code-shaped value" in review.rejected_operations[0].reason
+
+
+def test_normal_text_containing_record_dot_com_is_allowed():
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "add-subfield",
+                    "params": {
+                        "tag": "856",
+                        "code": "z",
+                        "value": "Connect through record.com for access",
+                    },
+                }
+            ],
+        )
+    )
+
+    assert review.rejected_operations == ()
+    assert operations_for_editor(review) == [
+        {
+            "kind": "add-subfield",
+            "params": {
+                "tag": "856",
+                "code": "z",
+                "value": "Connect through record.com for access",
+            },
+        }
+    ]
 
 
 def test_custom_operation_with_python_code_is_rejected():

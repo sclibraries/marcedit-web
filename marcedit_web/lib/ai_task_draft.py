@@ -45,7 +45,7 @@ class DraftReview:
 
 
 _PALETTE_BY_KIND = {op["kind"]: op for op in task_builder.OPERATIONS_PALETTE}
-_STRING_TYPES = {"text", "indicator", "subfield_code", "code", "select"}
+_STRING_TYPES = {"text", "indicator", "subfield_code", "code"}
 _REGEX_PARAMS_BY_KIND = {
     "replace-field-data-by-regex": ("pattern",),
     "delete-856-url-regex": ("pattern",),
@@ -53,7 +53,8 @@ _REGEX_PARAMS_BY_KIND = {
 _UNSUPPORTED_AI_OPERATION_KINDS = {"custom"}
 _CODE_SHAPED_RE = re.compile(
     r"(__import__|\bimport\b|\bfrom\s+\S+\s+import\b|\bexec\s*\(|"
-    r"\beval\s*\(|\bopen\s*\(|\brecord\.|\bos\.|\bsubprocess\b|\bsys\.|\bPath\s*\()"
+    r"\beval\s*\(|\bopen\s*\(|\brecord\.[A-Za-z_]\w*\s*\(|"
+    r"\bos\.|\bsubprocess\b|\bsys\.|\bPath\s*\()"
 )
 
 
@@ -173,6 +174,13 @@ def _param_type_error(name: str, value: Any, spec: dict) -> str | None:
         if not isinstance(value, str):
             return f"param '{name}' must be a string"
         return None
+    if param_type == "select":
+        if not isinstance(value, str):
+            return f"param '{name}' must be a string"
+        option_values = _select_option_values(spec)
+        if option_values and value not in option_values:
+            return f"param '{name}' must be one of: {', '.join(option_values)}"
+        return None
     if param_type == "bool":
         if not isinstance(value, bool):
             return f"param '{name}' must be a boolean"
@@ -189,6 +197,14 @@ def _param_type_error(name: str, value: Any, spec: dict) -> str | None:
             ):
                 return f"param '{name}' must contain [code, value] string pairs"
     return None
+
+
+def _select_option_values(spec: dict) -> list[str]:
+    values: list[str] = []
+    for option in spec.get("options", []):
+        if isinstance(option, dict) and isinstance(option.get("value"), str):
+            values.append(option["value"])
+    return values
 
 
 def _regex_error(kind: str, params: dict[str, Any]) -> str | None:
