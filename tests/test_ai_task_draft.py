@@ -153,6 +153,26 @@ def test_code_shaped_values_are_rejected():
     assert "code-shaped value" in review.rejected_operations[0].reason
 
 
+def test_record_method_values_are_rejected_as_code_shaped():
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "add-subfield",
+                    "params": {
+                        "tag": "856",
+                        "code": "z",
+                        "value": "record.remove_fields('029')",
+                    },
+                }
+            ],
+        )
+    )
+
+    assert review.operations == ()
+    assert "code-shaped value" in review.rejected_operations[0].reason
+
+
 def test_custom_operation_with_python_code_is_rejected():
     review = parse_ai_task_draft(
         _draft(

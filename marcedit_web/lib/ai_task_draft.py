@@ -53,7 +53,7 @@ _REGEX_PARAMS_BY_KIND = {
 _UNSUPPORTED_AI_OPERATION_KINDS = {"custom"}
 _CODE_SHAPED_RE = re.compile(
     r"(__import__|\bimport\b|\bfrom\s+\S+\s+import\b|\bexec\s*\(|"
-    r"\beval\s*\(|\bopen\s*\(|\bos\.|\bsubprocess\b|\bsys\.|\bPath\s*\()"
+    r"\beval\s*\(|\bopen\s*\(|\brecord\.|\bos\.|\bsubprocess\b|\bsys\.|\bPath\s*\()"
 )
 
 
