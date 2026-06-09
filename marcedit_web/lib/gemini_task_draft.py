@@ -95,9 +95,19 @@ def build_prompt(notes: str) -> str:
     ]
     schema = {
         "task_name": "valid-slug",
+        "description": "One sentence cataloger-facing task summary.",
         "operations": [
             {
                 "kind": "delete-tag",
+                "source_text": "Original cataloger note line that produced this op.",
+                "explanation": "Why this operation matches the source text.",
+                "confidence": "high",
+                "regex": {
+                    "pattern": "",
+                    "meaning": "",
+                    "before": "",
+                    "after": "",
+                },
                 "params": {"tag": "029"},
             }
         ],
@@ -115,6 +125,11 @@ def build_prompt(notes: str) -> str:
         "- Use only the allowed operation kinds and params listed below.\n"
         "- Put ambiguous or unsupported instructions in unsupported_lines or questions.\n"
         "- Preserve the cataloger's order when mapping supported operations.\n"
+        "- Include a top-level description.\n"
+        "- For every operation include source_text, explanation, and confidence "
+        "(high, medium, or low).\n"
+        "- For regex operations include a regex object with pattern, meaning, "
+        "before, and after strings; use empty strings for non-regex operations.\n"
         "\n"
         "Required response schema:\n"
         f"{json.dumps(schema, indent=2)}\n"

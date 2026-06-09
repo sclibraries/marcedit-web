@@ -15,9 +15,13 @@ def _draft_response_text() -> str:
     return json.dumps(
         {
             "task_name": "routledge-eba",
+            "description": "Delete 029 fields from Routledge EBA records.",
             "operations": [
                 {
                     "kind": "delete-tag",
+                    "source_text": "Delete all 029 fields.",
+                    "explanation": "Maps directly to deleting MARC tag 029.",
+                    "confidence": "high",
                     "params": {"tag": "029"},
                 }
             ],
@@ -57,6 +61,11 @@ def test_build_prompt_contains_schema_guardrails_allowed_operations_and_notes():
 
     assert "JSON only" in prompt
     assert "No Python" in prompt
+    assert '"description"' in prompt
+    assert '"source_text"' in prompt
+    assert '"explanation"' in prompt
+    assert '"confidence"' in prompt
+    assert '"regex"' in prompt
     assert "unsupported_lines" in prompt
     assert "replace-field-data-by-regex" in prompt
     assert '"custom"' not in prompt
@@ -95,7 +104,10 @@ def test_draft_task_from_notes_posts_to_gemini_and_parses_review(monkeypatch):
 
     assert parsed["raw_text"] == _draft_response_text()
     assert review.task_name == "routledge-eba"
+    assert review.description == "Delete 029 fields from Routledge EBA records."
     assert review.operations[0].kind == "delete-tag"
+    assert review.operations[0].source_text == "Delete all 029 fields."
+    assert review.operations[0].confidence == "high"
     assert review.questions == ("Confirm whether 856 links should be retained.",)
 
     req = captured["request"]

@@ -19,6 +19,7 @@ from marcedit_web.lib.ai_task_draft import (
 def _draft(**overrides) -> str:
     data = {
         "task_name": "routledge-eba",
+        "description": "",
         "operations": [],
         "questions": [],
         "manual_notes": [],
@@ -324,39 +325,56 @@ def test_routledge_style_fixture_accepts_common_ops_and_preserves_review_items()
     }
 
 
-def test_ai_draft_review_helper_preserves_low_confidence_and_rejected_source_text():
+def test_ai_draft_parser_preserves_review_metadata_for_handoff():
     sys.modules.setdefault(
         "streamlit_ace",
         SimpleNamespace(st_ace=lambda *args, **kwargs: None),
     )
     from marcedit_web.render import tasks as tasks_render
 
-    review = SimpleNamespace(
-        task_name="routledge-eba",
-        operations=(
-            SimpleNamespace(
-                kind="replace-field-data-by-regex",
-                params={
-                    "tag": "245",
-                    "pattern": r"\s+/$",
-                    "replacement": "",
+    review = parse_ai_task_draft(
+        _draft(
+            description="Remove vendor cleanup fields for Routledge EBA.",
+            operations=[
+                {
+                    "kind": "replace-field-data-by-regex",
+                    "source_text": "Strip trailing slash from 245.",
+                    "explanation": "Cataloger note says to strip trailing slash.",
+                    "confidence": "low",
+                    "regex": {
+                        "pattern": r"\s+/$",
+                        "meaning": "trailing slash after whitespace",
+                        "before": "Title /",
+                        "after": "Title",
+                    },
+                    "params": {
+                        "tag": "245",
+                        "pattern": r"\s+/$",
+                        "replacement": "",
+                    },
                 },
-                confidence="low",
-                explanation="Cataloger note says to strip trailing slash.",
-            ),
-        ),
-        rejected_operations=(
-            SimpleNamespace(
-                kind="vendor-specific-cleanup",
-                params={"line": "Normalize package notes"},
-                reason="unknown operation kind 'vendor-specific-cleanup'",
-                source_text="Normalize package notes",
-            ),
-        ),
-        questions=(),
-        manual_notes=(),
-        unsupported_lines=(),
+                {
+                    "kind": "vendor-specific-cleanup",
+                    "source_text": "Normalize package notes",
+                    "params": {"line": "Normalize package notes"},
+                },
+            ],
+        )
     )
+
+    assert review.description == "Remove vendor cleanup fields for Routledge EBA."
+    assert review.operations[0].source_text == "Strip trailing slash from 245."
+    assert review.operations[0].confidence == "low"
+    assert review.operations[0].explanation == (
+        "Cataloger note says to strip trailing slash."
+    )
+    assert review.operations[0].regex == {
+        "pattern": r"\s+/$",
+        "meaning": "trailing slash after whitespace",
+        "before": "Title /",
+        "after": "Title",
+    }
+    assert review.rejected_operations[0].source_text == "Normalize package notes"
 
     accepted_summary = tasks_render._ai_draft_operation_summary(review.operations[0])
     rejected_summary = tasks_render._ai_draft_rejected_operation_summary(
@@ -365,5 +383,6 @@ def test_ai_draft_review_helper_preserves_low_confidence_and_rejected_source_tex
 
     assert "confidence: low" in accepted_summary
     assert "Cataloger note says to strip trailing slash." in accepted_summary
+    assert "meaning: trailing slash after whitespace" in accepted_summary
     assert blocking_issue_count(review) == 1
     assert "Normalize package notes" in rejected_summary

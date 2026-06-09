@@ -20,6 +20,10 @@ class DraftOperation:
 
     kind: str
     params: dict[str, Any]
+    source_text: str = ""
+    explanation: str = ""
+    confidence: str = ""
+    regex: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,7 @@ class RejectedOperation:
     params: dict[str, Any]
     reason: str
     index: int | None = None
+    source_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,7 @@ class DraftReview:
     questions: tuple[str, ...]
     manual_notes: tuple[str, ...]
     unsupported_lines: tuple[str, ...]
+    description: str = ""
 
 
 _PALETTE_BY_KIND = {op["kind"]: op for op in task_builder.OPERATIONS_PALETTE}
@@ -86,6 +92,7 @@ def parse_ai_task_draft(raw_text: str) -> DraftReview:
         questions=_string_tuple(data, "questions"),
         manual_notes=_string_tuple(data, "manual_notes"),
         unsupported_lines=_string_tuple(data, "unsupported_lines"),
+        description=_optional_string(data, "description"),
     )
 
 
@@ -127,45 +134,93 @@ def _validate_operation(raw_op: Any, index: int) -> DraftOperation | RejectedOpe
 
     kind = raw_op.get("kind")
     params = raw_op.get("params", {})
+    source_text = _optional_string(raw_op, "source_text")
+    explanation = _optional_string(raw_op, "explanation")
+    confidence = _optional_string(raw_op, "confidence")
+    regex_metadata = _optional_string_dict(raw_op, "regex")
     if not isinstance(kind, str) or not kind:
-        return RejectedOperation("", _dict_or_empty(params), "operation kind is required", index)
+        return RejectedOperation(
+            "",
+            _dict_or_empty(params),
+            "operation kind is required",
+            index,
+            source_text,
+        )
     if not isinstance(params, dict):
-        return RejectedOperation(kind, {}, "params must be an object", index)
+        return RejectedOperation(kind, {}, "params must be an object", index, source_text)
+    if regex_metadata == "invalid":
+        return RejectedOperation(
+            kind,
+            dict(params),
+            "regex must be an object with string values",
+            index,
+            source_text,
+        )
 
     palette_op = _PALETTE_BY_KIND.get(kind)
     if palette_op is None:
-        return RejectedOperation(kind, dict(params), f"unknown operation kind '{kind}'", index)
+        return RejectedOperation(
+            kind,
+            dict(params),
+            f"unknown operation kind '{kind}'",
+            index,
+            source_text,
+        )
     if kind in _UNSUPPORTED_AI_OPERATION_KINDS:
         return RejectedOperation(
             kind,
             dict(params),
             f"{kind} operations are not supported in AI drafts",
             index,
+            source_text,
         )
 
     param_specs = {param["name"]: param for param in palette_op["params"]}
     for name in params:
         if name not in param_specs:
-            return RejectedOperation(kind, dict(params), f"unknown param '{name}'", index)
+            return RejectedOperation(
+                kind,
+                dict(params),
+                f"unknown param '{name}'",
+                index,
+                source_text,
+            )
 
     for name, spec in param_specs.items():
         if spec.get("required") and _is_empty(params.get(name)):
-            return RejectedOperation(kind, dict(params), f"required param '{name}' is missing", index)
+            return RejectedOperation(
+                kind,
+                dict(params),
+                f"required param '{name}' is missing",
+                index,
+                source_text,
+            )
 
     for name, value in params.items():
         reason = _param_type_error(name, value, param_specs[name])
         if reason is not None:
-            return RejectedOperation(kind, dict(params), reason, index)
+            return RejectedOperation(kind, dict(params), reason, index, source_text)
         if _contains_code_shaped_value(value):
             return RejectedOperation(
-                kind, dict(params), f"param '{name}' contains code-shaped value", index
+                kind,
+                dict(params),
+                f"param '{name}' contains code-shaped value",
+                index,
+                source_text,
             )
 
     regex_error = _regex_error(kind, params)
     if regex_error is not None:
-        return RejectedOperation(kind, dict(params), regex_error, index)
+        return RejectedOperation(kind, dict(params), regex_error, index, source_text)
 
-    return DraftOperation(kind=kind, params=_copy_jsonish(params))
+    return DraftOperation(
+        kind=kind,
+        params=_copy_jsonish(params),
+        source_text=source_text,
+        explanation=explanation,
+        confidence=confidence,
+        regex=_copy_jsonish(regex_metadata) if regex_metadata is not None else None,
+    )
 
 
 def _param_type_error(name: str, value: Any, spec: dict) -> str | None:
@@ -230,6 +285,26 @@ def _string_tuple(data: dict[str, Any], key: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise DraftValidationError(f"{key} must be a list of strings")
     return tuple(value)
+
+
+def _optional_string(data: dict[str, Any], key: str) -> str:
+    value = data.get(key, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise DraftValidationError(f"{key} must be a string")
+    return value
+
+
+def _optional_string_dict(data: dict[str, Any], key: str) -> dict[str, str] | str | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return "invalid"
+    if not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        return "invalid"
+    return dict(value)
 
 
 def _is_empty(value: Any) -> bool:

@@ -543,24 +543,15 @@ def _render_ai_draft_list(label: str, values: tuple[str, ...]) -> None:
 
 
 def _ai_draft_review_description(review: ai_task_draft.DraftReview) -> str:
-    return str(
-        getattr(
-            review,
-            "description",
-            getattr(review, "task_description", ""),
-        )
-        or ""
-    )
+    return review.description
 
 
-def _ai_draft_operation_summary(op) -> str:
+def _ai_draft_operation_summary(op: ai_task_draft.DraftOperation) -> str:
     pieces = [f"`{op.kind}`"]
-    confidence = getattr(op, "confidence", None)
-    if confidence:
-        pieces.append(f"confidence: {confidence}")
-    explanation = getattr(op, "explanation", None)
-    if explanation:
-        pieces.append(str(explanation))
+    if op.confidence:
+        pieces.append(f"confidence: {op.confidence}")
+    if op.explanation:
+        pieces.append(op.explanation)
 
     detail = _ai_draft_operation_detail(op)
     if detail:
@@ -568,23 +559,24 @@ def _ai_draft_operation_summary(op) -> str:
     return " — ".join(pieces)
 
 
-def _ai_draft_rejected_operation_summary(op) -> str:
-    pieces = [f"`{getattr(op, 'kind', '') or '(missing kind)'}`"]
-    reason = getattr(op, "reason", None)
-    if reason:
-        pieces.append(str(reason))
-    source_text = getattr(op, "source_text", None)
-    if source_text:
-        pieces.append(f"source: {source_text}")
+def _ai_draft_rejected_operation_summary(
+    op: ai_task_draft.RejectedOperation,
+) -> str:
+    pieces = [f"`{op.kind or '(missing kind)'}`"]
+    if op.reason:
+        pieces.append(op.reason)
+    if op.source_text:
+        pieces.append(f"source: {op.source_text}")
     return " — ".join(pieces)
 
 
-def _ai_draft_operation_detail(op) -> str:
-    params = getattr(op, "params", {}) or {}
+def _ai_draft_operation_detail(op: ai_task_draft.DraftOperation) -> str:
+    params = op.params or {}
+    regex = op.regex or {}
     parts = []
     for key in ("pattern", "meaning", "before", "after"):
-        value = getattr(op, key, None)
-        if value is None and isinstance(params, dict):
+        value = regex.get(key)
+        if value is None:
             value = params.get(key)
         if value not in (None, ""):
             parts.append(f"{key}: {value}")
