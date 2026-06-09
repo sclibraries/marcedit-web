@@ -50,6 +50,7 @@ _REGEX_PARAMS_BY_KIND = {
     "replace-field-data-by-regex": ("pattern",),
     "delete-856-url-regex": ("pattern",),
 }
+_UNSUPPORTED_AI_OPERATION_KINDS = {"custom"}
 _CODE_SHAPED_RE = re.compile(
     r"(__import__|\bimport\b|\bfrom\s+\S+\s+import\b|\bexec\s*\(|"
     r"\beval\s*\(|\bopen\s*\(|\bos\.|\bsubprocess\b|\bsys\.|\bPath\s*\()"
@@ -133,6 +134,13 @@ def _validate_operation(raw_op: Any, index: int) -> DraftOperation | RejectedOpe
     palette_op = _PALETTE_BY_KIND.get(kind)
     if palette_op is None:
         return RejectedOperation(kind, dict(params), f"unknown operation kind '{kind}'", index)
+    if kind in _UNSUPPORTED_AI_OPERATION_KINDS:
+        return RejectedOperation(
+            kind,
+            dict(params),
+            f"{kind} operations are not supported in AI drafts",
+            index,
+        )
 
     param_specs = {param["name"]: param for param in palette_op["params"]}
     for name in params:

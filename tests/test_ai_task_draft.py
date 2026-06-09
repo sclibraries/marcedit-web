@@ -153,6 +153,25 @@ def test_code_shaped_values_are_rejected():
     assert "code-shaped value" in review.rejected_operations[0].reason
 
 
+def test_custom_operation_with_python_code_is_rejected():
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "custom",
+                    "params": {"code": "record.remove_fields('029')"},
+                }
+            ],
+        )
+    )
+
+    assert review.operations == ()
+    assert review.rejected_operations[0].kind == "custom"
+    assert review.rejected_operations[0].reason == (
+        "custom operations are not supported in AI drafts"
+    )
+
+
 def test_routledge_style_fixture_accepts_common_ops_and_preserves_review_items():
     review = parse_ai_task_draft(
         _draft(
