@@ -37,6 +37,7 @@ marc-processing.zip
 
 # Worktree directories created by superpowers:using-git-worktrees
 .claude/
+.worktrees/
 
 # Local-only agent workflow + internal planning artifacts. These exist
 # on disk for the dev workflow but must never be committed to the
