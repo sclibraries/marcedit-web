@@ -35,8 +35,10 @@ import streamlit as st
 from streamlit_ace import st_ace
 
 from marcedit_web.lib import (
+    ai_task_draft,
     batch_replace,
     editor,
+    gemini_task_draft,
     marcedit_import,
     quotas,
     run_history,
@@ -81,6 +83,10 @@ K_RUN_RESULTS = "tasks_run_results"
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
 K_MATERIALIZED_DIR = "tasks_materialized_dir"
+K_AI_DRAFT_NOTES = "tasks_ai_draft_notes"
+K_AI_DRAFT_REVIEW = "tasks_ai_draft_review"
+K_AI_DRAFT_ERROR = "tasks_ai_draft_error"
+K_AI_DRAFT_BLOCKING_ACK = "tasks_ai_draft_blocking_ack"
 
 
 def _materialized_dir(user: str) -> Path:
@@ -231,6 +237,10 @@ def render() -> None:
         if upl is not None and st.button("Import", key="tasks_import_btn"):
             _do_marcedit_import(upl, tasks_dir)
             st.rerun()
+
+    _render_ai_draft_panel()
+    if st.session_state.get(K_AI_DRAFT_REVIEW) is not None:
+        _render_ai_draft_review()
 
     # --- Editor (form or code) --------------------------------------------
 
@@ -430,6 +440,181 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# AI draft panel
+# ---------------------------------------------------------------------------
+
+
+def _render_ai_draft_panel() -> None:
+    with st.expander("AI draft from notes"):
+        enabled = gemini_task_draft.is_enabled()
+        if not enabled:
+            st.info(
+                "AI task drafting is disabled. Set GEMINI_API_KEY to enable "
+                "drafting from cataloger notes."
+            )
+
+        notes = st.text_area(
+            "Cataloger notes",
+            value=st.session_state.get(K_AI_DRAFT_NOTES, ""),
+            key=K_AI_DRAFT_NOTES,
+            height=160,
+        )
+        if st.button(
+            "Draft task",
+            key="tasks_ai_draft_btn",
+            disabled=(not enabled or not notes.strip()),
+        ):
+            try:
+                review = gemini_task_draft.draft_task_from_notes(notes)
+            except (
+                gemini_task_draft.GeminiTaskDraftError,
+                ai_task_draft.DraftValidationError,
+            ) as exc:
+                st.session_state[K_AI_DRAFT_ERROR] = str(exc)
+            else:
+                st.session_state[K_AI_DRAFT_REVIEW] = review
+                st.session_state[K_AI_DRAFT_ERROR] = None
+                st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
+                audit_event(
+                    "ai-task-draft-created",
+                    user=st.session_state.get("user", "anonymous") or "anonymous",
+                    task_name=review.task_name,
+                    accepted_operations=len(review.operations),
+                    blocking_issues=ai_task_draft.blocking_issue_count(review),
+                )
+                st.rerun()
+
+        if st.session_state.get(K_AI_DRAFT_ERROR):
+            st.error(st.session_state[K_AI_DRAFT_ERROR])
+
+
+def _render_ai_draft_review() -> None:
+    review = st.session_state[K_AI_DRAFT_REVIEW]
+    blocking_issues = ai_task_draft.blocking_issue_count(review)
+    st.subheader("AI draft review")
+    st.markdown(f"**Proposed task:** `{review.task_name}`")
+    description = _ai_draft_review_description(review)
+    st.caption(description or "_No description proposed._")
+
+    if review.operations:
+        st.markdown("**Generated operations**")
+        for index, op in enumerate(review.operations, start=1):
+            st.markdown(f"{index}. {_ai_draft_operation_summary(op)}")
+    else:
+        st.info("No supported operations were generated.")
+
+    _render_ai_draft_list("Manual notes", review.manual_notes)
+    _render_ai_draft_list("Unsupported lines", review.unsupported_lines)
+    _render_ai_draft_list("Questions", review.questions)
+
+    if review.rejected_operations:
+        st.markdown("**Rejected operations**")
+        for rejected in review.rejected_operations:
+            st.warning(_ai_draft_rejected_operation_summary(rejected))
+
+    st.session_state[K_AI_DRAFT_BLOCKING_ACK] = blocking_issues == 0
+    if blocking_issues:
+        st.warning(
+            f"{blocking_issues} AI draft issue(s) need review before this "
+            "draft can be saved as a new task."
+        )
+
+    use_col, clear_col = st.columns([1, 1])
+    if use_col.button(
+        "Use this draft in form editor",
+        key="tasks_ai_draft_use",
+        type="primary",
+    ):
+        _open_editor_for_ai_draft(review)
+        st.rerun()
+    if clear_col.button("Clear AI draft", key="tasks_ai_draft_clear"):
+        st.session_state[K_AI_DRAFT_REVIEW] = None
+        st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
+        st.session_state[K_AI_DRAFT_ERROR] = None
+        st.rerun()
+
+
+def _render_ai_draft_list(label: str, values: tuple[str, ...]) -> None:
+    if not values:
+        return
+    st.markdown(f"**{label}**")
+    for value in values:
+        st.markdown(f"- {value}")
+
+
+def _ai_draft_review_description(review: ai_task_draft.DraftReview) -> str:
+    return str(
+        getattr(
+            review,
+            "description",
+            getattr(review, "task_description", ""),
+        )
+        or ""
+    )
+
+
+def _ai_draft_operation_summary(op) -> str:
+    pieces = [f"`{op.kind}`"]
+    confidence = getattr(op, "confidence", None)
+    if confidence:
+        pieces.append(f"confidence: {confidence}")
+    explanation = getattr(op, "explanation", None)
+    if explanation:
+        pieces.append(str(explanation))
+
+    detail = _ai_draft_operation_detail(op)
+    if detail:
+        pieces.append(detail)
+    return " — ".join(pieces)
+
+
+def _ai_draft_rejected_operation_summary(op) -> str:
+    pieces = [f"`{getattr(op, 'kind', '') or '(missing kind)'}`"]
+    reason = getattr(op, "reason", None)
+    if reason:
+        pieces.append(str(reason))
+    source_text = getattr(op, "source_text", None)
+    if source_text:
+        pieces.append(f"source: {source_text}")
+    return " — ".join(pieces)
+
+
+def _ai_draft_operation_detail(op) -> str:
+    params = getattr(op, "params", {}) or {}
+    parts = []
+    for key in ("pattern", "meaning", "before", "after"):
+        value = getattr(op, key, None)
+        if value is None and isinstance(params, dict):
+            value = params.get(key)
+        if value not in (None, ""):
+            parts.append(f"{key}: {value}")
+    return "; ".join(parts)
+
+
+def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
+    st.session_state[K_EDITOR_OPEN] = True
+    st.session_state[K_EDITOR_MODE] = "form"
+    st.session_state[K_EDITOR_NAME] = review.task_name
+    st.session_state[K_EDITOR_NAME_INPUT] = review.task_name
+    description = _ai_draft_review_description(review)
+    st.session_state[K_EDITOR_DESCRIPTION] = description
+    st.session_state[K_EDITOR_DESCRIPTION_INPUT] = description
+    st.session_state[K_EDITOR_BODY] = ""
+    st.session_state[K_EDITOR_OPS] = ai_task_draft.operations_for_editor(review)
+    st.session_state[K_EDITOR_ORIGINAL_NAME] = None
+    st.session_state[K_EDITOR_VISIBILITY] = "private"
+
+
+def _ai_draft_save_blocked_for_new_task() -> bool:
+    review = st.session_state.get(K_AI_DRAFT_REVIEW)
+    if review is None:
+        return False
+    if st.session_state.get(K_EDITOR_ORIGINAL_NAME) is not None:
+        return False
+    return ai_task_draft.blocking_issue_count(review) > 0
+
+
+# ---------------------------------------------------------------------------
 # Editor renderer (form + code)
 # ---------------------------------------------------------------------------
 
@@ -493,6 +678,13 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
     else:
         _render_code_editor()
 
+    save_disabled = _ai_draft_save_blocked_for_new_task()
+    if save_disabled:
+        st.warning(
+            "Resolve the blocking AI draft review items before saving this "
+            "new task."
+        )
+
     save_col, cancel_col = st.columns([1, 1])
     save_col.button(
         "Save task",
@@ -500,6 +692,7 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         key="tasks_save",
         on_click=_save_callback,
         args=(tasks_dir,),
+        disabled=save_disabled,
     )
     cancel_col.button(
         "Cancel",
@@ -773,6 +966,13 @@ def _save_callback(tasks_dir: Path) -> None:
     visibility = st.session_state.get(K_EDITOR_VISIBILITY, "private")
     user = st.session_state.get("user", "anonymous") or "anonymous"
 
+    if _ai_draft_save_blocked_for_new_task():
+        st.session_state[K_SAVE_ERROR] = (
+            "Resolve the blocking AI draft review items before saving this "
+            "new task."
+        )
+        return
+
     if mode == "form":
         ops = [
             Operation.from_dict(op)
@@ -824,6 +1024,8 @@ def _save_callback(tasks_dir: Path) -> None:
     task_db.materialize_to_dir(user, tasks_dir)
     tasks.load_user_tasks(tasks_dir, force_reload=True)
     st.session_state[K_EDITOR_OPEN] = False
+    st.session_state[K_AI_DRAFT_REVIEW] = None
+    st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
     st.session_state[K_SAVE_SUCCESS] = f"Saved `{name}`."
     is_admin = task_admin.is_admin(user)
     audit_event(
