@@ -135,6 +135,7 @@ def _is_heading(line: str) -> bool:
                 "replace field ",
                 "replace subfield ",
                 "change subfield ",
+                "add ",
                 "add field ",
                 "delete tag ",
             )
@@ -179,6 +180,9 @@ def _parse_block(block: _Block, draft: dict) -> None:
         return
     if lower.startswith("change subfield "):
         _parse_change_subfield(line, draft)
+        return
+    if re.match(rf"^add {_TAG}\b", lower):
+        _parse_add_field_prose(line, draft)
         return
     if lower.startswith("add field ") and not re.match(r"add field\s*\(", lower):
         _parse_add_field_line(line, draft)
@@ -266,6 +270,82 @@ def _parse_add_field_line(line: str, draft: dict) -> None:
         return
     tag, indicators, sf_text = match.groups()
     _add_field_from_text(draft, tag, indicators, sf_text, line, "high")
+
+
+def _parse_add_field_prose(line: str, draft: dict) -> None:
+    match = re.match(rf"add ({_TAG})\b(.+)$", line, re.I)
+    if match is None:
+        draft["unsupported_lines"].append(line)
+        return
+    tag, text = match.groups()
+    condition = _parse_leader_condition(text)
+    if condition is None and "leader" in text.lower():
+        draft["unsupported_lines"].append(line)
+        return
+    subfields = _parse_prose_subfields(text)
+    if not subfields:
+        draft["unsupported_lines"].append(line)
+        return
+    ind1, ind2 = _parse_prose_indicators(text)
+    _add_op(
+        draft,
+        "add-field",
+        {
+            "tag": tag,
+            "ind1": ind1,
+            "ind2": ind2,
+            "subfields": subfields,
+            "condition": condition or "always",
+            "if_absent": False,
+        },
+        line,
+        f"Add field {tag}.",
+    )
+
+
+def _parse_leader_condition(text: str) -> str | None:
+    lower = re.sub(r"\s+", " ", text.lower())
+    if "notated music" in lower or "leader type is c or d" in lower:
+        return "scores"
+    if (
+        "leader type is i or j" in lower
+        or "leader matches byte 8 i and j" in lower
+        or "leader matches byte 8 i or j" in lower
+    ):
+        return "audios"
+    return None
+
+
+def _parse_prose_indicators(text: str) -> tuple[str, str]:
+    ind1, ind2 = " ", " "
+    patterns = (
+        (r"\bindicator\s+1\s+(\S)", 1),
+        (r"\bindicator\s+2\s+(\S)", 2),
+        (r"\bfirst indicator\s+(\S)", 1),
+        (r"\bsecond indicator\s+(\S)", 2),
+    )
+    for pattern, position in patterns:
+        match = re.search(pattern, text, re.I)
+        if match is None:
+            continue
+        if position == 1:
+            ind1 = _indicator_char(match.group(1))
+        else:
+            ind2 = _indicator_char(match.group(1))
+    return ind1, ind2
+
+
+def _parse_prose_subfields(text: str) -> list[list[str]]:
+    sf_text = re.split(r"\s+when\b", text, maxsplit=1, flags=re.I)[0]
+    matches = list(re.finditer(r"\bsubfield\s+([0-9a-z])\s+", sf_text, re.I))
+    subfields: list[list[str]] = []
+    for index, match in enumerate(matches):
+        value_start = match.end()
+        value_end = matches[index + 1].start() if index + 1 < len(matches) else None
+        value = sf_text[value_start:value_end].strip()
+        if value:
+            subfields.append([match.group(1), value])
+    return subfields
 
 
 def _parse_add_field_block(block: _Block, draft: dict) -> None:

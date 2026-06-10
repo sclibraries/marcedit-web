@@ -67,6 +67,57 @@ def test_marcedit_add_field_block_parses():
     }
 
 
+def test_parses_streaming_audio_add_field_prose():
+    review = note_task_draft.draft_task_from_notes(
+        "add 877 subfield m Streaming Audio when leader type is i or j"
+    )
+
+    assert review.unsupported_lines == ()
+    assert len(review.operations) == 1
+    assert review.operations[0].kind == "add-field"
+    assert review.operations[0].params == {
+        "tag": "877",
+        "ind1": " ",
+        "ind2": " ",
+        "subfields": [["m", "Streaming Audio"]],
+        "condition": "audios",
+        "if_absent": False,
+    }
+
+
+def test_parses_scores_genre_heading_add_field_prose():
+    review = note_task_draft.draft_task_from_notes(
+        "add 655 indicator 2 7 subfield a Electronic scores. subfield 2 local "
+        "when leader type is c or d"
+    )
+
+    assert review.unsupported_lines == ()
+    assert len(review.operations) == 1
+    assert review.operations[0].params == {
+        "tag": "655",
+        "ind1": " ",
+        "ind2": "7",
+        "subfields": [["a", "Electronic scores."], ["2", "local"]],
+        "condition": "scores",
+        "if_absent": False,
+    }
+
+
+def test_parses_notated_music_add_field_prose():
+    review = note_task_draft.draft_task_from_notes(
+        "add 655 second indicator 7 subfield a Electronic scores. "
+        "subfield 2 local when leader indicates notated music"
+    )
+
+    assert review.unsupported_lines == ()
+    assert len(review.operations) == 1
+    assert review.operations[0].params["condition"] == "scores"
+    assert review.operations[0].params["subfields"] == [
+        ["a", "Electronic scores."],
+        ["2", "local"],
+    ]
+
+
 def test_marcedit_edit_field_001_block_parses_prefix_replace():
     review = note_task_draft.draft_task_from_notes(
         """
