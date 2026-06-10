@@ -118,6 +118,32 @@ def test_parses_notated_music_add_field_prose():
     ]
 
 
+def test_rejects_unsupported_add_field_when_clause():
+    line = "add 877 subfield m Streaming Audio when LDR type is i or j"
+    review = note_task_draft.draft_task_from_notes(line)
+
+    assert review.operations == ()
+    assert review.unsupported_lines == (line,)
+
+
+def test_parses_add_field_indicator_after_subfield_value():
+    review = note_task_draft.draft_task_from_notes(
+        "add 655 subfield a Electronic scores. indicator 2 7 "
+        "when leader type is c or d"
+    )
+
+    assert review.unsupported_lines == ()
+    assert len(review.operations) == 1
+    assert review.operations[0].params == {
+        "tag": "655",
+        "ind1": " ",
+        "ind2": "7",
+        "subfields": [["a", "Electronic scores."]],
+        "condition": "scores",
+        "if_absent": False,
+    }
+
+
 def test_marcedit_edit_field_001_block_parses_prefix_replace():
     review = note_task_draft.draft_task_from_notes(
         """

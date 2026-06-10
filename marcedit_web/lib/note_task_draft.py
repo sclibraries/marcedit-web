@@ -129,13 +129,13 @@ def _is_heading(line: str) -> bool:
         lower.startswith(("task:", "description:"))
         or _is_structural_heading(line)
         or bool(re.match(r"^(add field|edit field|edit subfield)\s*\(\d{3}\)", lower))
+        or bool(re.match(rf"^add {_TAG}\b", lower))
         or lower.startswith("edit subfield")
         or lower.startswith(
             (
                 "replace field ",
                 "replace subfield ",
                 "change subfield ",
-                "add ",
                 "add field ",
                 "delete tag ",
             )
@@ -279,7 +279,7 @@ def _parse_add_field_prose(line: str, draft: dict) -> None:
         return
     tag, text = match.groups()
     condition = _parse_leader_condition(text)
-    if condition is None and "leader" in text.lower():
+    if condition is None and re.search(r"\bwhen\b", text, re.I):
         draft["unsupported_lines"].append(line)
         return
     subfields = _parse_prose_subfields(text)
@@ -341,7 +341,16 @@ def _parse_prose_subfields(text: str) -> list[list[str]]:
     subfields: list[list[str]] = []
     for index, match in enumerate(matches):
         value_start = match.end()
-        value_end = matches[index + 1].start() if index + 1 < len(matches) else None
+        value_end = (
+            matches[index + 1].start() if index + 1 < len(matches) else len(sf_text)
+        )
+        indicator = re.search(
+            r"\s+\b(?:indicator\s+[12]|first indicator|second indicator)\s+\S",
+            sf_text[value_start:value_end],
+            re.I,
+        )
+        if indicator is not None:
+            value_end = value_start + indicator.start()
         value = sf_text[value_start:value_end].strip()
         if value:
             subfields.append([match.group(1), value])
