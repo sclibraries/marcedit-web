@@ -451,7 +451,7 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# AI draft panel
+# Task draft panel
 # ---------------------------------------------------------------------------
 
 
@@ -535,7 +535,7 @@ def _render_ai_draft_panel() -> None:
 def _render_ai_draft_review() -> None:
     review = st.session_state[K_AI_DRAFT_REVIEW]
     blocking_issues = ai_task_draft.blocking_issue_count(review)
-    st.subheader("AI draft review")
+    st.subheader("Task draft review")
     st.markdown(f"**Proposed task:** `{review.task_name}`")
     description = _ai_draft_review_description(review)
     st.caption(description or "_No description proposed._")
@@ -559,7 +559,7 @@ def _render_ai_draft_review() -> None:
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = blocking_issues == 0
     if blocking_issues:
         st.warning(
-            f"{blocking_issues} AI draft issue(s) need review before this "
+            f"{blocking_issues} task draft issue(s) need review before this "
             "draft can be saved as a new task."
         )
 
@@ -572,7 +572,7 @@ def _render_ai_draft_review() -> None:
     ):
         _open_editor_for_ai_draft(review)
         st.rerun()
-    if clear_col.button("Clear AI draft", key="tasks_ai_draft_clear"):
+    if clear_col.button("Clear draft", key="tasks_ai_draft_clear"):
         _clear_ai_draft_review()
         st.rerun()
 
@@ -757,7 +757,7 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
     save_disabled = _ai_draft_save_blocked_for_new_task()
     if save_disabled:
         st.warning(
-            "Resolve the blocking AI draft review items before saving this "
+            "Resolve the blocking task draft review items before saving this "
             "new task."
         )
 
@@ -1044,7 +1044,7 @@ def _save_callback(tasks_dir: Path) -> None:
 
     if _ai_draft_save_blocked_for_new_task():
         st.session_state[K_SAVE_ERROR] = (
-            "Resolve the blocking AI draft review items before saving this "
+            "Resolve the blocking task draft review items before saving this "
             "new task."
         )
         return

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import sys
 from types import SimpleNamespace
 
@@ -16,6 +17,9 @@ from marcedit_web.lib.ai_task_draft import (
     parse_ai_task_draft,
 )
 from marcedit_web.lib.task_builder import Operation
+
+
+TASKS_RENDER_SOURCE = Path("marcedit_web/render/tasks.py")
 
 
 def _draft(**overrides) -> str:
@@ -435,6 +439,15 @@ def test_ai_draft_parser_preserves_review_metadata_for_handoff():
     assert "meaning: trailing slash after whitespace" in accepted_summary
     assert blocking_issue_count(review) == 1
     assert "Normalize package notes" in rejected_summary
+
+
+def test_task_draft_ui_does_not_use_ai_draft_wording():
+    source = TASKS_RENDER_SOURCE.read_text()
+
+    assert '"AI draft review"' not in source
+    assert '"Clear AI draft"' not in source
+    assert "AI draft issue(s)" not in source
+    assert "blocking AI draft review items" not in source
 
 
 def test_ai_draft_save_block_only_applies_to_ai_handoff_editor(monkeypatch):
