@@ -80,6 +80,7 @@ K_EDITOR_VISIBILITY = "tasks_editor_visibility"
 K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
 K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
 K_EDITOR_FROM_AI_DRAFT = "tasks_editor_from_ai_draft"
+K_EDITOR_AI_DRAFT_REVIEW = "tasks_editor_ai_draft_review"
 K_RUN_RESULTS = "tasks_run_results"
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
@@ -138,6 +139,7 @@ def render() -> None:
     st.session_state.setdefault(K_EDITOR_ORIGINAL_NAME, None)
     st.session_state.setdefault(K_EDITOR_VISIBILITY, "private")
     st.session_state.setdefault(K_EDITOR_FROM_AI_DRAFT, False)
+    st.session_state.setdefault(K_EDITOR_AI_DRAFT_REVIEW, None)
     st.session_state.setdefault(K_RUN_RESULTS, None)
 
     # Load the materialized dir so the importer sees the user's tasks.
@@ -299,6 +301,7 @@ def _open_editor_for_new() -> None:
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
+    st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
 
 
 def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
@@ -318,6 +321,7 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     st.session_state[K_EDITOR_ORIGINAL_NAME] = row["name"]
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
+    st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
 
     parse_result = task_builder.parse_ops_from_source(row["body"])
     if parse_result["form_editable"]:
@@ -476,7 +480,7 @@ def _render_ai_draft_panel() -> None:
                 gemini_task_draft.GeminiTaskDraftError,
                 ai_task_draft.DraftValidationError,
             ) as exc:
-                st.session_state[K_AI_DRAFT_ERROR] = str(exc)
+                _store_ai_draft_error(str(exc))
             else:
                 st.session_state[K_AI_DRAFT_REVIEW] = review
                 st.session_state[K_AI_DRAFT_ERROR] = None
@@ -600,12 +604,13 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = True
+    st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = review
 
 
 def _ai_draft_save_blocked_for_new_task() -> bool:
     if not st.session_state.get(K_EDITOR_FROM_AI_DRAFT, False):
         return False
-    review = st.session_state.get(K_AI_DRAFT_REVIEW)
+    review = st.session_state.get(K_EDITOR_AI_DRAFT_REVIEW)
     if review is None:
         return False
     if st.session_state.get(K_EDITOR_ORIGINAL_NAME) is not None:
@@ -629,6 +634,13 @@ def _clear_ai_draft_review() -> None:
     if st.session_state.get(K_EDITOR_FROM_AI_DRAFT, False):
         st.session_state[K_EDITOR_OPEN] = False
         st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
+        st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+
+
+def _store_ai_draft_error(message: str) -> None:
+    st.session_state[K_AI_DRAFT_ERROR] = message
+    st.session_state[K_AI_DRAFT_REVIEW] = None
+    st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
 
 
 # ---------------------------------------------------------------------------
@@ -1042,6 +1054,7 @@ def _save_callback(tasks_dir: Path) -> None:
     tasks.load_user_tasks(tasks_dir, force_reload=True)
     st.session_state[K_EDITOR_OPEN] = False
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
+    st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
     st.session_state[K_SAVE_SUCCESS] = f"Saved `{name}`."
@@ -1071,6 +1084,7 @@ def _cancel_callback() -> None:
     """on_click callback for Cancel. Mirrors the on_click pattern of Save."""
     st.session_state[K_EDITOR_OPEN] = False
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
+    st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
 
 
 # ---------------------------------------------------------------------------

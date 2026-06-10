@@ -540,6 +540,7 @@ def test_clearing_ai_draft_closes_ai_handoff_editor(monkeypatch):
     assert state[tasks_render.K_AI_DRAFT_ERROR] is None
     assert state[tasks_render.K_EDITOR_OPEN] is False
     assert state[tasks_render.K_EDITOR_FROM_AI_DRAFT] is False
+    assert state[tasks_render.K_EDITOR_AI_DRAFT_REVIEW] is None
 
 
 def test_ai_draft_handoff_is_disabled_without_accepted_operations():
@@ -556,3 +557,62 @@ def test_ai_draft_handoff_is_disabled_without_accepted_operations():
 
     assert tasks_render._ai_draft_handoff_disabled(empty_review) is True
     assert tasks_render._ai_draft_handoff_disabled(accepted_review) is False
+
+
+def test_ai_handoff_save_block_uses_editor_bound_review(monkeypatch):
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    state: dict[str, object] = {}
+    monkeypatch.setattr(tasks_render.st, "session_state", state)
+    blocked_review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {"kind": "delete-tag", "params": {"tag": "029"}},
+            ],
+            questions=["Confirm whether 035 should be added or edited."],
+        )
+    )
+    clean_review = parse_ai_task_draft(
+        _draft(
+            task_name="clean-draft",
+            operations=[
+                {"kind": "delete-tag", "params": {"tag": "891"}},
+            ],
+        )
+    )
+
+    state[tasks_render.K_AI_DRAFT_REVIEW] = blocked_review
+    tasks_render._open_editor_for_ai_draft(blocked_review)
+    state[tasks_render.K_AI_DRAFT_REVIEW] = clean_review
+
+    assert tasks_render._ai_draft_save_blocked_for_new_task() is True
+
+
+def test_ai_draft_error_clears_stale_review(monkeypatch):
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    state: dict[str, object] = {}
+    monkeypatch.setattr(tasks_render.st, "session_state", state)
+    stale_review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {"kind": "delete-tag", "params": {"tag": "029"}},
+            ],
+        )
+    )
+    state[tasks_render.K_AI_DRAFT_REVIEW] = stale_review
+    state[tasks_render.K_AI_DRAFT_BLOCKING_ACK] = True
+
+    tasks_render._store_ai_draft_error("Gemini request failed")
+
+    assert state[tasks_render.K_AI_DRAFT_ERROR] == "Gemini request failed"
+    assert state[tasks_render.K_AI_DRAFT_REVIEW] is None
+    assert state[tasks_render.K_AI_DRAFT_BLOCKING_ACK] is False
