@@ -157,7 +157,32 @@ def test_wrong_param_type_is_rejected_with_specific_message():
     )
 
     assert review.operations == ()
-    assert review.rejected_operations[0].reason == "param 'subfields' must be a list"
+    assert review.rejected_operations[0].reason == (
+        "param 'subfields' must be a list of [code, value] pairs, "
+        'e.g. [["a", "Electronic scores."], ["2", "local"]]'
+    )
+
+
+def test_invalid_subfields_shape_explains_expected_pairs():
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "add-field",
+                    "params": {
+                        "tag": "655",
+                        "subfields": {"a": "Electronic scores.", "2": "local"},
+                    },
+                }
+            ],
+        )
+    )
+
+    assert review.operations == ()
+    assert review.rejected_operations[0].reason == (
+        "param 'subfields' must be a list of [code, value] pairs, "
+        'e.g. [["a", "Electronic scores."], ["2", "local"]]'
+    )
 
 
 def test_invalid_select_param_values_are_rejected():

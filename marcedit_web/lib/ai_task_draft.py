@@ -241,16 +241,20 @@ def _param_type_error(name: str, value: Any, spec: dict) -> str | None:
             return f"param '{name}' must be a boolean"
         return None
     if param_type == "subfields":
+        expected = (
+            f"param '{name}' must be a list of [code, value] pairs, "
+            'e.g. [["a", "Electronic scores."], ["2", "local"]]'
+        )
         if not isinstance(value, list):
-            return f"param '{name}' must be a list"
+            return expected
         for item in value:
             if (
-                not isinstance(item, list)
+                not isinstance(item, (list, tuple))
                 or len(item) != 2
                 or not isinstance(item[0], str)
                 or not isinstance(item[1], str)
             ):
-                return f"param '{name}' must contain [code, value] string pairs"
+                return expected
     return None
 
 
