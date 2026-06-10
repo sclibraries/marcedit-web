@@ -144,6 +144,31 @@ def test_parses_add_field_indicator_after_subfield_value():
     }
 
 
+def test_add_field_without_when_ignores_condition_words_in_subfield_value():
+    review = note_task_draft.draft_task_from_notes(
+        "add 500 subfield a Notated music"
+    )
+
+    assert review.unsupported_lines == ()
+    assert len(review.operations) == 1
+    assert review.operations[0].params == {
+        "tag": "500",
+        "ind1": " ",
+        "ind2": " ",
+        "subfields": [["a", "Notated music"]],
+        "condition": "always",
+        "if_absent": False,
+    }
+
+
+def test_add_field_rejects_unsupported_when_after_condition_words_in_value():
+    line = "add 500 subfield a Notated music when LDR type is x"
+    review = note_task_draft.draft_task_from_notes(line)
+
+    assert review.operations == ()
+    assert review.unsupported_lines == (line,)
+
+
 def test_marcedit_edit_field_001_block_parses_prefix_replace():
     review = note_task_draft.draft_task_from_notes(
         """

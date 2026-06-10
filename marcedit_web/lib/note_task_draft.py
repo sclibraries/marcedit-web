@@ -278,15 +278,18 @@ def _parse_add_field_prose(line: str, draft: dict) -> None:
         draft["unsupported_lines"].append(line)
         return
     tag, text = match.groups()
-    condition = _parse_leader_condition(text)
-    if condition is None and re.search(r"\bwhen\b", text, re.I):
+    field_text, when_clause = _split_prose_when_clause(text)
+    condition = (
+        _parse_leader_condition(when_clause) if when_clause is not None else None
+    )
+    if when_clause is not None and condition is None:
         draft["unsupported_lines"].append(line)
         return
-    subfields = _parse_prose_subfields(text)
+    subfields = _parse_prose_subfields(field_text)
     if not subfields:
         draft["unsupported_lines"].append(line)
         return
-    ind1, ind2 = _parse_prose_indicators(text)
+    ind1, ind2 = _parse_prose_indicators(field_text)
     _add_op(
         draft,
         "add-field",
@@ -303,7 +306,16 @@ def _parse_add_field_prose(line: str, draft: dict) -> None:
     )
 
 
-def _parse_leader_condition(text: str) -> str | None:
+def _split_prose_when_clause(text: str) -> tuple[str, str | None]:
+    match = re.search(r"\s+\bwhen\b\s*(.*)$", text, re.I)
+    if match is None:
+        return text, None
+    return text[: match.start()], match.group(1).strip()
+
+
+def _parse_leader_condition(text: str | None) -> str | None:
+    if text is None:
+        return None
     lower = re.sub(r"\s+", " ", text.lower())
     if "notated music" in lower or "leader type is c or d" in lower:
         return "scores"
