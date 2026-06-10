@@ -49,6 +49,22 @@ def unresolved_text(review: ai_task_draft.DraftReview) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def merge_fallback_review(
+    base: ai_task_draft.DraftReview,
+    fallback: ai_task_draft.DraftReview,
+) -> ai_task_draft.DraftReview:
+    """Merge a fallback review into a deterministic draft."""
+    return ai_task_draft.DraftReview(
+        task_name=base.task_name,
+        operations=base.operations + fallback.operations,
+        rejected_operations=fallback.rejected_operations,
+        questions=fallback.questions,
+        manual_notes=base.manual_notes + fallback.manual_notes,
+        unsupported_lines=fallback.unsupported_lines,
+        description=base.description or fallback.description,
+    )
+
+
 def _empty_draft(task_name: str, description: str) -> dict:
     return {
         "task_name": task_name,

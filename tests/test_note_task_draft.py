@@ -185,3 +185,23 @@ def test_gemini_fallback_available_only_for_unresolved_text(monkeypatch):
 
     monkeypatch.setattr(tasks_render.gemini_task_draft, "is_enabled", lambda: False)
     assert tasks_render._ai_fallback_available(unresolved) is False
+
+
+def test_fallback_review_merges_with_deterministic_draft():
+    base = note_task_draft.draft_task_from_notes(
+        """
+        Task: Routledge EBA
+        delete tag 029
+        Run the core custom catalog steps
+        """
+    )
+    fallback = note_task_draft.draft_task_from_notes(
+        "add field 710 2_ $aRoutledge EBA"
+    )
+
+    merged = note_task_draft.merge_fallback_review(base, fallback)
+
+    assert merged.task_name == "routledge-eba"
+    assert [op.kind for op in merged.operations] == ["delete-tag", "add-field"]
+    assert merged.questions == ()
+    assert merged.unsupported_lines == ()

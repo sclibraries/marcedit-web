@@ -512,7 +512,10 @@ def _render_ai_draft_panel() -> None:
                 ) as exc:
                     _store_ai_draft_error(str(exc))
                 else:
-                    _store_ai_draft_review(gemini_review)
+                    merged_review = note_task_draft.merge_fallback_review(
+                        review, gemini_review
+                    )
+                    _store_ai_draft_review(merged_review)
                     audit_event(
                         "ai-task-draft-created",
                         user=(
@@ -520,10 +523,10 @@ def _render_ai_draft_panel() -> None:
                             or "anonymous"
                         ),
                         source="gemini-fallback",
-                        task_name=gemini_review.task_name,
-                        accepted_operations=len(gemini_review.operations),
+                        task_name=merged_review.task_name,
+                        accepted_operations=len(merged_review.operations),
                         blocking_issues=ai_task_draft.blocking_issue_count(
-                            gemini_review
+                            merged_review
                         ),
                     )
                     st.rerun()
