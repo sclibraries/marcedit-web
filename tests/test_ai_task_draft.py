@@ -491,3 +491,19 @@ def test_clearing_ai_draft_closes_ai_handoff_editor(monkeypatch):
     assert state[tasks_render.K_AI_DRAFT_ERROR] is None
     assert state[tasks_render.K_EDITOR_OPEN] is False
     assert state[tasks_render.K_EDITOR_FROM_AI_DRAFT] is False
+
+
+def test_ai_draft_handoff_is_disabled_without_accepted_operations():
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    empty_review = parse_ai_task_draft(_draft(operations=[]))
+    accepted_review = parse_ai_task_draft(
+        _draft(operations=[{"kind": "delete-tag", "params": {"tag": "029"}}])
+    )
+
+    assert tasks_render._ai_draft_handoff_disabled(empty_review) is True
+    assert tasks_render._ai_draft_handoff_disabled(accepted_review) is False

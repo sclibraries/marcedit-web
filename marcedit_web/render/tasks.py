@@ -530,6 +530,7 @@ def _render_ai_draft_review() -> None:
         "Use this draft in form editor",
         key="tasks_ai_draft_use",
         type="primary",
+        disabled=_ai_draft_handoff_disabled(review),
     ):
         _open_editor_for_ai_draft(review)
         st.rerun()
@@ -610,6 +611,10 @@ def _ai_draft_save_blocked_for_new_task() -> bool:
     if st.session_state.get(K_EDITOR_ORIGINAL_NAME) is not None:
         return False
     return ai_task_draft.blocking_issue_count(review) > 0
+
+
+def _ai_draft_handoff_disabled(review: ai_task_draft.DraftReview) -> bool:
+    return not review.operations
 
 
 def _sync_editor_widget_inputs(name: str, description: str) -> None:
