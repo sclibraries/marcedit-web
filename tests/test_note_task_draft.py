@@ -225,6 +225,17 @@ def test_add_field_rejects_embedded_when_followed_by_condition_clause():
     assert review.unsupported_lines == (line,)
 
 
+def test_add_field_rejects_supported_when_followed_by_extra_when_clause():
+    line = (
+        "add 877 subfield m Streaming Audio "
+        "when leader type is i or j when tag 300 exists"
+    )
+    review = note_task_draft.draft_task_from_notes(line)
+
+    assert review.operations == ()
+    assert review.unsupported_lines == (line,)
+
+
 def test_marcedit_edit_field_001_block_parses_prefix_replace():
     review = note_task_draft.draft_task_from_notes(
         """

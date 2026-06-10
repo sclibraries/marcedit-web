@@ -321,12 +321,27 @@ def _split_prose_when_clause(text: str) -> tuple[str, str | None]:
                 skipped_condition_like = True
             continue
         if _parse_leader_condition(clause) is not None:
-            if skipped_condition_like:
+            if skipped_condition_like or _has_later_condition_clause(text, matches, index):
                 return text, "unsupported embedded when clause"
             return field_text, clause
         if _looks_like_condition_clause(clause):
             return field_text, clause
     return text, None
+
+
+def _has_later_condition_clause(
+    text: str,
+    matches: list[re.Match],
+    current_index: int,
+) -> bool:
+    for index in range(current_index + 1, len(matches)):
+        clause_end = matches[index + 1].start() if index + 1 < len(matches) else None
+        clause = text[matches[index].end():clause_end].strip()
+        if _parse_leader_condition(clause) is not None:
+            return True
+        if _looks_like_condition_clause(clause):
+            return True
+    return False
 
 
 def _is_embedded_when(field_text: str) -> bool:
