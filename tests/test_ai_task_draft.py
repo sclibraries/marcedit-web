@@ -419,3 +419,75 @@ def test_ai_draft_save_block_only_applies_to_ai_handoff_editor(monkeypatch):
 
     assert state[tasks_render.K_EDITOR_FROM_AI_DRAFT] is True
     assert tasks_render._ai_draft_save_blocked_for_new_task() is True
+
+
+def test_editor_open_helpers_reset_widget_name_and_description(monkeypatch):
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    state: dict[str, object] = {}
+    monkeypatch.setattr(tasks_render.st, "session_state", state)
+    review = parse_ai_task_draft(
+        _draft(
+            task_name="ai-draft-task",
+            description="AI draft description.",
+            operations=[],
+        )
+    )
+
+    tasks_render._open_editor_for_ai_draft(review)
+    assert state[tasks_render.K_EDITOR_NAME_INPUT] == "ai-draft-task"
+    assert state[tasks_render.K_EDITOR_DESCRIPTION_INPUT] == "AI draft description."
+
+    tasks_render._open_editor_for_new()
+    assert state[tasks_render.K_EDITOR_NAME_INPUT] == ""
+    assert state[tasks_render.K_EDITOR_DESCRIPTION_INPUT] == ""
+
+    tasks_render._open_editor_for_existing_row(
+        {
+            "name": "existing-task",
+            "description": "Existing description.",
+            "body": "pass\n",
+            "visibility": "private",
+        },
+        is_admin=False,
+    )
+    assert state[tasks_render.K_EDITOR_NAME_INPUT] == "existing-task"
+    assert state[tasks_render.K_EDITOR_DESCRIPTION_INPUT] == "Existing description."
+
+
+def test_clearing_ai_draft_closes_ai_handoff_editor(monkeypatch):
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    state: dict[str, object] = {}
+    monkeypatch.setattr(tasks_render.st, "session_state", state)
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "vendor-specific-cleanup",
+                    "source_text": "Normalize package notes",
+                    "params": {"line": "Normalize package notes"},
+                },
+            ],
+        )
+    )
+    state[tasks_render.K_AI_DRAFT_REVIEW] = review
+    state[tasks_render.K_AI_DRAFT_BLOCKING_ACK] = False
+    state[tasks_render.K_AI_DRAFT_ERROR] = "previous error"
+
+    tasks_render._open_editor_for_ai_draft(review)
+    tasks_render._clear_ai_draft_review()
+
+    assert state[tasks_render.K_AI_DRAFT_REVIEW] is None
+    assert state[tasks_render.K_AI_DRAFT_BLOCKING_ACK] is False
+    assert state[tasks_render.K_AI_DRAFT_ERROR] is None
+    assert state[tasks_render.K_EDITOR_OPEN] is False
+    assert state[tasks_render.K_EDITOR_FROM_AI_DRAFT] is False

@@ -286,6 +286,7 @@ def _open_editor_for_new() -> None:
     st.session_state[K_EDITOR_MODE] = "form"
     st.session_state[K_EDITOR_NAME] = ""
     st.session_state[K_EDITOR_DESCRIPTION] = ""
+    _sync_editor_widget_inputs("", "")
     st.session_state[K_EDITOR_BODY] = (
         "# `record` is a pymarc.Record. Mutate it in place; do not return.\n"
         "# Example: delete every 029 field.\n"
@@ -312,6 +313,7 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_NAME] = row["name"]
     st.session_state[K_EDITOR_DESCRIPTION] = row["description"]
+    _sync_editor_widget_inputs(row["name"], row["description"])
     st.session_state[K_EDITOR_BODY] = row["body"]
     st.session_state[K_EDITOR_ORIGINAL_NAME] = row["name"]
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
@@ -532,9 +534,7 @@ def _render_ai_draft_review() -> None:
         _open_editor_for_ai_draft(review)
         st.rerun()
     if clear_col.button("Clear AI draft", key="tasks_ai_draft_clear"):
-        st.session_state[K_AI_DRAFT_REVIEW] = None
-        st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
-        st.session_state[K_AI_DRAFT_ERROR] = None
+        _clear_ai_draft_review()
         st.rerun()
 
 
@@ -591,10 +591,9 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_MODE] = "form"
     st.session_state[K_EDITOR_NAME] = review.task_name
-    st.session_state[K_EDITOR_NAME_INPUT] = review.task_name
     description = _ai_draft_review_description(review)
     st.session_state[K_EDITOR_DESCRIPTION] = description
-    st.session_state[K_EDITOR_DESCRIPTION_INPUT] = description
+    _sync_editor_widget_inputs(review.task_name, description)
     st.session_state[K_EDITOR_BODY] = ""
     st.session_state[K_EDITOR_OPS] = ai_task_draft.operations_for_editor(review)
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
@@ -611,6 +610,20 @@ def _ai_draft_save_blocked_for_new_task() -> bool:
     if st.session_state.get(K_EDITOR_ORIGINAL_NAME) is not None:
         return False
     return ai_task_draft.blocking_issue_count(review) > 0
+
+
+def _sync_editor_widget_inputs(name: str, description: str) -> None:
+    st.session_state[K_EDITOR_NAME_INPUT] = name
+    st.session_state[K_EDITOR_DESCRIPTION_INPUT] = description
+
+
+def _clear_ai_draft_review() -> None:
+    st.session_state[K_AI_DRAFT_REVIEW] = None
+    st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
+    st.session_state[K_AI_DRAFT_ERROR] = None
+    if st.session_state.get(K_EDITOR_FROM_AI_DRAFT, False):
+        st.session_state[K_EDITOR_OPEN] = False
+        st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
 
 
 # ---------------------------------------------------------------------------
