@@ -14,4 +14,5 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=2048
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     restart: unless-stopped
