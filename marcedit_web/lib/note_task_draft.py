@@ -83,6 +83,8 @@ def _derive_task_name(notes: str) -> str:
             continue
         if line.lower().startswith("task:"):
             line = line.split(":", 1)[1].strip()
+        elif _is_structural_heading(line) or _is_instruction_detail(line):
+            continue
         slug = re.sub(r"[^a-z0-9]+", "-", line.lower()).strip("-")
         if editor.is_valid_slug(slug):
             return slug
@@ -125,7 +127,7 @@ def _is_heading(line: str) -> bool:
     lower = line.lower()
     return (
         lower.startswith(("task:", "description:"))
-        or lower in {"find/replace", "manual marcedit tasks"}
+        or _is_structural_heading(line)
         or bool(re.match(r"^(add field|edit field|edit subfield)\s*\(\d{3}\)", lower))
         or lower.startswith("edit subfield")
         or lower.startswith(
@@ -140,6 +142,18 @@ def _is_heading(line: str) -> bool:
         or "lastpass" in lower
         or "core custom catalog" in lower
         or "remove blank subfields" in lower
+    )
+
+
+def _is_structural_heading(line: str) -> bool:
+    return line.lower() in {"find/replace", "manual marcedit tasks"}
+
+
+def _is_instruction_detail(line: str) -> bool:
+    return (
+        line.startswith(("$", "="))
+        or bool(re.match(r"^\d{3}$", line))
+        or bool(re.match(r"^\d?\\?\$[0-9a-z]", line))
     )
 
 
@@ -293,14 +307,14 @@ def _parse_find_replace_block(block: _Block, draft: dict) -> None:
     if len(block.lines) != 2:
         draft["unsupported_lines"].append(_block_text(block))
         return
-    src, dst = block.lines
+    src, dst = (_clean_find_replace_value(line) for line in block.lines)
     if src.startswith("$z") and dst.startswith("$y") and src[2:] == dst[2:]:
         _add_op(
             draft,
             "copy-subfield",
             {"tag": "856", "src_code": "z", "dst_code": "y"},
             _block_text(block),
-            "Change 856$z link text to $y.",
+            "Change 856 subfield z link text to subfield y.",
             "medium",
         )
         _add_op(
@@ -308,7 +322,7 @@ def _parse_find_replace_block(block: _Block, draft: dict) -> None:
             "delete-subfield",
             {"tag": "856", "codes": "z"},
             _block_text(block),
-            "Remove original 856$z.",
+            "Remove original 856 subfield z.",
             "medium",
         )
         return
@@ -330,6 +344,10 @@ def _parse_find_replace_block(block: _Block, draft: dict) -> None:
         )
         return
     draft["unsupported_lines"].append(_block_text(block))
+
+
+def _clean_find_replace_value(value: str) -> str:
+    return re.sub(r"\s+\([^)]*\)\s*$", "", value).strip()
 
 
 def _add_field_from_text(

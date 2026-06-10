@@ -134,6 +134,59 @@ def test_routledge_style_note_parses_unambiguous_lines():
     assert any("Remove blank subfields" in line for line in review.unsupported_lines)
 
 
+def test_notes_starting_with_structural_heading_use_generic_task_name():
+    review = note_task_draft.draft_task_from_notes(
+        """
+        Find/replace
+            $zSmith: Link to resource
+            $ySmith: Link to resource
+        """
+    )
+
+    assert review.task_name == "draft-from-notes"
+
+
+def test_proxy_find_replace_ignores_trailing_parenthetical_notes():
+    review = note_task_draft.draft_task_from_notes(
+        """
+        Find/replace
+            http://libproxy.smith.edu:2048/login?url=      (ie, OLD PROXY)
+            https://libproxy.smith.edu/login?url=          (ie, NEW PROXY)
+        """
+    )
+
+    assert len(review.operations) == 1
+    assert review.operations[0].params["find"] == (
+        "http://libproxy.smith.edu:2048/login?url="
+    )
+    assert review.operations[0].params["replace"] == (
+        "https://libproxy.smith.edu/login?url="
+    )
+
+
+def test_subfield_change_summary_avoids_markdown_dollar_artifacts():
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    review = note_task_draft.draft_task_from_notes(
+        """
+        Find/replace
+            $zSmith: Link to resource
+            $ySmith: Link to resource
+        """
+    )
+
+    summary = tasks_render._ai_draft_operation_summary(review.operations[0])
+
+    assert "subfield z" in summary
+    assert "subfield y" in summary
+    assert "$z" not in summary
+    assert "$y" not in summary
+
+
 def test_ambiguous_lines_are_preserved_not_guessed():
     review = note_task_draft.draft_task_from_notes(
         """
