@@ -386,3 +386,36 @@ def test_ai_draft_parser_preserves_review_metadata_for_handoff():
     assert "meaning: trailing slash after whitespace" in accepted_summary
     assert blocking_issue_count(review) == 1
     assert "Normalize package notes" in rejected_summary
+
+
+def test_ai_draft_save_block_only_applies_to_ai_handoff_editor(monkeypatch):
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    state: dict[str, object] = {}
+    monkeypatch.setattr(tasks_render.st, "session_state", state)
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "vendor-specific-cleanup",
+                    "source_text": "Normalize package notes",
+                    "params": {"line": "Normalize package notes"},
+                },
+            ],
+        )
+    )
+    state[tasks_render.K_AI_DRAFT_REVIEW] = review
+
+    tasks_render._open_editor_for_new()
+
+    assert state[tasks_render.K_EDITOR_FROM_AI_DRAFT] is False
+    assert tasks_render._ai_draft_save_blocked_for_new_task() is False
+
+    tasks_render._open_editor_for_ai_draft(review)
+
+    assert state[tasks_render.K_EDITOR_FROM_AI_DRAFT] is True
+    assert tasks_render._ai_draft_save_blocked_for_new_task() is True

@@ -79,6 +79,7 @@ K_EDITOR_ORIGINAL_NAME = "tasks_editor_original_name"
 K_EDITOR_VISIBILITY = "tasks_editor_visibility"
 K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
 K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
+K_EDITOR_FROM_AI_DRAFT = "tasks_editor_from_ai_draft"
 K_RUN_RESULTS = "tasks_run_results"
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
@@ -136,6 +137,7 @@ def render() -> None:
     st.session_state.setdefault(K_EDITOR_OPS, [])  # list[dict] — Operation.to_dict()
     st.session_state.setdefault(K_EDITOR_ORIGINAL_NAME, None)
     st.session_state.setdefault(K_EDITOR_VISIBILITY, "private")
+    st.session_state.setdefault(K_EDITOR_FROM_AI_DRAFT, False)
     st.session_state.setdefault(K_RUN_RESULTS, None)
 
     # Load the materialized dir so the importer sees the user's tasks.
@@ -295,6 +297,7 @@ def _open_editor_for_new() -> None:
     st.session_state[K_EDITOR_OPS] = []
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
     st.session_state[K_EDITOR_VISIBILITY] = "private"
+    st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
 
 
 def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
@@ -312,6 +315,7 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     st.session_state[K_EDITOR_BODY] = row["body"]
     st.session_state[K_EDITOR_ORIGINAL_NAME] = row["name"]
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
+    st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
 
     parse_result = task_builder.parse_ops_from_source(row["body"])
     if parse_result["form_editable"]:
@@ -595,9 +599,12 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
     st.session_state[K_EDITOR_OPS] = ai_task_draft.operations_for_editor(review)
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
     st.session_state[K_EDITOR_VISIBILITY] = "private"
+    st.session_state[K_EDITOR_FROM_AI_DRAFT] = True
 
 
 def _ai_draft_save_blocked_for_new_task() -> bool:
+    if not st.session_state.get(K_EDITOR_FROM_AI_DRAFT, False):
+        return False
     review = st.session_state.get(K_AI_DRAFT_REVIEW)
     if review is None:
         return False
@@ -1016,6 +1023,7 @@ def _save_callback(tasks_dir: Path) -> None:
     task_db.materialize_to_dir(user, tasks_dir)
     tasks.load_user_tasks(tasks_dir, force_reload=True)
     st.session_state[K_EDITOR_OPEN] = False
+    st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
     st.session_state[K_SAVE_SUCCESS] = f"Saved `{name}`."
@@ -1044,6 +1052,7 @@ def _save_callback(tasks_dir: Path) -> None:
 def _cancel_callback() -> None:
     """on_click callback for Cancel. Mirrors the on_click pattern of Save."""
     st.session_state[K_EDITOR_OPEN] = False
+    st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
 
 
 # ---------------------------------------------------------------------------
