@@ -11,6 +11,7 @@ services:
       - ./.streamlit:/app/.streamlit:ro
       - ./tests:/app/tests:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=2048
