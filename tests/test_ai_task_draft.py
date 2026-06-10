@@ -8,12 +8,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from marcedit_web.lib import task_builder
 from marcedit_web.lib.ai_task_draft import (
     DraftValidationError,
     blocking_issue_count,
     operations_for_editor,
     parse_ai_task_draft,
 )
+from marcedit_web.lib.task_builder import Operation
 
 
 def _draft(**overrides) -> str:
@@ -58,6 +60,53 @@ def test_valid_regex_operation_maps_to_editor_op():
             },
         }
     ]
+
+
+def test_ai_draft_editor_ops_round_trip_through_task_builder_markers():
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "replace-field-data-by-regex",
+                    "regex": {
+                        "pattern": "^TFeba",
+                        "meaning": "vendor prefix at the start of 001",
+                        "before": "TFeba12345",
+                        "after": "SCTFEBA12345",
+                    },
+                    "params": {
+                        "tag": "001",
+                        "pattern": "^TFeba",
+                        "replacement": "SCTFEBA",
+                        "ignore_case": False,
+                    },
+                },
+                {
+                    "kind": "add-field",
+                    "params": {
+                        "tag": "710",
+                        "ind1": "2",
+                        "ind2": " ",
+                        "subfields": [["a", "Routledge EBA"]],
+                        "condition": "always",
+                        "if_absent": False,
+                    },
+                },
+            ],
+        )
+    )
+    ops = [Operation.from_dict(op) for op in operations_for_editor(review)]
+
+    rendered = task_builder.render_ops_to_python(ops)
+    parsed = task_builder.parse_ops_from_source(rendered["body"])
+
+    assert parsed["form_editable"] is True
+    assert [op.kind for op in parsed["ops"]] == [
+        "replace-field-data-by-regex",
+        "add-field",
+    ]
+    assert parsed["ops"][0].params["replacement"] == "SCTFEBA"
+    assert parsed["ops"][1].params["subfields"] == [["a", "Routledge EBA"]]
 
 
 def test_markdown_wrapped_json_is_rejected():
