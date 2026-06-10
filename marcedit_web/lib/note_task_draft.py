@@ -307,23 +307,45 @@ def _parse_add_field_prose(line: str, draft: dict) -> None:
 
 
 def _split_prose_when_clause(text: str) -> tuple[str, str | None]:
-    match = re.search(r"\s+\bwhen\b\s*(.*)$", text, re.I)
-    if match is None:
-        return text, None
-    return text[: match.start()], match.group(1).strip()
+    for match in re.finditer(r"\s+\bwhen\b\s*(.*)$", text, re.I):
+        field_text = text[: match.start()]
+        clause = match.group(1).strip()
+        if _is_embedded_when(field_text):
+            continue
+        if _parse_leader_condition(clause) is not None:
+            return field_text, clause
+        if _looks_like_condition_clause(clause):
+            return field_text, clause
+    return text, None
+
+
+def _is_embedded_when(field_text: str) -> bool:
+    lower = field_text.lower().rstrip()
+    return bool(
+        re.search(r"\babout$", lower)
+        or re.search(r"\bsubfield\s+[0-9a-z]$", lower)
+    )
+
+
+def _looks_like_condition_clause(text: str) -> bool:
+    return bool(re.match(r"^(leader|ldr|tag)\b", text.strip(), re.I))
 
 
 def _parse_leader_condition(text: str | None) -> str | None:
     if text is None:
         return None
     lower = re.sub(r"\s+", " ", text.lower())
-    if "notated music" in lower or "leader type is c or d" in lower:
+    if lower in {
+        "notated music",
+        "leader indicates notated music",
+        "leader type is c or d",
+    }:
         return "scores"
-    if (
-        "leader type is i or j" in lower
-        or "leader matches byte 8 i and j" in lower
-        or "leader matches byte 8 i or j" in lower
-    ):
+    if lower in {
+        "leader type is i or j",
+        "leader matches byte 8 i and j",
+        "leader matches byte 8 i or j",
+    }:
         return "audios"
     return None
 
@@ -348,7 +370,7 @@ def _parse_prose_indicators(text: str) -> tuple[str, str]:
 
 
 def _parse_prose_subfields(text: str) -> list[list[str]]:
-    sf_text = re.split(r"\s+when\b", text, maxsplit=1, flags=re.I)[0]
+    sf_text = text
     matches = list(re.finditer(r"\bsubfield\s+([0-9a-z])\s+", sf_text, re.I))
     subfields: list[list[str]] = []
     for index, match in enumerate(matches):
