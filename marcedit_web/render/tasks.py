@@ -40,6 +40,7 @@ from marcedit_web.lib import (
     editor,
     gemini_task_draft,
     marcedit_import,
+    note_task_draft,
     quotas,
     run_history,
     sandbox,
@@ -455,13 +456,15 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
 
 
 def _render_ai_draft_panel() -> None:
-    with st.expander("AI draft from notes"):
-        enabled = gemini_task_draft.is_enabled()
-        if not enabled:
+    with st.expander("Draft task from notes"):
+        gemini_enabled = gemini_task_draft.is_enabled()
+        if not gemini_enabled:
             st.info(
-                "AI task drafting is disabled. Set GEMINI_API_KEY to enable "
-                "drafting from cataloger notes."
+                "Local note parsing is available. Set GEMINI_API_KEY to enable "
+                "Gemini fallback for unresolved lines."
             )
+        with st.expander("Supported note syntax", expanded=False):
+            st.code(note_task_draft.help_text(), language="text")
 
         notes = st.text_area(
             "Cataloger notes",
@@ -472,22 +475,18 @@ def _render_ai_draft_panel() -> None:
         if st.button(
             "Draft task",
             key="tasks_ai_draft_btn",
-            disabled=(not enabled or not notes.strip()),
+            disabled=(not notes.strip()),
         ):
             try:
-                review = gemini_task_draft.draft_task_from_notes(notes)
-            except (
-                gemini_task_draft.GeminiTaskDraftError,
-                ai_task_draft.DraftValidationError,
-            ) as exc:
+                review = note_task_draft.draft_task_from_notes(notes)
+            except ai_task_draft.DraftValidationError as exc:
                 _store_ai_draft_error(str(exc))
             else:
-                st.session_state[K_AI_DRAFT_REVIEW] = review
-                st.session_state[K_AI_DRAFT_ERROR] = None
-                st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
+                _store_ai_draft_review(review)
                 audit_event(
                     "ai-task-draft-created",
                     user=st.session_state.get("user", "anonymous") or "anonymous",
+                    source="deterministic",
                     task_name=review.task_name,
                     accepted_operations=len(review.operations),
                     blocking_issues=ai_task_draft.blocking_issue_count(review),
@@ -496,6 +495,38 @@ def _render_ai_draft_panel() -> None:
 
         if st.session_state.get(K_AI_DRAFT_ERROR):
             st.error(st.session_state[K_AI_DRAFT_ERROR])
+
+        review = st.session_state.get(K_AI_DRAFT_REVIEW)
+        if review is not None and _ai_fallback_available(review):
+            if st.button(
+                "Use Gemini for unresolved lines",
+                key="tasks_gemini_fallback_btn",
+            ):
+                try:
+                    gemini_review = gemini_task_draft.draft_task_from_notes(
+                        note_task_draft.unresolved_text(review)
+                    )
+                except (
+                    gemini_task_draft.GeminiTaskDraftError,
+                    ai_task_draft.DraftValidationError,
+                ) as exc:
+                    _store_ai_draft_error(str(exc))
+                else:
+                    _store_ai_draft_review(gemini_review)
+                    audit_event(
+                        "ai-task-draft-created",
+                        user=(
+                            st.session_state.get("user", "anonymous")
+                            or "anonymous"
+                        ),
+                        source="gemini-fallback",
+                        task_name=gemini_review.task_name,
+                        accepted_operations=len(gemini_review.operations),
+                        blocking_issues=ai_task_draft.blocking_issue_count(
+                            gemini_review
+                        ),
+                    )
+                    st.rerun()
 
 
 def _render_ai_draft_review() -> None:
@@ -622,6 +653,13 @@ def _ai_draft_handoff_disabled(review: ai_task_draft.DraftReview) -> bool:
     return not review.operations
 
 
+def _ai_fallback_available(review: ai_task_draft.DraftReview) -> bool:
+    return (
+        gemini_task_draft.is_enabled()
+        and bool(note_task_draft.unresolved_text(review).strip())
+    )
+
+
 def _sync_editor_widget_inputs(name: str, description: str) -> None:
     st.session_state[K_EDITOR_NAME_INPUT] = name
     st.session_state[K_EDITOR_DESCRIPTION_INPUT] = description
@@ -640,6 +678,12 @@ def _clear_ai_draft_review() -> None:
 def _store_ai_draft_error(message: str) -> None:
     st.session_state[K_AI_DRAFT_ERROR] = message
     st.session_state[K_AI_DRAFT_REVIEW] = None
+    st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
+
+
+def _store_ai_draft_review(review: ai_task_draft.DraftReview) -> None:
+    st.session_state[K_AI_DRAFT_REVIEW] = review
+    st.session_state[K_AI_DRAFT_ERROR] = None
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
 
 

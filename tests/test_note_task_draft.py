@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 from marcedit_web.lib import note_task_draft
 
 
@@ -162,3 +165,23 @@ def test_unresolved_text_feeds_gemini_fallback():
     )
 
     assert "core custom catalog" in note_task_draft.unresolved_text(review)
+
+
+def test_gemini_fallback_available_only_for_unresolved_text(monkeypatch):
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    unresolved = note_task_draft.draft_task_from_notes(
+        "Run the core custom catalog steps"
+    )
+    resolved = note_task_draft.draft_task_from_notes("delete tag 029")
+
+    monkeypatch.setattr(tasks_render.gemini_task_draft, "is_enabled", lambda: True)
+    assert tasks_render._ai_fallback_available(unresolved) is True
+    assert tasks_render._ai_fallback_available(resolved) is False
+
+    monkeypatch.setattr(tasks_render.gemini_task_draft, "is_enabled", lambda: False)
+    assert tasks_render._ai_fallback_available(unresolved) is False
