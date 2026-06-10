@@ -307,12 +307,22 @@ def _parse_add_field_prose(line: str, draft: dict) -> None:
 
 
 def _split_prose_when_clause(text: str) -> tuple[str, str | None]:
-    for match in re.finditer(r"\s+\bwhen\b\s*(.*)$", text, re.I):
+    matches = list(re.finditer(r"\s+\bwhen\b\s*", text, re.I))
+    skipped_condition_like = False
+    for index, match in enumerate(matches):
         field_text = text[: match.start()]
-        clause = match.group(1).strip()
+        clause_end = matches[index + 1].start() if index + 1 < len(matches) else None
+        clause = text[match.end():clause_end].strip()
         if _is_embedded_when(field_text):
+            if (
+                _parse_leader_condition(clause) is not None
+                or _looks_like_condition_clause(clause)
+            ):
+                skipped_condition_like = True
             continue
         if _parse_leader_condition(clause) is not None:
+            if skipped_condition_like:
+                return text, "unsupported embedded when clause"
             return field_text, clause
         if _looks_like_condition_clause(clause):
             return field_text, clause

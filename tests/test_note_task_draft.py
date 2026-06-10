@@ -214,6 +214,17 @@ def test_add_field_value_with_when_leader_text_is_not_condition_clause():
     }
 
 
+def test_add_field_rejects_embedded_when_followed_by_condition_clause():
+    line = (
+        "add 500 subfield a Work about when leader type is c or d "
+        "when leader type is i or j"
+    )
+    review = note_task_draft.draft_task_from_notes(line)
+
+    assert review.operations == ()
+    assert review.unsupported_lines == (line,)
+
+
 def test_marcedit_edit_field_001_block_parses_prefix_replace():
     review = note_task_draft.draft_task_from_notes(
         """
