@@ -72,6 +72,18 @@ def test_build_prompt_contains_schema_guardrails_allowed_operations_and_notes():
     assert notes in prompt
 
 
+def test_build_prompt_includes_valid_add_field_examples():
+    prompt = gemini_task_draft.build_prompt(
+        "Add Streaming Audio 877 and Electronic scores 655."
+    )
+
+    assert "Examples of valid add-field operations" in prompt
+    assert '"subfields": [["m", "Streaming Audio"]]' in prompt
+    assert '"subfields": [["a", "Electronic scores."], ["2", "local"]]' in prompt
+    assert "subfields must be a list of [code, value] pairs" in prompt
+    assert "never an object or string" in prompt
+
+
 def test_draft_task_from_notes_posts_to_gemini_and_parses_review(monkeypatch):
     captured: dict[str, object] = {}
     parsed: dict[str, str] = {}

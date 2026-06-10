@@ -115,6 +115,43 @@ def build_prompt(notes: str) -> str:
         "manual_notes": [],
         "unsupported_lines": [],
     }
+    examples = [
+        {
+            "kind": "add-field",
+            "source_text": (
+                "add 877 subfield m Streaming Audio when leader type is i or j"
+            ),
+            "explanation": "Adds local media type for streaming audio records.",
+            "confidence": "high",
+            "regex": {},
+            "params": {
+                "tag": "877",
+                "ind1": " ",
+                "ind2": " ",
+                "subfields": [["m", "Streaming Audio"]],
+                "condition": "audios",
+                "if_absent": False,
+            },
+        },
+        {
+            "kind": "add-field",
+            "source_text": (
+                "add 655 second indicator 7 subfield a Electronic scores. "
+                "subfield 2 local when leader type is c or d"
+            ),
+            "explanation": "Adds a local genre heading for notated music records.",
+            "confidence": "high",
+            "regex": {},
+            "params": {
+                "tag": "655",
+                "ind1": " ",
+                "ind2": "7",
+                "subfields": [["a", "Electronic scores."], ["2", "local"]],
+                "condition": "scores",
+                "if_absent": False,
+            },
+        },
+    ]
 
     return (
         "Translate the cataloging notes into a MarcEdit Web task draft.\n"
@@ -133,6 +170,12 @@ def build_prompt(notes: str) -> str:
         "\n"
         "Required response schema:\n"
         f"{json.dumps(schema, indent=2)}\n"
+        "\n"
+        "Examples of valid add-field operations:\n"
+        f"{json.dumps(examples)}\n"
+        "\n"
+        "For add-field, subfields must be a list of [code, value] pairs. "
+        "It is never an object or string.\n"
         "\n"
         "Allowed operations:\n"
         f"{json.dumps(operations, indent=2)}\n"
