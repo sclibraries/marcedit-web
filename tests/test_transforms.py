@@ -211,6 +211,80 @@ def test_delete_subfields_empty_codes_is_noop(record):
     assert before == after
 
 
+def test_delete_subfields_matching_value_exact_only_removes_matching_subfield():
+    record = pymarc.Record()
+    record.add_ordered_field(
+        pymarc.Field(
+            tag="300",
+            indicators=[" ", " "],
+            subfields=[
+                pymarc.Subfield("a", "1 online resource"),
+                pymarc.Subfield("b", ":"),
+                pymarc.Subfield("b", "illustrations"),
+            ],
+        )
+    )
+
+    transforms.delete_subfields_matching_value(record, "300", "b", ":")
+
+    field = record.get_fields("300")[0]
+    assert [(sf.code, sf.value) for sf in field.subfields] == [
+        ("a", "1 online resource"),
+        ("b", "illustrations"),
+    ]
+
+
+def test_delete_subfields_matching_value_contains_can_ignore_case(record):
+    record.get_fields("856")[0].subfields.append(
+        pymarc.Subfield("z", "Smith Proxy note")
+    )
+    record.get_fields("856")[0].subfields.append(
+        pymarc.Subfield("z", "Public note")
+    )
+
+    transforms.delete_subfields_matching_value(
+        record,
+        "856",
+        "z",
+        "proxy",
+        match="contains",
+        ignore_case=True,
+    )
+
+    remaining = [
+        sf.value
+        for field in record.get_fields("856")
+        for sf in field.subfields
+        if sf.code == "z"
+    ]
+    assert remaining == ["Public note"]
+
+
+def test_delete_subfields_matching_value_regex_trims_before_comparison():
+    record = pymarc.Record()
+    record.add_ordered_field(
+        pymarc.Field(
+            tag="500",
+            indicators=[" ", " "],
+            subfields=[
+                pymarc.Subfield("a", "   :   "),
+                pymarc.Subfield("a", " : still text"),
+            ],
+        )
+    )
+
+    transforms.delete_subfields_matching_value(
+        record,
+        "500",
+        "a",
+        r"^:$",
+        match="regex",
+        trim=True,
+    )
+
+    assert record.get_fields("500")[0].get_subfields("a") == [" : still text"]
+
+
 def test_copy_subfield_within_field(record):
     """Copy $a → $z within every 245 field."""
     transforms.copy_subfield_within_field(record, "245", "a", "z")

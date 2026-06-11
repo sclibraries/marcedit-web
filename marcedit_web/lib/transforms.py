@@ -293,6 +293,46 @@ def delete_subfields(record: Record, tag: str, *codes: str) -> None:
         field.subfields = [sf for sf in field.subfields if sf.code not in drop]
 
 
+def delete_subfields_matching_value(
+    record: Record,
+    tag: str,
+    code: str,
+    value: str,
+    *,
+    match: str = "exact",
+    trim: bool = True,
+    ignore_case: bool = False,
+) -> None:
+    """Remove subfields whose value matches the requested comparison."""
+    if not tag or not code:
+        return
+
+    flags = re.IGNORECASE if ignore_case else 0
+    pattern = re.compile(value, flags) if match == "regex" else None
+    expected = value.lower() if ignore_case and match != "regex" else value
+
+    def comparison_text(raw: str) -> str:
+        text = raw.strip() if trim else raw
+        return text.lower() if ignore_case and match != "regex" else text
+
+    def should_delete(raw: str) -> bool:
+        text = comparison_text(raw)
+        if match == "contains":
+            return expected in text
+        if match == "regex":
+            return pattern.search(text) is not None
+        return text == expected
+
+    for field in record.get_fields(tag):
+        if field.is_control_field():
+            continue
+        field.subfields = [
+            sf
+            for sf in field.subfields
+            if sf.code != code or not should_delete(sf.value)
+        ]
+
+
 def copy_subfield_within_field(
     record: Record, tag: str, src_code: str, dst_code: str
 ) -> None:
