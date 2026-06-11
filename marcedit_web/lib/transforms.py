@@ -341,6 +341,54 @@ def set_indicators(
         field.indicators = [new_ind1, new_ind2]
 
 
+def replace_field_subfield_and_indicators(
+    record: Record,
+    tag: str,
+    match_ind1: str,
+    match_ind2: str,
+    match_code: str,
+    match_value: str,
+    new_ind1: str,
+    new_ind2: str,
+    new_code: str,
+    new_value: str,
+) -> None:
+    """Update indicators and one subfield value on exactly matched fields."""
+
+    def normalize_indicator(value: str) -> str:
+        if value in ("", "\\", "\\\\"):
+            return " "
+        return value[:1]
+
+    if not tag or not match_code or not new_code:
+        return
+
+    expected_indicators = [
+        normalize_indicator(match_ind1),
+        normalize_indicator(match_ind2),
+    ]
+    replacement_indicators = [
+        normalize_indicator(new_ind1),
+        normalize_indicator(new_ind2),
+    ]
+    for field in record.get_fields(tag):
+        if field.is_control_field():
+            continue
+        if list(field.indicators) != expected_indicators:
+            continue
+        updated = False
+        subfields = []
+        for subfield in field.subfields:
+            if subfield.code == match_code and subfield.value == match_value:
+                subfields.append(Subfield(code=new_code, value=new_value))
+                updated = True
+            else:
+                subfields.append(subfield)
+        if updated:
+            field.indicators = replacement_indicators
+            field.subfields = subfields
+
+
 def regex_replace_field_data(
     record: Record,
     tag: str,

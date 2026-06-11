@@ -241,6 +241,78 @@ def test_set_indicators_skips_control_fields(record):
     # Just survives.
 
 
+def test_replace_field_subfield_and_indicators_updates_only_matching_field():
+    record = pymarc.Record()
+    matching = pymarc.Field(
+        tag="035",
+        indicators=[" ", " "],
+        subfields=[pymarc.Subfield("a", "TFeba")],
+    )
+    nonmatching_value = pymarc.Field(
+        tag="035",
+        indicators=[" ", " "],
+        subfields=[pymarc.Subfield("a", "OTHER")],
+    )
+    nonmatching_indicator = pymarc.Field(
+        tag="035",
+        indicators=[" ", "9"],
+        subfields=[pymarc.Subfield("a", "TFeba")],
+    )
+    record.add_ordered_field(matching)
+    record.add_ordered_field(nonmatching_value)
+    record.add_ordered_field(nonmatching_indicator)
+
+    transforms.replace_field_subfield_and_indicators(
+        record,
+        "035",
+        " ",
+        " ",
+        "a",
+        "TFeba",
+        " ",
+        "9",
+        "a",
+        "(SCTFEBA)",
+    )
+
+    fields = record.get_fields("035")
+    assert list(fields[0].indicators) == [" ", "9"]
+    assert fields[0].get_subfields("a") == ["(SCTFEBA)"]
+    assert list(fields[1].indicators) == [" ", " "]
+    assert fields[1].get_subfields("a") == ["OTHER"]
+    assert list(fields[2].indicators) == [" ", "9"]
+    assert fields[2].get_subfields("a") == ["TFeba"]
+
+
+def test_replace_field_subfield_and_indicators_can_change_subfield_code():
+    record = pymarc.Record()
+    record.add_ordered_field(
+        pymarc.Field(
+            tag="035",
+            indicators=[" ", " "],
+            subfields=[pymarc.Subfield("a", "TFeba")],
+        )
+    )
+
+    transforms.replace_field_subfield_and_indicators(
+        record,
+        "035",
+        " ",
+        " ",
+        "a",
+        "TFeba",
+        " ",
+        "9",
+        "z",
+        "(SCTFEBA)",
+    )
+
+    field = record.get_fields("035")[0]
+    assert list(field.indicators) == [" ", "9"]
+    assert field.get_subfields("a") == []
+    assert field.get_subfields("z") == ["(SCTFEBA)"]
+
+
 def test_regex_replace_field_data_variable_field(record):
     """Replace text across every subfield value of a tag."""
     transforms.regex_replace_field_data(
