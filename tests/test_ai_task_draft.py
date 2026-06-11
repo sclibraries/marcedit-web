@@ -92,6 +92,29 @@ def test_atomic_replace_operation_is_valid_for_task_drafts():
     assert review.operations[0].kind == "replace-field-subfield-and-indicators"
 
 
+def test_delete_subfield_if_value_operation_is_valid_for_task_drafts():
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "delete-subfield-if-value",
+                    "params": {
+                        "tag": "300",
+                        "code": "b",
+                        "value": ":",
+                        "match": "exact",
+                        "trim": True,
+                        "ignore_case": False,
+                    },
+                }
+            ],
+        )
+    )
+
+    assert review.rejected_operations == ()
+    assert review.operations[0].kind == "delete-subfield-if-value"
+
+
 def test_ai_draft_editor_ops_round_trip_through_task_builder_markers():
     review = parse_ai_task_draft(
         _draft(
@@ -232,17 +255,29 @@ def test_invalid_select_param_values_are_rejected():
                         "position": "middle",
                     },
                 },
+                {
+                    "kind": "delete-subfield-if-value",
+                    "params": {
+                        "tag": "300",
+                        "code": "b",
+                        "value": ":",
+                        "match": "starts-with",
+                    },
+                },
             ],
         )
     )
 
     assert review.operations == ()
-    assert len(review.rejected_operations) == 2
+    assert len(review.rejected_operations) == 3
     assert review.rejected_operations[0].reason.startswith(
         "param 'condition' must be one of:"
     )
     assert review.rejected_operations[1].reason == (
         "param 'position' must be one of: end, start"
+    )
+    assert review.rejected_operations[2].reason == (
+        "param 'match' must be one of: exact, contains, regex"
     )
 
 
