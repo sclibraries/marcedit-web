@@ -97,6 +97,7 @@ def test_palette_includes_new_typed_ops():
         "copy-field", "move-field", "add-subfield", "delete-subfield",
         "copy-subfield", "edit-indicators", "replace-field-data-by-regex",
         "replace-field-subfield-and-indicators",
+        "delete-subfield-if-value",
     ):
         assert new in kinds, f"{new} missing from OPERATIONS_PALETTE"
 
@@ -152,6 +153,55 @@ def test_render_delete_subfield_empty_codes_emits_todo():
                    params={"tag": "856", "codes": "   "})]
     )
     assert "TODO" in out["body"]
+
+
+def test_render_delete_subfield_if_value():
+    out = task_builder.render_ops_to_python(
+        [
+            Operation(
+                kind="delete-subfield-if-value",
+                params={
+                    "tag": "300",
+                    "code": "b",
+                    "value": ":",
+                    "match": "exact",
+                    "trim": True,
+                    "ignore_case": False,
+                },
+            )
+        ]
+    )
+
+    body = out["body"]
+    assert "delete_subfields_matching_value(" in body
+    assert "'300'" in body
+    assert "'b'" in body
+    assert "match='exact'" in body
+    assert "trim=True" in body
+    assert any("delete_subfields_matching_value" in i for i in out["imports"])
+
+
+def test_delete_subfield_if_value_round_trips_from_markers():
+    op = Operation(
+        kind="delete-subfield-if-value",
+        params={
+            "tag": "300",
+            "code": "b",
+            "value": ":",
+            "match": "exact",
+            "trim": True,
+            "ignore_case": False,
+        },
+    )
+
+    rendered = task_builder.render_ops_to_python([op])
+    parsed = task_builder.parse_ops_from_source(rendered["body"])
+
+    assert parsed["form_editable"] is True
+    assert [parsed_op.kind for parsed_op in parsed["ops"]] == [
+        "delete-subfield-if-value"
+    ]
+    assert parsed["ops"][0].params == op.params
 
 
 def test_render_copy_subfield():

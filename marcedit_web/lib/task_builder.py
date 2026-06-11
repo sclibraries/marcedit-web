@@ -271,6 +271,32 @@ OPERATIONS_PALETTE: list[dict] = [
         ],
     },
     {
+        "kind": "delete-subfield-if-value",
+        "label": "Delete subfield when value matches",
+        "summary": (
+            "Strip a subfield only when its value matches exact text, "
+            "contains text, or matches a regex."
+        ),
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {"name": "code", "label": "Subfield code", "type": "subfield_code", "required": True},
+            {"name": "value", "label": "Value to match", "type": "text"},
+            {
+                "name": "match",
+                "label": "Match mode",
+                "type": "select",
+                "options": [
+                    {"value": "exact", "label": "Exact"},
+                    {"value": "contains", "label": "Contains"},
+                    {"value": "regex", "label": "Regex"},
+                ],
+                "default": "exact",
+            },
+            {"name": "trim", "label": "Trim before comparing", "type": "bool", "default": True},
+            {"name": "ignore_case", "label": "Case-insensitive", "type": "bool", "default": False},
+        ],
+    },
+    {
         "kind": "copy-subfield",
         "label": "Copy subfield within field",
         "summary": (
@@ -674,6 +700,24 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         return (
             [f"delete_subfields(record, {lit(tag)}, {code_args})"],
             {"delete_subfields"},
+            False,
+        )
+
+    if op.kind == "delete-subfield-if-value":
+        tag = str(p.get("tag", "")).strip()
+        code = str(p.get("code", "")).strip()[:1]
+        value = str(p.get("value", ""))
+        match_mode = str(p.get("match", "exact")).strip() or "exact"
+        trim = bool(p.get("trim", True))
+        ignore_case = bool(p.get("ignore_case", False))
+        return (
+            [
+                "delete_subfields_matching_value("
+                f"record, {lit(tag)}, {lit(code)}, {lit(value)}, "
+                f"match={lit(match_mode)}, trim={lit(trim)}, "
+                f"ignore_case={lit(ignore_case)})"
+            ],
+            {"delete_subfields_matching_value"},
             False,
         )
 
