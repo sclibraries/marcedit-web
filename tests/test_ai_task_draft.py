@@ -66,6 +66,32 @@ def test_valid_regex_operation_maps_to_editor_op():
     ]
 
 
+def test_atomic_replace_operation_is_valid_for_task_drafts():
+    review = parse_ai_task_draft(
+        _draft(
+            operations=[
+                {
+                    "kind": "replace-field-subfield-and-indicators",
+                    "params": {
+                        "tag": "035",
+                        "match_ind1": " ",
+                        "match_ind2": " ",
+                        "match_code": "a",
+                        "match_value": "TFeba",
+                        "new_ind1": " ",
+                        "new_ind2": "9",
+                        "new_code": "a",
+                        "new_value": "(SCTFEBA)",
+                    },
+                }
+            ],
+        )
+    )
+
+    assert review.rejected_operations == ()
+    assert review.operations[0].kind == "replace-field-subfield-and-indicators"
+
+
 def test_ai_draft_editor_ops_round_trip_through_task_builder_markers():
     review = parse_ai_task_draft(
         _draft(
