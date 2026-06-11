@@ -201,7 +201,7 @@ def _parse_block(block: _Block, draft: dict) -> None:
         _parse_find_replace_block(block, draft)
         return
     if lower.startswith("edit subfield"):
-        draft["unsupported_lines"].append(_block_text(block))
+        _parse_edit_subfield_block(block, draft)
         return
     draft["unsupported_lines"].append(_block_text(block))
 
@@ -449,6 +449,31 @@ def _parse_edit_field_block(block: _Block, draft: dict) -> None:
         )
         return
     draft["unsupported_lines"].append(_block_text(block))
+
+
+def _parse_edit_subfield_block(block: _Block, draft: dict) -> None:
+    if len(block.lines) != 3:
+        draft["unsupported_lines"].append(_block_text(block))
+        return
+    tag, code, value = block.lines
+    if re.fullmatch(_TAG, tag) is None or re.fullmatch(r"[0-9a-z]", code, re.I) is None:
+        draft["unsupported_lines"].append(_block_text(block))
+        return
+    _add_op(
+        draft,
+        "delete-subfield-if-value",
+        {
+            "tag": tag,
+            "code": code,
+            "value": value,
+            "match": "exact",
+            "trim": True,
+            "ignore_case": False,
+        },
+        _block_text(block),
+        f"Remove {tag}${code} when value is exactly {value!r}.",
+        "medium",
+    )
 
 
 def _parse_find_replace_block(block: _Block, draft: dict) -> None:

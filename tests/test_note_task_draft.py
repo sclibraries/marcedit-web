@@ -356,12 +356,34 @@ def test_subfield_change_summary_avoids_markdown_dollar_artifacts():
     assert "$y" not in summary
 
 
-def test_ambiguous_lines_are_preserved_not_guessed():
+def test_edit_subfield_remove_value_block_parses_delete_subfield_if_value():
     review = note_task_draft.draft_task_from_notes(
         """
         Edit subfield (remove :-only fields)
             300
             b
+            :
+        """
+    )
+
+    assert review.unsupported_lines == ()
+    assert len(review.operations) == 1
+    assert review.operations[0].kind == "delete-subfield-if-value"
+    assert review.operations[0].params == {
+        "tag": "300",
+        "code": "b",
+        "value": ":",
+        "match": "exact",
+        "trim": True,
+        "ignore_case": False,
+    }
+
+
+def test_malformed_edit_subfield_block_stays_unsupported():
+    review = note_task_draft.draft_task_from_notes(
+        """
+        Edit subfield (remove :-only fields)
+            300
             :
         """
     )
