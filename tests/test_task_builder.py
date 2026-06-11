@@ -96,6 +96,7 @@ def test_palette_includes_new_typed_ops():
     for new in (
         "copy-field", "move-field", "add-subfield", "delete-subfield",
         "copy-subfield", "edit-indicators", "replace-field-data-by-regex",
+        "replace-field-subfield-and-indicators",
     ):
         assert new in kinds, f"{new} missing from OPERATIONS_PALETTE"
 
@@ -189,6 +190,60 @@ def test_render_replace_field_data_by_regex():
     body = out["body"]
     assert "regex_replace_field_data(record, '245'" in body
     assert "ignore_case=True" in body
+
+
+def test_render_replace_field_subfield_and_indicators():
+    op = Operation(
+        kind="replace-field-subfield-and-indicators",
+        params={
+            "tag": "035",
+            "match_ind1": " ",
+            "match_ind2": " ",
+            "match_code": "a",
+            "match_value": "TFeba",
+            "new_ind1": " ",
+            "new_ind2": "9",
+            "new_code": "a",
+            "new_value": "(SCTFEBA)",
+        },
+    )
+
+    rendered = task_builder.render_ops_to_python([op])
+
+    assert "replace_field_subfield_and_indicators(" in rendered["body"]
+    assert "'035'" in rendered["body"]
+    assert "'TFeba'" in rendered["body"]
+    assert "'(SCTFEBA)'" in rendered["body"]
+    assert any(
+        "replace_field_subfield_and_indicators" in i
+        for i in rendered["imports"]
+    )
+
+
+def test_replace_field_subfield_and_indicators_round_trips_from_markers():
+    op = Operation(
+        kind="replace-field-subfield-and-indicators",
+        params={
+            "tag": "035",
+            "match_ind1": " ",
+            "match_ind2": " ",
+            "match_code": "a",
+            "match_value": "TFeba",
+            "new_ind1": " ",
+            "new_ind2": "9",
+            "new_code": "a",
+            "new_value": "(SCTFEBA)",
+        },
+    )
+
+    rendered = task_builder.render_ops_to_python([op])
+    parsed = task_builder.parse_ops_from_source(rendered["body"])
+
+    assert parsed["form_editable"] is True
+    assert [parsed_op.kind for parsed_op in parsed["ops"]] == [
+        "replace-field-subfield-and-indicators"
+    ]
+    assert parsed["ops"][0].params == op.params
 
 
 def test_subfield_replace_regex_toggle_emits_re_sub():

@@ -329,6 +329,25 @@ OPERATIONS_PALETTE: list[dict] = [
         ],
     },
     {
+        "kind": "replace-field-subfield-and-indicators",
+        "label": "Replace matched subfield and indicators",
+        "summary": (
+            "For fields matching tag, indicators, subfield code, and exact "
+            "subfield value, update the indicators and that subfield value."
+        ),
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {"name": "match_ind1", "label": "Match indicator 1", "type": "indicator", "default": " "},
+            {"name": "match_ind2", "label": "Match indicator 2", "type": "indicator", "default": " "},
+            {"name": "match_code", "label": "Match subfield code", "type": "subfield_code", "required": True},
+            {"name": "match_value", "label": "Match subfield value", "type": "text", "required": True},
+            {"name": "new_ind1", "label": "New indicator 1", "type": "indicator", "default": " "},
+            {"name": "new_ind2", "label": "New indicator 2", "type": "indicator", "default": " "},
+            {"name": "new_code", "label": "New subfield code", "type": "subfield_code", "required": True},
+            {"name": "new_value", "label": "New subfield value", "type": "text", "required": True},
+        ],
+    },
+    {
         "kind": "sort-fields",
         "label": "Sort fields by tag",
         "summary": "Reorder all variable fields by tag (used as a final step).",
@@ -700,6 +719,27 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
                 f"ignore_case={lit(ignore_case)})"
             ],
             {"regex_replace_field_data"},
+            False,
+        )
+
+    if op.kind == "replace-field-subfield-and-indicators":
+        tag = str(p.get("tag", "")).strip()
+        match_ind1 = (p.get("match_ind1") or " ")[:1] or " "
+        match_ind2 = (p.get("match_ind2") or " ")[:1] or " "
+        match_code = str(p.get("match_code", "")).strip()[:1]
+        match_value = str(p.get("match_value", ""))
+        new_ind1 = (p.get("new_ind1") or " ")[:1] or " "
+        new_ind2 = (p.get("new_ind2") or " ")[:1] or " "
+        new_code = str(p.get("new_code", "")).strip()[:1]
+        new_value = str(p.get("new_value", ""))
+        return (
+            [
+                "replace_field_subfield_and_indicators("
+                f"record, {lit(tag)}, {lit(match_ind1)}, {lit(match_ind2)}, "
+                f"{lit(match_code)}, {lit(match_value)}, {lit(new_ind1)}, "
+                f"{lit(new_ind2)}, {lit(new_code)}, {lit(new_value)})"
+            ],
+            {"replace_field_subfield_and_indicators"},
             False,
         )
 
