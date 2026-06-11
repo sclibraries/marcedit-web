@@ -456,6 +456,36 @@ def _parse_find_replace_block(block: _Block, draft: dict) -> None:
         draft["unsupported_lines"].append(_block_text(block))
         return
     src, dst = (_clean_find_replace_value(line) for line in block.lines)
+    source_shape = _parse_marcedit_field_shape(src)
+    dest_shape = _parse_marcedit_field_shape(dst)
+    if source_shape is not None or dest_shape is not None:
+        if (
+            source_shape is not None
+            and dest_shape is not None
+            and source_shape["tag"] == dest_shape["tag"]
+            and source_shape["value"]
+        ):
+            _add_op(
+                draft,
+                "replace-field-subfield-and-indicators",
+                {
+                    "tag": source_shape["tag"],
+                    "match_ind1": source_shape["ind1"],
+                    "match_ind2": source_shape["ind2"],
+                    "match_code": source_shape["code"],
+                    "match_value": source_shape["value"],
+                    "new_ind1": dest_shape["ind1"],
+                    "new_ind2": dest_shape["ind2"],
+                    "new_code": dest_shape["code"],
+                    "new_value": dest_shape["value"],
+                },
+                _block_text(block),
+                f"Replace matched {source_shape['tag']} field indicators and subfield.",
+                "medium",
+            )
+            return
+        draft["unsupported_lines"].append(_block_text(block))
+        return
     if src.startswith("$z") and dst.startswith("$y") and src[2:] == dst[2:]:
         _add_op(
             draft,
@@ -496,6 +526,43 @@ def _parse_find_replace_block(block: _Block, draft: dict) -> None:
 
 def _clean_find_replace_value(value: str) -> str:
     return re.sub(r"\s+\([^)]*\)\s*$", "", value).strip()
+
+
+def _parse_marcedit_field_shape(text: str) -> dict | None:
+    match = re.match(rf"^=({_TAG})(.+)$", text)
+    if match is None:
+        return None
+    tag, rest = match.groups()
+    dollar_index = rest.find("$")
+    if dollar_index < 2:
+        return None
+
+    indicator_prefix = rest[:dollar_index]
+    if not indicator_prefix[:-2].isspace():
+        return None
+    indicators = indicator_prefix[-2:]
+    subfield_text = rest[dollar_index + 1 :]
+    if len(subfield_text) < 2:
+        return None
+    code = subfield_text[0]
+    value = subfield_text[1:]
+    if re.fullmatch(r"[0-9a-z]", code, re.I) is None or not value:
+        return None
+
+    ind1, ind2 = _parse_marcedit_field_indicators(indicators)
+    return {
+        "tag": tag,
+        "ind1": ind1,
+        "ind2": ind2,
+        "code": code,
+        "value": value,
+    }
+
+
+def _parse_marcedit_field_indicators(indicators: str) -> tuple[str, str]:
+    if len(indicators) == 2 and indicators[1] == "\\" and indicators[0] != "\\":
+        return " ", _indicator_char(indicators[0])
+    return _parse_indicators(indicators)
 
 
 def _add_field_from_text(

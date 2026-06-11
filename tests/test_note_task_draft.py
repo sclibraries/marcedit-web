@@ -359,9 +359,6 @@ def test_subfield_change_summary_avoids_markdown_dollar_artifacts():
 def test_ambiguous_lines_are_preserved_not_guessed():
     review = note_task_draft.draft_task_from_notes(
         """
-        Find/replace
-            =035  \\\\$aTFeba
-            =035  9\\$a(SCTFEBA)
         Edit subfield (remove :-only fields)
             300
             b
@@ -370,7 +367,45 @@ def test_ambiguous_lines_are_preserved_not_guessed():
     )
 
     assert review.operations == ()
-    assert len(review.unsupported_lines) == 2
+    assert len(review.unsupported_lines) == 1
+
+
+def test_find_replace_035_field_shape_parses_atomic_replace():
+    review = note_task_draft.draft_task_from_notes(
+        """
+        Find/replace
+            =035  \\\\$aTFeba
+            =035  9\\$a(SCTFEBA)
+        """
+    )
+
+    assert review.unsupported_lines == ()
+    assert len(review.operations) == 1
+    assert review.operations[0].kind == "replace-field-subfield-and-indicators"
+    assert review.operations[0].params == {
+        "tag": "035",
+        "match_ind1": " ",
+        "match_ind2": " ",
+        "match_code": "a",
+        "match_value": "TFeba",
+        "new_ind1": " ",
+        "new_ind2": "9",
+        "new_code": "a",
+        "new_value": "(SCTFEBA)",
+    }
+
+
+def test_find_replace_mismatched_field_shape_stays_unsupported():
+    review = note_task_draft.draft_task_from_notes(
+        """
+        Find/replace
+            =035  \\\\$aTFeba
+            =036  9\\$a(SCTFEBA)
+        """
+    )
+
+    assert review.operations == ()
+    assert len(review.unsupported_lines) == 1
 
 
 def test_help_text_documents_supported_syntax():
