@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from urllib import request
 
 import pytest
@@ -141,6 +142,20 @@ def test_draft_task_from_notes_requires_api_key(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
     with pytest.raises(gemini_task_draft.GeminiTaskDraftError, match="GEMINI_API_KEY"):
+        gemini_task_draft.draft_task_from_notes("Delete all 029 fields.")
+
+
+def test_draft_task_from_notes_wraps_socket_timeout(monkeypatch):
+    def fake_urlopen(req, timeout):
+        raise socket.timeout("The read operation timed out")
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(request, "urlopen", fake_urlopen)
+
+    with pytest.raises(
+        gemini_task_draft.GeminiTaskDraftError,
+        match="Gemini request timed out",
+    ):
         gemini_task_draft.draft_task_from_notes("Delete all 029 fields.")
 
 

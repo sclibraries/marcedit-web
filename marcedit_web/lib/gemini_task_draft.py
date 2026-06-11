@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from typing import Any
 from urllib import error, request
 
@@ -47,6 +48,10 @@ def draft_task_from_notes(notes: str) -> ai_task_draft.DraftReview:
     try:
         with request.urlopen(req, timeout=_TIMEOUT_SECONDS) as response:
             data = json.loads(response.read().decode("utf-8"))
+    except socket.timeout as exc:
+        raise GeminiTaskDraftError(
+            "Gemini request timed out. Please try again."
+        ) from exc
     except error.HTTPError as exc:
         raise GeminiTaskDraftError(f"Gemini request failed: HTTP {exc.code}") from exc
     except error.URLError as exc:
