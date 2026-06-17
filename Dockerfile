@@ -13,7 +13,11 @@ RUN pip install -r requirements.txt
 
 COPY marcedit_web ./marcedit_web
 COPY data ./data
-COPY .streamlit ./.streamlit
+# Copy ONLY the non-secret Streamlit config. secrets.toml is never baked into
+# the image — it is provided at runtime via a bind mount (see docker-compose)
+# or env. Baking it would leak OAuth/cookie secrets to anyone who pulls the
+# image (TASK-069). .dockerignore also excludes secrets.toml as defense-in-depth.
+COPY .streamlit/config.toml ./.streamlit/config.toml
 
 # Stage 21: run as an unprivileged user. A compromised user-task that
 # survives the sandbox no longer comes back as root.

@@ -19,3 +19,9 @@ data/tasks/shared
 *.png
 *.jpg
 *.jpeg
+
+# Never let secrets enter the build context — they are provided at runtime via
+# a mount or env, never baked into the image (TASK-069).
+.streamlit/secrets.toml
+.streamlit/secrets*.toml
+.env

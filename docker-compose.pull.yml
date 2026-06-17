@@ -7,6 +7,11 @@ services:
       - "${MARCEDIT_WEB_PORT:-8501}:8501"
     volumes:
       - ${MARCEDIT_WEB_DATA_DIR:-./data}:/app/data
+      # OAuth secrets are NOT baked into the published image (TASK-069). The
+      # Shibboleth / REMOTE_USER production deployment does not need them. If you
+      # use the Streamlit OAuth path (st.login), provide secrets at runtime —
+      # add an `env_file: .env` to this service or mount a secrets file:
+      #   - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
     environment:
       PYTHONUNBUFFERED: "1"
       STREAMLIT_SERVER_MAX_UPLOAD_SIZE: "${STREAMLIT_SERVER_MAX_UPLOAD_SIZE:-2048}"
