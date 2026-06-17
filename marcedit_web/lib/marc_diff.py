@@ -388,6 +388,15 @@ def _iter_records(data: bytes) -> Iterator[tuple[int, bytes]]:
         if pos + 5 > n:
             raise ValueError(f"Truncated MARC blob at offset {pos}")
         length = int(data[pos:pos + 5])
+        if length < LEADER_LEN:
+            # A real MARC record is at least a 24-byte leader. A length of 0
+            # (or anything below the leader) would leave ``pos`` unchanged and
+            # spin this loop forever — a CPU DoS reachable from any uploaded
+            # .mrc. Treat it as malformed, like a truncated record. (TASK-072)
+            raise ValueError(
+                f"Invalid MARC record length {length} at offset {pos}: "
+                f"below the {LEADER_LEN}-byte leader minimum"
+            )
         if pos + length > n:
             raise ValueError(
                 f"Short read at offset {pos}: expected {length} bytes, "

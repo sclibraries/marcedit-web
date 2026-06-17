@@ -61,6 +61,16 @@ def test_from_bytes_handles_truncated(tmp_path):
     assert s.malformed_count() == 1
 
 
+def test_from_bytes_handles_zero_length_record(tmp_path):
+    # Length field 00000 would spin _iter_records forever (CPU DoS) without the
+    # guard. from_bytes must treat it as one malformed record and return
+    # promptly, exactly like the truncated case above (TASK-072).
+    s = RecordStore.from_bytes(b"00000abcde", tmp_dir=tmp_path / "zero")
+    assert s.count() == 0
+    assert s.raw_count() == 0
+    assert s.malformed_count() == 1
+
+
 def test_from_path_reads_existing_file(tmp_path):
     target = tmp_path / "sample.mrc"
     target.write_bytes(FIXTURE.read_bytes())
