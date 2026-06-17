@@ -336,6 +336,34 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
         st.session_state[K_EDITOR_OPS] = []
 
 
+def _archive_scratch_path(tasks_dir: Path, upl_name: str) -> Path:
+    """Return a traversal-safe scratch path inside ``tasks_dir`` for an upload.
+
+    The client-supplied filename is reduced to a bare basename (NUL stripped)
+    and prefixed with a unique token, so it can never redirect the write
+    outside ``tasks_dir`` (path traversal) and concurrent imports of like-named
+    files don't collide. The ``.__import__<uuid>_`` prefix is load-bearing for
+    safety, not just collisions: it keeps even a basename of ``..`` a literal
+    child filename rather than resolving to the parent directory. (TASK-071)
+    """
+    safe = Path(upl_name).name.replace("\x00", "") or "import.task"
+    return tasks_dir / f".__import__{uuid.uuid4().hex}_{safe}"
+
+
+def _convert_uploaded_archive(
+    tasks_dir: Path, upl_name: str, raw: bytes
+) -> "marcedit_import.ArchiveConversionResult":
+    """Write the uploaded ``.task`` archive bytes to a traversal-safe scratch
+    file inside ``tasks_dir``, convert it, and always remove the scratch file.
+    """
+    scratch = _archive_scratch_path(tasks_dir, upl_name)
+    try:
+        scratch.write_bytes(raw)
+        return marcedit_import.convert_task_archive(scratch)
+    finally:
+        scratch.unlink(missing_ok=True)
+
+
 def _do_marcedit_import(upl, tasks_dir: Path) -> None:
     """Import a MarcEdit `.tasksfile` or `.task` archive into SQL.
 
@@ -367,10 +395,7 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
 
     try:
         if is_archive:
-            tmp_path = tasks_dir / f".__import__{upl.name}"
-            tmp_path.write_bytes(raw)
-            archive = marcedit_import.convert_task_archive(tmp_path)
-            tmp_path.unlink(missing_ok=True)
+            archive = _convert_uploaded_archive(tasks_dir, upl.name, raw)
             if archive.archive_errors:
                 for err in archive.archive_errors:
                     st.error(err)
