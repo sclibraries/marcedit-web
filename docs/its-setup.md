@@ -60,6 +60,25 @@ Open the existing `libtools2.smith.edu` vhost config (likely
 contents of `/var/www/html/marcedit-web/deploy/libtools2-marcedit.conf.snippet`
 inside the existing `<VirtualHost *:443>` block.
 
+The snippet's `<Location>` block `Include`s an attestation secret file
+(TASK-073) — create it first, or `configtest` will fail on the missing
+include. Generate one secret and install it; the SAME value goes in the app's
+`.env` as `MARCEDIT_WEB_PROXY_SECRET` (the dev team fills that in):
+
+```bash
+SECRET=$(openssl rand -hex 32)
+install -o root -g apache -m 0640 \
+    /var/www/html/marcedit-web/deploy/marcedit-web-attestation.conf.example \
+    /etc/httpd/marcedit-web-attestation.conf
+sed -i "s/REPLACE_WITH_SECRET/$SECRET/" /etc/httpd/marcedit-web-attestation.conf
+echo "Give this to the dev team for .env MARCEDIT_WEB_PROXY_SECRET: $SECRET"
+```
+
+Keep the file **outside** `conf.d/` (so Apache's `*.conf` autoglob does not set
+the header on every vhost) and `0640 root:apache` (so the secret is not
+world-readable on the shared host). Without it the app refuses all header
+identity and every cataloger shows as `anonymous`.
+
 Then test the Apache config and reload:
 
 ```bash
@@ -91,7 +110,9 @@ Then ask the dev team to do their part:
    dev account; chown to marcedit:marcedit afterwards)
 2. `sudo -iu marcedit bash scripts/install.sh` — creates the venv,
    installs deps, ensures data subdirs exist
-3. Copy `.env.example` to `.env` and fill in production values
+3. Copy `.env.example` to `.env` and fill in production values —
+   including `MARCEDIT_WEB_PROXY_SECRET`, which MUST equal the secret ITS
+   put in `/etc/httpd/marcedit-web-attestation.conf` (step 4)
 4. Optionally copy `.streamlit/secrets.toml.example` to
    `.streamlit/secrets.toml` for Google OAuth
 

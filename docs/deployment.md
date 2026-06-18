@@ -54,6 +54,7 @@ The most operationally important ones:
 | --- | --- |
 | `MARCEDIT_WEB_PROD` | Set to `1` in production. Refuses anonymous sessions. |
 | `MARCEDIT_WEB_ADMINS` | Comma-separated allowlist of eppns/emails that get the Tasks code view. |
+| `MARCEDIT_WEB_PROXY_SECRET` | Shared secret Apache injects to prove a request came through the proxy. Without it, header identity is refused (fail-closed). Must match `/etc/httpd/marcedit-web-attestation.conf`. |
 | `MARCEDIT_WEB_AUDIT_DIR` | Audit JSONL location. |
 | `MARCEDIT_WEB_DB_PATH` | SQLite path. |
 | `MARCEDIT_WEB_TASKS_ROOT` | Where per-user task .py files materialize. |
@@ -78,6 +79,33 @@ with `RequestHeader unset … early`.
 In production mode (`MARCEDIT_WEB_PROD=1`), an anonymous result
 is refused via `session.enforce_auth()` — the page never renders
 and an `anonymous-action-refused` audit event is emitted.
+
+### Proxy attestation (TASK-073)
+
+The header scrub above only runs for traffic that passes through the
+`<Location /marcedit-web>` block. Because Streamlit listens on
+`127.0.0.1:8501`, any other local process on the shared host could otherwise
+connect straight to `:8501`, forge `REMOTE_USER`, and gain admin (which
+unlocks the raw-Python Code view → RCE as `marcedit`). To close that, the app
+trusts `REMOTE_USER` / `eppn` **only** when the request also carries an
+`X-MarcEdit-Proxy-Attestation` header matching `MARCEDIT_WEB_PROXY_SECRET`
+(constant-time compare). Absent or invalid attestation, the header identity is
+dropped to `anonymous` (fail-closed).
+
+**Provision the secret (one value, two places):**
+
+1. `openssl rand -hex 32`
+2. Put it in the app's `.env` as `MARCEDIT_WEB_PROXY_SECRET=…`.
+3. Put the *same* value in `/etc/httpd/marcedit-web-attestation.conf` (see
+   `deploy/marcedit-web-attestation.conf.example`), owner `root:apache`, mode
+   `0640`, installed **outside** `conf.d/` so Apache's `*.conf` autoglob does
+   not set the header globally.
+4. `sudo systemctl restart marcedit-web && sudo systemctl reload httpd`.
+
+If the app shows everyone as `anonymous` after deploy, the `.env` secret and
+the Apache include disagree — re-check steps 2–3. **Loopback only:** `:8501`
+must never be exposed beyond loopback (the systemd unit binds `127.0.0.1`; the
+compose files publish `127.0.0.1:8501:8501`).
 
 ## Google OAuth (optional)
 
@@ -164,6 +192,10 @@ idempotent.
 5. Tail today's audit log — `tail -F /var/www/html/marcedit-web/data/audit/audit-$(date -u +%F).log` —
    then perform an upload through the UI; an `upload-accepted` event
    should appear.
+6. Forged-header refusal — `curl -s -H 'REMOTE_USER: someone@smith.edu'
+   http://127.0.0.1:8501/marcedit-web/` sent straight to the backend
+   (bypassing Apache) must NOT yield an identified/admin session: in prod it
+   is refused and the sidebar shows `anonymous`, never the forged eppn.
 
 ## Runtime temp files
 
