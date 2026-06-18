@@ -1732,11 +1732,10 @@ def _render_diff_rows(
 
 
 def _stamped_filename(orig: str | None) -> str:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if not orig:
-        return f"transformed_{stamp}.mrc"
+        return session.stamped_filename("transformed")
     p = Path(orig)
-    return f"{p.stem}_{stamp}{p.suffix or '.mrc'}"
+    return session.stamped_filename(p.stem, p.suffix or ".mrc")
 
 
 # ---------------------------------------------------------------------------

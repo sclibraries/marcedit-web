@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -244,8 +243,7 @@ def _convert_to_mrk() -> None:
             result = converters.to_mrk_text(raw)
         _show_preflight(result)
         if isinstance(result.output, str) and result.output:
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            fname = f"records_{stamp}.mrk"
+            fname = session.stamped_filename("records", ".mrk")
             st.download_button(
                 f"⬇ Download {fname}",
                 data=result.output.encode("utf-8"),
@@ -316,8 +314,7 @@ def _convert_to_xml() -> None:
             result = converters.to_marcxml(raw)
         _show_preflight(result)
         if result.output:
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            fname = f"records_{stamp}.xml"
+            fname = session.stamped_filename("records", ".xml")
             st.download_button(
                 f"⬇ Download {fname}",
                 data=result.output,
@@ -354,8 +351,7 @@ def _render_csv() -> None:
             use_container_width=True,
         )
         csv_text = converters.write_csv(rows, columns=col_names)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"records_{stamp}.csv"
+        fname = session.stamped_filename("records", ".csv")
         st.download_button(
             f"⬇ Download {fname}",
             data=csv_text.encode("utf-8"),
@@ -395,8 +391,7 @@ def _show_line_errors(line_errors) -> None:
 
 
 def _offer_download_binary(blob: bytes, source_bytes: int) -> None:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"records_{stamp}.mrc"
+    fname = session.stamped_filename("records")
     st.download_button(
         f"⬇ Download {fname}",
         data=blob,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 
 import pymarc
@@ -328,10 +327,9 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         out_bytes = store.to_mrc_bytes()
         st.session_state["issues_cache"] = {}
 
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         orig = session.current_filename() or "edited.mrc"
         stem = Path(orig).stem or "edited"
-        fname = f"{stem}_{stamp}.mrc"
+        fname = session.stamped_filename(stem)
 
         st.success(
             f"Saved **{len(record_objs)}** record(s) back into the session. "

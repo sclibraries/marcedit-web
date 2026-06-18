@@ -24,7 +24,6 @@ import logging
 import mmap
 import re
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
 import pymarc
@@ -889,10 +888,9 @@ if dr:
                 deletes_locations, old_sources_mm
             )
 
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         st.session_state["diff_output_blobs"] = {
-            "adds_name": f"adds_{stamp}.mrc",
-            "deletes_name": f"deletes_{stamp}.mrc",
+            "adds_name": session.stamped_filename("adds"),
+            "deletes_name": session.stamped_filename("deletes"),
             "adds": adds_bytes,
             "deletes": deletes_bytes,
             "adds_count": len(adds_keys),

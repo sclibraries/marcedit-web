@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import io
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -328,8 +327,7 @@ def _offer_subset_download(store, indices: list[int]) -> None:
             rec = store.get(idx)
             if rec is not None:
                 writer.write(rec)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"matches_{stamp}.mrc"
+    fname = session.stamped_filename("matches")
     st.download_button(
         f"⬇ Download {fname}",
         data=subset_path.read_bytes(),

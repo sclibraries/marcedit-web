@@ -311,9 +311,7 @@ def _csv_download(df: pd.DataFrame, section: str, *, key: str) -> None:
     (``df.to_csv`` is cheap), but the button widget itself eagerly
     builds the payload — small report DataFrames make this fine.
     """
-    from datetime import datetime
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fname = f"report_{section}_{stamp}.csv"
+    fname = session.stamped_filename(f"report_{section}", ".csv")
     st.download_button(
         f"⬇ Download {fname}",
         data=df.to_csv(index=False).encode("utf-8"),

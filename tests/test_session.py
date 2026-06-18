@@ -73,3 +73,16 @@ def test_v1_records_key_is_gone():
     assert "records" not in session.STATE_DEFAULTS
     assert "raw_bytes" not in session.STATE_DEFAULTS
     assert "malformed_count" not in session.STATE_DEFAULTS
+
+
+def test_stamped_filename_shape():
+    """TASK-078c: single owner of the download-filename timestamp shape."""
+    import re
+
+    assert re.fullmatch(
+        r"records_\d{8}_\d{6}\.mrk", session.stamped_filename("records", ".mrk")
+    )
+    # default suffix is .mrc
+    assert re.fullmatch(
+        r"matches_\d{8}_\d{6}\.mrc", session.stamped_filename("matches")
+    )

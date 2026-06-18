@@ -25,7 +25,6 @@ from __future__ import annotations
 import mmap
 import tempfile
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -599,9 +598,8 @@ def _render_export(buffer_path: Path, dup_groups: dict[str, list[int]]) -> None:
     export_bytes = st.session_state.get(_K_EXPORT_BYTES)
     if export_bytes is not None:
         count = st.session_state.get(_K_EXPORT_COUNT, 0)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         stem = Path(session.current_filename() or "deletes").stem or "deletes"
-        fname = f"{stem}_deletes_{stamp}.mrc"
+        fname = session.stamped_filename(f"{stem}_deletes")
         st.success(
             f"Built `{fname}` with **{count}** record(s) "
             f"({len(export_bytes) / 1e6:,.2f} MB)."

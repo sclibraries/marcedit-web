@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -370,6 +371,16 @@ def current_store() -> Optional[RecordStore]:
 def current_filename() -> Optional[str]:
     store = current_store()
     return store.filename if store is not None else None
+
+
+def stamped_filename(base: str, suffix: str = ".mrc") -> str:
+    """Return ``{base}_{YYYYMMDD_HHMMSS}{suffix}`` for a download.
+
+    Single owner of the download-filename timestamp shape (TASK-078c);
+    callers pass their base (and a non-default suffix when needed).
+    """
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{base}_{stamp}{suffix}"
 
 
 def record_count() -> int:
