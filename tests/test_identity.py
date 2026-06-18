@@ -325,3 +325,26 @@ def test_oauth_unaffected_by_attestation(monkeypatch):
         monkeypatch, _FakeUser(is_logged_in=True, email="alice@example.edu")
     )
     assert current_user(headers={"REMOTE_USER": "shib@x.edu"}) == "alice@example.edu"
+
+
+def test_forged_admin_header_does_not_grant_admin(monkeypatch):
+    """End-to-end: a forged admin REMOTE_USER without attestation must not
+    resolve to an admin (the RCE path the ticket closes)."""
+    from marcedit_web.lib import task_admin
+
+    monkeypatch.setenv(identity._PROXY_SECRET_ENV, _PROXY_SECRET)
+    monkeypatch.setenv("MARCEDIT_WEB_ADMINS", "admin@smith.edu")
+    user = current_user(headers={"REMOTE_USER": "admin@smith.edu"})  # no attestation
+    assert user == ANONYMOUS
+    assert task_admin.is_admin(user) is False
+
+
+def test_attested_admin_header_grants_admin(monkeypatch):
+    from marcedit_web.lib import task_admin
+
+    monkeypatch.setenv("MARCEDIT_WEB_ADMINS", "admin@smith.edu")
+    user = current_user(
+        headers=_attest(monkeypatch, {"REMOTE_USER": "admin@smith.edu"})
+    )
+    assert user == "admin@smith.edu"
+    assert task_admin.is_admin(user) is True

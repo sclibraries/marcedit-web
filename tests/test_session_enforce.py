@@ -29,11 +29,14 @@ class _FakeSt:
     class Stopped(Exception):
         pass
 
-    def __init__(self, *, user: str | None):
+    def __init__(self, *, user: str | None, headers: dict | None = None):
         self.session_state = {"user": user} if user is not None else {}
         self.errors: list[str] = []
         self.captions: list[str] = []
         self.stopped = False
+        # `_streamlit_headers()` reads `st.context.headers`; expose it so the
+        # enforce fallback can route through current_user() with real headers.
+        self.context = types.SimpleNamespace(headers=dict(headers or {}))
         # `runtime.scriptrunner.get_script_run_ctx` is hit by
         # _page_label — make the helper return None so we don't
         # depend on a real Streamlit script context.
@@ -56,8 +59,8 @@ class _FakeSt:
 
 @pytest.fixture
 def fake_st(monkeypatch):
-    def _install(user: str | None):
-        fake = _FakeSt(user=user)
+    def _install(user: str | None, headers: dict | None = None):
+        fake = _FakeSt(user=user, headers=headers)
         # session._current_user_for_enforcement does `import streamlit
         # as st`; intercept the module import so our fake is what gets
         # imported. Same for the audit module's writes (we want the
@@ -131,3 +134,20 @@ def test_prod_mode_empty_user_treated_as_anonymous(
     with pytest.raises(_FakeSt.Stopped):
         session.enforce_auth()
     assert fake.stopped is True
+
+
+def test_prod_forged_header_without_attestation_refused(
+    monkeypatch, fake_st, tmp_path,
+):
+    """Prod boot: a forged REMOTE_USER at :8501 (no attestation, no secret)
+    resolves anonymous via current_user() and enforce_auth refuses it."""
+    monkeypatch.setenv("MARCEDIT_WEB_PROD", "1")
+    monkeypatch.setenv("MARCEDIT_WEB_AUDIT_DIR", str(tmp_path))
+    monkeypatch.delenv("MARCEDIT_WEB_PROXY_SECRET", raising=False)
+    # No cached session user → enforce falls back to current_user(), which
+    # reads st.context.headers (forged) and finds no valid attestation.
+    fake = fake_st(user=None, headers={"REMOTE_USER": "admin@smith.edu"})
+    with pytest.raises(_FakeSt.Stopped):
+        session.enforce_auth()
+    assert fake.stopped is True
+    assert fake.errors and "Sign-in required" in fake.errors[0]
