@@ -29,7 +29,7 @@ from typing import Iterable
 
 from pymarc import MARCReader
 
-from .errors import Issue
+from .errors import Issue, make_record_issue
 from .transforms import normalize_oclc_035
 
 logger = logging.getLogger("marcedit_web.preflight")
@@ -145,7 +145,7 @@ def run_preflight(
         except Exception:  # noqa: BLE001 - bad leader can't be stringified
             leader_str = ""
         if len(leader_str) != 24:
-            record_issues.append(_record_issue(
+            record_issues.append(make_record_issue(
                 "error", "leader-length-invalid",
                 f"leader is {len(leader_str)} bytes (expected 24)",
                 "review this record; the leader may be corrupt",
@@ -153,14 +153,14 @@ def run_preflight(
             ))
 
         if record.get("001") is None:
-            record_issues.append(_record_issue(
+            record_issues.append(make_record_issue(
                 "warning", "missing-001",
                 "no 001 control field",
                 "001 is the system control number; many downstream systems require it",
                 i, identifier,
             ))
         if record.get("245") is None:
-            record_issues.append(_record_issue(
+            record_issues.append(make_record_issue(
                 "warning", "missing-245",
                 "no 245 title field",
                 "discovery match relies on 245; review before upload",
@@ -169,7 +169,7 @@ def run_preflight(
 
         f856_list = record.get_fields("856")
         if not f856_list:
-            record_issues.append(_record_issue(
+            record_issues.append(make_record_issue(
                 "warning", "missing-856",
                 "no 856 access URL field",
                 "electronic-resource loads need at least one 856 with a usable $u",
@@ -179,7 +179,7 @@ def run_preflight(
             for f in f856_list:
                 u_values = f.get_subfields("u")
                 if any(not (u or "").strip() for u in u_values):
-                    record_issues.append(_record_issue(
+                    record_issues.append(make_record_issue(
                         "warning", "empty-856-u",
                         "856 has an empty $u",
                         "review the access URL before upload",
@@ -302,25 +302,6 @@ def _lccn_values(record) -> list[str]:
             if v and v.strip():
                 out.append(v.strip())
     return out
-
-
-def _record_issue(
-    severity: str,
-    code: str,
-    message: str,
-    suggestion: str | None,
-    record_index: int,
-    identifier: str | None,
-) -> Issue:
-    return Issue(
-        severity=severity,  # type: ignore[arg-type]
-        scope="record",
-        code=code,
-        message=message,
-        suggestion=suggestion,
-        record_index=record_index,
-        identifier=identifier,
-    )
 
 
 def _duplicate_issues(

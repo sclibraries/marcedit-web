@@ -10,6 +10,7 @@ from marcedit_web.lib.errors import (
     PreflightError,
     TaskLoadError,
     TransformError,
+    make_record_issue,
     task_load_issue,
     transform_issue,
 )
@@ -81,3 +82,17 @@ def test_issue_scope_drops_workflow_and_registry():
     """
     for scope in ("file", "record", "task"):
         Issue(severity="info", scope=scope, code="x", message="m")
+
+
+def test_make_record_issue_builds_record_scoped_issue():
+    """TASK-078c: the single record-issue factory shared by preflight + rules_validate."""
+    issue = make_record_issue(
+        "warning", "duplicate-001", "two records share 001", "dedupe", 4, "ocm123"
+    )
+    assert issue.severity == "warning"
+    assert issue.scope == "record"
+    assert issue.code == "duplicate-001"
+    assert issue.message == "two records share 001"
+    assert issue.suggestion == "dedupe"
+    assert issue.record_index == 4
+    assert issue.identifier == "ocm123"

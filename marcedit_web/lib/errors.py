@@ -55,6 +55,27 @@ class Issue:
         return {k: v for k, v in asdict(self).items() if v is not None}
 
 
+def make_record_issue(
+    severity: str,
+    code: str,
+    message: str,
+    suggestion: str | None,
+    record_index: int,
+    identifier: str | None,
+) -> Issue:
+    """Build a record-scoped Issue. Single owner shared by preflight and
+    rules_validate (TASK-078c)."""
+    return Issue(
+        severity=severity,  # type: ignore[arg-type]
+        scope="record",
+        code=code,
+        message=message,
+        suggestion=suggestion,
+        record_index=record_index,
+        identifier=identifier,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exception types
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ from typing import Iterable
 
 from pymarc import Record
 
-from .errors import Issue
+from .errors import Issue, make_record_issue
 from .rules import FieldRule, RuleSet
 from .transforms import is_control_tag
 
@@ -73,7 +73,7 @@ def _validate_one(
     for tag, count in tags_present.items():
         rule = rules.fields.get(tag)
         if rule is None:
-            out.append(_record_issue(
+            out.append(make_record_issue(
                 "info",
                 "rule-unknown-tag",
                 f"tag {tag!r} has no entry in marc-rules.txt",
@@ -82,7 +82,7 @@ def _validate_one(
             ))
             continue
         if rule.repeatability == "NR" and count > 1:
-            out.append(_record_issue(
+            out.append(make_record_issue(
                 "warning",
                 "rule-tag-nonrepeatable",
                 f"tag {tag!r} is non-repeatable but appears {count}× in this record",
@@ -92,7 +92,7 @@ def _validate_one(
 
     # Cross-record-style rules expressed per-record.
     if rules.cross_record.must_have_245 and record.get("245") is None:
-        out.append(_record_issue(
+        out.append(make_record_issue(
             "warning",
             "rule-missing-245",
             "marc-rules.txt declares 245 must be present; record has no 245",
@@ -103,7 +103,7 @@ def _validate_one(
     if rules.cross_record.only_one_1xx:
         ones = sum(c for tag, c in tags_present.items() if tag.startswith("1"))
         if ones > 1:
-            out.append(_record_issue(
+            out.append(make_record_issue(
                 "warning",
                 "rule-only-one-1xx",
                 f"marc-rules.txt declares only one 1XX is allowed; record has {ones}",
@@ -134,7 +134,7 @@ def _check_field_against_rule(
         if rule.length is not None and rule.length.exact is not None:
             data = getattr(f, "data", "") or ""
             if len(data) != rule.length.exact:
-                out.append(_record_issue(
+                out.append(make_record_issue(
                     "warning",
                     "rule-length-mismatch",
                     (
@@ -151,7 +151,7 @@ def _check_field_against_rule(
         allowed = rule.ind1.allowed_chars()
         actual = (list(f.indicators)[0] if f.indicators else " ")
         if actual not in allowed:
-            out.append(_record_issue(
+            out.append(make_record_issue(
                 "warning",
                 "rule-bad-indicator",
                 (
@@ -165,7 +165,7 @@ def _check_field_against_rule(
         allowed = rule.ind2.allowed_chars()
         actual = (list(f.indicators)[1] if len(list(f.indicators)) > 1 else " ")
         if actual not in allowed:
-            out.append(_record_issue(
+            out.append(make_record_issue(
                 "warning",
                 "rule-bad-indicator",
                 (
@@ -182,7 +182,7 @@ def _check_field_against_rule(
     for sf in f.subfields:
         sub_counts[sf.code] += 1
         if valid is not None and sf.code not in valid:
-            out.append(_record_issue(
+            out.append(make_record_issue(
                 "warning",
                 "rule-bad-subfield",
                 f"{f.tag} ${sf.code} is not in the valid subfield list {rule.valid_subfield_codes!r}",
@@ -194,7 +194,7 @@ def _check_field_against_rule(
         if sf_rule is None:
             continue
         if sf_rule.repeatability == "NR" and count > 1:
-            out.append(_record_issue(
+            out.append(make_record_issue(
                 "warning",
                 "rule-subfield-nonrepeatable",
                 f"{f.tag} ${code} is non-repeatable but appears {count}× in this field",
@@ -225,22 +225,3 @@ def _identifier(record: Record) -> str | None:
         if a:
             return a[0]
     return None
-
-
-def _record_issue(
-    severity: str,
-    code: str,
-    message: str,
-    suggestion: str | None,
-    record_index: int,
-    identifier: str | None,
-) -> Issue:
-    return Issue(
-        severity=severity,  # type: ignore[arg-type]
-        scope="record",
-        code=code,
-        message=message,
-        suggestion=suggestion,
-        record_index=record_index,
-        identifier=identifier,
-    )
