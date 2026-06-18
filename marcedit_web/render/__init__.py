@@ -54,7 +54,7 @@ def sidebar_status() -> None:
     """
     with st.sidebar:
         st.header("marcedit-web")
-        user = st.session_state.get("user", "anonymous")
+        user = session.current_user_id()
         st.caption(f"Signed in as **{user}**")
         st.divider()
         if session.has_upload():

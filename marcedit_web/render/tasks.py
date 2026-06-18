@@ -126,7 +126,7 @@ def _refresh_tasks_for(user: str) -> Path:
 
 def render() -> None:
     """Render the Tasks tab into the current Streamlit container."""
-    current_user_id = st.session_state.get("user", "anonymous") or "anonymous"
+    current_user_id = session.current_user_id()
     is_admin = task_admin.is_admin(current_user_id)
     tasks_dir = _refresh_tasks_for(current_user_id)
 
@@ -372,7 +372,7 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
     used as a scratch path for archive extraction; the persistent
     storage is the SQLite ``tasks`` table.
     """
-    user = st.session_state.get("user", "anonymous") or "anonymous"
+    user = session.current_user_id()
     raw = upl.getvalue()
     is_archive = upl.name.lower().endswith(".task")
     # Tasksfiles are text → 1 MB cap. Archives can be larger because
@@ -510,7 +510,7 @@ def _render_ai_draft_panel() -> None:
                 _store_ai_draft_review(review)
                 audit_event(
                     "ai-task-draft-created",
-                    user=st.session_state.get("user", "anonymous") or "anonymous",
+                    user=session.current_user_id(),
                     source="deterministic",
                     task_name=review.task_name,
                     accepted_operations=len(review.operations),
@@ -544,7 +544,7 @@ def _render_ai_draft_panel() -> None:
                     audit_event(
                         "ai-task-draft-created",
                         user=(
-                            st.session_state.get("user", "anonymous")
+                            session.current_user_id()
                             or "anonymous"
                         ),
                         source="gemini-fallback",
@@ -846,7 +846,7 @@ def _render_form_editor() -> None:
     )
 
     is_admin = task_admin.is_admin(
-        st.session_state.get("user", "anonymous") or "anonymous"
+        session.current_user_id()
     )
     ops = st.session_state[K_EDITOR_OPS]
     to_remove: list[int] = []
@@ -1065,7 +1065,7 @@ def _save_callback(tasks_dir: Path) -> None:
     original = st.session_state.get(K_EDITOR_ORIGINAL_NAME)
     mode = st.session_state.get(K_EDITOR_MODE, "form")
     visibility = st.session_state.get(K_EDITOR_VISIBILITY, "private")
-    user = st.session_state.get("user", "anonymous") or "anonymous"
+    user = session.current_user_id()
 
     if _ai_draft_save_blocked_for_new_task():
         st.session_state[K_SAVE_ERROR] = (
@@ -1215,7 +1215,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             imports=[],  # imports already baked into the saved file
         ))
 
-    user = st.session_state.get("user", "anonymous") or "anonymous"
+    user = session.current_user_id()
     # Stage 20: stream the live records to a temp file instead of
     # materializing the whole batch as bytes in this process. The
     # sandbox driver opens it lazily via MARCReader and pages through.
@@ -1922,7 +1922,7 @@ def _apply_quick_preview(preview) -> None:
             )
         return
 
-    user = st.session_state.get("user", "anonymous") or "anonymous"
+    user = session.current_user_id()
     audit_event(
         "batch-replace-applied",
         user=user,

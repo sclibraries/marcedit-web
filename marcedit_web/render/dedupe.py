@@ -581,7 +581,7 @@ def _render_export(buffer_path: Path, dup_groups: dict[str, list[int]]) -> None:
         # audited individually (would be noise); the strategy
         # name + params at the moment of export is enough to
         # reconstruct the reasoning after the fact.
-        user = st.session_state.get("user", "anonymous") or "anonymous"
+        user = session.current_user_id()
         audit_event(
             "dedupe-deletes-issued",
             user=user,

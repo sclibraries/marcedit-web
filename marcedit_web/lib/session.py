@@ -383,6 +383,18 @@ def stamped_filename(base: str, suffix: str = ".mrc") -> str:
     return f"{base}_{stamp}{suffix}"
 
 
+def current_user_id() -> str:
+    """Return the active user captured at init() (cached), or ANONYMOUS.
+
+    The single read-point for the per-session identity (TASK-078b). The value
+    is set once by init() via current_user() (OAuth + proxy-attestation gated,
+    TASK-073); callers read the cached value rather than re-evaluating.
+    """
+    import streamlit as st
+
+    return st.session_state.get("user") or ANONYMOUS
+
+
 def record_count() -> int:
     """Number of live records, or 0 if nothing loaded.
 

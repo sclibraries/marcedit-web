@@ -232,7 +232,7 @@ def _read_uploaded(files, side: str) -> list[tuple[str, str]]:
     Rejected files drop out of the returned list so the rest of the
     page treats them as if they were never uploaded.
     """
-    user = st.session_state.get("user", "anonymous") or "anonymous"
+    user = session.current_user_id()
     workdir = _diff_workdir(side)
     accepted: list[tuple[str, str]] = []
     for f in (files or []):
@@ -442,7 +442,7 @@ st.caption(
 
 with st.sidebar:
     st.header("marcedit-web")
-    user = st.session_state.get("user", "anonymous")
+    user = session.current_user_id()
     st.caption(f"Signed in as **{user}**")
     st.divider()
     if session.has_upload():

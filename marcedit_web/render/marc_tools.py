@@ -193,7 +193,7 @@ def _check_upload(upload, *, kind: str) -> _Source | None:
     raw = upload.getvalue()  # Streamlit already holds these bytes
     size = len(raw)
     name = upload.name
-    user = st.session_state.get("user", "anonymous") or "anonymous"
+    user = session.current_user_id()
     try:
         quotas.check_upload(size, kind=kind)
     except quotas.QuotaExceeded as exc:
@@ -402,7 +402,7 @@ def _offer_download_binary(blob: bytes, source_bytes: int) -> None:
 
 
 def _audit_conversion(kind: str, source_bytes: int, output_bytes: int) -> None:
-    user = st.session_state.get("user", "anonymous") or "anonymous"
+    user = session.current_user_id()
     audit_event(
         "conversion-issued",
         user=user,

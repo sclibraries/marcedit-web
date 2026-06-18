@@ -101,3 +101,28 @@ def test_stamped_filename_exact_format(monkeypatch):
     assert session.stamped_filename("records", ".mrk") == "records_20260618_143005.mrk"
     assert session.stamped_filename("matches") == "matches_20260618_143005.mrc"
     assert session.stamped_filename("x_deletes") == "x_deletes_20260618_143005.mrc"
+
+
+def _fake_streamlit(monkeypatch, session_state):
+    import sys
+    import types
+
+    monkeypatch.setitem(
+        sys.modules, "streamlit", types.SimpleNamespace(session_state=session_state)
+    )
+
+
+def test_current_user_id_returns_cached_value(monkeypatch):
+    """TASK-078b: the single identity read-point returns the cached value."""
+    _fake_streamlit(monkeypatch, {"user": "alice@smith.edu"})
+    assert session.current_user_id() == "alice@smith.edu"
+
+
+def test_current_user_id_anonymous_when_unset(monkeypatch):
+    _fake_streamlit(monkeypatch, {})
+    assert session.current_user_id() == "anonymous"
+
+
+def test_current_user_id_anonymous_when_empty(monkeypatch):
+    _fake_streamlit(monkeypatch, {"user": ""})
+    assert session.current_user_id() == "anonymous"
