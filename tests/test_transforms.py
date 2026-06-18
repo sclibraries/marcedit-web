@@ -430,3 +430,28 @@ def test_smith_specific_helpers_are_gone():
         "_host_from_url",
     ):
         assert not hasattr(transforms, name), f"{name} should have been removed"
+
+
+# ---------------------------------------------------------------------------
+# TASK-078a: canonical OCLC-035 extraction (the single generic owner that
+# replaces the three divergent copies; NOT the removed Smith canonicalizer).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("(OCoLC)12345", "12345"),
+        ("(OCoLC)ocm00012345", "ocm00012345"),
+        ("(OCoLC)ocn123456789", "ocn123456789"),
+        ("(OCoLC)on1234567890", "on1234567890"),
+        ("12345", None),               # bare number is NOT an OCLC number
+        ("(DLC)12345", None),
+        ("(OCoLC)", None),             # empty after the prefix
+        ("  (OCoLC)12345", "12345"),   # leading whitespace tolerated
+        ("(OCoLC)12345  ", "12345"),   # trailing whitespace stripped
+        ("", None),
+    ],
+)
+def test_normalize_oclc_035(value, expected):
+    assert transforms.normalize_oclc_035(value) == expected

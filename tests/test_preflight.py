@@ -188,3 +188,33 @@ def test_run_preflight_generator_with_expected_count_mismatch(make_record):
     )
     codes = {i.code for i in issues}
     assert "record-count-mismatch" in codes
+
+
+def _record_with_035a(make_record, value):
+    rec = make_record()
+    rec.remove_fields("035")
+    rec.add_field(
+        pymarc.Field(
+            tag="035",
+            indicators=[" ", " "],
+            subfields=[pymarc.Subfield("a", value)],
+        )
+    )
+    return rec
+
+
+def test_bare_number_035_not_flagged_as_oclc_duplicate(make_record):
+    """TASK-078a: a bare numeric 035 $a (no (OCoLC)) is not an OCLC number, so
+    two records sharing one are NOT flagged as OCLC duplicates."""
+    a = _record_with_035a(make_record, "12345")
+    b = _record_with_035a(make_record, "12345")
+    codes = {i.code for i in preflight.run_preflight(records=[a, b])}
+    assert "duplicate-oclc-035" not in codes
+
+
+def test_oclc_prefixed_035_still_flagged_as_duplicate(make_record):
+    """Real OCLC duplicates ((OCoLC)-prefixed) are still detected."""
+    a = _record_with_035a(make_record, "(OCoLC)999")
+    b = _record_with_035a(make_record, "(OCoLC)999")
+    codes = [i.code for i in preflight.run_preflight(records=[a, b])]
+    assert codes.count("duplicate-oclc-035") == 1

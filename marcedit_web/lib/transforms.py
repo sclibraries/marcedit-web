@@ -210,6 +210,28 @@ def control_value(record: Record, tag: str) -> str | None:
     return field.data
 
 
+def normalize_oclc_035(value: str) -> str | None:
+    """Return the bare OCLC number from one 035 $a value, or None.
+
+    `value` is a single 035 $a. Returns the identifier with the ``(OCoLC)``
+    prefix removed (``"(OCoLC)12345"`` -> ``"12345"``,
+    ``"(OCoLC)ocm00012345"`` -> ``"ocm00012345"``). Returns None when the
+    value lacks the ``(OCoLC)`` prefix (bare numbers included) or is empty
+    after stripping. Leading whitespace is tolerated; the result is
+    whitespace-stripped. The ocm/ocn/on prefix and leading zeros are kept
+    verbatim.
+
+    This is the single owner of OCLC-035 extraction semantics (TASK-078a) —
+    a generic primitive shared by preflight, reporting, and marc_diff;
+    distinct from the removed Smith-specific canonicalizer.
+    """
+    prefix = "(OCoLC)"
+    stripped = (value or "").lstrip()
+    if not stripped.startswith(prefix):
+        return None
+    return stripped[len(prefix):].strip() or None
+
+
 # --- TASK-030: Task Builder ops expansion ------------------------------------
 #
 # Helpers added in lockstep with new entries in

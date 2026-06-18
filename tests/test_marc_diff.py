@@ -6,7 +6,8 @@ import itertools
 
 import pytest
 
-from marcedit_web.lib.marc_diff import _iter_records
+from marcedit_web.lib.marc_diff import OCOLC_SPEC, _iter_records, extract_key
+from marcedit_web.lib.transforms import normalize_oclc_035
 
 
 def test_iter_records_rejects_nonadvancing_zero_length():
@@ -60,3 +61,39 @@ def test_iter_records_terminates_on_valid_blob():
     got = list(itertools.islice(_iter_records(blob), 0, 10))
     assert len(got) == 1
     assert got[0][0] == 0  # single record at offset 0
+
+
+def _record_bytes_with_035a(value):
+    import pymarc
+
+    rec = pymarc.Record()
+    rec.add_field(pymarc.Field(tag="001", data="ctrl1"))
+    rec.add_field(
+        pymarc.Field(
+            tag="035",
+            indicators=[" ", " "],
+            subfields=[pymarc.Subfield(code="a", value=value)],
+        )
+    )
+    return rec.as_marc()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "(OCoLC)12345",
+        "(OCoLC)ocm00012345",
+        "12345",
+        "(DLC)12345",
+        "(OCoLC)",
+        "  (OCoLC)12345",
+        "(OCoLC)12345  ",
+    ],
+)
+def test_diff_oclc_extraction_matches_normalize_helper(value):
+    """TASK-078a: marc_diff's OCOLC_SPEC extraction must stay equivalent to the
+    canonical transforms.normalize_oclc_035, so they can't silently re-diverge."""
+    blob = _record_bytes_with_035a(value)
+    norm = normalize_oclc_035(value)
+    expected = (norm,) if norm is not None else None
+    assert extract_key(blob, [OCOLC_SPEC]) == expected

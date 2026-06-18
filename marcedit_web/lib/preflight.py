@@ -30,6 +30,7 @@ from typing import Iterable
 from pymarc import MARCReader
 
 from .errors import Issue
+from .transforms import normalize_oclc_035
 
 logger = logging.getLogger("marcedit_web.preflight")
 
@@ -279,12 +280,18 @@ def _control_value(record, tag: str) -> str | None:
 
 
 def _oclc_values(record) -> list[str]:
-    """Return all 035 $a values that look like OCLC identifiers."""
+    """Return all (OCoLC)-prefixed 035 $a values, normalized to bare numbers.
+
+    Uses the canonical extractor (TASK-078a): bare numeric 035 $a are no
+    longer treated as OCLC numbers, and the ``(OCoLC)`` prefix is stripped so
+    these dedup keys align with marc_diff / reporting.
+    """
     out: list[str] = []
     for f in record.get_fields("035"):
         for v in f.get_subfields("a"):
-            if v and ("(OCoLC)" in v or v.strip().isdigit()):
-                out.append(v.strip())
+            oclc = normalize_oclc_035(v)
+            if oclc is not None:
+                out.append(oclc)
     return out
 
 

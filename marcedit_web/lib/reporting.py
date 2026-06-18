@@ -20,6 +20,8 @@ from urllib.parse import urlparse
 
 from pymarc import Record
 
+from .transforms import normalize_oclc_035
+
 Status = Literal["ok", "warning", "error"]
 
 
@@ -54,11 +56,17 @@ def _first_subfield(record: Record, tag: str, code: str) -> str | None:
 
 
 def _oclc_from_035(record: Record) -> str | None:
-    """Return the first OCLC-style 035 $a (i.e. `(OCoLC)<num>`)."""
+    """Return the first OCLC-style 035 $a as a bare number, or None.
+
+    Delegates to :func:`transforms.normalize_oclc_035` (TASK-078a) so the
+    OCLC semantics match preflight and marc_diff.
+    """
     for f in record.get_fields("035"):
         for sf in f.subfields:
-            if sf.code == "a" and sf.value.startswith("(OCoLC)"):
-                return sf.value[len("(OCoLC)") :]
+            if sf.code == "a":
+                oclc = normalize_oclc_035(sf.value)
+                if oclc is not None:
+                    return oclc
     return None
 
 

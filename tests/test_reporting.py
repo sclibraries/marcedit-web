@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pymarc
+
 from marcedit_web.lib import reporting
 
 
@@ -47,3 +49,31 @@ def test_run_summary_accumulates(record):
 def test_smith_specific_helpers_are_gone():
     for name in ("_container_from_035", "check_warnings"):
         assert not hasattr(reporting, name)
+
+
+def _record_with_035a(value):
+    rec = pymarc.Record()
+    rec.add_field(
+        pymarc.Field(
+            tag="035",
+            indicators=[" ", " "],
+            subfields=[pymarc.Subfield("a", value)],
+        )
+    )
+    return rec
+
+
+def test_snapshot_oclc_number_from_oclc_035():
+    snap = reporting.RecordSnapshot.of(_record_with_035a("(OCoLC)12345"), index=0)
+    assert snap.oclc_number == "12345"
+
+
+def test_snapshot_oclc_number_tolerates_leading_space():
+    """TASK-078a: a leading space before (OCoLC) no longer defeats extraction."""
+    snap = reporting.RecordSnapshot.of(_record_with_035a("  (OCoLC)12345"), index=0)
+    assert snap.oclc_number == "12345"
+
+
+def test_snapshot_oclc_number_none_for_bare_number():
+    snap = reporting.RecordSnapshot.of(_record_with_035a("12345"), index=0)
+    assert snap.oclc_number is None
