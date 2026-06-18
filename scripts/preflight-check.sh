@@ -86,6 +86,20 @@ else
 fi
 echo
 
+echo "[Attestation secret]"
+ENV_FILE=/var/www/html/marcedit-web/.env
+if [ -f "$ENV_FILE" ]; then
+    secret="$(grep -E '^MARCEDIT_WEB_PROXY_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+    if [ -z "$secret" ] || [ "$secret" = "REPLACE_WITH_SECRET" ]; then
+        fail "MARCEDIT_WEB_PROXY_SECRET unset/placeholder in $ENV_FILE — forged REMOTE_USER headers would be trusted"
+    else
+        pass "MARCEDIT_WEB_PROXY_SECRET is set in $ENV_FILE"
+    fi
+else
+    info "$ENV_FILE not found yet (created from .env.example during install)"
+fi
+echo
+
 echo "[Healthcheck]"
 if curl -fs http://127.0.0.1:8501/marcedit-web/_stcore/health >/dev/null 2>&1; then
     pass "http://127.0.0.1:8501/marcedit-web/_stcore/health responds"
