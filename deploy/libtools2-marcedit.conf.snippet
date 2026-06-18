@@ -41,6 +41,19 @@ RewriteRule ^/marcedit-web/(.*) "ws://127.0.0.1:8501/marcedit-web/$1" [P,L]
     # should show the eppn, not "anonymous".
     RequestHeader set REMOTE_USER "expr=%{REMOTE_USER}"
     RequestHeader set eppn        "expr=%{HTTP_EPPN}"
+
+    # Scrub any client-supplied copy of the attestation header, then inject
+    # the real one from a NON-world-readable include so the secret never
+    # sits in this world-readable vhost file (TASK-073). The app
+    # (marcedit_web/lib/identity.py) trusts REMOTE_USER/eppn only when this
+    # header matches MARCEDIT_WEB_PROXY_SECRET; without it, a process that
+    # reaches 127.0.0.1:8501 directly cannot forge an identity.
+    RequestHeader unset X-MarcEdit-Proxy-Attestation early
+    Include /etc/httpd/marcedit-web-attestation.conf
+    # ITS fallback: if this Apache rejects `Include` inside <Location>, paste
+    # the `RequestHeader set X-MarcEdit-Proxy-Attestation "<secret>"` line
+    # here instead and restrict this vhost file's permissions (weaker — the
+    # secret then lives in a possibly world-readable conf file).
 </Location>
 
 # 3. HTTP reverse proxy to Streamlit. Must come after the WebSocket rule.

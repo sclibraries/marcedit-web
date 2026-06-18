@@ -1,0 +1,17 @@
+# deploy/marcedit-web-attestation.conf.example  (TASK-073)
+#
+# The secret-bearing half of the proxy-attestation defense. Apache `Include`s
+# this from the <Location /marcedit-web> block in the main vhost snippet.
+#
+# ITS one-time setup:
+#   1. Generate a secret:  openssl rand -hex 32
+#   2. Put the SAME value in this file AND in the app's .env as
+#      MARCEDIT_WEB_PROXY_SECRET.
+#   3. Install it OUTSIDE conf.d/ so Apache's *.conf autoglob does not load
+#      it globally (which would set the header on every vhost):
+#        install -o root -g apache -m 0640 \
+#          marcedit-web-attestation.conf.example \
+#          /etc/httpd/marcedit-web-attestation.conf
+#   4. Edit /etc/httpd/marcedit-web-attestation.conf, replace the placeholder.
+#   5. systemctl reload httpd
+RequestHeader set X-MarcEdit-Proxy-Attestation "REPLACE_WITH_SECRET"
