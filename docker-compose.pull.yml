@@ -4,7 +4,10 @@ services:
     container_name: marcedit-web
     pull_policy: always
     ports:
-      - "${MARCEDIT_WEB_PORT:-8501}:8501"
+      # Loopback only. :8501 carries unauthenticated traffic that Apache
+      # attests (TASK-073); it must never be reachable by untrusted local
+      # apps or off-box.
+      - "127.0.0.1:${MARCEDIT_WEB_PORT:-8501}:8501"
     volumes:
       - ${MARCEDIT_WEB_DATA_DIR:-./data}:/app/data
       # OAuth secrets are NOT baked into the published image (TASK-069). The
@@ -18,6 +21,7 @@ services:
       MARCEDIT_WEB_PROD: "${MARCEDIT_WEB_PROD:-}"
       MARCEDIT_WEB_AUDIT_DIR: "${MARCEDIT_WEB_AUDIT_DIR:-/app/data/audit}"
       MARCEDIT_WEB_ADMINS: "${MARCEDIT_WEB_ADMINS:-}"
+      MARCEDIT_WEB_PROXY_SECRET: "${MARCEDIT_WEB_PROXY_SECRET:-}"
       MARCEDIT_WEB_MAX_UPLOAD_BYTES: "${MARCEDIT_WEB_MAX_UPLOAD_BYTES:-2147483648}"
       MARCEDIT_WEB_MAX_DIFF_BYTES: "${MARCEDIT_WEB_MAX_DIFF_BYTES:-2147483648}"
       MARCEDIT_WEB_MAX_TASKSFILE_BYTES: "${MARCEDIT_WEB_MAX_TASKSFILE_BYTES:-1048576}"

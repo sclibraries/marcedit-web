@@ -4,7 +4,8 @@ services:
     image: marcedit-web:dev
     container_name: marcedit-web
     ports:
-      - "8501:8501"
+      # Loopback only (TASK-073): never expose :8501 beyond the host.
+      - "127.0.0.1:8501:8501"
     volumes:
       - ./marcedit_web:/app/marcedit_web:ro
       - ./data:/app/data
@@ -15,5 +16,6 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=2048
+      - MARCEDIT_WEB_PROXY_SECRET=${MARCEDIT_WEB_PROXY_SECRET:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     restart: unless-stopped
