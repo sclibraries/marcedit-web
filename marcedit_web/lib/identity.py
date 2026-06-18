@@ -97,12 +97,25 @@ def current_user(headers: Mapping[str, str] | None = None) -> str:
     check; OAuth still wins because a signed-in operator with a
     Shibboleth header present should be identified by their OAuth
     email, not the proxy header.
+
+    Security contract (TASK-073): the ``REMOTE_USER`` / ``eppn`` headers
+    are trusted ONLY when the request carries a valid
+    ``X-MarcEdit-Proxy-Attestation`` header matching
+    ``MARCEDIT_WEB_PROXY_SECRET``. Absent or invalid attestation yields
+    ``ANONYMOUS`` (fail-closed), even if ``REMOTE_USER`` is set. The OAuth
+    path is independent of attestation — Streamlit validates that session.
     """
     email = oauth_user()
     if email:
         return email
     if headers is None:
         headers = _streamlit_headers()
+    # TASK-073: trust the reverse-proxy identity headers only when the
+    # request is attested to have arrived through the trusted Apache proxy.
+    # A direct caller to 127.0.0.1:8501 cannot supply a valid attestation,
+    # so a forged REMOTE_USER/eppn resolves to ANONYMOUS (fail-closed).
+    if not _attestation_ok(headers):
+        return ANONYMOUS
     raw = (headers.get("REMOTE_USER") or "").strip()
     if raw:
         return raw

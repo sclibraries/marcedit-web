@@ -6,6 +6,16 @@ from marcedit_web.lib import identity
 from marcedit_web.lib.identity import ANONYMOUS, current_user
 
 
+_PROXY_SECRET = "test-attestation-secret"
+
+
+def _attest(monkeypatch, headers):
+    """Configure the proxy secret and stamp `headers` with a valid
+    attestation, so the Shibboleth header path is trusted (post-TASK-073)."""
+    monkeypatch.setenv(identity._PROXY_SECRET_ENV, _PROXY_SECRET)
+    return {**headers, identity._ATTESTATION_HEADER: _PROXY_SECRET}
+
+
 def test_anonymous_when_no_headers():
     assert current_user(headers={}) == ANONYMOUS
 
@@ -15,19 +25,23 @@ def test_anonymous_when_called_without_streamlit_runtime():
     assert current_user() == ANONYMOUS
 
 
-def test_remote_user_header_wins():
-    assert current_user(headers={"REMOTE_USER": "rconnell@smith.edu"}) == "rconnell@smith.edu"
+def test_remote_user_header_wins(monkeypatch):
+    assert current_user(
+        headers=_attest(monkeypatch, {"REMOTE_USER": "rconnell@smith.edu"})
+    ) == "rconnell@smith.edu"
 
 
-def test_eppn_used_when_remote_user_absent():
-    assert current_user(headers={"eppn": "rconnell@smith.edu"}) == "rconnell@smith.edu"
+def test_eppn_used_when_remote_user_absent(monkeypatch):
+    assert current_user(
+        headers=_attest(monkeypatch, {"eppn": "rconnell@smith.edu"})
+    ) == "rconnell@smith.edu"
 
 
-def test_remote_user_takes_precedence_over_eppn():
-    headers = {
+def test_remote_user_takes_precedence_over_eppn(monkeypatch):
+    headers = _attest(monkeypatch, {
         "REMOTE_USER": "primary@smith.edu",
         "eppn": "secondary@smith.edu",
-    }
+    })
     assert current_user(headers=headers) == "primary@smith.edu"
 
 
@@ -36,8 +50,10 @@ def test_empty_string_falls_back():
     assert current_user(headers={"REMOTE_USER": "", "eppn": ""}) == ANONYMOUS
 
 
-def test_whitespace_trimmed():
-    assert current_user(headers={"REMOTE_USER": "  user  "}) == "user"
+def test_whitespace_trimmed(monkeypatch):
+    assert current_user(
+        headers=_attest(monkeypatch, {"REMOTE_USER": "  user  "})
+    ) == "user"
 
 
 def test_no_logging_of_user(caplog):
@@ -164,7 +180,7 @@ def test_current_user_prefers_oauth_over_remote_user(monkeypatch):
 def test_current_user_falls_back_to_headers_when_not_logged_in(monkeypatch):
     _install_fake_user(monkeypatch, _FakeUser(is_logged_in=False, email=None))
     assert (
-        current_user(headers={"REMOTE_USER": "shib-user@example.edu"})
+        current_user(headers=_attest(monkeypatch, {"REMOTE_USER": "shib-user@example.edu"}))
         == "shib-user@example.edu"
     )
 
@@ -253,3 +269,59 @@ def test_attestation_ok_false_on_mismatch(monkeypatch):
 def test_attestation_ok_false_when_header_absent(monkeypatch):
     monkeypatch.setenv("MARCEDIT_WEB_PROXY_SECRET", "s3cr3t")
     assert identity._attestation_ok({}) is False
+
+
+# ---------------------------------------------------------------------------
+# TASK-073: current_user() attestation gate
+# ---------------------------------------------------------------------------
+
+
+def test_forged_remote_user_rejected_without_attestation(monkeypatch):
+    """A forged REMOTE_USER hitting :8501 directly (no attestation) must NOT
+    be trusted — this is the privilege-escalation the ticket closes."""
+    monkeypatch.setenv(identity._PROXY_SECRET_ENV, _PROXY_SECRET)
+    assert current_user(headers={"REMOTE_USER": "admin@smith.edu"}) == ANONYMOUS
+
+
+def test_remote_user_trusted_with_valid_attestation(monkeypatch):
+    assert current_user(
+        headers=_attest(monkeypatch, {"REMOTE_USER": "admin@smith.edu"})
+    ) == "admin@smith.edu"
+
+
+def test_remote_user_rejected_with_wrong_attestation_same_length(monkeypatch):
+    monkeypatch.setenv(identity._PROXY_SECRET_ENV, "secretvalue0001")
+    headers = {
+        "REMOTE_USER": "admin@smith.edu",
+        identity._ATTESTATION_HEADER: "secretvalue9999",
+    }
+    assert current_user(headers=headers) == ANONYMOUS
+
+
+def test_remote_user_rejected_with_wrong_attestation_diff_length(monkeypatch):
+    monkeypatch.setenv(identity._PROXY_SECRET_ENV, "secretvalue0001")
+    headers = {
+        "REMOTE_USER": "admin@smith.edu",
+        identity._ATTESTATION_HEADER: "x",
+    }
+    assert current_user(headers=headers) == ANONYMOUS
+
+
+def test_header_identity_failclosed_when_secret_unset(monkeypatch):
+    """No configured secret → even a header with an attestation value is
+    ignored (fail-closed)."""
+    monkeypatch.delenv(identity._PROXY_SECRET_ENV, raising=False)
+    headers = {
+        "REMOTE_USER": "admin@smith.edu",
+        identity._ATTESTATION_HEADER: "anything",
+    }
+    assert current_user(headers=headers) == ANONYMOUS
+
+
+def test_oauth_unaffected_by_attestation(monkeypatch):
+    """OAuth identity wins even with no secret and no attestation."""
+    monkeypatch.delenv(identity._PROXY_SECRET_ENV, raising=False)
+    _install_fake_user(
+        monkeypatch, _FakeUser(is_logged_in=True, email="alice@example.edu")
+    )
+    assert current_user(headers={"REMOTE_USER": "shib@x.edu"}) == "alice@example.edu"
