@@ -348,3 +348,44 @@ def test_attested_admin_header_grants_admin(monkeypatch):
     )
     assert user == "admin@smith.edu"
     assert task_admin.is_admin(user) is True
+
+
+# ---------------------------------------------------------------------------
+# TASK-073: real Streamlit header-casing regression (prod path)
+# ---------------------------------------------------------------------------
+# Production resolves headers via dict(st.context.headers); Streamlit
+# normalizes key casing (REMOTE_USER -> "Remote_user", eppn -> "Eppn",
+# X-MarcEdit-Proxy-Attestation -> "X-Marcedit-Proxy-Attestation"). The gate
+# must survive that normalization, or every Shibboleth cataloger is locked
+# out in prod (TASK-073 criterion 2). These feed headers through the REAL
+# StreamlitHeaders so the suite can actually catch a case-sensitivity bug.
+
+
+def test_remote_user_trusted_through_real_streamlit_header_casing(monkeypatch):
+    from streamlit.runtime.context import StreamlitHeaders
+
+    monkeypatch.setenv(identity._PROXY_SECRET_ENV, _PROXY_SECRET)
+    flattened = dict(StreamlitHeaders([
+        ("REMOTE_USER", "alice@smith.edu"),
+        (identity._ATTESTATION_HEADER, _PROXY_SECRET),
+    ]))
+    assert current_user(headers=flattened) == "alice@smith.edu"
+
+
+def test_eppn_trusted_through_real_streamlit_header_casing(monkeypatch):
+    from streamlit.runtime.context import StreamlitHeaders
+
+    monkeypatch.setenv(identity._PROXY_SECRET_ENV, _PROXY_SECRET)
+    flattened = dict(StreamlitHeaders([
+        ("eppn", "bob@smith.edu"),
+        (identity._ATTESTATION_HEADER, _PROXY_SECRET),
+    ]))
+    assert current_user(headers=flattened) == "bob@smith.edu"
+
+
+def test_forged_header_rejected_through_real_streamlit_header_casing(monkeypatch):
+    from streamlit.runtime.context import StreamlitHeaders
+
+    monkeypatch.setenv(identity._PROXY_SECRET_ENV, _PROXY_SECRET)
+    flattened = dict(StreamlitHeaders([("REMOTE_USER", "admin@smith.edu")]))
+    assert current_user(headers=flattened) == ANONYMOUS

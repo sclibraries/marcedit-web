@@ -91,7 +91,7 @@ ENV_FILE=/var/www/html/marcedit-web/.env
 if [ -f "$ENV_FILE" ]; then
     secret="$(grep -E '^MARCEDIT_WEB_PROXY_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
     if [ -z "$secret" ] || [ "$secret" = "REPLACE_WITH_SECRET" ]; then
-        fail "MARCEDIT_WEB_PROXY_SECRET unset/placeholder in $ENV_FILE — forged REMOTE_USER headers would be trusted"
+        fail "MARCEDIT_WEB_PROXY_SECRET unset/placeholder in $ENV_FILE — header identity refused for everyone (fail-closed); legitimate catalogers will all show as anonymous"
     else
         pass "MARCEDIT_WEB_PROXY_SECRET is set in $ENV_FILE"
     fi

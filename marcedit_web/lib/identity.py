@@ -47,17 +47,35 @@ def proxy_secret() -> str | None:
     return raw or None
 
 
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    """Case-insensitive header lookup.
+
+    Production reads headers via ``dict(st.context.headers)``, and Streamlit
+    normalizes key casing (e.g. ``REMOTE_USER`` -> ``Remote_user``,
+    ``X-MarcEdit-Proxy-Attestation`` -> ``X-Marcedit-Proxy-Attestation``).
+    Matching on a case-folded key keeps the same code correct for the live
+    (case-insensitive) mapping, the normalized flattened dict, and the
+    exact-case dicts tests pass in.
+    """
+    target = name.lower()
+    for key, value in headers.items():
+        if key.lower() == target:
+            return value
+    return None
+
+
 def _attestation_ok(headers: Mapping[str, str]) -> bool:
     """True iff the request is attested to come through the trusted proxy.
 
-    Fail-closed: returns False when no secret is configured. Uses a
-    constant-time compare so the secret can't be recovered by timing.
+    Fail-closed: returns False when no secret is configured. Compares on
+    bytes with a constant-time digest so the secret can't be recovered by
+    timing and a non-ASCII secret can't raise.
     """
     secret = proxy_secret()
     if secret is None:
         return False
-    supplied = headers.get(_ATTESTATION_HEADER) or ""
-    return hmac.compare_digest(supplied, secret)
+    supplied = _header(headers, _ATTESTATION_HEADER) or ""
+    return hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8"))
 
 
 def is_prod() -> bool:
@@ -116,10 +134,10 @@ def current_user(headers: Mapping[str, str] | None = None) -> str:
     # so a forged REMOTE_USER/eppn resolves to ANONYMOUS (fail-closed).
     if not _attestation_ok(headers):
         return ANONYMOUS
-    raw = (headers.get("REMOTE_USER") or "").strip()
+    raw = (_header(headers, "REMOTE_USER") or "").strip()
     if raw:
         return raw
-    raw = (headers.get("eppn") or "").strip()
+    raw = (_header(headers, "eppn") or "").strip()
     if raw:
         return raw
     return ANONYMOUS
