@@ -86,3 +86,18 @@ def test_stamped_filename_shape():
     assert re.fullmatch(
         r"matches_\d{8}_\d{6}\.mrc", session.stamped_filename("matches")
     )
+
+
+def test_stamped_filename_exact_format(monkeypatch):
+    """Pin the exact historical name (not just shape) at a fixed instant."""
+    import datetime as _dt
+
+    class _FixedDT:
+        @staticmethod
+        def now():
+            return _dt.datetime(2026, 6, 18, 14, 30, 5)
+
+    monkeypatch.setattr(session, "datetime", _FixedDT)
+    assert session.stamped_filename("records", ".mrk") == "records_20260618_143005.mrk"
+    assert session.stamped_filename("matches") == "matches_20260618_143005.mrc"
+    assert session.stamped_filename("x_deletes") == "x_deletes_20260618_143005.mrc"
