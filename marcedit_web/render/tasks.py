@@ -543,10 +543,7 @@ def _render_ai_draft_panel() -> None:
                     _store_ai_draft_review(merged_review)
                     audit_event(
                         "ai-task-draft-created",
-                        user=(
-                            session.current_user_id()
-                            or "anonymous"
-                        ),
+                        user=session.current_user_id(),
                         source="gemini-fallback",
                         task_name=merged_review.task_name,
                         accepted_operations=len(merged_review.operations),

@@ -245,7 +245,7 @@ def handle_upload(uploaded_file) -> dict:
     """
     import streamlit as st
 
-    user = st.session_state.get("user", "anonymous")
+    user = current_user_id()
 
     if uploaded_file is None:
         st.session_state["store"] = None
