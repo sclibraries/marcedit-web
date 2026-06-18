@@ -48,6 +48,8 @@ from typing import Iterable
 
 import pymarc
 
+from .transforms import is_control_tag
+
 logger = logging.getLogger("marcedit_web.mrk_parser")
 
 
@@ -211,7 +213,7 @@ def _build_record(
             saw_leader = True
             continue
 
-        if _is_control_tag(tag):
+        if is_control_tag(tag):
             data, ctrl_errs = _parse_control_data(line_no, content)
             errors.extend(ctrl_errs)
             try:
@@ -457,15 +459,6 @@ def _next_delim(s: str, start: int) -> int:
 # ---------------------------------------------------------------------------
 # Predicates
 # ---------------------------------------------------------------------------
-
-
-def _is_control_tag(tag: str) -> bool:
-    return (
-        len(tag) == 3
-        and tag.startswith("00")
-        and tag[2].isdigit()
-        and tag != "000"
-    )
 
 
 def _is_valid_indicator(ch: str) -> bool:

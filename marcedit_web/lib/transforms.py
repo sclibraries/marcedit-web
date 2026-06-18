@@ -199,6 +199,19 @@ def sort_fields(record: Record) -> None:
     record.fields.sort(key=lambda f: f.tag)
 
 
+def is_control_tag(tag: str) -> bool:
+    """True for control-field tags 001-009 (no indicators, no subfields).
+
+    Excludes the leader sentinel "000". Shared by rules_validate and
+    mrk_parser (TASK-078c)."""
+    return (
+        len(tag) == 3
+        and tag.startswith("00")
+        and tag[2].isdigit()
+        and tag != "000"
+    )
+
+
 # --- 003/001 introspection ---------------------------------------------------
 
 

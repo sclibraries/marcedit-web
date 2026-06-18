@@ -455,3 +455,24 @@ def test_smith_specific_helpers_are_gone():
 )
 def test_normalize_oclc_035(value, expected):
     assert transforms.normalize_oclc_035(value) == expected
+
+
+# TASK-078c: shared control-tag predicate (was duplicated in rules_validate + mrk_parser)
+
+
+@pytest.mark.parametrize(
+    "tag, expected",
+    [
+        ("001", True),
+        ("008", True),
+        ("009", True),
+        ("000", False),   # 000 is the leader sentinel, not a control field
+        ("010", False),
+        ("245", False),
+        ("00", False),    # too short
+        ("0012", False),  # too long
+        ("00X", False),   # non-digit in position 2
+    ],
+)
+def test_is_control_tag(tag, expected):
+    assert transforms.is_control_tag(tag) is expected

@@ -31,6 +31,7 @@ from pymarc import Record
 
 from .errors import Issue
 from .rules import FieldRule, RuleSet
+from .transforms import is_control_tag
 
 logger = logging.getLogger("marcedit_web.rules_validate")
 
@@ -129,7 +130,7 @@ def _check_field_against_rule(
     out: list[Issue] = []
 
     # Control fields: only length checks apply (no indicators, no subfields).
-    if _is_control_tag(f.tag):
+    if is_control_tag(f.tag):
         if rule.length is not None and rule.length.exact is not None:
             data = getattr(f, "data", "") or ""
             if len(data) != rule.length.exact:
@@ -207,16 +208,6 @@ def _check_field_against_rule(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _is_control_tag(tag: str) -> bool:
-    """Control-field tags are 001-009 (no indicators, no subfields)."""
-    return (
-        len(tag) == 3
-        and tag.startswith("00")
-        and tag[2].isdigit()
-        and tag != "000"
-    )
 
 
 def _format_allowed(allowed: set[str]) -> str:
