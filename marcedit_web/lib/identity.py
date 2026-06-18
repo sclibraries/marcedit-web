@@ -21,6 +21,7 @@ in the UI sidebar.
 
 from __future__ import annotations
 
+import hmac
 import os
 from typing import Mapping
 
@@ -28,6 +29,35 @@ ANONYMOUS = "anonymous"
 
 
 _TRUTHY = {"1", "true", "yes", "on"}
+
+
+_PROXY_SECRET_ENV = "MARCEDIT_WEB_PROXY_SECRET"
+_ATTESTATION_HEADER = "X-MarcEdit-Proxy-Attestation"
+
+
+def proxy_secret() -> str | None:
+    """Return the configured proxy-attestation secret, or None.
+
+    Read from ``MARCEDIT_WEB_PROXY_SECRET``. Apache injects a matching
+    header (``X-MarcEdit-Proxy-Attestation``) on every request it proxies;
+    the app trusts ``REMOTE_USER`` / ``eppn`` only when that header matches
+    this value. Unset/blank disables header trust entirely (fail-closed).
+    """
+    raw = os.environ.get(_PROXY_SECRET_ENV, "").strip()
+    return raw or None
+
+
+def _attestation_ok(headers: Mapping[str, str]) -> bool:
+    """True iff the request is attested to come through the trusted proxy.
+
+    Fail-closed: returns False when no secret is configured. Uses a
+    constant-time compare so the secret can't be recovered by timing.
+    """
+    secret = proxy_secret()
+    if secret is None:
+        return False
+    supplied = headers.get(_ATTESTATION_HEADER) or ""
+    return hmac.compare_digest(supplied, secret)
 
 
 def is_prod() -> bool:

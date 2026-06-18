@@ -206,3 +206,50 @@ def test_is_oauth_configured_swallows_secrets_errors(monkeypatch):
 
     monkeypatch.setattr(st, "secrets", _BoomSecrets(), raising=False)
     assert identity.is_oauth_configured() is False
+
+
+# ---------------------------------------------------------------------------
+# TASK-073: proxy attestation predicate
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_secret_none_when_unset(monkeypatch):
+    monkeypatch.delenv("MARCEDIT_WEB_PROXY_SECRET", raising=False)
+    assert identity.proxy_secret() is None
+
+
+def test_proxy_secret_none_when_blank(monkeypatch):
+    monkeypatch.setenv("MARCEDIT_WEB_PROXY_SECRET", "   ")
+    assert identity.proxy_secret() is None
+
+
+def test_proxy_secret_returns_stripped_value(monkeypatch):
+    monkeypatch.setenv("MARCEDIT_WEB_PROXY_SECRET", "  s3cr3t  ")
+    assert identity.proxy_secret() == "s3cr3t"
+
+
+def test_attestation_ok_false_when_secret_unset(monkeypatch):
+    """Fail closed: no configured secret means no header is ever trusted."""
+    monkeypatch.delenv("MARCEDIT_WEB_PROXY_SECRET", raising=False)
+    assert identity._attestation_ok(
+        {identity._ATTESTATION_HEADER: "anything"}
+    ) is False
+
+
+def test_attestation_ok_true_on_exact_match(monkeypatch):
+    monkeypatch.setenv("MARCEDIT_WEB_PROXY_SECRET", "s3cr3t")
+    assert identity._attestation_ok(
+        {identity._ATTESTATION_HEADER: "s3cr3t"}
+    ) is True
+
+
+def test_attestation_ok_false_on_mismatch(monkeypatch):
+    monkeypatch.setenv("MARCEDIT_WEB_PROXY_SECRET", "s3cr3t")
+    assert identity._attestation_ok(
+        {identity._ATTESTATION_HEADER: "nope"}
+    ) is False
+
+
+def test_attestation_ok_false_when_header_absent(monkeypatch):
+    monkeypatch.setenv("MARCEDIT_WEB_PROXY_SECRET", "s3cr3t")
+    assert identity._attestation_ok({}) is False
