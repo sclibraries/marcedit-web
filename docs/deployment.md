@@ -221,8 +221,15 @@ and TASK-054 for the audited boundary.
 
 marcedit-web supports a dual-unit deployment model to safely expose a
 limited public interface (for anonymous users) without compromising the
-authenticated cataloger tier. Both units run the same artifact, but
-are configured via environment variables to select different feature sets.
+authenticated cataloger tier. Both units run the same artifact (installed at
+`/var/www/html/marcedit-web`, same as `marcedit-web.service`), but are
+configured via environment variables to select different feature sets.
+
+**Relationship to `marcedit-web.service`:** The two-tier units
+(`marcedit-web-private.service` and `marcedit-web-public.service`) supersede
+the single `marcedit-web.service` when two-tier mode is deployed. Do not run
+all three simultaneously on the same host — disable `marcedit-web.service`
+before enabling the two-tier pair.
 
 ### Architecture
 
@@ -242,16 +249,43 @@ The reverse proxy (Apache):
 
 ### Configuration
 
-**Private unit environment:**
+**Private unit — proxy attestation secret injection:**
+
+The private unit loads `/var/www/html/marcedit-web/.env` via `EnvironmentFile=`,
+the same mechanism used by `marcedit-web.service`. That file must contain
+`MARCEDIT_WEB_PROXY_SECRET`. Follow the same setup steps documented in
+`deploy/marcedit-web-attestation.conf.example`:
+
+```bash
+# 1. Generate a shared secret (same value goes in Apache and .env):
+openssl rand -hex 32
+
+# 2. Add the secret to the app's environment file:
+echo 'MARCEDIT_WEB_PROXY_SECRET=<paste-secret-here>' \
+  >> /var/www/html/marcedit-web/.env
+chmod 0640 /var/www/html/marcedit-web/.env
+chown root:marcedit /var/www/html/marcedit-web/.env
+
+# 3. Put the same value in the Apache include (outside conf.d/):
+install -o root -g apache -m 0640 \
+  deploy/marcedit-web-attestation.conf.example \
+  /etc/httpd/marcedit-web-attestation.conf
+# Edit /etc/httpd/marcedit-web-attestation.conf, replace REPLACE_WITH_SECRET.
+systemctl reload httpd
+```
+
+The proxy attestation secret is **never** forwarded to the public unit — the
+public unit carries no `EnvironmentFile=` and no `MARCEDIT_WEB_PROXY_SECRET`.
+
+**Private unit environment (set in the systemd unit file):**
 
 ```bash
 MARCEDIT_WEB_MODE=private
 MARCEDIT_WEB_PROD=1
-MARCEDIT_WEB_DB_PATH=/opt/marcedit-web/data/marcedit.db
+MARCEDIT_WEB_DB_PATH=/var/www/html/marcedit-web/data/marcedit.db
 MARCEDIT_WEB_ADMIN_EMAILS=roconnell@smith.edu  # Comma-separated
 MARCEDIT_WEB_ALLOWED_DOMAINS=smith.edu,umass.edu,mtholyoke.edu,amherst.edu,hampshire.edu
-# Proxy attestation secret (EnvironmentFile or drop-in):
-MARCEDIT_WEB_PROXY_SECRET=<...>
+# MARCEDIT_WEB_PROXY_SECRET — loaded from EnvironmentFile= (.env), not set inline.
 ```
 
 See `deploy/marcedit-web-private.service` for the full systemd unit.

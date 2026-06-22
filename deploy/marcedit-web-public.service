@@ -1,20 +1,36 @@
 [Unit]
-Description=marcedit-web (public / anonymous light tier) — TASK-088
+Description=marcedit-web Streamlit app (public / anonymous light tier)
+Documentation=https://github.com/smith-libraries/marcedit-web
 After=network.target
 
 [Service]
 Type=simple
 User=marcedit
-WorkingDirectory=/opt/marcedit-web
+Group=marcedit
+WorkingDirectory=/var/www/html/marcedit-web
+# No EnvironmentFile: anonymous by design — no DB, no OAuth, no proxy secret.
 Environment=MARCEDIT_WEB_MODE=public
-# No MARCEDIT_WEB_PROD, no DB path, no OAuth, no proxy secret — anonymous by design.
 Environment=MARCEDIT_WEB_MAX_UPLOAD_BYTES=5242880
-ExecStart=/opt/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py \
-  --server.address 127.0.0.1 --server.port 8502
+ExecStart=/var/www/html/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py \
+    --server.address=127.0.0.1 \
+    --server.port=8502 \
+    --server.headless=true \
+    --server.baseUrlPath=marcedit-web \
+    --server.enableXsrfProtection=true
 Restart=on-failure
-# Tighter resource isolation so anon abuse can't starve the private unit (TASK-075):
+RestartSec=5
+
+# Tighter resource isolation (TASK-075): anon abuse must not starve the private unit.
 MemoryMax=1G
 CPUQuota=100%
+
+# Recreate the container-side hardening (TASK-029) at the systemd layer:
+# read-only filesystem; no privilege escalation; ephemeral scratch via PrivateTmp.
+# ReadWritePaths is intentionally absent: the public unit has no catalog DB.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

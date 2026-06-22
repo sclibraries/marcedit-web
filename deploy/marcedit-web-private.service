@@ -1,24 +1,42 @@
 [Unit]
-Description=marcedit-web (private / authenticated tier) — TASK-088
+Description=marcedit-web Streamlit app (private / authenticated tier)
+Documentation=https://github.com/smith-libraries/marcedit-web
 After=network.target
 
 [Service]
 Type=simple
 User=marcedit
-WorkingDirectory=/opt/marcedit-web
+Group=marcedit
+WorkingDirectory=/var/www/html/marcedit-web
+EnvironmentFile=/var/www/html/marcedit-web/.env
 Environment=MARCEDIT_WEB_MODE=private
 Environment=MARCEDIT_WEB_PROD=1
-Environment=MARCEDIT_WEB_DB_PATH=/opt/marcedit-web/data/marcedit.db
-# Comma-separated bootstrap admins + auto-approved domains:
+Environment=MARCEDIT_WEB_DB_PATH=/var/www/html/marcedit-web/data/marcedit.db
+# Comma-separated bootstrap admins + auto-approved domains (Five-College Consortium):
 Environment=MARCEDIT_WEB_ADMIN_EMAILS=roconnell@smith.edu
 Environment=MARCEDIT_WEB_ALLOWED_DOMAINS=smith.edu,umass.edu,mtholyoke.edu,amherst.edu,hampshire.edu
-# Proxy attestation secret is provided out-of-band (drop-in / EnvironmentFile), not here.
-ExecStart=/opt/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py \
-  --server.address 127.0.0.1 --server.port 8501
+# MARCEDIT_WEB_PROXY_SECRET is supplied via EnvironmentFile= above (.env),
+# matching the same mechanism as marcedit-web.service (see marcedit-web-attestation.conf.example).
+ExecStart=/var/www/html/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py \
+    --server.address=127.0.0.1 \
+    --server.port=8501 \
+    --server.headless=true \
+    --server.baseUrlPath=marcedit-web \
+    --server.enableXsrfProtection=true
 Restart=on-failure
-# Resource isolation (TASK-075):
+RestartSec=5
+
+# Resource isolation (TASK-075): generous budget for authenticated catalogers.
 MemoryMax=2G
 CPUQuota=200%
+
+# Recreate the container-side hardening (TASK-029) at the systemd layer:
+# read-only filesystem except for the data dir; no privilege escalation.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/www/html/marcedit-web/data
 
 [Install]
 WantedBy=multi-user.target
