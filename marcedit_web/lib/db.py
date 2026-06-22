@@ -80,6 +80,40 @@ def connect() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+def _split_env_csv(name: str) -> list[str]:
+    """Parse a comma-separated env var into lowercased, stripped, non-empty items."""
+    raw = os.environ.get(name, "")
+    return [part.strip().lower() for part in raw.split(",") if part.strip()]
+
+
+def _seed_access_control(conn: sqlite3.Connection) -> None:
+    """Seed bootstrap admins + allowed domains from env (TASK-088).
+
+    Idempotent and promotion-only: a configured admin email is upserted
+    to ``approved``/``admin`` (upgrading an existing cataloger), but a
+    user is never demoted by seeding. Runs on every ``init_schema()`` so
+    operators can grant access by editing env + restarting.
+    """
+    now = _utc_now_iso()
+    for email in _split_env_csv("MARCEDIT_WEB_ADMIN_EMAILS"):
+        conn.execute(
+            "INSERT INTO users(email, role, status, created_at,"
+            " approved_at, approved_by)"
+            " VALUES (?, 'admin', 'approved', ?, ?, '__bootstrap__')"
+            " ON CONFLICT(email) DO UPDATE SET"
+            "   role='admin', status='approved',"
+            "   approved_at=COALESCE(users.approved_at, excluded.approved_at),"
+            "   approved_by='__bootstrap__'",
+            (email, now, now),
+        )
+    for domain in _split_env_csv("MARCEDIT_WEB_ALLOWED_DOMAINS"):
+        conn.execute(
+            "INSERT OR IGNORE INTO allowed_domains(domain, added_at, added_by)"
+            " VALUES (?, ?, '__bootstrap__')",
+            (domain, now),
+        )
+
+
 def init_schema() -> None:
     """Create tables + indexes if missing. Idempotent + thread-safe.
 
@@ -100,6 +134,7 @@ def init_schema() -> None:
         with connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(_SCHEMA_SQL)
+            _seed_access_control(conn)
             row = conn.execute(
                 "SELECT version FROM _schema_version"
             ).fetchone()
