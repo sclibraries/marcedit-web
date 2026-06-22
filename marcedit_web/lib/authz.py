@@ -92,3 +92,83 @@ def authorize(email: str) -> Decision:
         )
     audit_event("auth.pending", user=email)
     return Decision("pending")
+
+
+_VALID_ROLES = ("admin", "cataloger")
+
+
+def approve_user(email: str, *, by: str, role: str = "cataloger") -> None:
+    if role not in _VALID_ROLES:
+        raise ValueError(f"unknown role: {role!r}")
+    email = email.lower()
+    now = _now()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO users(email, role, status, created_at,"
+            " approved_at, approved_by)"
+            " VALUES (?, ?, 'approved', ?, ?, ?)"
+            " ON CONFLICT(email) DO UPDATE SET"
+            "   role=excluded.role, status='approved',"
+            "   approved_at=excluded.approved_at, approved_by=excluded.approved_by",
+            (email, role, now, now, by),
+        )
+    audit_event("auth.approved", user=email)
+
+
+def revoke_user(email: str, *, by: str) -> None:
+    email = email.lower()
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE users SET status='revoked' WHERE email=?", (email,)
+        )
+    audit_event("auth.revoked", user=email)
+
+
+def set_role(email: str, role: str, *, by: str) -> None:
+    if role not in _VALID_ROLES:
+        raise ValueError(f"unknown role: {role!r}")
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE users SET role=? WHERE email=?", (role, email.lower())
+        )
+
+
+def list_users() -> list:
+    with db.connect() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT email, role, status, created_at, approved_at, approved_by"
+            " FROM users ORDER BY email"
+        )]
+
+
+def list_pending() -> list:
+    with db.connect() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT email, created_at FROM users WHERE status='pending'"
+            " ORDER BY created_at"
+        )]
+
+
+def list_domains() -> list:
+    with db.connect() as conn:
+        return [r["domain"] for r in conn.execute(
+            "SELECT domain FROM allowed_domains ORDER BY domain"
+        )]
+
+
+def add_domain(domain: str, *, by: str) -> None:
+    domain = domain.strip().lower()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO allowed_domains(domain, added_at, added_by)"
+            " VALUES (?, ?, ?)",
+            (domain, _now(), by),
+        )
+    audit_event("auth.domain_added", user=by)
+
+
+def remove_domain(domain: str) -> None:
+    with db.connect() as conn:
+        conn.execute(
+            "DELETE FROM allowed_domains WHERE domain=?", (domain.strip().lower(),)
+        )
