@@ -28,9 +28,11 @@ def _resolve_user() -> str:
     return current_user()
 
 
-def gate_decision():
+def gate_decision(user: str | None = None) -> authz.Decision:
     """Resolve + authorize the current user. Pure; safe to unit-test."""
-    return authz.authorize(_resolve_user())
+    if user is None:
+        user = _resolve_user()
+    return authz.authorize(user)
 
 
 _SCREENS = {
@@ -61,11 +63,12 @@ def enforce_access() -> None:
 
     import streamlit as st
 
-    decision = gate_decision()
+    user = _resolve_user()
+    decision = gate_decision(user)
     if decision.outcome == "approved":
         st.session_state["role"] = decision.role
         return
 
-    audit_event(f"auth.{decision.outcome}", user=_resolve_user())
-    st.error(_SCREENS[decision.outcome])
+    audit_event(f"auth.{decision.outcome}", user=user)
+    st.error(_SCREENS.get(decision.outcome, _SCREENS["denied"]))
     st.stop()
