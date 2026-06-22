@@ -216,3 +216,112 @@ users' /tmp dirs in PrivateTmp=true mode, but root can clean them.)
 The app targets WCAG 2.1 AA for content the app controls. See the
 accessibility section in `marcedit_web/render/*` source comments
 and TASK-054 for the audited boundary.
+
+## Two-tier deployment (TASK-088)
+
+marcedit-web supports a dual-unit deployment model to safely expose a
+limited public interface (for anonymous users) without compromising the
+authenticated cataloger tier. Both units run the same artifact, but
+are configured via environment variables to select different feature sets.
+
+### Architecture
+
+Two systemd units share the same binary but bind to different loopback ports:
+
+| Unit | Port | Mode | Purpose |
+| --- | --- | --- | --- |
+| `marcedit-web-private.service` | 8501 | `MARCEDIT_WEB_MODE=private` | Authenticated catalog, task sandbox, uploads (internal use) |
+| `marcedit-web-public.service` | 8502 | `MARCEDIT_WEB_MODE=public` | Anonymous light tier: Home, View, Validate, Report, Marc Tools only |
+
+The reverse proxy (Apache):
+- Routes requests to `https://libtools2.smith.edu/marcedit-web/` → `:8501` (private unit) after Shibboleth authentication.
+- Routes requests to `https://marcedit-open.smith.edu/` → `:8502` (public unit) without auth.
+- Terminates TLS.
+- Applies per-IP rate limiting in front of the public unit (recommended: 30 req/min).
+- Never forwards the proxy attestation secret to the public unit.
+
+### Configuration
+
+**Private unit environment:**
+
+```bash
+MARCEDIT_WEB_MODE=private
+MARCEDIT_WEB_PROD=1
+MARCEDIT_WEB_DB_PATH=/opt/marcedit-web/data/marcedit.db
+MARCEDIT_WEB_ADMIN_EMAILS=roconnell@smith.edu  # Comma-separated
+MARCEDIT_WEB_ALLOWED_DOMAINS=smith.edu,umass.edu,mtholyoke.edu,amherst.edu,hampshire.edu
+# Proxy attestation secret (EnvironmentFile or drop-in):
+MARCEDIT_WEB_PROXY_SECRET=<...>
+```
+
+See `deploy/marcedit-web-private.service` for the full systemd unit.
+
+**Public unit environment:**
+
+```bash
+MARCEDIT_WEB_MODE=public
+MARCEDIT_WEB_MAX_UPLOAD_BYTES=5242880  # 5 MB
+# No MARCEDIT_WEB_PROD, no DB path, no OAuth, no proxy secret.
+```
+
+The public unit **intentionally has no catalog database and no sandbox page**.
+These are accessed only in private mode. See `deploy/marcedit-web-public.service`
+for the full systemd unit.
+
+### Resource isolation
+
+Both units are subject to cgroup constraints (TASK-075):
+
+| Unit | Memory | CPU |
+| --- | --- | --- |
+| Private | 2 GB | 200% (2 cores) |
+| Public | 1 GB | 100% (1 core) |
+
+This ensures that anonymous abuse (high upload volume, resource-exhaustive
+validation) cannot starve the private unit and impact catalogers.
+
+### Scalability and concurrency limits
+
+**Important:** The public unit is still a single-process Streamlit
+application. Its concurrency ceiling is the same order as the private unit —
+bounded by Streamlit's synchronous session model, not scalable horizontally.
+The rate limit (30 req/min default) + byte cap (5 MB) + separate resource
+budget (1 GB / 1 core) are operational controls that reduce the blast radius
+of abuse, but they do **not** make the public unit horizontally scalable or
+suitable for high-throughput anonymous workloads. Use load balancing and
+multiple instances only if you replace Streamlit with a async-first framework.
+
+### Bootstrap and initial setup
+
+On first deploy, the private unit's `MARCEDIT_WEB_ADMIN_EMAILS` and
+`MARCEDIT_WEB_ALLOWED_DOMAINS` are used to seed the access control
+table (`access_control`) — see `marcedit_web.lib.db._seed_access_control()`.
+This is a one-time event per database. Subsequent changes require direct
+SQL edits or a UI for operators (future enhancement).
+
+### Manual smoke tests
+
+After deploy, verify both units in separate terminals:
+
+```bash
+# Terminal 1: public unit
+MARCEDIT_WEB_MODE=public \
+  streamlit run marcedit_web/App.py --server.port 8502
+
+# Terminal 2: private unit (with minimal auth setup)
+MARCEDIT_WEB_MODE=private MARCEDIT_WEB_ADMIN_EMAILS=you@smith.edu \
+  streamlit run marcedit_web/App.py --server.port 8501
+```
+
+Then, from a third terminal:
+
+1. **Public unit checks:**
+   - `curl http://127.0.0.1:8502/` → renders Home page.
+   - Sidebar shows only: Home, View, Validate, Report, Marc Tools.
+   - No Tasks page, no Code view, no Catalog.
+
+2. **Private unit checks (dev mode, no OAuth):**
+   - `curl http://127.0.0.1:8501/` → renders Home page.
+   - Sidebar shows full menu: Tasks, Catalog, Uploads, Sandbox, Validate, etc.
+   - (With OAuth configured: allowlisted eppns land as catalogers;
+     unknown users land in pending state.)

@@ -1,0 +1,20 @@
+[Unit]
+Description=marcedit-web (public / anonymous light tier) — TASK-088
+After=network.target
+
+[Service]
+Type=simple
+User=marcedit
+WorkingDirectory=/opt/marcedit-web
+Environment=MARCEDIT_WEB_MODE=public
+# No MARCEDIT_WEB_PROD, no DB path, no OAuth, no proxy secret — anonymous by design.
+Environment=MARCEDIT_WEB_MAX_UPLOAD_BYTES=5242880
+ExecStart=/opt/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py \
+  --server.address 127.0.0.1 --server.port 8502
+Restart=on-failure
+# Tighter resource isolation so anon abuse can't starve the private unit (TASK-075):
+MemoryMax=1G
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+[Unit]
+Description=marcedit-web (private / authenticated tier) — TASK-088
+After=network.target
+
+[Service]
+Type=simple
+User=marcedit
+WorkingDirectory=/opt/marcedit-web
+Environment=MARCEDIT_WEB_MODE=private
+Environment=MARCEDIT_WEB_PROD=1
+Environment=MARCEDIT_WEB_DB_PATH=/opt/marcedit-web/data/marcedit.db
+# Comma-separated bootstrap admins + auto-approved domains:
+Environment=MARCEDIT_WEB_ADMIN_EMAILS=roconnell@smith.edu
+Environment=MARCEDIT_WEB_ALLOWED_DOMAINS=smith.edu,umass.edu,mtholyoke.edu,amherst.edu,hampshire.edu
+# Proxy attestation secret is provided out-of-band (drop-in / EnvironmentFile), not here.
+ExecStart=/opt/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py \
+  --server.address 127.0.0.1 --server.port 8501
+Restart=on-failure
+# Resource isolation (TASK-075):
+MemoryMax=2G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target
