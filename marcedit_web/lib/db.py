@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -252,4 +252,23 @@ CREATE TABLE IF NOT EXISTS uploads (
 );
 
 CREATE INDEX IF NOT EXISTS idx_uploads_user_active ON uploads(user_email, active);
+
+CREATE TABLE IF NOT EXISTS users (
+    email       TEXT PRIMARY KEY,
+    role        TEXT NOT NULL DEFAULT 'cataloger'
+                CHECK(role IN ('admin','cataloger')),
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('approved','pending','revoked')),
+    created_at  TEXT NOT NULL,
+    approved_at TEXT,
+    approved_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+
+CREATE TABLE IF NOT EXISTS allowed_domains (
+    domain   TEXT PRIMARY KEY,
+    added_at TEXT NOT NULL,
+    added_by TEXT NOT NULL
+);
 """

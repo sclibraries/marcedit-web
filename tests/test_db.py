@@ -121,3 +121,37 @@ def test_connect_creates_parent_dir(monkeypatch, tmp_path):
     db.reset_for_tests()
     db.init_schema()
     assert nested.exists()
+
+
+def test_v4_creates_users_and_allowed_domains():
+    db.init_schema()
+    with db.connect() as conn:
+        names = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+    assert {"users", "allowed_domains"}.issubset(names)
+
+
+def test_v4_users_role_and_status_checks():
+    db.init_schema()
+    with db.connect() as conn:
+        # valid row inserts fine
+        conn.execute(
+            "INSERT INTO users(email, role, status, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            ("a@smith.edu", "cataloger", "pending", "2026-06-22T00:00:00Z"),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO users(email, role, status, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                ("b@smith.edu", "wizard", "pending", "2026-06-22T00:00:00Z"),
+            )
+
+
+def test_schema_version_is_4():
+    db.init_schema()
+    with db.connect() as conn:
+        row = conn.execute("SELECT version FROM _schema_version").fetchone()
+    assert row["version"] == 4
+    assert db.SCHEMA_VERSION == 4
