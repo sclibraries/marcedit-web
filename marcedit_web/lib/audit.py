@@ -56,7 +56,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from . import db
+from . import db, runmode
 
 logger = logging.getLogger("marcedit_web.audit")
 
@@ -103,22 +103,25 @@ def audit_event(kind: str, *, user: str = "anonymous", **fields: Any) -> None:
     except OSError as exc:
         logger.warning("audit-write failed for %s: %s", kind, exc)
 
-    # SQL mirror — independent of JSONL so a DB hiccup can't lose
-    # the on-disk trail. ``payload_json`` carries everything except
-    # the indexed columns; that lets reporters reconstruct each
+    # SQL mirror — private mode only. Public-tier processes never touch
+    # the catalog DB; the guard here enforces that in code, not just via
+    # a read-only filesystem mount. Independent of JSONL so a DB hiccup
+    # can't lose the on-disk trail. ``payload_json`` carries everything
+    # except the indexed columns; that lets reporters reconstruct each
     # event without joining tables.
-    try:
-        # Idempotent; in-process flag short-circuits after first call.
-        # Doing it here means callers that audit before App.py boots
-        # (e.g. tests, ad-hoc scripts) don't trip "no such table".
-        db.init_schema()
-        sql_fields = {k: v for k, v in payload.items() if k not in {"ts", "kind", "user"}}
-        payload_json = json.dumps(sql_fields, sort_keys=True, default=str)
-        with db.connect() as conn:
-            conn.execute(
-                "INSERT INTO audit_events(ts, user_email, kind, payload_json)"
-                " VALUES (?, ?, ?, ?)",
-                (ts, user, kind, payload_json),
-            )
-    except Exception as exc:  # noqa: BLE001 — audit must never propagate
-        logger.warning("audit-sql-write failed for %s: %s", kind, exc)
+    if runmode.is_private():
+        try:
+            # Idempotent; in-process flag short-circuits after first call.
+            # Doing it here means callers that audit before App.py boots
+            # (e.g. tests, ad-hoc scripts) don't trip "no such table".
+            db.init_schema()
+            sql_fields = {k: v for k, v in payload.items() if k not in {"ts", "kind", "user"}}
+            payload_json = json.dumps(sql_fields, sort_keys=True, default=str)
+            with db.connect() as conn:
+                conn.execute(
+                    "INSERT INTO audit_events(ts, user_email, kind, payload_json)"
+                    " VALUES (?, ?, ?, ?)",
+                    (ts, user, kind, payload_json),
+                )
+        except Exception as exc:  # noqa: BLE001 — audit must never propagate
+            logger.warning("audit-sql-write failed for %s: %s", kind, exc)

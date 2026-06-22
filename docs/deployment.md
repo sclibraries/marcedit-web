@@ -299,8 +299,11 @@ MARCEDIT_WEB_MAX_UPLOAD_BYTES=5242880  # 5 MB
 ```
 
 The public unit **intentionally has no catalog database and no sandbox page**.
-These are accessed only in private mode. See `deploy/marcedit-web-public.service`
-for the full systemd unit.
+These are accessed only in private mode. This is enforced in code: in public
+mode `audit_event` never calls `db.init_schema()` and never opens the catalog
+DB, regardless of whether the filesystem is writable. No DB path needs to be
+set in the public unit's environment, and none is created at runtime.
+See `deploy/marcedit-web-public.service` for the full systemd unit.
 
 ### Resource isolation
 
