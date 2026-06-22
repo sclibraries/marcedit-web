@@ -6,6 +6,7 @@ import importlib
 
 PUBLIC_ALLOWED = {"Home", "View", "Validate", "Report", "MarcTools"}
 SANDBOX = "Tasks"
+ADMIN = "Admin"
 
 
 def _url_paths(pages):
@@ -23,6 +24,7 @@ def test_public_mode_registers_only_light_pages(monkeypatch):
     paths = _url_paths(app.build_pages(public=True))
     assert paths == PUBLIC_ALLOWED
     assert SANDBOX not in paths
+    assert ADMIN not in paths
 
 
 def test_private_mode_includes_sandbox(monkeypatch):
@@ -30,3 +32,4 @@ def test_private_mode_includes_sandbox(monkeypatch):
     paths = _url_paths(app.build_pages(public=False))
     assert SANDBOX in paths
     assert PUBLIC_ALLOWED.issubset(paths)
+    assert ADMIN in paths

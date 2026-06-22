@@ -107,6 +107,11 @@ def build_pages(public: bool) -> dict[str, list[PageSpec]]:
                      script="views/8_Dedupe.py", icon=":material/filter_alt:"),
             marctools,
         ],
+        "Admin": [
+            PageSpec(url_path="Admin", title="Admin",
+                     script="views/A_Admin.py", icon=":material/admin_panel_settings:",
+                     default=False),
+        ],
     }
 
 
