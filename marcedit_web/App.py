@@ -24,7 +24,7 @@ exactly as it did pre-OAuth.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import streamlit as st
 
@@ -62,7 +62,7 @@ def build_pages(public: bool) -> dict[str, list[PageSpec]]:
         url_path="Home", title="Home",
         script="views/00_Home.py", icon=":material/upload_file:", default=True,
     )
-    inspect = [
+    inspect_pages = [
         PageSpec(url_path="View", title="View",
                  script="views/1_View.py", icon=":material/visibility:"),
         PageSpec(url_path="Validate", title="Validate",
@@ -78,7 +78,7 @@ def build_pages(public: bool) -> dict[str, list[PageSpec]]:
     if public:
         return {
             "Start": [home],
-            "Inspect": inspect,
+            "Inspect": inspect_pages,
             "Convert": [marctools],
         }
 
@@ -89,9 +89,11 @@ def build_pages(public: bool) -> dict[str, list[PageSpec]]:
                      script="views/0_Workspace.py", icon=":material/dashboard:"),
         ],
         "Inspect": [
+            PageSpec(url_path="View", title="View",
+                     script="views/1_View.py", icon=":material/visibility:"),
             PageSpec(url_path="Find", title="Find",
                      script="views/7_Find.py", icon=":material/search:"),
-        ] + inspect,
+        ] + inspect_pages[1:],
         "Edit": [
             PageSpec(url_path="MarcEditor", title="MarcEditor",
                      script="views/5_MarcEditor.py", icon=":material/edit_note:"),
