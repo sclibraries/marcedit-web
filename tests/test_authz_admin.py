@@ -40,5 +40,5 @@ def test_set_role_rejects_unknown_role():
 def test_domain_add_list_remove():
     authz.add_domain("Smith.edu", by="boss@smith.edu")
     assert authz.list_domains() == ["smith.edu"]
-    authz.remove_domain("smith.edu")
+    authz.remove_domain("smith.edu", by="boss@smith.edu")
     assert authz.list_domains() == []

@@ -100,7 +100,7 @@ _VALID_ROLES = ("admin", "cataloger")
 def approve_user(email: str, *, by: str, role: str = "cataloger") -> None:
     if role not in _VALID_ROLES:
         raise ValueError(f"unknown role: {role!r}")
-    email = email.lower()
+    email = email.strip().lower()
     now = _now()
     with db.connect() as conn:
         conn.execute(
@@ -116,7 +116,7 @@ def approve_user(email: str, *, by: str, role: str = "cataloger") -> None:
 
 
 def revoke_user(email: str, *, by: str) -> None:
-    email = email.lower()
+    email = email.strip().lower()
     with db.connect() as conn:
         conn.execute(
             "UPDATE users SET status='revoked' WHERE email=?", (email,)
@@ -127,13 +127,15 @@ def revoke_user(email: str, *, by: str) -> None:
 def set_role(email: str, role: str, *, by: str) -> None:
     if role not in _VALID_ROLES:
         raise ValueError(f"unknown role: {role!r}")
+    email = email.strip().lower()
     with db.connect() as conn:
         conn.execute(
-            "UPDATE users SET role=? WHERE email=?", (role, email.lower())
+            "UPDATE users SET role=? WHERE email=?", (role, email)
         )
+    audit_event("auth.role_changed", user=email)
 
 
-def list_users() -> list:
+def list_users() -> list[dict]:
     with db.connect() as conn:
         return [dict(r) for r in conn.execute(
             "SELECT email, role, status, created_at, approved_at, approved_by"
@@ -141,7 +143,7 @@ def list_users() -> list:
         )]
 
 
-def list_pending() -> list:
+def list_pending() -> list[dict]:
     with db.connect() as conn:
         return [dict(r) for r in conn.execute(
             "SELECT email, created_at FROM users WHERE status='pending'"
@@ -149,7 +151,7 @@ def list_pending() -> list:
         )]
 
 
-def list_domains() -> list:
+def list_domains() -> list[str]:
     with db.connect() as conn:
         return [r["domain"] for r in conn.execute(
             "SELECT domain FROM allowed_domains ORDER BY domain"
@@ -167,8 +169,9 @@ def add_domain(domain: str, *, by: str) -> None:
     audit_event("auth.domain_added", user=by)
 
 
-def remove_domain(domain: str) -> None:
+def remove_domain(domain: str, *, by: str) -> None:
     with db.connect() as conn:
         conn.execute(
             "DELETE FROM allowed_domains WHERE domain=?", (domain.strip().lower(),)
         )
+    audit_event("auth.domain_removed", user=by)
