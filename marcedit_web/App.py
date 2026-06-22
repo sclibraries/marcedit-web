@@ -24,21 +24,110 @@ exactly as it did pre-OAuth.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import streamlit as st
 
-from marcedit_web.lib import db, identity
+from marcedit_web.lib import db, identity, runmode
 
-# Ensure the SQLite schema exists before any page emits an audit
-# event. Idempotent — multiple Streamlit reruns of this module
-# short-circuit on the in-process flag.
-db.init_schema()
 
-st.set_page_config(
-    page_title="marcedit-web",
-    page_icon="\N{BOOKS}",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+@dataclass(frozen=True)
+class PageSpec:
+    """Lightweight page descriptor — fully constructable outside a Streamlit runtime.
+
+    ``st.Page`` early-returns from its ``__init__`` when there is no
+    ``ScriptRunContext``, leaving ``_url_path`` and ``_title`` unset and
+    making ``.url_path`` inaccessible in tests. ``PageSpec`` records the
+    same information in plain Python so ``build_pages`` is unit-testable
+    without a live Streamlit process.
+    """
+
+    url_path: str
+    title: str
+    script: str
+    icon: str
+    default: bool = False
+
+
+def build_pages(public: bool) -> dict[str, list[PageSpec]]:
+    """Return the section->pages dict for the current run mode.
+
+    Public mode exposes only the read-only / deterministic-transform
+    pages (Home upload, View, Validate, Report, Marc Tools). The
+    Task Builder / sandbox, Workspace, MarcEditor, Diff, Dedupe, and
+    Find pages are NOT registered in public mode — the sandbox path is
+    absent by construction, not gated at runtime.
+    """
+    home = PageSpec(
+        url_path="Home", title="Home",
+        script="views/00_Home.py", icon=":material/upload_file:", default=True,
+    )
+    inspect = [
+        PageSpec(url_path="View", title="View",
+                 script="views/1_View.py", icon=":material/visibility:"),
+        PageSpec(url_path="Validate", title="Validate",
+                 script="views/2_Validate.py", icon=":material/rule:"),
+        PageSpec(url_path="Report", title="Report",
+                 script="views/3_Report.py", icon=":material/insights:"),
+    ]
+    marctools = PageSpec(
+        url_path="MarcTools", title="Marc Tools",
+        script="views/9_MarcTools.py", icon=":material/swap_horiz:",
+    )
+
+    if public:
+        return {
+            "Start": [home],
+            "Inspect": inspect,
+            "Convert": [marctools],
+        }
+
+    return {
+        "Start": [
+            home,
+            PageSpec(url_path="Workspace", title="Workspace",
+                     script="views/0_Workspace.py", icon=":material/dashboard:"),
+        ],
+        "Inspect": [
+            PageSpec(url_path="Find", title="Find",
+                     script="views/7_Find.py", icon=":material/search:"),
+        ] + inspect,
+        "Edit": [
+            PageSpec(url_path="MarcEditor", title="MarcEditor",
+                     script="views/5_MarcEditor.py", icon=":material/edit_note:"),
+            PageSpec(url_path="Tasks", title="Tasks",
+                     script="views/4_Tasks.py", icon=":material/play_arrow:"),
+        ],
+        "Reconcile": [
+            PageSpec(url_path="Diff", title="Diff",
+                     script="views/6_Diff.py", icon=":material/compare_arrows:"),
+            PageSpec(url_path="Dedupe", title="Dedupe",
+                     script="views/8_Dedupe.py", icon=":material/filter_alt:"),
+            marctools,
+        ],
+    }
+
+
+def _to_st_pages(specs: dict[str, list[PageSpec]]) -> dict[str, list]:
+    """Convert a ``build_pages`` result into ``st.Page`` objects for ``st.navigation``.
+
+    Only called inside the ``if __name__ == "__main__"`` guard so that
+    ``st.Page`` construction (which requires a Streamlit runtime context)
+    never executes during import or testing.
+    """
+    return {
+        section: [
+            st.Page(
+                spec.script,
+                title=spec.title,
+                url_path=spec.url_path,
+                icon=spec.icon,
+                default=spec.default,
+            )
+            for spec in page_specs
+        ]
+        for section, page_specs in specs.items()
+    }
 
 
 def _render_auth_header() -> None:
@@ -88,66 +177,18 @@ def _render_auth_header() -> None:
         return
 
 
-_render_auth_header()
+if __name__ == "__main__":
+    # Public unit has no catalog DB; only init the schema in private mode.
+    if runmode.is_private():
+        db.init_schema()
 
+    st.set_page_config(
+        page_title="marcedit-web",
+        page_icon="\N{BOOKS}",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
 
-# Task-aligned sections. The dict key is the sidebar section header;
-# the order in this dict is the order rendered in the sidebar.
-# ``url_path=`` preserves the legacy URLs so direct links / bookmarks
-# (``/View``, ``/Tasks``, etc.) keep working.
-_pages = {
-    "Start": [
-        st.Page(
-            "views/00_Home.py", title="Home",
-            url_path="Home", icon=":material/upload_file:", default=True,
-        ),
-        st.Page(
-            "views/0_Workspace.py", title="Workspace",
-            url_path="Workspace", icon=":material/dashboard:",
-        ),
-    ],
-    "Inspect": [
-        st.Page(
-            "views/1_View.py", title="View",
-            url_path="View", icon=":material/visibility:",
-        ),
-        st.Page(
-            "views/7_Find.py", title="Find",
-            url_path="Find", icon=":material/search:",
-        ),
-        st.Page(
-            "views/2_Validate.py", title="Validate",
-            url_path="Validate", icon=":material/rule:",
-        ),
-        st.Page(
-            "views/3_Report.py", title="Report",
-            url_path="Report", icon=":material/insights:",
-        ),
-    ],
-    "Edit": [
-        st.Page(
-            "views/5_MarcEditor.py", title="MarcEditor",
-            url_path="MarcEditor", icon=":material/edit_note:",
-        ),
-        st.Page(
-            "views/4_Tasks.py", title="Tasks",
-            url_path="Tasks", icon=":material/play_arrow:",
-        ),
-    ],
-    "Reconcile": [
-        st.Page(
-            "views/6_Diff.py", title="Diff",
-            url_path="Diff", icon=":material/compare_arrows:",
-        ),
-        st.Page(
-            "views/8_Dedupe.py", title="Dedupe",
-            url_path="Dedupe", icon=":material/filter_alt:",
-        ),
-        st.Page(
-            "views/9_MarcTools.py", title="Marc Tools",
-            url_path="MarcTools", icon=":material/swap_horiz:",
-        ),
-    ],
-}
+    _render_auth_header()
 
-st.navigation(_pages).run()
+    st.navigation(_to_st_pages(build_pages(public=runmode.is_public()))).run()
