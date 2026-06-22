@@ -34,12 +34,29 @@ from typing import Any, Optional
 
 from pymarc import Record
 
-from . import quotas, upload_persistence
+from . import quotas, runmode, upload_persistence
 from .audit import audit_event
 from .identity import ANONYMOUS, current_user, is_anonymous, is_prod
 from .record_store import RecordStore
 
 logger = logging.getLogger("marcedit_web.session")
+
+_PUBLIC_MAX_UPLOAD_BYTES = 5 * 1024 * 1024     # 5 MB anonymous cap
+_PRIVATE_MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB authenticated cap
+
+
+def max_upload_bytes() -> int:
+    """Resolved upload size ceiling for the current run mode.
+
+    Override with ``MARCEDIT_WEB_MAX_UPLOAD_BYTES`` (operational tuning).
+    Public default is deliberately smaller than private to bound
+    anonymous abuse on the shared public process (TASK-088).
+    """
+    import os
+    raw = os.environ.get("MARCEDIT_WEB_MAX_UPLOAD_BYTES", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return _PUBLIC_MAX_UPLOAD_BYTES if runmode.is_public() else _PRIVATE_MAX_UPLOAD_BYTES
 
 # Single source of truth for the state-key shape. `init()` sets each one
 # to its default below; later code reads them via `st.session_state[…]`.
@@ -246,6 +263,19 @@ def handle_upload(uploaded_file) -> dict:
     import streamlit as st
 
     user = current_user_id()
+
+    # Early cap check — reject before reading bytes (TASK-088).
+    # Shape mirrors the existing quota-rejection path so callers behave
+    # identically: {"filename", "total": 0, "malformed": 0, "error": str}.
+    size_hint = getattr(uploaded_file, "size", None)
+    if size_hint is not None and size_hint > max_upload_bytes():
+        cap_mb = max_upload_bytes() // (1024 * 1024)
+        return {
+            "filename": getattr(uploaded_file, "name", None),
+            "total": 0,
+            "malformed": 0,
+            "error": f"File exceeds the {cap_mb} MB limit.",
+        }
 
     if uploaded_file is None:
         st.session_state["store"] = None
