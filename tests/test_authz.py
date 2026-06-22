@@ -66,6 +66,7 @@ def test_existing_row_wins_over_domain_allowlist():
         )
     d = authz.authorize("bad@smith.edu")
     assert d.outcome == "revoked"
+    assert d.role is None
 
 
 def test_approved_admin_returns_admin_role():

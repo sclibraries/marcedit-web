@@ -38,7 +38,7 @@ def _now() -> str:
 def domain_of(email: str) -> str:
     """Lowercased domain part of an email, or '' when there's no '@'."""
     _, _, domain = email.partition("@")
-    return domain.strip().lower() if "@" in email else ""
+    return domain.strip().lower()
 
 
 def get_user(email: str) -> Optional[dict]:
