@@ -21,11 +21,12 @@ def is_admin(state) -> bool:
 
 def _render() -> None:
     session.init_page()  # state defaults + (private) auth already enforced upstream
-    st.title("Admin")
 
     if not is_admin(st.session_state):
         st.error("**Admins only.** Your account does not have admin access.")
         st.stop()
+
+    st.title("Admin")
 
     me = session.current_user_id()
 
@@ -44,7 +45,11 @@ def _render() -> None:
             st.rerun()
 
     st.subheader("Allowed domains")
-    st.write(", ".join(authz.list_domains()) or "_none_")
+    domains = authz.list_domains()
+    if not domains:
+        st.caption("No domains configured.")
+    else:
+        st.write(", ".join(domains))
     new_domain = st.text_input("Add domain", key="add_domain")
     if st.button("Add", key="add_domain_btn") and new_domain.strip():
         authz.add_domain(new_domain, by=me)
