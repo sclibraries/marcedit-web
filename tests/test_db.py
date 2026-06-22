@@ -147,6 +147,12 @@ def test_v4_users_role_and_status_checks():
                 " VALUES (?, ?, ?, ?)",
                 ("b@smith.edu", "wizard", "pending", "2026-06-22T00:00:00Z"),
             )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO users(email, role, status, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                ("c@smith.edu", "cataloger", "banned", "2026-06-22T00:00:00Z"),
+            )
 
 
 def test_schema_version_is_4():
