@@ -103,7 +103,7 @@ def _seed_access_control(conn: sqlite3.Connection) -> None:
             " ON CONFLICT(email) DO UPDATE SET"
             "   role='admin', status='approved',"
             "   approved_at=COALESCE(users.approved_at, excluded.approved_at),"
-            "   approved_by='__bootstrap__'",
+            "   approved_by=COALESCE(users.approved_by, '__bootstrap__')",
             (email, now, now),
         )
     for domain in _split_env_csv("MARCEDIT_WEB_ALLOWED_DOMAINS"):

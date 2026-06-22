@@ -55,3 +55,53 @@ def test_no_env_seeds_nothing(monkeypatch):
     db.init_schema()
     assert _rows("users") == []
     assert _rows("allowed_domains") == []
+
+
+def test_demotion_omission_is_noop(monkeypatch):
+    """Seeding only touches emails in env; omitting an admin is a no-op."""
+    # First boot: seed an admin via env.
+    monkeypatch.setenv("MARCEDIT_WEB_ADMIN_EMAILS", "admin@smith.edu")
+    db.reset_for_tests()
+    db.init_schema()
+    users = {r["email"]: r for r in _rows("users")}
+    assert users["admin@smith.edu"]["role"] == "admin"
+    assert users["admin@smith.edu"]["status"] == "approved"
+
+    # Re-boot with that email OMITTED from env.
+    monkeypatch.setenv("MARCEDIT_WEB_ADMIN_EMAILS", "")
+    db.reset_for_tests()
+    db.init_schema()
+    users = {r["email"]: r for r in _rows("users")}
+    # Admin unchanged — still admin and approved.
+    assert users["admin@smith.edu"]["role"] == "admin"
+    assert users["admin@smith.edu"]["status"] == "approved"
+
+
+def test_approver_preserved_on_promotion(monkeypatch):
+    """Promoting a user preserves their human approver; new bootstrap admins get __bootstrap__."""
+    # Insert a user pre-approved by a real admin.
+    db.reset_for_tests()
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO users(email, role, status, created_at, approved_at, approved_by)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            ("user@smith.edu", "cataloger", "approved",
+             "2026-06-22T00:00:00Z", "2026-06-22T00:00:00Z", "admin@smith.edu"),
+        )
+
+    # Seed with that user in admin emails; should promote but preserve approver.
+    monkeypatch.setenv("MARCEDIT_WEB_ADMIN_EMAILS", "user@smith.edu, newadmin@smith.edu")
+    db.reset_for_tests()
+    db.init_schema()
+    users = {r["email"]: r for r in _rows("users")}
+
+    # Existing user: promoted to admin, approver preserved.
+    assert users["user@smith.edu"]["role"] == "admin"
+    assert users["user@smith.edu"]["status"] == "approved"
+    assert users["user@smith.edu"]["approved_by"] == "admin@smith.edu"
+
+    # New bootstrap user: gets __bootstrap__.
+    assert users["newadmin@smith.edu"]["role"] == "admin"
+    assert users["newadmin@smith.edu"]["status"] == "approved"
+    assert users["newadmin@smith.edu"]["approved_by"] == "__bootstrap__"
