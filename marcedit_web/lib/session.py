@@ -26,6 +26,7 @@ so it can run independently of the rest of the app state.
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 import warnings
 from datetime import datetime
@@ -52,7 +53,6 @@ def max_upload_bytes() -> int:
     Public default is deliberately smaller than private to bound
     anonymous abuse on the shared public process (TASK-088).
     """
-    import os
     raw = os.environ.get("MARCEDIT_WEB_MAX_UPLOAD_BYTES", "").strip()
     if raw.isdigit():
         return int(raw)
@@ -268,8 +268,9 @@ def handle_upload(uploaded_file) -> dict:
     # Shape mirrors the existing quota-rejection path so callers behave
     # identically: {"filename", "total": 0, "malformed": 0, "error": str}.
     size_hint = getattr(uploaded_file, "size", None)
-    if size_hint is not None and size_hint > max_upload_bytes():
-        cap_mb = max_upload_bytes() // (1024 * 1024)
+    cap = max_upload_bytes()
+    if size_hint is not None and size_hint > cap:
+        cap_mb = cap // (1024 * 1024)
         return {
             "filename": getattr(uploaded_file, "name", None),
             "total": 0,
