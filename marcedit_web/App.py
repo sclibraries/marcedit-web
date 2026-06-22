@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 import streamlit as st
 
-from marcedit_web.lib import db, identity, runmode
+from marcedit_web.lib import access_gate, db, identity, runmode
 
 
 @dataclass(frozen=True)
@@ -192,5 +192,6 @@ if __name__ == "__main__":
     )
 
     _render_auth_header()
+    access_gate.enforce_access()   # private-mode gate; no-op in public
 
     st.navigation(_to_st_pages(build_pages(public=runmode.is_public()))).run()
