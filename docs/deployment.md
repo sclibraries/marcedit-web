@@ -330,11 +330,24 @@ multiple instances only if you replace Streamlit with a async-first framework.
 
 ### Bootstrap and initial setup
 
-On first deploy, the private unit's `MARCEDIT_WEB_ADMIN_EMAILS` and
-`MARCEDIT_WEB_ALLOWED_DOMAINS` are used to seed the access control
-table (`access_control`) — see `marcedit_web.lib.db._seed_access_control()`.
-This is a one-time event per database. Subsequent changes require direct
-SQL edits or a UI for operators (future enhancement).
+On private-unit startup, `db.init_schema()` seeds access state from two
+environment variables:
+
+- `MARCEDIT_WEB_ADMIN_EMAILS`: comma-separated trusted first-admin emails.
+  Each listed email is promoted to `users.role='admin'` and
+  `users.status='approved'`. This can recover an existing pending row when
+  an admin first logged in before the env var was present.
+- `MARCEDIT_WEB_ALLOWED_DOMAINS`: comma-separated domains that auto-approve
+  new logins as catalogers. These domains are stored in `allowed_domains`.
+
+Unknown users whose domain is not in `allowed_domains` are inserted into
+`users` with `status='pending'`. An approved admin then opens the private
+Admin page and approves or denies those pending users. Normal approvals should
+go through that UI; manual SQLite edits are not the supported workflow.
+
+Seeding is idempotent and runs on each private schema initialization. It is
+promotion-only: listed admins are promoted, but omitting an existing admin from
+the env var does not demote them.
 
 ### Manual smoke tests
 

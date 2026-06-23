@@ -25,6 +25,24 @@ def test_approve_then_revoke_roundtrip():
     assert authz.authorize("p@gmail.com").outcome == "revoked"
 
 
+def test_admin_approval_chain_promotes_pending_user_to_cataloger():
+    """Admin page approval path turns a queued login into cataloger access."""
+    decision = authz.authorize("newperson@example.org")
+    assert decision.outcome == "pending"
+    assert [u["email"] for u in authz.list_pending()] == ["newperson@example.org"]
+
+    authz.approve_user("newperson@example.org", by="roconnell@smith.edu")
+
+    approved = authz.authorize("newperson@example.org")
+    assert approved.outcome == "approved"
+    assert approved.role == "cataloger"
+    assert authz.list_pending() == []
+    assert (
+        authz.get_user("newperson@example.org")["approved_by"]
+        == "roconnell@smith.edu"
+    )
+
+
 def test_set_role_to_admin():
     authz.approve_user("c@smith.edu", by="boss@smith.edu")
     authz.set_role("c@smith.edu", "admin", by="boss@smith.edu")

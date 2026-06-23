@@ -105,3 +105,24 @@ def test_approver_preserved_on_promotion(monkeypatch):
     assert users["newadmin@smith.edu"]["role"] == "admin"
     assert users["newadmin@smith.edu"]["status"] == "approved"
     assert users["newadmin@smith.edu"]["approved_by"] == "__bootstrap__"
+
+
+def test_bootstrap_admin_env_promotes_existing_pending_user(monkeypatch):
+    """A first admin can be recovered by env seeding, without manual SQL edits."""
+    db.reset_for_tests()
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO users(email, role, status, created_at)"
+            " VALUES (?, 'cataloger', 'pending', '2026-06-23T00:00:00Z')",
+            ("roconnell@smith.edu",),
+        )
+
+    monkeypatch.setenv("MARCEDIT_WEB_ADMIN_EMAILS", "roconnell@smith.edu")
+    db.reset_for_tests()
+    db.init_schema()
+
+    users = {r["email"]: r for r in _rows("users")}
+    assert users["roconnell@smith.edu"]["role"] == "admin"
+    assert users["roconnell@smith.edu"]["status"] == "approved"
+    assert users["roconnell@smith.edu"]["approved_by"] == "__bootstrap__"
