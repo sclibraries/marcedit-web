@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,38 @@ def test_recording_supersedes_previous_active_row():
     assert {r["filename"] for r in inactive} == {"first.mrc"}
 
 
+def test_concurrent_uploads_leave_one_active_row_per_user():
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(8)
+
+    def worker(i: int) -> None:
+        try:
+            barrier.wait()
+            _record(filename=f"batch-{i}.mrc", path=f"/tmp/batch-{i}.mrc")
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    with db.connect() as conn:
+        active = list(conn.execute(
+            "SELECT filename FROM uploads"
+            " WHERE user_email=? AND active=1",
+            ("alice@example.edu",),
+        ))
+        total = conn.execute(
+            "SELECT COUNT(*) AS n FROM uploads WHERE user_email=?",
+            ("alice@example.edu",),
+        ).fetchone()["n"]
+    assert len(active) == 1
+    assert total == 8
+
+
 def test_active_rows_are_per_user():
     _record(user="alice@example.edu", filename="a.mrc")
     _record(user="bob@example.edu", filename="b.mrc")
@@ -93,6 +126,35 @@ def test_active_rows_are_per_user():
         upload_persistence.get_active_upload("bob@example.edu")["filename"]
         == "b.mrc"
     )
+
+
+def test_concurrent_uploads_for_different_users_each_keep_active_row():
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(6)
+
+    def worker(i: int) -> None:
+        try:
+            user = f"user-{i}@example.edu"
+            barrier.wait()
+            _record(user=user, filename=f"{i}.mrc", path=f"/tmp/{i}.mrc")
+        except BaseException as exc:  # pragma: no cover - re-raised below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    with db.connect() as conn:
+        active = list(conn.execute(
+            "SELECT user_email, filename FROM uploads WHERE active=1"
+        ))
+    assert len(active) == 6
+    assert {row["user_email"] for row in active} == {
+        f"user-{i}@example.edu" for i in range(6)
+    }
 
 
 def test_clear_active_upload_removes_file_and_flips_row(tmp_path):

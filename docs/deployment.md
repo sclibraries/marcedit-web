@@ -171,13 +171,21 @@ layer if your deployment requires it.
 SQLite WAL mode at `data/marcedit.db`. Three files:
 `marcedit.db`, `marcedit.db-wal`, `marcedit.db-shm`.
 
+SQLite runs with connection-per-call access. Write paths that swap shared
+state, such as active uploads and advisory locks, use explicit
+`BEGIN IMMEDIATE` transactions so concurrent Streamlit sessions serialize at
+the database boundary. The advisory lock table is a foundation for future
+shared-job and record checkout flows; it is not a user-facing collaboration UI
+by itself.
+
 Backup: stop the service, copy all three files, restart. Or use
 `sqlite3 marcedit.db ".backup /path/to/backup.db"` online.
 
 Schema version tracked in the `_schema_version` table. v1 added
 `audit_events` (TASK-049); v2 added `tasks` (TASK-050); v3 added
-uploads (TASK-051). Migrations run on first request and are
-idempotent.
+uploads (TASK-051); v4 added `users` and `allowed_domains` (TASK-088);
+v5 added `advisory_locks` (TASK-083). Migrations run on first request and
+are idempotent.
 
 ## Smoke tests after deploy
 

@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -306,4 +306,17 @@ CREATE TABLE IF NOT EXISTS allowed_domains (
     added_at TEXT NOT NULL,
     added_by TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS advisory_locks (
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    holder_email  TEXT NOT NULL,
+    expires_at    TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY(resource_type, resource_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_advisory_locks_expires
+    ON advisory_locks(expires_at);
 """

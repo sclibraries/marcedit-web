@@ -83,6 +83,7 @@ def record_upload(
         return
     now = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
     with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "UPDATE uploads SET active = 0 WHERE user_email = ? AND active = 1",
             (user,),

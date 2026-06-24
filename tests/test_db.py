@@ -132,6 +132,22 @@ def test_v4_creates_users_and_allowed_domains():
     assert {"users", "allowed_domains"}.issubset(names)
 
 
+def test_v5_creates_advisory_locks_table():
+    db.init_schema()
+    with db.connect() as conn:
+        names = {r["name"] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        cols = {r["name"] for r in conn.execute(
+            "PRAGMA table_info(advisory_locks)"
+        )}
+    assert "advisory_locks" in names
+    assert {
+        "resource_type", "resource_id", "holder_email",
+        "expires_at", "created_at", "updated_at",
+    }.issubset(cols)
+
+
 def test_v4_users_role_and_status_checks():
     db.init_schema()
     with db.connect() as conn:
@@ -155,9 +171,9 @@ def test_v4_users_role_and_status_checks():
             )
 
 
-def test_schema_version_is_4():
+def test_schema_version_is_5():
     db.init_schema()
     with db.connect() as conn:
         row = conn.execute("SELECT version FROM _schema_version").fetchone()
-    assert row["version"] == 4
-    assert db.SCHEMA_VERSION == 4
+    assert row["version"] == 5
+    assert db.SCHEMA_VERSION == 5
