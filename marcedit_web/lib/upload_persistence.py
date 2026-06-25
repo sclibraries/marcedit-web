@@ -33,7 +33,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import db
+from . import db, jobs
 from .identity import ANONYMOUS, is_anonymous
 from .task_storage import safe_user_slug
 
@@ -72,6 +72,7 @@ def record_upload(
     file_path: Path | str,
     record_count: int,
     file_bytes: int,
+    job_id: int | None = None,
 ) -> None:
     """Mark ``file_path`` as ``user``'s active upload.
 
@@ -82,6 +83,7 @@ def record_upload(
     if is_anonymous(user):
         return
     now = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    target_job_id = job_id or jobs.ensure_default_job(user)["id"]
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -90,10 +92,18 @@ def record_upload(
         )
         conn.execute(
             "INSERT INTO uploads"
-            "(user_email, filename, file_path, record_count, file_bytes,"
+            "(user_email, job_id, filename, file_path, record_count, file_bytes,"
             " uploaded_at, active)"
-            " VALUES (?, ?, ?, ?, ?, ?, 1)",
-            (user, filename, str(file_path), record_count, file_bytes, now),
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+            (
+                user,
+                target_job_id,
+                filename,
+                str(file_path),
+                record_count,
+                file_bytes,
+                now,
+            ),
         )
 
 

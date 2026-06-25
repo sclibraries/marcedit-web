@@ -60,3 +60,7 @@ Ticket link: `.tickets/TASK-081-job-project-model.md`
 - Schema checkpoint implemented:
   v6 adds `jobs`, `job_access`, and `uploads.job_id`. Existing upload rows are
   migrated into a per-user `Personal uploads` job without losing upload rows.
+- Library checkpoint implemented:
+  `marcedit_web.lib.jobs` can create/list jobs, ensure the default personal
+  job, and list a job's uploads. `record_upload` attaches persisted uploads to
+  a job while preserving the existing active-upload restore behavior.
