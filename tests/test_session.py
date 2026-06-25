@@ -64,6 +64,7 @@ def test_state_defaults_shape():
         "editor_text",
         "editor_dirty",
         "tasks_palette_state",
+        "current_job_id",
     }
     assert expected.issubset(keys)
 

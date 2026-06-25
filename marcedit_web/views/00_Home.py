@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from marcedit_web.lib import session
+from marcedit_web.lib import jobs, session
+from marcedit_web.lib.identity import is_anonymous
 
 session.init_page()
 
@@ -26,6 +27,45 @@ st.title("marcedit-web")
 st.caption("MARC21 viewer, validator, editor, and diff — in your browser.")
 # h2 — heading ladder must step h1 → h2 → h3 without gaps (TASK-054).
 st.header("Upload a MARC file")
+
+user = session.current_user_id()
+if not is_anonymous(user):
+    job_rows = jobs.list_jobs(user)
+    if not job_rows:
+        job_rows = [jobs.ensure_default_job(user)]
+
+    current_job_id = st.session_state.get("current_job_id")
+    job_ids = [job["id"] for job in job_rows]
+    if current_job_id not in job_ids:
+        current_job_id = job_ids[0]
+        st.session_state["current_job_id"] = current_job_id
+
+    selected_job_id = st.selectbox(
+        "Job",
+        options=job_ids,
+        index=job_ids.index(current_job_id),
+        format_func=lambda job_id: next(
+            job["name"] for job in job_rows if job["id"] == job_id
+        ),
+        help="Uploads attach to the selected job. Sharing controls are not enabled yet.",
+        key="current_job_id",
+    )
+
+    with st.expander("Create job", expanded=False):
+        new_job_name = st.text_input(
+            "Job name",
+            placeholder="e.g. Vendor load June",
+            key="new_job_name",
+        )
+        if st.button("Create job", key="create_job_btn"):
+            try:
+                created = jobs.create_job(user, new_job_name)
+            except jobs.JobError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state["current_job_id"] = created["id"]
+                st.success(f"Created job `{created['name']}`.")
+                st.rerun()
 
 uploaded = st.file_uploader(
     "Choose a .mrc file",

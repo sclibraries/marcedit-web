@@ -229,8 +229,14 @@ Cold-copy fallback: stop the service, copy `marcedit.db`, `marcedit.db-wal`,
 Schema version tracked in the `_schema_version` table. v1 added
 `audit_events` (TASK-049); v2 added `tasks` (TASK-050); v3 added
 uploads (TASK-051); v4 added `users` and `allowed_domains` (TASK-088);
-v5 added `advisory_locks` (TASK-083). Migrations run on first request and
-are idempotent.
+v5 added `advisory_locks` (TASK-083); v6 added `jobs`, `job_access`, and
+`uploads.job_id` (TASK-081). Migrations run on first request and are
+idempotent.
+
+The job model is forward-compatible with collaboration work in TASK-086:
+`jobs.owner_email` identifies the owner, and `job_access` can grant future
+`owner` / `editor` / `viewer` access. The current UI only lets a signed-in
+cataloger create/select their own jobs; no sharing UI is enabled yet.
 
 ## Smoke tests after deploy
 

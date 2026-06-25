@@ -1,6 +1,6 @@
 # TASK-081 — Job/project model (multi-file, collaboration-aware schema)
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 3 — Service foundation
 **Collaboration:** Foundation built now; sharing UI deferred to TASK-086
 **Source:** Deep code audit 2026-06-17 — horizon (job model / multi-file)
@@ -64,3 +64,6 @@ Ticket link: `.tickets/TASK-081-job-project-model.md`
   `marcedit_web.lib.jobs` can create/list jobs, ensure the default personal
   job, and list a job's uploads. `record_upload` attaches persisted uploads to
   a job while preserving the existing active-upload restore behavior.
+- UI/documentation checkpoint implemented:
+  Home lets signed-in catalogers select or create their own jobs before upload.
+  Sharing is documented for TASK-086 but not exposed in the UI yet.

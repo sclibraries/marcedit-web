@@ -13,6 +13,7 @@ State keys:
     editor_text           str | None (set when MarcEditor dirties)
     editor_dirty          bool
     tasks_palette_state   list[Operation] (form-builder rows)
+    current_job_id        int | None (selected private upload job)
 
 In v1 we held the parsed records in `records: list[pymarc.Record]` and
 the raw bytes in `raw_bytes`. v2 replaces both with a single
@@ -68,6 +69,7 @@ STATE_DEFAULTS: dict[str, Any] = {
     "editor_dirty": False,
     "tasks_palette_state": [],
     "upload_bytes_total": 0,
+    "current_job_id": None,
 }
 
 
@@ -326,12 +328,14 @@ def handle_upload(uploaded_file) -> dict:
         filename=uploaded_file.name,
     )
     if not is_anonymous(user):
+        selected_job_id = st.session_state.get("current_job_id")
         upload_persistence.record_upload(
             user=user,
             filename=uploaded_file.name,
             file_path=store.path,
             record_count=store.count(),
             file_bytes=size,
+            job_id=selected_job_id,
         )
     st.session_state["store"] = store
     st.session_state["upload_bytes_total"] = new_total

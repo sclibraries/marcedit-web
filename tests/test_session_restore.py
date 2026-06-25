@@ -16,7 +16,7 @@ from pathlib import Path
 import pymarc
 import pytest
 
-from marcedit_web.lib import db, session, upload_persistence
+from marcedit_web.lib import db, jobs, session, upload_persistence
 from marcedit_web.lib.record_store import RecordStore
 
 
@@ -130,6 +130,22 @@ def test_handle_upload_re_upload_replaces_active_row(
     assert first["filename"] == "first.mrc"
     assert second["filename"] == "second.mrc"
     assert second["record_count"] == 2
+
+
+def test_handle_upload_attaches_to_selected_job(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Home's selected job should determine where the upload is attached."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    job = jobs.create_job("alice@example.edu", "Vendor load June")
+    st.session_state["current_job_id"] = job["id"]
+
+    session.handle_upload(_FakeUpload("test.mrc", _serialize([record])))
+
+    row = upload_persistence.get_active_upload("alice@example.edu")
+    assert row["job_id"] == job["id"]
 
 
 # ---------------------------------------------------------------------------
