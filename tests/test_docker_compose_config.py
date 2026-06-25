@@ -41,3 +41,10 @@ def test_dockerfile_does_not_bake_streamlit_secrets():
     content = _build_context_file("Dockerfile")
     assert "COPY .streamlit ./.streamlit" not in content
     assert "COPY .streamlit/config.toml ./.streamlit/config.toml" in content
+
+
+def test_docker_healthcheck_requires_db_readiness():
+    """TASK-084: container health must check DB readiness, not only Streamlit."""
+    content = _build_context_file("Dockerfile")
+    assert "python -m marcedit_web.ops.health" in content
+    assert "_stcore/health" in content

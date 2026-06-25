@@ -134,6 +134,18 @@ sudo systemctl stop marcedit-web
 journalctl -u marcedit-web -f         # follow stdout/stderr
 ```
 
+Private service startup runs a readiness probe before Streamlit starts:
+
+```bash
+sudo -u marcedit /var/www/html/marcedit-web/.venv/bin/python \
+    -m marcedit_web.ops.health
+```
+
+The probe initializes the schema if needed and verifies the SQLite database
+accepts a rollbacked write transaction. This is intentionally stricter than
+Streamlit's built-in `/_stcore/health`, which only proves the process is
+serving HTTP.
+
 The unit replicates the Dockerfile's hardening at the systemd
 layer:
 
@@ -189,18 +201,20 @@ are idempotent.
 
 ## Smoke tests after deploy
 
-1. `curl -fs http://127.0.0.1:8501/marcedit-web/_stcore/health` →
+1. `sudo -u marcedit /var/www/html/marcedit-web/.venv/bin/python -m marcedit_web.ops.health` →
    should print `ok`.
-2. `curl -I https://libtools2.smith.edu/marcedit-web/` while logged
+2. `curl -fs http://127.0.0.1:8501/marcedit-web/_stcore/health` →
+   should print `ok`.
+3. `curl -I https://libtools2.smith.edu/marcedit-web/` while logged
    out → should redirect to Shibboleth.
-3. After Shib login, the sidebar should show the cataloger's eppn,
+4. After Shib login, the sidebar should show the cataloger's eppn,
    not `anonymous`.
-4. `sudo systemctl show -p MainPID marcedit-web | xargs -I {} ps -o user= -p {}` →
+5. `sudo systemctl show -p MainPID marcedit-web | xargs -I {} ps -o user= -p {}` →
    should report `marcedit` (not `root`, not `apache`).
-5. Tail today's audit log — `tail -F /var/www/html/marcedit-web/data/audit/audit-$(date -u +%F).log` —
+6. Tail today's audit log — `tail -F /var/www/html/marcedit-web/data/audit/audit-$(date -u +%F).log` —
    then perform an upload through the UI; an `upload-accepted` event
    should appear.
-6. Forged-header refusal — `curl -s -H 'REMOTE_USER: someone@smith.edu'
+7. Forged-header refusal — `curl -s -H 'REMOTE_USER: someone@smith.edu'
    http://127.0.0.1:8501/marcedit-web/` sent straight to the backend
    (bypassing Apache) must NOT yield an identified/admin session: in prod it
    is refused and the sidebar shows `anonymous`, never the forged eppn.

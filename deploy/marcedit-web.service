@@ -9,6 +9,7 @@ User=marcedit
 Group=marcedit
 WorkingDirectory=/var/www/html/marcedit-web
 EnvironmentFile=/var/www/html/marcedit-web/.env
+ExecStartPre=/var/www/html/marcedit-web/.venv/bin/python -m marcedit_web.ops.health
 ExecStart=/var/www/html/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py \
     --server.address=127.0.0.1 \
     --server.port=8501 \
