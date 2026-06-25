@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -369,6 +369,22 @@ CREATE TABLE IF NOT EXISTS job_access (
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_access_user ON job_access(user_email);
+
+CREATE TABLE IF NOT EXISTS job_snapshots (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id       INTEGER NOT NULL,
+    user_email   TEXT    NOT NULL,
+    kind         TEXT    NOT NULL,
+    label        TEXT    NOT NULL,
+    before_path  TEXT    NOT NULL,
+    after_path   TEXT    NOT NULL,
+    summary_json TEXT    NOT NULL DEFAULT '{}',
+    created_at   TEXT    NOT NULL,
+    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_snapshots_job_created
+    ON job_snapshots(job_id, created_at);
 
 CREATE TABLE IF NOT EXISTS users (
     email       TEXT PRIMARY KEY,

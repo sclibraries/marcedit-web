@@ -1,6 +1,6 @@
 # TASK-082 — Persisted undo + user-attributed provenance
 
-**Status:** Todo
+**Status:** In-Progress
 **Priority:** Tier 3 — Service foundation
 **Collaboration:** Per-change attribution is the collaboration audit foundation
 **Source:** Deep code audit 2026-06-17 — horizon (undo/rollback + provenance)
@@ -27,3 +27,29 @@ attribution, enabling one-click rollback and a queryable "who changed what".
 2. History persists across sessions and records who ran/edited what, and when.
 3. Snapshot storage respects job ownership and caps.
 4. Focused tests and the Docker test suite pass before completion.
+
+## Implementation Plan
+
+Ticket link: `.tickets/TASK-082-persisted-undo-provenance.md`
+
+1. Persistence foundation:
+   - Add schema v7 `job_snapshots` with job/user/kind/label, before/after file
+     paths, summary JSON, and timestamp.
+   - Add `marcedit_web.lib.provenance` helpers to create/list snapshots,
+     restore pre-change bytes, and prune old snapshots per job.
+   - Commit.
+2. Mutation integration:
+   - Record snapshots around Tasks batch runs and MarcEditor/full-record saves.
+   - Add restore action where history is rendered.
+   - Commit.
+3. Final verification:
+   - Docker suite, docs, and ticket completion.
+
+## Progress
+
+- 2026-06-25: Added schema v7 `job_snapshots` persistence and provenance
+  helpers for create/list/restore/prune.
+- 2026-06-25: Verified foundation with
+  `python3 -m pytest tests/test_provenance.py tests/test_db.py tests/test_job_schema.py tests/test_jobs.py -q`,
+  `python3 -m compileall -q marcedit_web/lib/provenance.py marcedit_web/lib/db.py`,
+  and `git diff --check`.
