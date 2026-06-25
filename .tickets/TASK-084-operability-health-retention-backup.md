@@ -57,3 +57,7 @@ Ticket link: `.tickets/TASK-084-operability-health-retention-backup.md`
   private SQLite DB accepts a rollbacked write transaction. Docker healthcheck
   now requires both DB readiness and Streamlit liveness. Private systemd units
   run readiness with `ExecStartPre`; the public unit remains DB-free.
+- Retention/VACUUM checkpoint implemented:
+  `python -m marcedit_web.ops.maintenance retention --retain-days N` prunes
+  SQL audit rows and dated JSONL audit files, checkpoints WAL, and runs
+  `VACUUM`. Deployment docs include the schedulable command.

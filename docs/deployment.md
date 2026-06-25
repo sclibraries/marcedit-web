@@ -178,6 +178,19 @@ are not audited by design — they aren't security-relevant in this
 app's threat model. Add reverse-proxy egress logging at the Apache
 layer if your deployment requires it.
 
+Audit retention is handled by the maintenance CLI. Run it daily from cron or a
+systemd timer as the `marcedit` user:
+
+```bash
+cd /var/www/html/marcedit-web
+/var/www/html/marcedit-web/.venv/bin/python \
+    -m marcedit_web.ops.maintenance retention --retain-days 90
+```
+
+The command prunes `audit_events` rows older than the retention window, deletes
+matching `data/audit/audit-YYYY-MM-DD.log` files, checkpoints the WAL, and runs
+`VACUUM`. It prints a one-line summary with deleted row/file counts.
+
 ## Database
 
 SQLite WAL mode at `data/marcedit.db`. Three files:
