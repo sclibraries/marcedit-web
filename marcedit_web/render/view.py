@@ -276,6 +276,13 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         key_prefix="view_edit",
     )
 
+    fixed_field_helper.render_fixed_field_helper(
+        store=store,
+        index=index,
+        record=record,
+        key_prefix="view_control",
+    )
+
     fixed_field_helper.render_008_helper(
         store=store,
         index=index,

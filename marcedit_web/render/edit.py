@@ -97,6 +97,13 @@ def _render_single_record_picker(store, total: int, rule_set) -> None:
         key_prefix="workspace_edit",
     )
 
+    fixed_field_helper.render_fixed_field_helper(
+        store=store,
+        index=index,
+        record=record,
+        key_prefix="workspace_control",
+    )
+
     fixed_field_helper.render_008_helper(
         store=store,
         index=index,

@@ -1,6 +1,6 @@
 # TASK-091 — Structured cataloger-friendly record editing
 
-**Status:** Todo
+**Status:** Completed
 **Priority:** Tier 3 — cataloger usability / edit safety
 **Source:** Cataloger feedback: raw `.mrk` fixed fields are difficult to edit
 
@@ -63,3 +63,18 @@ meaning.
 - The design should avoid overbuilding a full MARC cataloging client. The first
   pass should focus on high-risk / high-friction fixed-field edits surfaced by
   cataloging feedback.
+
+## Implementation Plan
+
+Ticket link: `.tickets/TASK-091-structured-record-editing.md`
+
+1. Add focused tests for a structured fixed-field model covering `LDR`, `006`,
+   and `007`.
+2. Create a pure helper module that exposes labeled positions and applies byte
+   edits without requiring catalogers to count positions manually.
+3. Extend the existing `fixed_field_helper` Streamlit renderer with a compact
+   `LDR / 006 / 007` helper, keeping the existing raw `.mrk` editor and 008
+   helper unchanged.
+4. Mount the helper in View and Workspace Edit wherever single-record editing
+   is available.
+5. Run focused tests and commit TASK-091 as a rollback checkpoint.

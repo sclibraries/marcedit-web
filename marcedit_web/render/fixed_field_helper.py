@@ -1,8 +1,9 @@
-"""Streamlit renderer for the 008 fixed-field structured editor.
+"""Streamlit renderers for fixed-field structured editors.
 
-The lib layer (:mod:`marcedit_web.lib.fixed_field_008`) owns the
-schema + parse / apply logic. This module is the thin Streamlit
-binding — same shape as :mod:`single_record_edit`:
+The lib layers (:mod:`marcedit_web.lib.fixed_field_008` and
+:mod:`marcedit_web.lib.fixed_field_control`) own schema + parse / apply logic.
+This module is the thin Streamlit binding — same shape as
+:mod:`single_record_edit`:
 
 * a ``key_prefix`` so View and the Workspace Edit tab can both
   embed the helper without colliding session-state keys;
@@ -21,7 +22,87 @@ from typing import Any
 
 import streamlit as st
 
+from marcedit_web.lib import fixed_field_control as ffc
 from marcedit_web.lib import fixed_field_008 as ff
+
+
+def render_fixed_field_helper(
+    *,
+    store: Any,
+    index: int,
+    record: Any,
+    key_prefix: str,
+) -> None:
+    """Render structured controls for LDR, 006, and 007."""
+    parsed = ffc.parse_fixed_fields(record)
+
+    with st.expander("LDR / 006 / 007 helper", expanded=False):
+        st.caption(
+            "Edit common fixed-field bytes with labels. Save writes the "
+            "selected byte changes back to this record only; the raw `.mrk` "
+            "editor remains available for fields not covered here."
+        )
+
+        draft_key = f"{key_prefix}_fixed_draft_{index}"
+        feedback_key = f"{key_prefix}_fixed_feedback"
+        initial = {
+            pos.id: pos.value
+            for positions in parsed.values()
+            for pos in positions
+        }
+        draft = st.session_state.setdefault(draft_key, initial)
+
+        for tag in ("LDR", "006", "007"):
+            positions = parsed.get(tag, [])
+            st.markdown(f"**{tag}**")
+            if not positions:
+                st.info(f"{tag} is not present or has no supported editable positions.")
+                continue
+
+            cols = st.columns(2)
+            for i, pos in enumerate(positions):
+                with cols[i % 2]:
+                    draft[pos.id] = _render_fixed_widget(
+                        pos,
+                        draft.get(pos.id, pos.value),
+                        key=f"{key_prefix}_fixed_{pos.id}_{index}",
+                    )
+
+        feedback = st.session_state.pop(feedback_key, None)
+        if feedback:
+            kind, msg = feedback
+            getattr(st, kind)(msg)
+
+        save_col, cancel_col, _ = st.columns([1, 1, 4])
+        save_clicked = save_col.button(
+            "Save fixed fields",
+            type="primary",
+            key=f"{key_prefix}_fixed_save_{index}",
+        )
+        cancel_clicked = cancel_col.button(
+            "Cancel",
+            key=f"{key_prefix}_fixed_cancel_{index}",
+        )
+
+        if cancel_clicked:
+            st.session_state.pop(draft_key, None)
+            st.rerun()
+            return
+
+        if save_clicked:
+            try:
+                ffc.apply_fixed_field_updates(record, dict(draft))
+            except ValueError as exc:
+                st.error(f"Fixed fields not saved: {exc}")
+                return
+            store.replace(index - 1, record)
+            st.session_state["issues_cache"] = {}
+            st.session_state.pop(draft_key, None)
+            st.session_state[feedback_key] = (
+                "success",
+                f"Record {index}'s fixed fields saved. Other records unchanged.",
+            )
+            st.rerun()
 
 
 def render_008_helper(
@@ -158,5 +239,32 @@ def _render_widget(pos: ff.Position, current: str, *, key: str) -> str:
         index=index,
         format_func=lambda code: f"{code!r} — {labels.get(code, code)}",
         help=f"{pos.help} (byte {pos.start}{' ' if pos.length == 1 else f' – {pos.end - 1}'})",
+        key=key,
+    )
+
+
+def _render_fixed_widget(pos: ffc.FixedPosition, current: str, *, key: str) -> str:
+    """Render one LDR/006/007 position widget."""
+    if not pos.allowed:
+        return st.text_input(
+            pos.label,
+            value=current,
+            max_chars=pos.length,
+            help=f"{pos.help} ({pos.length}-char range, bytes {pos.start}-{pos.end - 1})",
+            key=key,
+        )
+
+    options = pos.values()
+    labels = {code: label for code, label in pos.allowed}
+    if current not in options:
+        options = [current] + options
+        labels[current] = f"(existing: {current!r})"
+    option_index = options.index(current) if current in options else 0
+    return st.selectbox(
+        pos.label,
+        options=options,
+        index=option_index,
+        format_func=lambda code: f"{code!r} — {labels.get(code, code)}",
+        help=f"{pos.help} (byte {pos.start})",
         key=key,
     )
