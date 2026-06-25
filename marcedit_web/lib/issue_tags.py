@@ -35,6 +35,13 @@ _CODE_TO_TAG: dict[str, str] = {
     "empty-856-u": "856",
     "duplicate-oclc-035": "035",
     "duplicate-lccn-010": "010",
+    "load-missing-006": "006",
+    "load-invalid-006": "006",
+    "load-missing-007": "007",
+    "load-invalid-007": "007",
+    "load-missing-008": "008",
+    "load-invalid-008": "008",
+    "load-008-form-of-item": "008",
 }
 
 # ``rule-*`` checks construct messages like ``"245 ind1 = ' '..."``,

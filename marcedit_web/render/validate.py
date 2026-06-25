@@ -5,7 +5,14 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from marcedit_web.lib import issue_tags, preflight, rules as rules_mod, rules_validate, session
+from marcedit_web.lib import (
+    issue_tags,
+    load_readiness,
+    preflight,
+    rules as rules_mod,
+    rules_validate,
+    session,
+)
 from marcedit_web.lib.errors import Issue
 from marcedit_web.render._record_modal import open_record_modal
 
@@ -56,7 +63,16 @@ def _compute_issues(
             store.iter_records() if store else iter([]),
             rule_set,
         )
-        all_issues: list[Issue] = preflight_issues + rule_issues
+        status.update(
+            label=(
+                f"Rules: {len(rule_issues)} issue(s). "
+                "Checking load readiness…"
+            )
+        )
+        load_issues = load_readiness.validate_records(
+            store.iter_records() if store else iter([]),
+        )
+        all_issues: list[Issue] = preflight_issues + rule_issues + load_issues
         status.update(
             label=f"Done — {len(all_issues)} issue(s) found.",
             state="complete",

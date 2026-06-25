@@ -1,6 +1,6 @@
 # TASK-090 — Explicit load-readiness MARC hardening checks
 
-**Status:** Todo
+**Status:** Completed
 **Priority:** Tier 3 — catalog loading safety
 **Source:** Cataloger feedback: make FOLIO/EDS CC load prerequisites explicit
 
@@ -26,3 +26,18 @@ Make FOLIO / EDS CC load-readiness checks explicit in validation/preflight.
    by focused tests.
 3. The checks are available for both FOLIO and EDS CC load review.
 4. Existing validation and upload behavior does not regress.
+
+## Implementation Plan
+
+Ticket link: `.tickets/TASK-090-load-readiness-marc-hardening.md`
+
+1. Add focused tests in `tests/test_load_readiness.py` for the shared
+   FOLIO / EDS CC warning profile.
+2. Create `marcedit_web/lib/load_readiness.py` with a pure
+   `validate_records(records)` function returning warning `Issue` objects.
+3. Integrate the new pass into `marcedit_web/render/validate.py` after
+   preflight and rule validation so the warnings appear in the existing issue
+   table.
+4. Extend issue-to-tag highlighting so load-readiness rows open the relevant
+   record field.
+5. Run focused tests, then commit TASK-090 as a rollback checkpoint.

@@ -49,6 +49,13 @@ def _make_issue(code: str, message: str, severity: str = "warning") -> Issue:
         ("empty-856-u", "856"),
         ("duplicate-oclc-035", "035"),
         ("duplicate-lccn-010", "010"),
+        ("load-missing-006", "006"),
+        ("load-invalid-006", "006"),
+        ("load-missing-007", "007"),
+        ("load-invalid-007", "007"),
+        ("load-missing-008", "008"),
+        ("load-invalid-008", "008"),
+        ("load-008-form-of-item", "008"),
     ],
 )
 def test_tag_for_issue_resolves_preflight_codes(code: str, expected: str):
