@@ -24,6 +24,19 @@ check-out, locking, presence, and an access list.
   record-level locks for ordinary editing, job-level locks for batch-wide
   mutations, and no real-time co-editing.
 
+## Implementation Plan
+
+Plan: `docs/superpowers/plans/2026-06-25-collaboration-checkout-locking.md`
+
+Sub-tickets:
+
+1. TASK-093 — Shared job access service and UI.
+2. TASK-094 — Collaboration lock and version service.
+3. TASK-095 — Record checkout and read-only edit UI.
+4. TASK-096 — Job-level locks for batch-wide operations.
+5. TASK-097 — Shared job presence indicators.
+6. TASK-098 — Collaboration provenance display.
+
 ## Success Criteria
 
 1. Two catalogers can open the same shared job; one checks out a record/file,
