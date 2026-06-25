@@ -1,6 +1,6 @@
 # TASK-082 — Persisted undo + user-attributed provenance
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 3 — Service foundation
 **Collaboration:** Per-change attribution is the collaboration audit foundation
 **Source:** Deep code audit 2026-06-17 — horizon (undo/rollback + provenance)
@@ -66,3 +66,6 @@ Ticket link: `.tickets/TASK-082-persisted-undo-provenance.md`
   saves and the structured fixed-field helpers (`008` and `LDR/006/007`).
   Verified with focused tests, compile checks, `git diff --check`, and
   Docker render imports.
+- 2026-06-25: Final verification passed with
+  `docker compose run --rm marcedit-web python -m pytest -q`
+  (`851 passed, 5 skipped`).
