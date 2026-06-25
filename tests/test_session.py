@@ -127,3 +127,51 @@ def test_current_user_id_anonymous_when_unset(monkeypatch):
 def test_current_user_id_anonymous_when_empty(monkeypatch):
     _fake_streamlit(monkeypatch, {"user": ""})
     assert session.current_user_id() == "anonymous"
+
+
+def test_replace_current_store_from_bytes_resets_state_and_persists_upload(
+    monkeypatch, tmp_path, record
+):
+    """Restoring a snapshot must replace the live batch and stale derived state."""
+    raw = _serialize([record])
+    session_state = {
+        "user": "cataloger@example.edu",
+        "store": None,
+        "issues_cache": {"old": ["stale"]},
+        "editor_text": "stale text",
+        "editor_dirty": True,
+        "upload_bytes_total": 0,
+    }
+    _fake_streamlit(monkeypatch, session_state)
+
+    recorded = {}
+    monkeypatch.setattr(session, "is_anonymous", lambda user: False)
+    monkeypatch.setattr(
+        session.upload_persistence,
+        "persisted_upload_dir",
+        lambda user: tmp_path / "uploads" / user,
+    )
+
+    def fake_record_upload(**kwargs):
+        recorded.update(kwargs)
+
+    monkeypatch.setattr(
+        session.upload_persistence, "record_upload", fake_record_upload
+    )
+
+    store = session.replace_current_store_from_bytes(
+        raw,
+        filename="restored.mrc",
+        job_id=42,
+    )
+
+    assert store.count() == 1
+    assert session_state["store"] is store
+    assert session_state["issues_cache"] == {}
+    assert session_state["editor_text"] is None
+    assert session_state["editor_dirty"] is False
+    assert recorded["user"] == "cataloger@example.edu"
+    assert recorded["filename"] == "restored.mrc"
+    assert recorded["job_id"] == 42
+    assert recorded["record_count"] == 1
+    assert recorded["file_bytes"] == len(raw)

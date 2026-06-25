@@ -42,9 +42,11 @@ from marcedit_web.lib import (
     marcedit_import,
     note_task_draft,
     quotas,
+    provenance,
     run_history,
     sandbox,
     session,
+    snapshot_actions,
     task_admin,
     task_builder,
     task_db,
@@ -275,6 +277,7 @@ def render() -> None:
 
     _render_run_results()
     _render_run_history()
+    _render_persisted_job_snapshots()
     _render_quick_find_replace()
 
 
@@ -1311,6 +1314,34 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not build task diff summary: %s", exc)
 
+    snapshot = snapshot_actions.record_job_snapshot(
+        job_id=st.session_state.get("current_job_id"),
+        user_email=user,
+        kind="task-run",
+        label=", ".join(selection) or "Task run",
+        before_bytes=sandbox_input.read_bytes(),
+        after_bytes=result.records_bytes or b"",
+        summary={
+            "task_names": list(selection),
+            "input_record_count": store.count(),
+            "output_record_count": len(out_records),
+            "changed_count": (
+                diff_summary.changed_count if diff_summary is not None else 0
+            ),
+            "error_count": len(issues),
+            "timed_out": bool(result.timed_out),
+            "sandbox_returncode": int(result.returncode or 0),
+        },
+    )
+    if snapshot is not None:
+        audit_event(
+            "job-snapshot-created",
+            user=user,
+            snapshot_id=snapshot["id"],
+            job_id=snapshot["job_id"],
+            kind=snapshot["kind"],
+        )
+
     st.session_state[K_RUN_RESULTS] = {
         "issues": issues,
         "out_bytes": result.records_bytes,
@@ -1477,6 +1508,85 @@ def _render_run_history() -> None:
         # Newest first.
         for record in reversed(history):
             _render_history_entry(record)
+
+
+def _render_persisted_job_snapshots() -> None:
+    """Render durable job-scoped snapshots for rollback across sessions."""
+    job_id = st.session_state.get("current_job_id")
+    if job_id is None:
+        return
+    rows = provenance.list_snapshots(int(job_id))
+    if not rows:
+        return
+
+    with st.expander(f"Job snapshots ({len(rows)})", expanded=False):
+        st.caption(
+            "Durable before/after snapshots for this job. Restoring loads the "
+            "pre-change version back into the current session."
+        )
+        for row in rows:
+            _render_job_snapshot_entry(row)
+
+
+def _render_job_snapshot_entry(row: dict) -> None:
+    summary = _snapshot_summary(row)
+    st.markdown(
+        f"**{row['created_at']}** — `{row['kind']}` — "
+        f"{row['label'] or '(no label)'}"
+    )
+    st.caption(f"By {row['user_email']}" + (f" · {summary}" if summary else ""))
+
+    cols = st.columns(3)
+    if cols[0].button(
+        "Restore pre-change version",
+        key=f"snapshot_restore_{row['id']}",
+        help="Replace the current loaded batch with this snapshot's before state.",
+    ):
+        raw = provenance.restore_bytes(int(row["id"]))
+        filename = session.current_filename() or f"snapshot-{row['id']}.mrc"
+        session.replace_current_store_from_bytes(
+            raw,
+            filename=filename,
+            job_id=int(row["job_id"]),
+        )
+        audit_event(
+            "job-snapshot-restored",
+            user=session.current_user_id(),
+            snapshot_id=row["id"],
+            job_id=row["job_id"],
+            kind=row["kind"],
+        )
+        st.success("Restored the pre-change version into the current session.")
+        st.rerun()
+
+    _offer_history_download(
+        cols[1],
+        row.get("before_path"),
+        "Download before",
+        f"snapshot_{row['id']}_before.mrc",
+        key=f"snapshot_before_{row['id']}",
+    )
+    _offer_history_download(
+        cols[2],
+        row.get("after_path"),
+        "Download after",
+        f"snapshot_{row['id']}_after.mrc",
+        key=f"snapshot_after_{row['id']}",
+    )
+    st.divider()
+
+
+def _snapshot_summary(row: dict) -> str:
+    try:
+        summary = json.loads(row.get("summary_json") or "{}")
+    except json.JSONDecodeError:
+        return ""
+    parts = []
+    if "changed_count" in summary:
+        parts.append(f"{summary['changed_count']} changed")
+    if "error_count" in summary:
+        parts.append(f"{summary['error_count']} errors")
+    return ", ".join(parts)
 
 
 def _render_history_entry(record: TaskRunRecord) -> None:

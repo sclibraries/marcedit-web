@@ -364,6 +364,44 @@ def handle_upload(uploaded_file) -> dict:
     }
 
 
+def replace_current_store_from_bytes(
+    raw: bytes,
+    *,
+    filename: str,
+    job_id: int | None = None,
+) -> RecordStore:
+    """Replace the live store from trusted MARC bytes.
+
+    Used by persisted rollback/restore flows after the bytes were already
+    accepted into the application. It mirrors upload storage choices so a
+    signed-in restore also survives refresh via the active upload row.
+    """
+    import streamlit as st
+
+    user = current_user_id()
+    if is_anonymous(user):
+        store_dir = _session_records_dir()
+    else:
+        store_dir = upload_persistence.persisted_upload_dir(user)
+
+    store = RecordStore.from_bytes(raw, tmp_dir=store_dir, filename=filename)
+    if not is_anonymous(user):
+        upload_persistence.record_upload(
+            user=user,
+            filename=filename,
+            file_path=store.path,
+            record_count=store.count(),
+            file_bytes=len(raw),
+            job_id=job_id,
+        )
+
+    st.session_state["store"] = store
+    st.session_state["issues_cache"] = {}
+    st.session_state["editor_text"] = None
+    st.session_state["editor_dirty"] = False
+    return store
+
+
 def has_upload() -> bool:
     """True when a file has been uploaded and parsed in this session."""
     import streamlit as st

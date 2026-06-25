@@ -9,6 +9,7 @@ import pymarc
 import streamlit as st
 from streamlit_ace import st_ace
 
+from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib import (
     mrk_parser,
     mrk_writer,
@@ -16,6 +17,7 @@ from marcedit_web.lib import (
     rules as rules_mod,
     rules_validate,
     session,
+    snapshot_actions,
     viewer,
 )
 from marcedit_web.render import fixed_field_helper, single_record_edit
@@ -330,8 +332,29 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
 
     if save_clicked and parse_state is not None and fatal == 0:
         record_objs = parse_state["records"]
+        before_bytes = store.to_mrc_bytes()
         store.replace_all(list(record_objs))
         out_bytes = store.to_mrc_bytes()
+        snapshot = snapshot_actions.record_job_snapshot(
+            job_id=st.session_state.get("current_job_id"),
+            user_email=session.current_user_id(),
+            kind="edit",
+            label="Full MARC editor save",
+            before_bytes=before_bytes,
+            after_bytes=out_bytes,
+            summary={
+                "record_count": len(record_objs),
+                "source": "marc-editor",
+            },
+        )
+        if snapshot is not None:
+            audit_event(
+                "job-snapshot-created",
+                user=session.current_user_id(),
+                snapshot_id=snapshot["id"],
+                job_id=snapshot["job_id"],
+                kind=snapshot["kind"],
+            )
         st.session_state["issues_cache"] = {}
 
         orig = session.current_filename() or "edited.mrc"

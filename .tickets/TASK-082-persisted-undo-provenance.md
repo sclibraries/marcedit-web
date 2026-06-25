@@ -53,3 +53,12 @@ Ticket link: `.tickets/TASK-082-persisted-undo-provenance.md`
   `python3 -m pytest tests/test_provenance.py tests/test_db.py tests/test_job_schema.py tests/test_jobs.py -q`,
   `python3 -m compileall -q marcedit_web/lib/provenance.py marcedit_web/lib/db.py`,
   and `git diff --check`.
+- 2026-06-25: Added job snapshot recording for task runs and full MARC
+  editor saves, plus a Tasks-page job snapshot restore/download view.
+- 2026-06-25: Verified integration with
+  `python3 -m pytest tests/test_session.py tests/test_snapshot_actions.py tests/test_provenance.py -q`,
+  `python3 -m compileall -q marcedit_web/lib/session.py marcedit_web/lib/snapshot_actions.py marcedit_web/render/tasks.py marcedit_web/render/edit.py`,
+  `git diff --check`,
+  `docker compose run --rm marcedit-web python -m pytest tests/test_session.py tests/test_snapshot_actions.py tests/test_provenance.py -q`,
+  and Docker imports for `marcedit_web.render.tasks` and
+  `marcedit_web.render.edit`.
