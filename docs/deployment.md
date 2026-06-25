@@ -203,8 +203,28 @@ the database boundary. The advisory lock table is a foundation for future
 shared-job and record checkout flows; it is not a user-facing collaboration UI
 by itself.
 
-Backup: stop the service, copy all three files, restart. Or use
-`sqlite3 marcedit.db ".backup /path/to/backup.db"` online.
+Scriptable backup:
+
+```bash
+cd /var/www/html/marcedit-web
+/var/www/html/marcedit-web/.venv/bin/python \
+    -m marcedit_web.ops.backup create /var/backups/marcedit-web/$(date -u +%F)
+```
+
+The backup command uses `sqlite3.Connection.backup`, so committed WAL content
+is folded into the backed-up `marcedit.db`; it also copies `data/audit/` JSONL
+logs and writes a small manifest. To restore during a maintenance window:
+
+```bash
+sudo systemctl stop marcedit-web
+cd /var/www/html/marcedit-web
+/var/www/html/marcedit-web/.venv/bin/python \
+    -m marcedit_web.ops.backup restore /var/backups/marcedit-web/YYYY-MM-DD
+sudo systemctl start marcedit-web
+```
+
+Cold-copy fallback: stop the service, copy `marcedit.db`, `marcedit.db-wal`,
+`marcedit.db-shm`, and `data/audit/`, then restart.
 
 Schema version tracked in the `_schema_version` table. v1 added
 `audit_events` (TASK-049); v2 added `tasks` (TASK-050); v3 added

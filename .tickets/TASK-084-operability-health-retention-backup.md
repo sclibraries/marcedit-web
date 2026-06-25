@@ -1,6 +1,6 @@
 # TASK-084 — Operability: health probe, retention/VACUUM, backup/restore
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 3 — Service foundation
 **Source:** Deep code audit 2026-06-17 — horizon critic (operability gaps)
 
@@ -61,3 +61,7 @@ Ticket link: `.tickets/TASK-084-operability-health-retention-backup.md`
   `python -m marcedit_web.ops.maintenance retention --retain-days N` prunes
   SQL audit rows and dated JSONL audit files, checkpoints WAL, and runs
   `VACUUM`. Deployment docs include the schedulable command.
+- Backup/restore checkpoint implemented:
+  `python -m marcedit_web.ops.backup create <dir>` creates an online SQLite
+  backup plus audit JSONL copy; `restore <dir>` replaces the DB and audit logs
+  and re-validates schema initialization.
