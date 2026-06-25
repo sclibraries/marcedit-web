@@ -5,6 +5,7 @@
 **Collaboration:** The shared-environment feature itself
 **Source:** User decision 2026-06-17 — shared project + record check-out/locking
 **Depends on:** TASK-073, TASK-081, TASK-082, TASK-083, TASK-085
+**Design ADR:** `docs/adr-collaboration-locking.md`
 
 ## Title
 
@@ -19,8 +20,9 @@ check-out, locking, presence, and an access list.
   who holds a lock; read-only view for non-holders; lock expiry / release.
 - Presence indicators (who is currently in the job).
 - Per-change attribution surfaced from TASK-082 provenance.
-- Implement per the model fixed in the TASK-085 ADR (no real-time co-editing;
-  check-out/locking).
+- Implement per `docs/adr-collaboration-locking.md`: hybrid checkout with
+  record-level locks for ordinary editing, job-level locks for batch-wide
+  mutations, and no real-time co-editing.
 
 ## Success Criteria
 

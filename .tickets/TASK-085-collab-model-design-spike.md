@@ -1,6 +1,6 @@
 # TASK-085 — Collaboration design spike / ADR
 
-**Status:** Todo
+**Status:** Completed
 **Priority:** Tier 4 — Collaboration (future-state, design only)
 **Collaboration:** Locks the model before any collaboration code is written
 **Source:** User decision 2026-06-17 — shared project + record check-out/locking
@@ -32,3 +32,12 @@ building it, including the concurrency-scale ceiling of the current substrate.
    concurrency-scale ceiling with its re-architecture trigger.
 2. The ADR is referenced by TASK-086's scope.
 3. Design only — no code changes.
+
+## Outcome
+
+- ADR written: `docs/adr-collaboration-locking.md`.
+- Chosen model: hybrid checkout. Record-level locks for ordinary editing;
+  job-level locks for batch-wide mutations; no real-time co-editing.
+- Scale ceiling: stay on single-process Streamlit + SQLite WAL for roughly
+  15-20 active catalogers; re-architect when contention, multi-process serving,
+  or near-real-time presence requires a server database/application model.
