@@ -62,3 +62,7 @@ Ticket link: `.tickets/TASK-082-persisted-undo-provenance.md`
   `docker compose run --rm marcedit-web python -m pytest tests/test_session.py tests/test_snapshot_actions.py tests/test_provenance.py -q`,
   and Docker imports for `marcedit_web.render.tasks` and
   `marcedit_web.render.edit`.
+- 2026-06-25: Extended edit snapshot coverage to inline single-record
+  saves and the structured fixed-field helpers (`008` and `LDR/006/007`).
+  Verified with focused tests, compile checks, `git diff --check`, and
+  Docker render imports.

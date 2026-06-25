@@ -22,7 +22,14 @@ from typing import Any
 import streamlit as st
 from streamlit_ace import st_ace
 
-from marcedit_web.lib import mrk_annotations, mrk_writer, view_edit
+from marcedit_web.lib import (
+    mrk_annotations,
+    mrk_writer,
+    session,
+    snapshot_actions,
+    view_edit,
+)
+from marcedit_web.lib.audit import audit_event
 
 
 def render_inline_edit(
@@ -155,7 +162,26 @@ def render_inline_edit(
             )
             _render_validation_feedback(result)
             return
+        before_bytes = store.to_mrc_bytes()
         store.replace(index - 1, result.record)
+        after_bytes = store.to_mrc_bytes()
+        snapshot = snapshot_actions.record_edit_snapshot(
+            job_id=st.session_state.get("current_job_id"),
+            user_email=session.current_user_id(),
+            label=f"Single record edit #{index}",
+            before_bytes=before_bytes,
+            after_bytes=after_bytes,
+            record_index=index,
+            source=key_prefix,
+        )
+        if snapshot is not None:
+            audit_event(
+                "job-snapshot-created",
+                user=session.current_user_id(),
+                snapshot_id=snapshot["id"],
+                job_id=snapshot["job_id"],
+                kind=snapshot["kind"],
+            )
         # Stale derived state — Validate / Report / etc. cached the
         # pre-edit issue lists; drop them so the next visit re-runs.
         st.session_state["issues_cache"] = {}

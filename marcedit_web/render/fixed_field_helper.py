@@ -24,6 +24,8 @@ import streamlit as st
 
 from marcedit_web.lib import fixed_field_control as ffc
 from marcedit_web.lib import fixed_field_008 as ff
+from marcedit_web.lib import session, snapshot_actions
+from marcedit_web.lib.audit import audit_event
 
 
 def render_fixed_field_helper(
@@ -91,11 +93,30 @@ def render_fixed_field_helper(
 
         if save_clicked:
             try:
+                before_bytes = store.to_mrc_bytes()
                 ffc.apply_fixed_field_updates(record, dict(draft))
             except ValueError as exc:
                 st.error(f"Fixed fields not saved: {exc}")
                 return
             store.replace(index - 1, record)
+            after_bytes = store.to_mrc_bytes()
+            snapshot = snapshot_actions.record_edit_snapshot(
+                job_id=st.session_state.get("current_job_id"),
+                user_email=session.current_user_id(),
+                label=f"LDR/006/007 edit #{index}",
+                before_bytes=before_bytes,
+                after_bytes=after_bytes,
+                record_index=index,
+                source=f"{key_prefix}-fixed-field-helper",
+            )
+            if snapshot is not None:
+                audit_event(
+                    "job-snapshot-created",
+                    user=session.current_user_id(),
+                    snapshot_id=snapshot["id"],
+                    job_id=snapshot["job_id"],
+                    kind=snapshot["kind"],
+                )
             st.session_state["issues_cache"] = {}
             st.session_state.pop(draft_key, None)
             st.session_state[feedback_key] = (
@@ -196,11 +217,30 @@ def render_008_helper(
 
         if save_clicked:
             try:
+                before_bytes = store.to_mrc_bytes()
                 ff.apply_008(record, dict(draft))
             except ValueError as exc:
                 st.error(f"008 not saved: {exc}")
                 return
             store.replace(index - 1, record)
+            after_bytes = store.to_mrc_bytes()
+            snapshot = snapshot_actions.record_edit_snapshot(
+                job_id=st.session_state.get("current_job_id"),
+                user_email=session.current_user_id(),
+                label=f"008 edit #{index}",
+                before_bytes=before_bytes,
+                after_bytes=after_bytes,
+                record_index=index,
+                source=f"{key_prefix}-008-helper",
+            )
+            if snapshot is not None:
+                audit_event(
+                    "job-snapshot-created",
+                    user=session.current_user_id(),
+                    snapshot_id=snapshot["id"],
+                    job_id=snapshot["job_id"],
+                    kind=snapshot["kind"],
+                )
             st.session_state["issues_cache"] = {}
             st.session_state.pop(draft_key, None)
             st.session_state[feedback_key] = (
