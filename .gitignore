@@ -39,12 +39,13 @@ marc-processing.zip
 .claude/
 .worktrees/
 
-# Local-only agent workflow + internal planning artifacts. These exist
-# on disk for the dev workflow but must never be committed to the
-# public repository.
+# Local-only agent workflow + internal planning artifacts. Ticket markdown
+# is version-controlled so task scope and rollback checkpoints travel with
+# commits; other agent scratch docs remain local-only.
 /CLAUDE.md
 /AGENTS.md
-/.tickets/
+/.tickets/*
+!/.tickets/*.md
 /docs/superpowers/
 /docs/application-overview.md
 
