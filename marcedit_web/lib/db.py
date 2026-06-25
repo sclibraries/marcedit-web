@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -141,6 +141,8 @@ def init_schema() -> None:
             current_version = row["version"] if row else 0
             if current_version < 2:
                 _migrate_v1_to_v2(conn)
+            if current_version < 6:
+                _migrate_to_v6(conn)
             # After all pending steps land, set the version row to the
             # newest. INSERT OR REPLACE keeps the table single-row.
             conn.execute("DELETE FROM _schema_version")
@@ -231,6 +233,57 @@ def _utc_now_iso() -> str:
     return _dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
+def _migrate_to_v6(conn: sqlite3.Connection) -> None:
+    """Add job/project foundation and attach legacy uploads (TASK-081)."""
+    upload_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(uploads)")
+    }
+    if "job_id" not in upload_cols:
+        conn.execute("ALTER TABLE uploads ADD COLUMN job_id INTEGER")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_job ON uploads(job_id)")
+
+    now = _utc_now_iso()
+    users = [
+        row["user_email"]
+        for row in conn.execute(
+            "SELECT DISTINCT user_email FROM uploads WHERE user_email <> ''"
+        )
+    ]
+    for user in users:
+        job_id = _ensure_default_job(conn, user, now)
+        conn.execute(
+            "UPDATE uploads SET job_id = ?"
+            " WHERE user_email = ? AND job_id IS NULL",
+            (job_id, user),
+        )
+
+
+def _ensure_default_job(
+    conn: sqlite3.Connection,
+    owner_email: str,
+    now: str,
+) -> int:
+    row = conn.execute(
+        "SELECT id FROM jobs WHERE owner_email = ? AND name = ?",
+        (owner_email, "Personal uploads"),
+    ).fetchone()
+    if row:
+        return int(row["id"])
+    cur = conn.execute(
+        "INSERT INTO jobs(owner_email, name, description, visibility,"
+        " created_at, updated_at)"
+        " VALUES (?, 'Personal uploads', '', 'private', ?, ?)",
+        (owner_email, now, now),
+    )
+    job_id = int(cur.lastrowid)
+    conn.execute(
+        "INSERT OR IGNORE INTO job_access(job_id, user_email, role, created_at)"
+        " VALUES (?, ?, 'owner', ?)",
+        (job_id, owner_email, now),
+    )
+    return job_id
+
+
 def reset_for_tests() -> None:
     """Drop the initialized flag so the next ``init_schema()`` runs.
 
@@ -278,15 +331,44 @@ CREATE INDEX IF NOT EXISTS idx_tasks_visibility ON tasks(visibility);
 CREATE TABLE IF NOT EXISTS uploads (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email    TEXT    NOT NULL,
+    job_id        INTEGER,
     filename      TEXT    NOT NULL,
     file_path     TEXT    NOT NULL,
     record_count  INTEGER NOT NULL,
     file_bytes    INTEGER NOT NULL,
     uploaded_at   TEXT    NOT NULL,
-    active        INTEGER NOT NULL DEFAULT 1
+    active        INTEGER NOT NULL DEFAULT 1,
+    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_uploads_user_active ON uploads(user_email, active);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_email   TEXT    NOT NULL,
+    name          TEXT    NOT NULL,
+    description   TEXT    NOT NULL DEFAULT '',
+    visibility    TEXT    NOT NULL DEFAULT 'private'
+                  CHECK(visibility IN ('private','shared')),
+    created_at    TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL,
+    active        INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(owner_email, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner_email);
+
+CREATE TABLE IF NOT EXISTS job_access (
+    job_id      INTEGER NOT NULL,
+    user_email  TEXT    NOT NULL,
+    role        TEXT    NOT NULL
+                CHECK(role IN ('owner','editor','viewer')),
+    created_at  TEXT    NOT NULL,
+    PRIMARY KEY(job_id, user_email),
+    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_access_user ON job_access(user_email);
 
 CREATE TABLE IF NOT EXISTS users (
     email       TEXT PRIMARY KEY,

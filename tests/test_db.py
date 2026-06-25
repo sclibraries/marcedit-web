@@ -171,9 +171,9 @@ def test_v4_users_role_and_status_checks():
             )
 
 
-def test_schema_version_is_5():
+def test_schema_version_is_6():
     db.init_schema()
     with db.connect() as conn:
         row = conn.execute("SELECT version FROM _schema_version").fetchone()
-    assert row["version"] == 5
-    assert db.SCHEMA_VERSION == 5
+    assert row["version"] == 6
+    assert db.SCHEMA_VERSION == 6

@@ -1,6 +1,6 @@
 # TASK-081 — Job/project model (multi-file, collaboration-aware schema)
 
-**Status:** Todo
+**Status:** In-Progress
 **Priority:** Tier 3 — Service foundation
 **Collaboration:** Foundation built now; sharing UI deferred to TASK-086
 **Source:** Deep code audit 2026-06-17 — horizon (job model / multi-file)
@@ -33,3 +33,30 @@ dimension.
    no sharing UI required yet; documented for TASK-086.
 3. Existing uploads migrate cleanly with no data loss.
 4. Focused tests and the Docker test suite pass before completion.
+
+## Implementation Plan
+
+Ticket link: `.tickets/TASK-081-job-project-model.md`
+
+1. Schema checkpoint:
+   - Add schema v6 tables `jobs` and `job_access`.
+   - Add nullable `uploads.job_id` with a migration that assigns existing
+     uploads to a default personal job per user.
+   - Add tests for new schema and migration behavior.
+2. Library checkpoint:
+   - Add server-side job helpers for creating/listing jobs and selecting the
+     default job.
+   - Make upload persistence attach each upload to a job while preserving the
+     current active-upload restore behavior.
+   - Add tests and commit.
+3. UI/documentation checkpoint:
+   - Add a minimal job selector/creator where uploads happen, without adding
+     sharing UI.
+   - Document the `job_access` model for TASK-086.
+   - Run Docker suite and complete the ticket.
+
+## Progress
+
+- Schema checkpoint implemented:
+  v6 adds `jobs`, `job_access`, and `uploads.job_id`. Existing upload rows are
+  migrated into a per-user `Personal uploads` job without losing upload rows.
