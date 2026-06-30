@@ -1,6 +1,6 @@
 # TASK-095 — Record checkout and read-only edit UI
 
-**Status:** Todo
+**Status:** Completed
 **Priority:** Tier 4 — Collaboration
 **Parent:** TASK-086
 **Depends on:** TASK-093, TASK-094
@@ -23,3 +23,13 @@ Gate inline record and fixed-field editing behind record checkout locks.
 2. The holder can save; non-holders and viewers cannot.
 3. If the lock expires or the version changed, save fails loud.
 4. Focused tests and Docker suite pass before completion.
+
+## Outcome
+
+- Added record checkout/release controls to inline record editing.
+- Disabled inline and fixed-field save actions for viewers and non-holders.
+- Re-checks lock ownership and job version immediately before record or
+  fixed-field saves.
+- Ignores expired lock rows in the UI so records can be checked out again.
+- Final verification: `docker compose run --rm marcedit-web python -m pytest -q`
+  passed with `871 passed, 5 skipped`.

@@ -17,12 +17,16 @@ That's what the ``key_prefix`` parameter handles — pass
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 import streamlit as st
 from streamlit_ace import st_ace
 
 from marcedit_web.lib import (
+    collaboration,
+    jobs,
+    locks,
     mrk_annotations,
     mrk_writer,
     session,
@@ -30,6 +34,35 @@ from marcedit_web.lib import (
     view_edit,
 )
 from marcedit_web.lib.audit import audit_event
+
+
+def _can_edit_record(role: str | None, holds_lock: bool) -> bool:
+    return role in {"owner", "editor"} and holds_lock
+
+
+def _checkout_keys(
+    key_prefix: str,
+    index: int,
+    job_id: int | None = None,
+) -> tuple[str, str]:
+    return (
+        f"{key_prefix}_lock_{index}",
+        f"record_checkout_opened_version_{job_id or 'session'}_{index}",
+    )
+
+
+def _record_lock_state(job_id: int, index: int) -> tuple[dict | None, bool]:
+    row = locks.get_lock("record", collaboration.record_resource_id(job_id, index))
+    if row and _is_expired(row["expires_at"]):
+        row = None
+    holds_lock = bool(row and row["holder_email"] == session.current_user_id())
+    return row, holds_lock
+
+
+def _is_expired(expires_at: str) -> bool:
+    expiry = dt.datetime.fromisoformat(expires_at.removesuffix("Z"))
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    return expiry <= now
 
 
 def render_inline_edit(
@@ -60,6 +93,21 @@ def render_inline_edit(
     k_index = f"{key_prefix}_index"
     k_text = f"{key_prefix}_text"
     k_feedback = f"{key_prefix}_feedback"
+    job_id = st.session_state.get("current_job_id")
+    user = session.current_user_id()
+    role = jobs.get_access_role(int(job_id), user) if job_id is not None else None
+    lock_row = None
+    holds_lock = job_id is None
+    if job_id is not None:
+        lock_row, holds_lock = _record_lock_state(int(job_id), index)
+        _render_checkout_controls(
+            job_id=int(job_id),
+            index=index,
+            key_prefix=key_prefix,
+            role=role,
+            lock_row=lock_row,
+            holds_lock=holds_lock,
+        )
 
     # Navigating to a different record while edit is open cancels the
     # previous draft — the buffer was tied to the previous index, so
@@ -76,9 +124,12 @@ def render_inline_edit(
         getattr(st, kind)(msg)
 
     if not st.session_state.get(k_active):
+        can_open = _can_edit_record(role, holds_lock)
+        disabled = job_id is not None and not can_open
         if st.button(
             "✏️ Edit this record",
             key=f"{key_prefix}_open_{index}",
+            disabled=disabled,
             help=(
                 "Open the single record above in a .mrk editor. Save "
                 "commits the edit back into the loaded batch at this "
@@ -133,9 +184,11 @@ def render_inline_edit(
         st.session_state[k_text] = new_text
 
     col_save, col_cancel, col_status = st.columns([1, 1, 4])
+    can_save = _can_edit_record(role, holds_lock)
     save_clicked = col_save.button(
         "Save changes",
         type="primary",
+        disabled=job_id is not None and not can_save,
         key=f"{key_prefix}_save_{index}",
     )
     cancel_clicked = col_cancel.button(
@@ -162,6 +215,22 @@ def render_inline_edit(
             )
             _render_validation_feedback(result)
             return
+        if job_id is not None:
+            _, version_key = _checkout_keys(key_prefix, index, int(job_id))
+            opened_version = st.session_state.get(version_key)
+            if opened_version is None:
+                col_status.error("Cannot save: record checkout is missing.")
+                return
+            try:
+                collaboration.assert_can_save_record(
+                    int(job_id),
+                    index,
+                    user,
+                    int(opened_version),
+                )
+            except collaboration.CollaborationError as exc:
+                col_status.error(f"Cannot save: {exc}")
+                return
         before_bytes = store.to_mrc_bytes()
         store.replace(index - 1, result.record)
         after_bytes = store.to_mrc_bytes()
@@ -202,6 +271,58 @@ def render_inline_edit(
 def _clear_state(*keys: str) -> None:
     for key in keys:
         st.session_state.pop(key, None)
+
+
+def _render_checkout_controls(
+    *,
+    job_id: int,
+    index: int,
+    key_prefix: str,
+    role: str | None,
+    lock_row: dict | None,
+    holds_lock: bool,
+) -> None:
+    lock_key, version_key = _checkout_keys(key_prefix, index, job_id)
+    if role not in {"owner", "editor"}:
+        st.info("This shared job is read-only for your account.")
+        return
+
+    if lock_row and not holds_lock:
+        st.warning(
+            "Record is checked out by "
+            f"{lock_row['holder_email']} until {lock_row['expires_at']}."
+        )
+        return
+
+    cols = st.columns([1, 1, 4])
+    if holds_lock:
+        cols[2].caption(
+            f"Checked out by you until {lock_row['expires_at'] if lock_row else 'expiry'}."
+        )
+        if cols[1].button("Release checkout", key=f"{lock_key}_release"):
+            collaboration.release_record_lock(job_id, index, session.current_user_id())
+            st.session_state.pop(version_key, None)
+            st.rerun()
+        return
+
+    if cols[0].button("Check out record", key=f"{lock_key}_acquire"):
+        try:
+            decision = collaboration.acquire_record_lock(
+                job_id,
+                index,
+                session.current_user_id(),
+            )
+        except collaboration.CollaborationError as exc:
+            st.error(str(exc))
+            return
+        if decision.acquired:
+            st.session_state[version_key] = collaboration.current_job_version(job_id)
+            st.rerun()
+        else:
+            st.warning(
+                "Record is checked out by "
+                f"{decision.holder_email} until {decision.expires_at}."
+            )
 
 
 def _render_validation_feedback(result) -> None:

@@ -24,8 +24,9 @@ import streamlit as st
 
 from marcedit_web.lib import fixed_field_control as ffc
 from marcedit_web.lib import fixed_field_008 as ff
-from marcedit_web.lib import session, snapshot_actions
+from marcedit_web.lib import collaboration, jobs, session, snapshot_actions
 from marcedit_web.lib.audit import audit_event
+from marcedit_web.render import single_record_edit
 
 
 def render_fixed_field_helper(
@@ -75,10 +76,15 @@ def render_fixed_field_helper(
             kind, msg = feedback
             getattr(st, kind)(msg)
 
+        save_disabled, checkout_message = _fixed_save_gate(index)
+        if checkout_message:
+            st.caption(checkout_message)
+
         save_col, cancel_col, _ = st.columns([1, 1, 4])
         save_clicked = save_col.button(
             "Save fixed fields",
             type="primary",
+            disabled=save_disabled,
             key=f"{key_prefix}_fixed_save_{index}",
         )
         cancel_clicked = cancel_col.button(
@@ -92,6 +98,8 @@ def render_fixed_field_helper(
             return
 
         if save_clicked:
+            if not _assert_fixed_save_allowed(index, key_prefix):
+                return
             try:
                 before_bytes = store.to_mrc_bytes()
                 ffc.apply_fixed_field_updates(record, dict(draft))
@@ -199,10 +207,15 @@ def render_008_helper(
             kind, msg = feedback
             getattr(st, kind)(msg)
 
+        save_disabled, checkout_message = _fixed_save_gate(index)
+        if checkout_message:
+            st.caption(checkout_message)
+
         save_col, cancel_col, _ = st.columns([1, 1, 4])
         save_clicked = save_col.button(
             "Save 008",
             type="primary",
+            disabled=save_disabled,
             key=f"{key_prefix}_save_{index}",
         )
         cancel_clicked = cancel_col.button(
@@ -216,6 +229,8 @@ def render_008_helper(
             return
 
         if save_clicked:
+            if not _assert_fixed_save_allowed(index, key_prefix):
+                return
             try:
                 before_bytes = store.to_mrc_bytes()
                 ff.apply_008(record, dict(draft))
@@ -248,6 +263,57 @@ def render_008_helper(
                 f"Record {index}'s 008 saved. Other records unchanged.",
             )
             st.rerun()
+
+
+def _fixed_save_gate(index: int) -> tuple[bool, str]:
+    job_id = st.session_state.get("current_job_id")
+    if job_id is None:
+        return False, ""
+    user = session.current_user_id()
+    role = jobs.get_access_role(int(job_id), user)
+    lock_row, holds_lock = single_record_edit._record_lock_state(int(job_id), index)
+    if role not in {"owner", "editor"}:
+        return True, "This shared job is read-only for your account."
+    if lock_row and not holds_lock:
+        return (
+            True,
+            "Record is checked out by "
+            f"{lock_row['holder_email']} until {lock_row['expires_at']}.",
+        )
+    if not single_record_edit._can_edit_record(role, holds_lock):
+        return True, "Check out this record before saving fixed-field edits."
+    return False, ""
+
+
+def _assert_fixed_save_allowed(index: int, key_prefix: str) -> bool:
+    job_id = st.session_state.get("current_job_id")
+    if job_id is None:
+        return True
+    role = jobs.get_access_role(int(job_id), session.current_user_id())
+    _, holds_lock = single_record_edit._record_lock_state(int(job_id), index)
+    if not single_record_edit._can_edit_record(role, holds_lock):
+        st.error("Fixed fields not saved: check out this record first.")
+        return False
+    _, version_key = single_record_edit._checkout_keys(
+        key_prefix,
+        index,
+        int(job_id),
+    )
+    opened_version = st.session_state.get(version_key)
+    if opened_version is None:
+        st.error("Fixed fields not saved: record checkout is missing.")
+        return False
+    try:
+        collaboration.assert_can_save_record(
+            int(job_id),
+            index,
+            session.current_user_id(),
+            int(opened_version),
+        )
+    except collaboration.CollaborationError as exc:
+        st.error(f"Fixed fields not saved: {exc}")
+        return False
+    return True
 
 
 def _render_widget(pos: ff.Position, current: str, *, key: str) -> str:
