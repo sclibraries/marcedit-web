@@ -21,4 +21,9 @@ Surface MARC/load-readiness validation in the record editor before save.
 
 ## Status
 
-Todo
+Completed
+
+## Verification
+
+- `docker compose run --rm marcedit-web pytest tests/test_view_edit.py tests/test_structured_record_editor.py tests/test_load_readiness.py tests/test_validate_load_readiness.py tests/test_validate_view_button.py`
+- `docker compose run --rm marcedit-web pytest -ra`

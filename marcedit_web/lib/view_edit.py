@@ -24,7 +24,7 @@ from typing import Optional
 
 import pymarc
 
-from . import mrk_parser, preflight, rules_validate
+from . import load_readiness, mrk_parser, preflight, rules_validate
 from .errors import Issue
 from .rules import RuleSet
 
@@ -124,6 +124,7 @@ def parse_and_validate_single_record(
     issues = preflight.run_preflight(records=[only.record], malformed=0)
     if rule_set is not None:
         issues = issues + rules_validate.validate_records([only.record], rule_set)
+    issues = issues + load_readiness.validate_records([only.record])
     result.rule_issues = issues
 
     for iss in issues:

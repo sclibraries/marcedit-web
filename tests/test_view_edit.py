@@ -126,6 +126,15 @@ def test_warning_severity_does_not_block_save(record, rule_set):
     assert any("rule-unknown-tag" in m for m in result.info)
 
 
+def test_load_readiness_warnings_are_visible_before_save(record, rule_set):
+    """FOLIO/EDS CC readiness warnings should appear in record-editor save review."""
+    result = view_edit.parse_and_validate_single_record(_record_mrk(record), rule_set)
+
+    assert result.can_save is True
+    assert any("load-missing-006" in msg for msg in result.warnings)
+    assert any("load-missing-007" in msg for msg in result.warnings)
+
+
 # ---------------------------------------------------------------------------
 # Rule set is optional (no validation when omitted)
 # ---------------------------------------------------------------------------
