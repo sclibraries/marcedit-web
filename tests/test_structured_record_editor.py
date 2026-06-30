@@ -125,3 +125,27 @@ def test_validate_draft_reports_invalid_leader_without_raising():
 
     assert result.can_save is False
     assert any("structured draft" in msg for msg in result.fatal_errors)
+
+
+def test_jump_targets_group_common_cataloging_fields(record):
+    """Long records need stable jump links for common cataloging sections."""
+    draft = structured_record_editor.record_to_draft(record)
+
+    targets = structured_record_editor.jump_targets(draft)
+
+    assert targets[0] == ("fixed", "Leader / control fields")
+    assert ("245", "245 Title") in targets
+    assert ("506", "506 Access") in targets
+    assert ("655", "655 Genre/Form") in targets
+    assert ("856", "856 Links") in targets
+
+
+def test_preview_text_renders_changed_draft_as_mrk(record):
+    """Preview before save should show the exact record that will be saved."""
+    draft = structured_record_editor.record_to_draft(record)
+    title = next(field for field in draft.variable_fields if field.tag == "245")
+    title.subfields[0].value = "Previewed title."
+
+    text = structured_record_editor.preview_mrk(draft)
+
+    assert "=245  10$aPreviewed title." in text

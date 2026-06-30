@@ -9,6 +9,27 @@ from pymarc import Field, Leader, Record, Subfield
 from . import mrk_writer, view_edit
 from .rules import RuleSet
 
+_JUMP_LABELS = {
+    "020": "ISBN",
+    "035": "System numbers",
+    "245": "Title",
+    "300": "Description",
+    "336": "Content / media / carrier",
+    "337": "Content / media / carrier",
+    "338": "Content / media / carrier",
+    "506": "Access",
+    "650": "Subjects",
+    "655": "Genre/Form",
+    "700": "Contributors",
+    "710": "Contributors",
+    "776": "Related records",
+    "830": "Series",
+    "852": "Holdings",
+    "856": "Links",
+    "876": "Item data",
+    "877": "Item data",
+}
+
 
 @dataclass
 class ControlFieldDraft:
@@ -105,6 +126,24 @@ def validate_draft(
 
     text = mrk_writer.render_records_mrk([record])
     return view_edit.parse_and_validate_single_record(text, rule_set)
+
+
+def preview_mrk(draft: RecordDraft) -> str:
+    """Return canonical `.mrk` text for the current structured draft."""
+    return mrk_writer.render_records_mrk([draft_to_record(draft)])
+
+
+def jump_targets(draft: RecordDraft) -> list[tuple[str, str]]:
+    """Build stable jump anchors for common sections present in the draft."""
+    targets = [("fixed", "Leader / control fields")]
+    seen: set[str] = set()
+    for field in draft.variable_fields:
+        label = _JUMP_LABELS.get(field.tag)
+        if label is None or field.tag in seen:
+            continue
+        seen.add(field.tag)
+        targets.append((field.tag, f"{field.tag} {label}"))
+    return targets
 
 
 def _indicator_text(value: str | None) -> str:

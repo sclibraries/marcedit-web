@@ -97,6 +97,8 @@ def render_inline_edit(
     k_draft = f"{key_prefix}_draft"
     k_mode = f"{key_prefix}_mode"
     k_user_closed = f"{key_prefix}_user_closed"
+    k_preview = f"{key_prefix}_preview_before_save"
+    k_pending_preview = f"{key_prefix}_pending_preview"
     k_feedback = f"{key_prefix}_feedback"
     job_id = st.session_state.get("current_job_id")
     user = session.current_user_id()
@@ -170,39 +172,99 @@ def render_inline_edit(
             k_draft,
             structured_record_editor.record_to_draft(record),
         )
-        _render_structured_field_editor(draft, key_prefix, index)
+        can_save = _can_edit_record(role, holds_lock)
+        save_disabled = job_id is not None and not can_save
+        _render_jump_links(draft)
+        top_save_clicked, top_cancel_clicked, preview_enabled = (
+            _render_structured_action_bar(
+                key_prefix,
+                index,
+                "top",
+                preview_key=k_preview,
+                include_preview=True,
+                save_disabled=save_disabled,
+            )
+        )
+        section_save_clicked = _render_structured_field_editor(
+            draft,
+            key_prefix,
+            index,
+            save_disabled=save_disabled,
+        )
         live_result = structured_record_editor.validate_draft(draft, rule_set)
 
-        col_save, col_cancel, col_status = st.columns([1, 1, 4])
-        can_save = _can_edit_record(role, holds_lock)
-        save_clicked = col_save.button(
-            "Save changes",
-            type="primary",
-            disabled=job_id is not None and not can_save,
-            key=f"{key_prefix}_structured_save_{index}",
+        bottom_save_clicked, bottom_cancel_clicked, _ = (
+            _render_structured_action_bar(
+                key_prefix,
+                index,
+                "bottom",
+                preview_key=k_preview,
+                include_preview=False,
+                save_disabled=save_disabled,
+            )
         )
-        cancel_clicked = col_cancel.button(
-            "Cancel",
-            key=f"{key_prefix}_structured_cancel_{index}",
-        )
+        save_clicked = top_save_clicked or section_save_clicked or bottom_save_clicked
+        cancel_clicked = top_cancel_clicked or bottom_cancel_clicked
 
         if cancel_clicked:
             _clear_state(k_active, k_index, k_text, k_draft, k_mode)
             st.session_state[k_user_closed] = True
+            st.session_state.pop(k_pending_preview, None)
             st.rerun()
             return
 
         if save_clicked:
-            if _save_validated_record(
-                store=store,
-                index=index,
-                result=live_result,
-                key_prefix=key_prefix,
-                status_container=col_status,
-                feedback_key=k_feedback,
-                clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
-            ):
+            if preview_enabled:
+                st.session_state[k_pending_preview] = True
+            else:
+                st.session_state.pop(k_pending_preview, None)
+                if _save_validated_record(
+                    store=store,
+                    index=index,
+                    result=live_result,
+                    key_prefix=key_prefix,
+                    status_container=st,
+                    feedback_key=k_feedback,
+                    clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
+                ):
+                    st.rerun()
+                return
+
+        if st.session_state.get(k_pending_preview):
+            st.markdown("**Preview record before saving**")
+            if live_result.can_save:
+                st.code(
+                    structured_record_editor.preview_mrk(draft),
+                    language="text",
+                )
+            confirm_col, dismiss_col, status_col = st.columns([1, 1, 4])
+            confirm_clicked = confirm_col.button(
+                "Confirm save",
+                type="primary",
+                key=f"{key_prefix}_confirm_preview_{index}",
+            )
+            dismiss_clicked = dismiss_col.button(
+                "Keep editing",
+                key=f"{key_prefix}_dismiss_preview_{index}",
+            )
+            if dismiss_clicked:
+                st.session_state.pop(k_pending_preview, None)
                 st.rerun()
+                return
+            if confirm_clicked:
+                st.session_state.pop(k_pending_preview, None)
+                if _save_validated_record(
+                    store=store,
+                    index=index,
+                    result=live_result,
+                    key_prefix=key_prefix,
+                    status_container=status_col,
+                    feedback_key=k_feedback,
+                    clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
+                ):
+                    st.rerun()
+                return
+            _render_validation_feedback(live_result)
             return
 
         _render_validation_feedback(live_result)
@@ -309,6 +371,73 @@ def _should_open_immediately(
     return not session_state.get(closed_key)
 
 
+def _render_jump_links(draft: structured_record_editor.RecordDraft) -> None:
+    targets = structured_record_editor.jump_targets(draft)
+    if not targets:
+        return
+    links = " · ".join(
+        f"[{label}](#{_section_anchor(target)})"
+        for target, label in targets
+    )
+    st.markdown(f"Jump to: {links}")
+
+
+def _section_anchor(target: str) -> str:
+    return f"record-field-{target.lower()}"
+
+
+def _render_anchor(target: str) -> None:
+    st.markdown(
+        f'<a id="{_section_anchor(target)}"></a>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_structured_action_bar(
+    key_prefix: str,
+    index: int,
+    suffix: str,
+    *,
+    preview_key: str,
+    include_preview: bool,
+    save_disabled: bool,
+) -> tuple[bool, bool, bool]:
+    cols = st.columns([1, 1, 2, 3])
+    save_clicked = cols[0].button(
+        "Save changes",
+        type="primary",
+        disabled=save_disabled,
+        key=f"{key_prefix}_structured_save_{suffix}_{index}",
+    )
+    cancel_clicked = cols[1].button(
+        "Cancel",
+        key=f"{key_prefix}_structured_cancel_{suffix}_{index}",
+    )
+    preview_enabled = bool(st.session_state.get(preview_key, False))
+    if include_preview:
+        preview_enabled = cols[2].checkbox(
+            "Preview before saving",
+            key=preview_key,
+            value=preview_enabled,
+        )
+    return save_clicked, cancel_clicked, preview_enabled
+
+
+def _render_section_save(
+    key_prefix: str,
+    index: int,
+    suffix: str,
+    *,
+    disabled: bool,
+) -> bool:
+    return st.button(
+        "Save changes",
+        type="primary",
+        disabled=disabled,
+        key=f"{key_prefix}_section_save_{index}_{suffix}",
+    )
+
+
 def _save_validated_record(
     *,
     store: Any,
@@ -380,8 +509,12 @@ def _render_structured_field_editor(
     draft: structured_record_editor.RecordDraft,
     key_prefix: str,
     index: int,
-) -> None:
+    *,
+    save_disabled: bool,
+) -> bool:
     """Render editable MARC field rows for a single-record draft."""
+    save_clicked = False
+    _render_anchor("fixed")
     draft.leader = st.text_input(
         "Leader",
         value=draft.leader,
@@ -415,9 +548,20 @@ def _render_structured_field_editor(
             structured_record_editor.ControlFieldDraft(tag="001", data="")
         )
         st.rerun()
+    save_clicked = (
+        _render_section_save(
+            key_prefix,
+            index,
+            "fixed",
+            disabled=save_disabled,
+        )
+        or save_clicked
+    )
 
     st.markdown("**Variable fields**")
     for pos, field in enumerate(list(draft.variable_fields)):
+        if pos == 0 or draft.variable_fields[pos - 1].tag != field.tag:
+            _render_anchor(field.tag)
         with st.container(border=True):
             top = st.columns([1, 1, 1, 1, 1, 1])
             field.tag = top[0].text_input(
@@ -487,6 +631,15 @@ def _render_structured_field_editor(
                     structured_record_editor.SubfieldDraft(code="a", value="")
                 )
                 st.rerun()
+            save_clicked = (
+                _render_section_save(
+                    key_prefix,
+                    index,
+                    f"variable_{pos}",
+                    disabled=save_disabled,
+                )
+                or save_clicked
+            )
 
     if st.button("Add variable field", key=f"{key_prefix}_add_variable_{index}"):
         draft.variable_fields.append(
@@ -500,6 +653,7 @@ def _render_structured_field_editor(
             )
         )
         st.rerun()
+    return save_clicked
 
 
 def _render_checkout_controls(
