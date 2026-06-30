@@ -122,6 +122,7 @@ def test_floating_jump_rail_html_is_fixed_and_collapsible():
     assert 'href="#record-field-fixed"' in html
     assert 'href="#record-field-245"' in html
     assert "Leader / control fields" in html
+    assert "padding-right: 13rem" in html
 
 
 def test_fixed_save_gate_blocks_viewer(monkeypatch):
