@@ -18,4 +18,9 @@ Show changed MARC lines in the record editor preview and save feedback.
 
 ## Status
 
-Todo
+Completed
+
+## Verification
+
+- `docker compose run --rm marcedit-web pytest tests/test_collaboration_ui_helpers.py tests/test_structured_record_editor.py tests/test_view_edit.py`
+- `docker compose run --rm marcedit-web pytest -ra`

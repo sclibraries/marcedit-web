@@ -18,6 +18,7 @@ That's what the ``key_prefix`` parameter handles — pass
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import html
 from pathlib import Path
 from typing import Any
@@ -236,6 +237,7 @@ def render_inline_edit(
             _open_pending_preview_dialog(
                 draft=draft,
                 live_result=live_result,
+                original_mrk=mrk_writer.render_records_mrk([record]),
                 key_prefix=key_prefix,
                 index=index,
                 save_callback=_confirm_preview,
@@ -479,6 +481,7 @@ def _open_pending_preview_dialog(
     *,
     draft: structured_record_editor.RecordDraft,
     live_result: view_edit.SingleRecordParseResult,
+    original_mrk: str,
     key_prefix: str,
     index: int,
     save_callback: Any,
@@ -487,6 +490,7 @@ def _open_pending_preview_dialog(
     _record_save_preview_dialog(
         draft=draft,
         live_result=live_result,
+        original_mrk=original_mrk,
         key_prefix=key_prefix,
         index=index,
         save_callback=save_callback,
@@ -498,15 +502,19 @@ def _open_pending_preview_dialog(
 def _record_save_preview_dialog(
     draft: structured_record_editor.RecordDraft,
     live_result: view_edit.SingleRecordParseResult,
+    original_mrk: str,
     key_prefix: str,
     index: int,
     save_callback: Any,
     dismiss_callback: Any,
 ) -> None:
     if live_result.can_save:
-        st.code(
-            structured_record_editor.preview_mrk(draft),
-            language="text",
+        st.markdown(
+            _changed_record_preview_html(
+                original_mrk,
+                structured_record_editor.preview_mrk(draft),
+            ),
+            unsafe_allow_html=True,
         )
     else:
         _render_validation_feedback(live_result)
@@ -530,6 +538,53 @@ def _record_save_preview_dialog(
 
 def _section_anchor(target: str) -> str:
     return f"record-field-{target.lower()}"
+
+
+def _changed_record_preview_html(original_mrk: str, edited_mrk: str) -> str:
+    rows = []
+    for line in difflib.ndiff(
+        original_mrk.splitlines(),
+        edited_mrk.splitlines(),
+    ):
+        if line.startswith("? "):
+            continue
+        if line.startswith("- "):
+            css_class = "record-preview-line record-preview-line--removed"
+        elif line.startswith("+ "):
+            css_class = "record-preview-line record-preview-line--added"
+        else:
+            css_class = "record-preview-line"
+        rows.append(
+            f'<span class="{css_class}">{html.escape(line)}</span>'
+        )
+    body = "\n".join(rows)
+    return (
+        "<style>"
+        ".record-preview-diff {"
+        "background: #f8f9fb;"
+        "border: 1px solid #d9dee7;"
+        "border-radius: 6px;"
+        "padding: 0.75rem;"
+        "max-height: 65vh;"
+        "overflow: auto;"
+        "white-space: pre-wrap;"
+        "overflow-wrap: anywhere;"
+        "font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;"
+        "font-size: 0.86rem;"
+        "line-height: 1.45;"
+        "}"
+        ".record-preview-line { display: block; padding: 0.08rem 0.25rem; }"
+        ".record-preview-line--added {"
+        "background: #e7f6ec;"
+        "border-left: 3px solid #2f9e44;"
+        "}"
+        ".record-preview-line--removed {"
+        "background: #fff0f0;"
+        "border-left: 3px solid #d9480f;"
+        "}"
+        "</style>"
+        f'<pre class="record-preview-diff">{body}</pre>'
+    )
 
 
 def _render_anchor(target: str) -> None:

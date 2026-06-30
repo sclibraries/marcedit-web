@@ -99,6 +99,7 @@ def test_pending_preview_opens_dialog(monkeypatch):
     single_record_edit._open_pending_preview_dialog(
         draft=object(),
         live_result=object(),
+        original_mrk="=245  10$aOld title",
         key_prefix="workspace_edit",
         index=2,
         save_callback=lambda status_col: None,
@@ -106,6 +107,7 @@ def test_pending_preview_opens_dialog(monkeypatch):
     )
 
     assert opened[0]["index"] == 2
+    assert opened[0]["original_mrk"] == "=245  10$aOld title"
     assert callable(opened[0]["save_callback"])
     assert callable(opened[0]["dismiss_callback"])
 
@@ -137,6 +139,18 @@ def test_clear_export_payloads_removes_only_matching_editor_keys():
     assert "workspace_edit_export_payload_1" not in session_state
     assert session_state["view_edit_export_payload_1"] == (b"keep", "keep.mrc")
     assert session_state["workspace_edit_active"] is True
+
+
+def test_changed_record_preview_html_marks_added_and_removed_lines():
+    original = "=LDR  00000nam a2200000 a 4500\n=245  10$aOld title"
+    edited = "=LDR  00000nam a2200000 a 4500\n=245  10$aNew title"
+
+    html = single_record_edit._changed_record_preview_html(original, edited)
+
+    assert "record-preview-line--removed" in html
+    assert "record-preview-line--added" in html
+    assert "- =245  10$aOld title" in html
+    assert "+ =245  10$aNew title" in html
 
 
 def test_fixed_save_gate_blocks_viewer(monkeypatch):
