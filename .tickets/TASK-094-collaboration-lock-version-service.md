@@ -1,6 +1,6 @@
 # TASK-094 — Collaboration lock and version service
 
-**Status:** Todo
+**Status:** Completed
 **Priority:** Tier 4 — Collaboration
 **Parent:** TASK-086
 **Depends on:** TASK-083, TASK-085, TASK-093
@@ -25,3 +25,13 @@ lost-update protection.
 3. Expired locks can be reacquired; non-holders cannot release active locks.
 4. Save-time version checks block stale edits.
 5. Concurrent tests and Docker suite pass before completion.
+
+## Outcome
+
+- Added schema v8 `job_versions` for job mutation version tokens.
+- Added `marcedit_web.lib.collaboration` with record/job lock acquisition,
+  release helpers, cross-resource lock checks, role enforcement, and
+  save-time lock/version validation.
+- Updated deployment schema notes for v7/v8 and the TASK-093 sharing UI.
+- Final verification: `docker compose run --rm marcedit-web python -m pytest -q`
+  passed with `866 passed, 5 skipped`.

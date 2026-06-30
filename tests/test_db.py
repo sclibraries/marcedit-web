@@ -171,9 +171,20 @@ def test_v4_users_role_and_status_checks():
             )
 
 
-def test_schema_version_is_7():
+def test_collaboration_schema_adds_job_versions_table():
+    db.init_schema()
+    with db.connect() as conn:
+        cols = {
+            row["name"] for row in conn.execute(
+                "PRAGMA table_info(job_versions)"
+            )
+        }
+    assert {"job_id", "version", "updated_at"}.issubset(cols)
+
+
+def test_schema_version_is_8():
     db.init_schema()
     with db.connect() as conn:
         row = conn.execute("SELECT version FROM _schema_version").fetchone()
-    assert row["version"] == 7
-    assert db.SCHEMA_VERSION == 7
+    assert row["version"] == 8
+    assert db.SCHEMA_VERSION == 8

@@ -230,13 +230,14 @@ Schema version tracked in the `_schema_version` table. v1 added
 `audit_events` (TASK-049); v2 added `tasks` (TASK-050); v3 added
 uploads (TASK-051); v4 added `users` and `allowed_domains` (TASK-088);
 v5 added `advisory_locks` (TASK-083); v6 added `jobs`, `job_access`, and
-`uploads.job_id` (TASK-081). Migrations run on first request and are
-idempotent.
+`uploads.job_id` (TASK-081); v7 added `job_snapshots` (TASK-082); v8 added
+`job_versions` (TASK-094). Migrations run on first request and are idempotent.
 
 The job model is forward-compatible with collaboration work in TASK-086:
-`jobs.owner_email` identifies the owner, and `job_access` can grant future
-`owner` / `editor` / `viewer` access. The current UI only lets a signed-in
-cataloger create/select their own jobs; no sharing UI is enabled yet.
+`jobs.owner_email` identifies the owner, and `job_access` grants `owner`,
+`editor`, or `viewer` access. Owners can grant/revoke editor/viewer access from
+the private Home page. Record checkout, presence, and batch-operation locking
+are staged in the remaining TASK-086 child tickets.
 
 ## Smoke tests after deploy
 
