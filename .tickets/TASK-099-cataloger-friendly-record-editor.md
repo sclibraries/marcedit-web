@@ -1,6 +1,6 @@
 # TASK-099 — Cataloger-friendly one-record MARC editor
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 4 — Cataloger editing UX
 **Source:** User decision 2026-06-30 — raw `.mrk` is too hard for cataloger
 editing

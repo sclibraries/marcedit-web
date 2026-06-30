@@ -31,6 +31,7 @@ from marcedit_web.lib import (
     mrk_writer,
     session,
     snapshot_actions,
+    structured_record_editor,
     view_edit,
 )
 from marcedit_web.lib.audit import audit_event
@@ -92,6 +93,8 @@ def render_inline_edit(
     k_active = f"{key_prefix}_active"
     k_index = f"{key_prefix}_index"
     k_text = f"{key_prefix}_text"
+    k_draft = f"{key_prefix}_draft"
+    k_mode = f"{key_prefix}_mode"
     k_feedback = f"{key_prefix}_feedback"
     job_id = st.session_state.get("current_job_id")
     user = session.current_user_id()
@@ -116,7 +119,7 @@ def render_inline_edit(
         st.session_state.get(k_active)
         and st.session_state.get(k_index) != index
     ):
-        _clear_state(k_active, k_index, k_text)
+        _clear_state(k_active, k_index, k_text, k_draft, k_mode)
 
     feedback = st.session_state.pop(k_feedback, None)
     if feedback:
@@ -131,24 +134,76 @@ def render_inline_edit(
             key=f"{key_prefix}_open_{index}",
             disabled=disabled,
             help=(
-                "Open the single record above in a .mrk editor. Save "
-                "commits the edit back into the loaded batch at this "
-                "position. Other records aren't touched."
+                "Open a one-record field editor. Save commits this "
+                "record back into the loaded batch; other records aren't "
+                "touched."
             ),
         ):
             st.session_state[k_active] = True
             st.session_state[k_index] = index
             st.session_state[k_text] = mrk_writer.render_records_mrk([record])
+            st.session_state[k_draft] = structured_record_editor.record_to_draft(
+                record
+            )
+            st.session_state[k_mode] = "Field editor"
             st.rerun()
         return
 
     st.markdown("**Edit this record**")
+    mode = st.radio(
+        "Edit mode",
+        ["Field editor", "Advanced .mrk source"],
+        horizontal=True,
+        key=f"{key_prefix}_mode_radio_{index}",
+        index=0 if st.session_state.get(k_mode) != "Advanced .mrk source" else 1,
+    )
+    st.session_state[k_mode] = mode
+
+    if mode == "Field editor":
+        draft = st.session_state.setdefault(
+            k_draft,
+            structured_record_editor.record_to_draft(record),
+        )
+        _render_structured_field_editor(draft, key_prefix, index)
+        live_result = structured_record_editor.validate_draft(draft, rule_set)
+
+        col_save, col_cancel, col_status = st.columns([1, 1, 4])
+        can_save = _can_edit_record(role, holds_lock)
+        save_clicked = col_save.button(
+            "Save changes",
+            type="primary",
+            disabled=job_id is not None and not can_save,
+            key=f"{key_prefix}_structured_save_{index}",
+        )
+        cancel_clicked = col_cancel.button(
+            "Cancel",
+            key=f"{key_prefix}_structured_cancel_{index}",
+        )
+
+        if cancel_clicked:
+            _clear_state(k_active, k_index, k_text, k_draft, k_mode)
+            st.rerun()
+            return
+
+        if save_clicked:
+            if _save_validated_record(
+                store=store,
+                index=index,
+                result=live_result,
+                key_prefix=key_prefix,
+                status_container=col_status,
+                feedback_key=k_feedback,
+                clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
+            ):
+                st.rerun()
+            return
+
+        _render_validation_feedback(live_result)
+        return
+
     st.caption(
-        "The editor uses MarcEdit `.mrk` format: `\\` represents a "
-        "blank space in control fields, and `$` is the subfield "
-        "delimiter. The read-only display above shows the actual MARC "
-        "content. Save re-parses and validates; fatal errors block the "
-        "save and surface inline below."
+        "Advanced source mode uses MarcEdit `.mrk` format: `\\` represents "
+        "a blank space in control fields, and `$` is the subfield delimiter."
     )
 
     # Validate the current buffer ONCE before st_ace so the result can
@@ -197,7 +252,7 @@ def render_inline_edit(
     )
 
     if cancel_clicked:
-        _clear_state(k_active, k_index, k_text)
+        _clear_state(k_active, k_index, k_text, k_draft, k_mode)
         st.rerun()
         return
 
@@ -208,58 +263,16 @@ def render_inline_edit(
         # the editor — we don't trust it for the save decision.
         text = st.session_state.get(k_text, "")
         result = view_edit.parse_and_validate_single_record(text, rule_set)
-        if not result.can_save:
-            col_status.error(
-                f"Cannot save: {len(result.fatal_errors)} fatal error(s). "
-                "See list below."
-            )
-            _render_validation_feedback(result)
-            return
-        if job_id is not None:
-            _, version_key = _checkout_keys(key_prefix, index, int(job_id))
-            opened_version = st.session_state.get(version_key)
-            if opened_version is None:
-                col_status.error("Cannot save: record checkout is missing.")
-                return
-            try:
-                collaboration.assert_can_save_record(
-                    int(job_id),
-                    index,
-                    user,
-                    int(opened_version),
-                )
-            except collaboration.CollaborationError as exc:
-                col_status.error(f"Cannot save: {exc}")
-                return
-        before_bytes = store.to_mrc_bytes()
-        store.replace(index - 1, result.record)
-        after_bytes = store.to_mrc_bytes()
-        snapshot = snapshot_actions.record_edit_snapshot(
-            job_id=st.session_state.get("current_job_id"),
-            user_email=session.current_user_id(),
-            label=f"Single record edit #{index}",
-            before_bytes=before_bytes,
-            after_bytes=after_bytes,
-            record_index=index,
-            source=key_prefix,
-        )
-        if snapshot is not None:
-            audit_event(
-                "job-snapshot-created",
-                user=session.current_user_id(),
-                snapshot_id=snapshot["id"],
-                job_id=snapshot["job_id"],
-                kind=snapshot["kind"],
-            )
-        # Stale derived state — Validate / Report / etc. cached the
-        # pre-edit issue lists; drop them so the next visit re-runs.
-        st.session_state["issues_cache"] = {}
-        _clear_state(k_active, k_index, k_text)
-        st.session_state[k_feedback] = (
-            "success",
-            f"Record {index} saved. Other records in the batch are unchanged.",
-        )
-        st.rerun()
+        if _save_validated_record(
+            store=store,
+            index=index,
+            result=result,
+            key_prefix=key_prefix,
+            status_container=col_status,
+            feedback_key=k_feedback,
+            clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
+        ):
+            st.rerun()
         return
 
     # Expander fallback below the buttons — same data as the gutter
@@ -271,6 +284,199 @@ def render_inline_edit(
 def _clear_state(*keys: str) -> None:
     for key in keys:
         st.session_state.pop(key, None)
+
+
+def _save_validated_record(
+    *,
+    store: Any,
+    index: int,
+    result: view_edit.SingleRecordParseResult,
+    key_prefix: str,
+    status_container: Any,
+    feedback_key: str,
+    clear_keys: tuple[str, ...],
+) -> bool:
+    """Save a validated single-record edit through shared safeguards."""
+    if not result.can_save:
+        status_container.error(
+            f"Cannot save: {len(result.fatal_errors)} fatal error(s). "
+            "See list below."
+        )
+        _render_validation_feedback(result)
+        return False
+
+    job_id = st.session_state.get("current_job_id")
+    user = session.current_user_id()
+    if job_id is not None:
+        _, version_key = _checkout_keys(key_prefix, index, int(job_id))
+        opened_version = st.session_state.get(version_key)
+        if opened_version is None:
+            status_container.error("Cannot save: record checkout is missing.")
+            return False
+        try:
+            collaboration.assert_can_save_record(
+                int(job_id),
+                index,
+                user,
+                int(opened_version),
+            )
+        except collaboration.CollaborationError as exc:
+            status_container.error(f"Cannot save: {exc}")
+            return False
+
+    before_bytes = store.to_mrc_bytes()
+    store.replace(index - 1, result.record)
+    after_bytes = store.to_mrc_bytes()
+    snapshot = snapshot_actions.record_edit_snapshot(
+        job_id=st.session_state.get("current_job_id"),
+        user_email=session.current_user_id(),
+        label=f"Single record edit #{index}",
+        before_bytes=before_bytes,
+        after_bytes=after_bytes,
+        record_index=index,
+        source=key_prefix,
+    )
+    if snapshot is not None:
+        audit_event(
+            "job-snapshot-created",
+            user=session.current_user_id(),
+            snapshot_id=snapshot["id"],
+            job_id=snapshot["job_id"],
+            kind=snapshot["kind"],
+        )
+    st.session_state["issues_cache"] = {}
+    _clear_state(*clear_keys)
+    st.session_state[feedback_key] = (
+        "success",
+        f"Record {index} saved. Other records in the batch are unchanged.",
+    )
+    return True
+
+
+def _render_structured_field_editor(
+    draft: structured_record_editor.RecordDraft,
+    key_prefix: str,
+    index: int,
+) -> None:
+    """Render editable MARC field rows for a single-record draft."""
+    draft.leader = st.text_input(
+        "Leader",
+        value=draft.leader,
+        max_chars=24,
+        key=f"{key_prefix}_leader_{index}",
+    )
+
+    st.markdown("**Control fields**")
+    for pos, field in enumerate(list(draft.control_fields)):
+        cols = st.columns([1, 5, 1])
+        field.tag = cols[0].text_input(
+            "Tag",
+            value=field.tag,
+            max_chars=3,
+            key=f"{key_prefix}_control_tag_{index}_{pos}",
+        )
+        field.data = cols[1].text_input(
+            "Data",
+            value=field.data,
+            key=f"{key_prefix}_control_data_{index}_{pos}",
+        )
+        if cols[2].button(
+            "Delete",
+            key=f"{key_prefix}_control_delete_{index}_{pos}",
+        ):
+            del draft.control_fields[pos]
+            st.rerun()
+
+    if st.button("Add control field", key=f"{key_prefix}_add_control_{index}"):
+        draft.control_fields.append(
+            structured_record_editor.ControlFieldDraft(tag="001", data="")
+        )
+        st.rerun()
+
+    st.markdown("**Variable fields**")
+    for pos, field in enumerate(list(draft.variable_fields)):
+        with st.container(border=True):
+            top = st.columns([1, 1, 1, 1, 1, 1])
+            field.tag = top[0].text_input(
+                "Tag",
+                value=field.tag,
+                max_chars=3,
+                key=f"{key_prefix}_var_tag_{index}_{pos}",
+            )
+            field.ind1 = top[1].text_input(
+                "Ind 1",
+                value=field.ind1,
+                max_chars=1,
+                key=f"{key_prefix}_var_ind1_{index}_{pos}",
+            )
+            field.ind2 = top[2].text_input(
+                "Ind 2",
+                value=field.ind2,
+                max_chars=1,
+                key=f"{key_prefix}_var_ind2_{index}_{pos}",
+            )
+            if top[3].button(
+                "Move up",
+                key=f"{key_prefix}_var_up_{index}_{pos}",
+            ):
+                if pos > 0:
+                    draft.variable_fields[pos - 1], draft.variable_fields[pos] = (
+                        draft.variable_fields[pos],
+                        draft.variable_fields[pos - 1],
+                    )
+                    st.rerun()
+            if top[4].button(
+                "Move down",
+                key=f"{key_prefix}_var_down_{index}_{pos}",
+            ):
+                if pos < len(draft.variable_fields) - 1:
+                    draft.variable_fields[pos + 1], draft.variable_fields[pos] = (
+                        draft.variable_fields[pos],
+                        draft.variable_fields[pos + 1],
+                    )
+                    st.rerun()
+            if top[5].button("Delete", key=f"{key_prefix}_var_delete_{index}_{pos}"):
+                del draft.variable_fields[pos]
+                st.rerun()
+
+            for sub_pos, subfield in enumerate(list(field.subfields)):
+                cols = st.columns([1, 6, 1])
+                subfield.code = cols[0].text_input(
+                    "Code",
+                    value=subfield.code,
+                    max_chars=1,
+                    key=f"{key_prefix}_sub_code_{index}_{pos}_{sub_pos}",
+                )
+                subfield.value = cols[1].text_input(
+                    "Value",
+                    value=subfield.value,
+                    key=f"{key_prefix}_sub_value_{index}_{pos}_{sub_pos}",
+                )
+                if cols[2].button(
+                    "Delete",
+                    key=f"{key_prefix}_sub_delete_{index}_{pos}_{sub_pos}",
+                ):
+                    del field.subfields[sub_pos]
+                    st.rerun()
+
+            if st.button("Add subfield", key=f"{key_prefix}_add_sub_{index}_{pos}"):
+                field.subfields.append(
+                    structured_record_editor.SubfieldDraft(code="a", value="")
+                )
+                st.rerun()
+
+    if st.button("Add variable field", key=f"{key_prefix}_add_variable_{index}"):
+        draft.variable_fields.append(
+            structured_record_editor.VariableFieldDraft(
+                tag="500",
+                ind1=" ",
+                ind2=" ",
+                subfields=[
+                    structured_record_editor.SubfieldDraft(code="a", value="")
+                ],
+            )
+        )
+        st.rerun()
 
 
 def _render_checkout_controls(
