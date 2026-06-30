@@ -88,6 +88,28 @@ def test_should_show_pending_preview_uses_session_state_flag():
     ) is False
 
 
+def test_pending_preview_opens_dialog(monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        single_record_edit,
+        "_record_save_preview_dialog",
+        lambda **kwargs: opened.append(kwargs),
+    )
+
+    single_record_edit._open_pending_preview_dialog(
+        draft=object(),
+        live_result=object(),
+        key_prefix="workspace_edit",
+        index=2,
+        save_callback=lambda status_col: None,
+        dismiss_callback=lambda: None,
+    )
+
+    assert opened[0]["index"] == 2
+    assert callable(opened[0]["save_callback"])
+    assert callable(opened[0]["dismiss_callback"])
+
+
 def test_fixed_save_gate_blocks_viewer(monkeypatch):
     monkeypatch.setattr(fixed_field_helper.st, "session_state", {"current_job_id": 1})
     monkeypatch.setattr(

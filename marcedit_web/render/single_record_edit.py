@@ -213,18 +213,11 @@ def render_inline_edit(
             return
 
         if _should_show_pending_preview(st.session_state, k_pending_preview):
-            preview_action, status_col = _render_pending_preview(
-                draft,
-                live_result,
-                key_prefix,
-                index,
-            )
-            if preview_action == "dismiss":
+            def _dismiss_preview() -> None:
                 st.session_state.pop(k_pending_preview, None)
                 st.rerun()
-                return
-            if preview_action == "confirm":
-                st.session_state.pop(k_pending_preview, None)
+
+            def _confirm_preview(status_col: Any) -> None:
                 if _save_validated_record(
                     store=store,
                     index=index,
@@ -234,10 +227,17 @@ def render_inline_edit(
                     feedback_key=k_feedback,
                     clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
                 ):
+                    st.session_state.pop(k_pending_preview, None)
                     st.rerun()
-                return
-            _render_validation_feedback(live_result)
-            return
+
+            _open_pending_preview_dialog(
+                draft=draft,
+                live_result=live_result,
+                key_prefix=key_prefix,
+                index=index,
+                save_callback=_confirm_preview,
+                dismiss_callback=_dismiss_preview,
+            )
 
         section_save_clicked = _render_structured_field_editor(
             draft,
@@ -405,22 +405,46 @@ def _render_jump_links(draft: structured_record_editor.RecordDraft) -> None:
     st.markdown(f"Jump to: {links}")
 
 
-def _render_pending_preview(
+def _open_pending_preview_dialog(
+    *,
     draft: structured_record_editor.RecordDraft,
     live_result: view_edit.SingleRecordParseResult,
     key_prefix: str,
     index: int,
-) -> tuple[str | None, Any]:
-    st.markdown("**Preview record before saving**")
+    save_callback: Any,
+    dismiss_callback: Any,
+) -> None:
+    _record_save_preview_dialog(
+        draft=draft,
+        live_result=live_result,
+        key_prefix=key_prefix,
+        index=index,
+        save_callback=save_callback,
+        dismiss_callback=dismiss_callback,
+    )
+
+
+@st.dialog("Preview record before saving", width="large")
+def _record_save_preview_dialog(
+    draft: structured_record_editor.RecordDraft,
+    live_result: view_edit.SingleRecordParseResult,
+    key_prefix: str,
+    index: int,
+    save_callback: Any,
+    dismiss_callback: Any,
+) -> None:
     if live_result.can_save:
         st.code(
             structured_record_editor.preview_mrk(draft),
             language="text",
         )
+    else:
+        _render_validation_feedback(live_result)
     confirm_col, dismiss_col, status_col = st.columns([1, 1, 4])
     confirm_clicked = confirm_col.button(
         "Confirm save",
         type="primary",
+        disabled=not live_result.can_save,
         key=f"{key_prefix}_confirm_preview_{index}",
     )
     dismiss_clicked = dismiss_col.button(
@@ -428,10 +452,10 @@ def _render_pending_preview(
         key=f"{key_prefix}_dismiss_preview_{index}",
     )
     if dismiss_clicked:
-        return "dismiss", status_col
+        dismiss_callback()
+        return
     if confirm_clicked:
-        return "confirm", status_col
-    return None, status_col
+        save_callback(status_col)
 
 
 def _section_anchor(target: str) -> str:
