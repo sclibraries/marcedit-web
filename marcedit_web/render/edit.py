@@ -369,6 +369,12 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         before_bytes = store.to_mrc_bytes()
         store.replace_all(list(record_objs))
         out_bytes = store.to_mrc_bytes()
+        try:
+            store.persist_to_disk()
+        except OSError as exc:
+            st.error(f"Cannot save: edited records were not persisted. {exc}")
+            return
+
         snapshot = snapshot_actions.record_job_snapshot(
             job_id=st.session_state.get("current_job_id"),
             user_email=session.current_user_id(),

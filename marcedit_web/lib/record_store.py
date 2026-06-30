@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -315,6 +316,25 @@ class RecordStore:
             for record in self.iter_records():
                 writer.write(record)
         written = path.stat().st_size
+        return written
+
+    def persist_to_disk(self) -> int:
+        """Rewrite this store's backing file with the current live records.
+
+        ``write_mrc_to(self.path)`` is unsafe because iterating records reads
+        from ``self.path``; opening that same file for write would truncate it
+        before unchanged records can be copied. Write to a sibling temp file
+        first, then atomically replace the backing file and rebuild the index.
+        """
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self._path.with_name(f".{self._path.name}.tmp")
+        written = self.write_mrc_to(temp_path)
+        os.replace(temp_path, self._path)
+        locations, malformed = _index_bytes(self._path.read_bytes())
+        self._locations = locations
+        self._overrides.clear()
+        self._appended.clear()
+        self._malformed = malformed
         return written
 
     # ------------------------------------------------------------------ helpers

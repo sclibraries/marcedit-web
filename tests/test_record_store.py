@@ -272,6 +272,20 @@ def test_write_mrc_to_creates_parent_dir(fixture_bytes, tmp_path):
     assert out_path.exists()
 
 
+def test_persist_to_disk_survives_restore(store):
+    """Saved edits must update the backing file used after browser refresh."""
+    edited = pymarc.Record()
+    edited.leader = pymarc.Leader("00000nam a2200000 a 4500")
+    edited.add_field(pymarc.Field(tag="001", data="PERSISTED-0"))
+
+    store.replace(0, edited)
+    store.persist_to_disk()
+
+    restored = RecordStore.from_path(store.path)
+    assert restored.get(0).get("001").data == "PERSISTED-0"
+    assert store.get(0).get("001").data == "PERSISTED-0"
+
+
 # ---------------------------------------------------------------------------
 # RecordLocation
 # ---------------------------------------------------------------------------

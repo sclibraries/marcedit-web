@@ -622,6 +622,12 @@ def _save_validated_record(
     before_bytes = store.to_mrc_bytes()
     store.replace(index - 1, result.record)
     after_bytes = store.to_mrc_bytes()
+    try:
+        store.persist_to_disk()
+    except OSError as exc:
+        status_container.error(f"Cannot save: edited record was not persisted. {exc}")
+        return False
+
     snapshot = snapshot_actions.record_edit_snapshot(
         job_id=st.session_state.get("current_job_id"),
         user_email=session.current_user_id(),
