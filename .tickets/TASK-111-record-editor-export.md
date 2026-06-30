@@ -20,4 +20,9 @@ Add export controls to the cataloger-friendly record editor workflow.
 
 ## Status
 
-Todo
+Completed
+
+## Verification
+
+- `docker compose run --rm marcedit-web pytest tests/test_collaboration_ui_helpers.py tests/test_record_store.py tests/test_marceditor_mode.py`
+- `docker compose run --rm marcedit-web pytest -ra`

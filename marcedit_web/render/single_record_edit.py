@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
@@ -186,6 +187,7 @@ def render_inline_edit(
                 save_disabled=save_disabled,
             )
         )
+        _render_export_controls(store, key_prefix, index, "top")
         live_result = structured_record_editor.validate_draft(draft, rule_set)
 
         if top_cancel_clicked:
@@ -258,6 +260,7 @@ def render_inline_edit(
                 save_disabled=save_disabled,
             )
         )
+        _render_export_controls(store, key_prefix, index, "bottom")
         save_clicked = top_save_clicked or section_save_clicked or bottom_save_clicked
         cancel_clicked = top_cancel_clicked or bottom_cancel_clicked
 
@@ -646,12 +649,51 @@ def _save_validated_record(
             kind=snapshot["kind"],
         )
     st.session_state["issues_cache"] = {}
+    _clear_export_payloads(st.session_state, key_prefix)
     _clear_state(*clear_keys)
     st.session_state[feedback_key] = (
         "success",
         f"Record {index} saved. Other records in the batch are unchanged.",
     )
     return True
+
+
+def _clear_export_payloads(session_state: dict, key_prefix: str) -> None:
+    prefix = f"{key_prefix}_export_payload_"
+    for key in list(session_state):
+        if key.startswith(prefix):
+            session_state.pop(key, None)
+
+
+def _render_export_controls(
+    store: Any,
+    key_prefix: str,
+    index: int,
+    suffix: str,
+) -> None:
+    payload_key = f"{key_prefix}_export_payload_{index}_{suffix}"
+    prepare_col, download_col = st.columns([1, 3])
+    if prepare_col.button(
+        "Prepare export",
+        key=f"{key_prefix}_prepare_export_{index}_{suffix}",
+        help="Prepare the current saved batch for download.",
+    ):
+        orig = session.current_filename() or "edited.mrc"
+        stem = Path(orig).stem or "edited"
+        filename = session.stamped_filename(stem)
+        st.session_state[payload_key] = (store.to_mrc_bytes(), filename)
+
+    payload = st.session_state.get(payload_key)
+    if payload is None:
+        return
+    data, filename = payload
+    download_col.download_button(
+        label=f"Download {filename}",
+        data=data,
+        file_name=filename,
+        mime="application/marc",
+        key=f"{key_prefix}_download_export_{index}_{suffix}",
+    )
 
 
 def _render_structured_field_editor(

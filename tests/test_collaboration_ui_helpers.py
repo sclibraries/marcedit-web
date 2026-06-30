@@ -125,6 +125,20 @@ def test_floating_jump_rail_html_is_fixed_and_collapsible():
     assert "padding-right: 13rem" in html
 
 
+def test_clear_export_payloads_removes_only_matching_editor_keys():
+    session_state = {
+        "workspace_edit_export_payload_1": (b"old", "old.mrc"),
+        "view_edit_export_payload_1": (b"keep", "keep.mrc"),
+        "workspace_edit_active": True,
+    }
+
+    single_record_edit._clear_export_payloads(session_state, "workspace_edit")
+
+    assert "workspace_edit_export_payload_1" not in session_state
+    assert session_state["view_edit_export_payload_1"] == (b"keep", "keep.mrc")
+    assert session_state["workspace_edit_active"] is True
+
+
 def test_fixed_save_gate_blocks_viewer(monkeypatch):
     monkeypatch.setattr(fixed_field_helper.st, "session_state", {"current_job_id": 1})
     monkeypatch.setattr(
