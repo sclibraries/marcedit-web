@@ -25,6 +25,8 @@ from marcedit_web.render import fixed_field_helper, single_record_edit
 logger = logging.getLogger("marcedit_web.render.edit")
 
 MAX_EDITOR_RECORDS = 5000
+RECORD_MODE = "Record editor"
+SOURCE_MODE = "Advanced full-batch .mrk source"
 
 
 def _is_fatal_code(code: str) -> bool:
@@ -33,6 +35,19 @@ def _is_fatal_code(code: str) -> bool:
 
 
 _K_PICK_INDEX = "edit_pick_index"
+_K_EDITOR_MODE = "marc_editor_mode"
+
+
+def _editor_mode_options(total: int) -> list[str]:
+    """Return available MarcEditor modes for the loaded record count."""
+    if total > MAX_EDITOR_RECORDS:
+        return [RECORD_MODE]
+    return [RECORD_MODE, SOURCE_MODE]
+
+
+def _default_editor_mode(total: int) -> str:
+    """Default MarcEditor to the cataloger-friendly one-record editor."""
+    return _editor_mode_options(total)[0]
 
 
 def _render_single_record_picker(store, total: int, rule_set) -> None:
@@ -130,14 +145,30 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         rule_set = rules_for_page()
 
     over_cap = total > MAX_EDITOR_RECORDS
-    if over_cap:
-        st.info(
-            f"This batch contains **{total:,}** records, above the "
-            f"`{MAX_EDITOR_RECORDS:,}`-record cap for the full-batch "
-            "text editor. **Per-record inline editing is enabled below** — "
-            "pick a record by number to edit it. For bulk transforms "
-            "across all records, use the **Tasks** page."
+    mode_options = _editor_mode_options(total)
+    current_mode = st.session_state.get(_K_EDITOR_MODE)
+    if current_mode not in mode_options:
+        st.session_state[_K_EDITOR_MODE] = _default_editor_mode(total)
+
+    if len(mode_options) > 1:
+        st.radio(
+            "MarcEditor mode",
+            mode_options,
+            horizontal=True,
+            key=_K_EDITOR_MODE,
         )
+    else:
+        st.session_state[_K_EDITOR_MODE] = RECORD_MODE
+
+    if st.session_state[_K_EDITOR_MODE] == RECORD_MODE:
+        if over_cap:
+            st.info(
+                f"This batch contains **{total:,}** records, above the "
+                f"`{MAX_EDITOR_RECORDS:,}`-record cap for the full-batch "
+                "text editor. **Per-record editing is enabled below** — "
+                "pick a record by number to edit it. For bulk transforms "
+                "across all records, use the **Tasks** page."
+            )
         _render_single_record_picker(store, total, rule_set)
         return
 
