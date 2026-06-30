@@ -49,6 +49,34 @@ def test_checkout_version_key_is_shared_per_job_record():
     assert first_version == second_version
 
 
+def test_should_open_editor_immediately_honors_existing_state():
+    session_state = {"workspace_edit_active": False}
+
+    assert single_record_edit._should_open_immediately(
+        session_state,
+        "workspace_edit_active",
+        start_open=True,
+    ) is True
+    assert single_record_edit._should_open_immediately(
+        session_state,
+        "workspace_edit_active",
+        start_open=False,
+    ) is False
+
+
+def test_should_open_editor_immediately_does_not_reopen_after_cancel():
+    session_state = {
+        "workspace_edit_active": False,
+        "workspace_edit_user_closed": True,
+    }
+
+    assert single_record_edit._should_open_immediately(
+        session_state,
+        "workspace_edit_active",
+        start_open=True,
+    ) is False
+
+
 def test_fixed_save_gate_blocks_viewer(monkeypatch):
     monkeypatch.setattr(fixed_field_helper.st, "session_state", {"current_job_id": 1})
     monkeypatch.setattr(

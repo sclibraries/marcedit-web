@@ -73,6 +73,7 @@ def render_inline_edit(
     record: Any,
     rule_set: Any,
     key_prefix: str,
+    start_open: bool = False,
 ) -> None:
     """Render the inline single-record editor below the current call site.
 
@@ -95,6 +96,7 @@ def render_inline_edit(
     k_text = f"{key_prefix}_text"
     k_draft = f"{key_prefix}_draft"
     k_mode = f"{key_prefix}_mode"
+    k_user_closed = f"{key_prefix}_user_closed"
     k_feedback = f"{key_prefix}_feedback"
     job_id = st.session_state.get("current_job_id")
     user = session.current_user_id()
@@ -115,16 +117,26 @@ def render_inline_edit(
     # Navigating to a different record while edit is open cancels the
     # previous draft — the buffer was tied to the previous index, so
     # carrying it across would silently corrupt the wrong record.
-    if (
-        st.session_state.get(k_active)
-        and st.session_state.get(k_index) != index
-    ):
-        _clear_state(k_active, k_index, k_text, k_draft, k_mode)
+    if st.session_state.get(k_index) not in (None, index):
+        _clear_state(k_active, k_index, k_text, k_draft, k_mode, k_user_closed)
 
     feedback = st.session_state.pop(k_feedback, None)
     if feedback:
         kind, msg = feedback
         getattr(st, kind)(msg)
+
+    def _open_editor() -> None:
+        st.session_state[k_active] = True
+        st.session_state[k_index] = index
+        st.session_state[k_text] = mrk_writer.render_records_mrk([record])
+        st.session_state[k_draft] = structured_record_editor.record_to_draft(
+            record
+        )
+        st.session_state[k_mode] = "Field editor"
+        st.session_state.pop(k_user_closed, None)
+
+    if _should_open_immediately(st.session_state, k_active, start_open=start_open):
+        _open_editor()
 
     if not st.session_state.get(k_active):
         can_open = _can_edit_record(role, holds_lock)
@@ -139,13 +151,7 @@ def render_inline_edit(
                 "touched."
             ),
         ):
-            st.session_state[k_active] = True
-            st.session_state[k_index] = index
-            st.session_state[k_text] = mrk_writer.render_records_mrk([record])
-            st.session_state[k_draft] = structured_record_editor.record_to_draft(
-                record
-            )
-            st.session_state[k_mode] = "Field editor"
+            _open_editor()
             st.rerun()
         return
 
@@ -182,6 +188,7 @@ def render_inline_edit(
 
         if cancel_clicked:
             _clear_state(k_active, k_index, k_text, k_draft, k_mode)
+            st.session_state[k_user_closed] = True
             st.rerun()
             return
 
@@ -253,6 +260,7 @@ def render_inline_edit(
 
     if cancel_clicked:
         _clear_state(k_active, k_index, k_text, k_draft, k_mode)
+        st.session_state[k_user_closed] = True
         st.rerun()
         return
 
@@ -284,6 +292,21 @@ def render_inline_edit(
 def _clear_state(*keys: str) -> None:
     for key in keys:
         st.session_state.pop(key, None)
+
+
+def _should_open_immediately(
+    session_state: dict,
+    active_key: str,
+    *,
+    start_open: bool,
+) -> bool:
+    """Return whether a start-open editor should initialize this render."""
+    if not start_open:
+        return False
+    if session_state.get(active_key):
+        return False
+    closed_key = active_key.replace("_active", "_user_closed")
+    return not session_state.get(closed_key)
 
 
 def _save_validated_record(

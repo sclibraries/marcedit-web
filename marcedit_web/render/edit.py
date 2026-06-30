@@ -104,7 +104,6 @@ def _render_single_record_picker(store, total: int, rule_set) -> None:
     st.markdown(
         f"**Record {index:,} of {total:,}** — `{identifier}` — {title}"
     )
-    st.code(viewer.render_record_human(record), language="text")
 
     single_record_edit.render_inline_edit(
         store=store,
@@ -112,7 +111,11 @@ def _render_single_record_picker(store, total: int, rule_set) -> None:
         record=record,
         rule_set=rule_set,
         key_prefix="workspace_edit",
+        start_open=True,
     )
+
+    with st.expander("Record source preview", expanded=False):
+        st.code(viewer.render_record_human(record), language="text")
 
     fixed_field_helper.render_fixed_field_helper(
         store=store,
