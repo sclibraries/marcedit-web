@@ -185,6 +185,60 @@ def render_inline_edit(
                 save_disabled=save_disabled,
             )
         )
+        live_result = structured_record_editor.validate_draft(draft, rule_set)
+
+        if top_cancel_clicked:
+            _clear_state(k_active, k_index, k_text, k_draft, k_mode)
+            st.session_state[k_user_closed] = True
+            st.session_state.pop(k_pending_preview, None)
+            st.rerun()
+            return
+
+        if top_save_clicked:
+            if preview_enabled:
+                st.session_state[k_pending_preview] = True
+                st.rerun()
+                return
+            st.session_state.pop(k_pending_preview, None)
+            if _save_validated_record(
+                store=store,
+                index=index,
+                result=live_result,
+                key_prefix=key_prefix,
+                status_container=st,
+                feedback_key=k_feedback,
+                clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
+            ):
+                st.rerun()
+            return
+
+        if _should_show_pending_preview(st.session_state, k_pending_preview):
+            preview_action, status_col = _render_pending_preview(
+                draft,
+                live_result,
+                key_prefix,
+                index,
+            )
+            if preview_action == "dismiss":
+                st.session_state.pop(k_pending_preview, None)
+                st.rerun()
+                return
+            if preview_action == "confirm":
+                st.session_state.pop(k_pending_preview, None)
+                if _save_validated_record(
+                    store=store,
+                    index=index,
+                    result=live_result,
+                    key_prefix=key_prefix,
+                    status_container=status_col,
+                    feedback_key=k_feedback,
+                    clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
+                ):
+                    st.rerun()
+                return
+            _render_validation_feedback(live_result)
+            return
+
         section_save_clicked = _render_structured_field_editor(
             draft,
             key_prefix,
@@ -216,6 +270,8 @@ def render_inline_edit(
         if save_clicked:
             if preview_enabled:
                 st.session_state[k_pending_preview] = True
+                st.rerun()
+                return
             else:
                 st.session_state.pop(k_pending_preview, None)
                 if _save_validated_record(
@@ -229,43 +285,6 @@ def render_inline_edit(
                 ):
                     st.rerun()
                 return
-
-        if st.session_state.get(k_pending_preview):
-            st.markdown("**Preview record before saving**")
-            if live_result.can_save:
-                st.code(
-                    structured_record_editor.preview_mrk(draft),
-                    language="text",
-                )
-            confirm_col, dismiss_col, status_col = st.columns([1, 1, 4])
-            confirm_clicked = confirm_col.button(
-                "Confirm save",
-                type="primary",
-                key=f"{key_prefix}_confirm_preview_{index}",
-            )
-            dismiss_clicked = dismiss_col.button(
-                "Keep editing",
-                key=f"{key_prefix}_dismiss_preview_{index}",
-            )
-            if dismiss_clicked:
-                st.session_state.pop(k_pending_preview, None)
-                st.rerun()
-                return
-            if confirm_clicked:
-                st.session_state.pop(k_pending_preview, None)
-                if _save_validated_record(
-                    store=store,
-                    index=index,
-                    result=live_result,
-                    key_prefix=key_prefix,
-                    status_container=status_col,
-                    feedback_key=k_feedback,
-                    clear_keys=(k_active, k_index, k_text, k_draft, k_mode),
-                ):
-                    st.rerun()
-                return
-            _render_validation_feedback(live_result)
-            return
 
         _render_validation_feedback(live_result)
         return
@@ -371,6 +390,10 @@ def _should_open_immediately(
     return not session_state.get(closed_key)
 
 
+def _should_show_pending_preview(session_state: dict, pending_key: str) -> bool:
+    return bool(session_state.get(pending_key))
+
+
 def _render_jump_links(draft: structured_record_editor.RecordDraft) -> None:
     targets = structured_record_editor.jump_targets(draft)
     if not targets:
@@ -380,6 +403,35 @@ def _render_jump_links(draft: structured_record_editor.RecordDraft) -> None:
         for target, label in targets
     )
     st.markdown(f"Jump to: {links}")
+
+
+def _render_pending_preview(
+    draft: structured_record_editor.RecordDraft,
+    live_result: view_edit.SingleRecordParseResult,
+    key_prefix: str,
+    index: int,
+) -> tuple[str | None, Any]:
+    st.markdown("**Preview record before saving**")
+    if live_result.can_save:
+        st.code(
+            structured_record_editor.preview_mrk(draft),
+            language="text",
+        )
+    confirm_col, dismiss_col, status_col = st.columns([1, 1, 4])
+    confirm_clicked = confirm_col.button(
+        "Confirm save",
+        type="primary",
+        key=f"{key_prefix}_confirm_preview_{index}",
+    )
+    dismiss_clicked = dismiss_col.button(
+        "Keep editing",
+        key=f"{key_prefix}_dismiss_preview_{index}",
+    )
+    if dismiss_clicked:
+        return "dismiss", status_col
+    if confirm_clicked:
+        return "confirm", status_col
+    return None, status_col
 
 
 def _section_anchor(target: str) -> str:

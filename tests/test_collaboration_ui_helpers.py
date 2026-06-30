@@ -77,6 +77,17 @@ def test_should_open_editor_immediately_does_not_reopen_after_cancel():
     ) is False
 
 
+def test_should_show_pending_preview_uses_session_state_flag():
+    assert single_record_edit._should_show_pending_preview(
+        {"workspace_edit_pending_preview": True},
+        "workspace_edit_pending_preview",
+    ) is True
+    assert single_record_edit._should_show_pending_preview(
+        {},
+        "workspace_edit_pending_preview",
+    ) is False
+
+
 def test_fixed_save_gate_blocks_viewer(monkeypatch):
     monkeypatch.setattr(fixed_field_helper.st, "session_state", {"current_job_id": 1})
     monkeypatch.setattr(
