@@ -18,7 +18,6 @@ That's what the ``key_prefix`` parameter handles — pass
 from __future__ import annotations
 
 import datetime as dt
-import html
 from typing import Any
 
 import streamlit as st
@@ -399,56 +398,23 @@ def _render_jump_links(draft: structured_record_editor.RecordDraft) -> None:
     targets = structured_record_editor.jump_targets(draft)
     if not targets:
         return
-    st.markdown(_jump_bar_html(targets), unsafe_allow_html=True)
+    links = _jump_links_markdown(targets)
+    st.markdown(f"Jump to: {links}")
+    _render_sidebar_jump_links(links)
 
 
-def _jump_bar_html(targets: list[tuple[str, str]]) -> str:
-    links = "\n".join(
-        (
-            f'<a class="record-jump-link" href="#{_section_anchor(target)}">'
-            f"{html.escape(label)}</a>"
-        )
+def _jump_links_markdown(targets: list[tuple[str, str]]) -> str:
+    return " · ".join(
+        f"[{label}](#{_section_anchor(target)})"
         for target, label in targets
     )
-    return (
-        "<div class=\"record-jump-bar\">"
-        "<span class=\"record-jump-label\">Jump to</span>"
-        f"{links}"
-        "</div>"
-        "<style>"
-        ".record-jump-bar {"
-        "position: sticky;"
-        "top: 0.5rem;"
-        "z-index: 10;"
-        "display: flex;"
-        "flex-wrap: wrap;"
-        "gap: 0.35rem;"
-        "align-items: center;"
-        "padding: 0.45rem 0.55rem;"
-        "margin: 0.25rem 0 0.75rem 0;"
-        "background: rgba(255,255,255,0.96);"
-        "border: 1px solid rgba(49,51,63,0.18);"
-        "border-radius: 6px;"
-        "box-shadow: 0 2px 10px rgba(49,51,63,0.08);"
-        "}"
-        ".record-jump-label {"
-        "font-weight: 600;"
-        "font-size: 0.85rem;"
-        "margin-right: 0.2rem;"
-        "}"
-        ".record-jump-link {"
-        "font-size: 0.82rem;"
-        "line-height: 1.2;"
-        "padding: 0.18rem 0.4rem;"
-        "border-radius: 999px;"
-        "background: rgba(49,51,63,0.06);"
-        "text-decoration: none !important;"
-        "}"
-        ".record-jump-link:hover {"
-        "background: rgba(255,75,75,0.12);"
-        "}"
-        "</style>"
-    )
+
+
+def _render_sidebar_jump_links(links: str) -> None:
+    with st.sidebar:
+        st.markdown("### Record editor")
+        st.markdown("**Jump to**")
+        st.markdown(links)
 
 
 def _open_pending_preview_dialog(
