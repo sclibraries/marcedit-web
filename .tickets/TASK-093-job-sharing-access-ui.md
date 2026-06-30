@@ -1,6 +1,6 @@
 # TASK-093 — Shared job access service and UI
 
-**Status:** Todo
+**Status:** Completed
 **Priority:** Tier 4 — Collaboration
 **Parent:** TASK-086
 **Depends on:** TASK-081, TASK-085
@@ -25,3 +25,13 @@ job listing/selection.
 2. Shared jobs appear for invited users.
 3. Viewers can select and inspect a shared job but cannot perform edit actions.
 4. Focused tests and Docker suite pass before completion.
+
+## Outcome
+
+- Added job access helpers for grant, revoke, list, role lookup, and role
+  enforcement.
+- Updated job listing to include shared jobs with `access_role`.
+- Added owner-only Home-page sharing controls for granting and revoking
+  editor/viewer access.
+- Final verification: `docker compose run --rm marcedit-web python -m pytest -q`
+  passed with `856 passed, 5 skipped`.

@@ -40,6 +40,90 @@ def test_create_job_rejects_duplicate_owner_name():
         jobs.create_job("alice@example.edu", "Vendor load June")
 
 
+def test_owner_can_grant_and_revoke_shared_job_access():
+    job = jobs.create_job("owner@example.edu", "Shared load")
+
+    granted = jobs.grant_access(
+        job["id"],
+        "editor@example.edu",
+        "editor",
+        by="owner@example.edu",
+    )
+
+    assert granted["job_id"] == job["id"]
+    assert granted["user_email"] == "editor@example.edu"
+    assert granted["role"] == "editor"
+    assert jobs.get_access_role(job["id"], "editor@example.edu") == "editor"
+    assert jobs.revoke_access(
+        job["id"],
+        "editor@example.edu",
+        by="owner@example.edu",
+    ) is True
+    assert jobs.get_access_role(job["id"], "editor@example.edu") is None
+
+
+def test_non_owner_cannot_grant_shared_job_access():
+    job = jobs.create_job("owner@example.edu", "Shared load")
+
+    with pytest.raises(jobs.JobError, match="owner"):
+        jobs.grant_access(
+            job["id"],
+            "editor@example.edu",
+            "editor",
+            by="not-owner@example.edu",
+        )
+
+
+def test_owner_role_cannot_be_downgraded_by_grant():
+    job = jobs.create_job("owner@example.edu", "Shared load")
+
+    with pytest.raises(jobs.JobError, match="owner access"):
+        jobs.grant_access(
+            job["id"],
+            "owner@example.edu",
+            "viewer",
+            by="owner@example.edu",
+        )
+
+    assert jobs.get_access_role(job["id"], "owner@example.edu") == "owner"
+
+
+def test_list_jobs_includes_shared_jobs_with_role():
+    owned = jobs.create_job("alice@example.edu", "Owned")
+    shared = jobs.create_job("owner@example.edu", "Shared")
+    jobs.grant_access(
+        shared["id"],
+        "alice@example.edu",
+        "viewer",
+        by="owner@example.edu",
+    )
+
+    rows = jobs.list_jobs("alice@example.edu")
+
+    assert [(row["id"], row["access_role"]) for row in rows] == [
+        (owned["id"], "owner"),
+        (shared["id"], "viewer"),
+    ]
+
+
+def test_require_role_returns_matching_role_and_rejects_viewer():
+    job = jobs.create_job("owner@example.edu", "Shared load")
+    jobs.grant_access(
+        job["id"],
+        "viewer@example.edu",
+        "viewer",
+        by="owner@example.edu",
+    )
+
+    assert jobs.require_role(
+        job["id"], "owner@example.edu", {"owner", "editor"}
+    ) == "owner"
+    with pytest.raises(jobs.JobError, match="access denied"):
+        jobs.require_role(
+            job["id"], "viewer@example.edu", {"owner", "editor"}
+        )
+
+
 def test_record_upload_attaches_to_default_job():
     upload_persistence.record_upload(
         user="alice@example.edu",

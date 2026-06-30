@@ -20,6 +20,13 @@ from marcedit_web.lib.identity import is_anonymous
 session.init_page()
 
 
+def _job_label(job: dict) -> str:
+    role = job.get("access_role")
+    if role and role != "owner":
+        return f"{job['name']} ({role})"
+    return job["name"]
+
+
 # --- Upload widget (handled FIRST so the sidebar reads fresh state) --------
 
 
@@ -45,11 +52,12 @@ if not is_anonymous(user):
         options=job_ids,
         index=job_ids.index(current_job_id),
         format_func=lambda job_id: next(
-            job["name"] for job in job_rows if job["id"] == job_id
+            _job_label(job) for job in job_rows if job["id"] == job_id
         ),
-        help="Uploads attach to the selected job. Sharing controls are not enabled yet.",
+        help="Uploads attach to the selected job.",
         key="current_job_id",
     )
+    current_job_id = int(selected_job_id)
 
     with st.expander("Create job", expanded=False):
         new_job_name = st.text_input(
@@ -66,6 +74,59 @@ if not is_anonymous(user):
                 st.session_state["current_job_id"] = created["id"]
                 st.success(f"Created job `{created['name']}`.")
                 st.rerun()
+
+    role = jobs.get_access_role(current_job_id, user)
+    if role == "owner":
+        with st.expander("Share job", expanded=False):
+            share_email = st.text_input(
+                "Cataloger email",
+                placeholder="name@example.edu",
+                key="share_job_email",
+            )
+            share_role = st.selectbox(
+                "Role",
+                ["editor", "viewer"],
+                key="share_job_role",
+            )
+            if st.button("Grant access", key="share_job_grant"):
+                try:
+                    jobs.grant_access(
+                        current_job_id,
+                        share_email,
+                        share_role,
+                        by=user,
+                    )
+                except jobs.JobError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success("Access granted.")
+                    st.rerun()
+
+            access_rows = jobs.list_access(current_job_id)
+            st.dataframe(access_rows, hide_index=True, use_container_width=True)
+
+            revoke_options = [
+                row["user_email"] for row in access_rows
+                if row["role"] != "owner"
+            ]
+            if revoke_options:
+                revoke_email = st.selectbox(
+                    "Remove access",
+                    revoke_options,
+                    key="share_job_revoke_email",
+                )
+                if st.button("Revoke access", key="share_job_revoke"):
+                    try:
+                        jobs.revoke_access(
+                            current_job_id,
+                            revoke_email,
+                            by=user,
+                        )
+                    except jobs.JobError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.success("Access revoked.")
+                        st.rerun()
 
 uploaded = st.file_uploader(
     "Choose a .mrc file",
