@@ -18,6 +18,7 @@ That's what the ``key_prefix`` parameter handles — pass
 from __future__ import annotations
 
 import datetime as dt
+import html
 from typing import Any
 
 import streamlit as st
@@ -398,23 +399,71 @@ def _render_jump_links(draft: structured_record_editor.RecordDraft) -> None:
     targets = structured_record_editor.jump_targets(draft)
     if not targets:
         return
-    links = _jump_links_markdown(targets)
-    st.markdown(f"Jump to: {links}")
-    _render_sidebar_jump_links(links)
+    st.markdown(_floating_jump_rail_html(targets), unsafe_allow_html=True)
 
 
-def _jump_links_markdown(targets: list[tuple[str, str]]) -> str:
-    return " · ".join(
-        f"[{label}](#{_section_anchor(target)})"
+def _floating_jump_rail_html(targets: list[tuple[str, str]]) -> str:
+    links = "\n".join(
+        (
+            f'<a class="record-jump-rail-link" '
+            f'href="#{_section_anchor(target)}">{html.escape(label)}</a>'
+        )
         for target, label in targets
     )
-
-
-def _render_sidebar_jump_links(links: str) -> None:
-    with st.sidebar:
-        st.markdown("### Record editor")
-        st.markdown("**Jump to**")
-        st.markdown(links)
+    return (
+        '<aside class="record-jump-rail">'
+        "<details open>"
+        "<summary>Jump</summary>"
+        '<nav aria-label="Record sections">'
+        f"{links}"
+        "</nav>"
+        "</details>"
+        "</aside>"
+        "<style>"
+        ".record-jump-rail {"
+        "position: fixed;"
+        "top: 7rem;"
+        "right: 1rem;"
+        "z-index: 50;"
+        "max-width: 11.5rem;"
+        "font-size: 0.8rem;"
+        "}"
+        ".record-jump-rail details {"
+        "background: rgba(255,255,255,0.97);"
+        "border: 1px solid rgba(49,51,63,0.2);"
+        "border-radius: 6px;"
+        "box-shadow: 0 4px 18px rgba(49,51,63,0.14);"
+        "padding: 0.35rem;"
+        "}"
+        ".record-jump-rail summary {"
+        "cursor: pointer;"
+        "font-weight: 650;"
+        "line-height: 1.2;"
+        "padding: 0.15rem 0.2rem;"
+        "}"
+        ".record-jump-rail nav {"
+        "display: flex;"
+        "flex-direction: column;"
+        "gap: 0.2rem;"
+        "margin-top: 0.35rem;"
+        "}"
+        ".record-jump-rail-link {"
+        "display: block;"
+        "padding: 0.2rem 0.35rem;"
+        "border-radius: 4px;"
+        "background: rgba(49,51,63,0.055);"
+        "text-decoration: none !important;"
+        "line-height: 1.15;"
+        "}"
+        ".record-jump-rail-link:hover {"
+        "background: rgba(255,75,75,0.13);"
+        "}"
+        "@media (max-width: 900px) {"
+        ".record-jump-rail { right: 0.35rem; max-width: 8.5rem; }"
+        ".record-jump-rail nav { max-height: 55vh; overflow-y: auto; }"
+        "}"
+        "</style>"
+    )
 
 
 def _open_pending_preview_dialog(

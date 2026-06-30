@@ -110,15 +110,18 @@ def test_pending_preview_opens_dialog(monkeypatch):
     assert callable(opened[0]["dismiss_callback"])
 
 
-def test_jump_links_markdown_points_to_record_sections():
-    markdown = single_record_edit._jump_links_markdown([
+def test_floating_jump_rail_html_is_fixed_and_collapsible():
+    html = single_record_edit._floating_jump_rail_html([
         ("fixed", "Leader / control fields"),
         ("245", "245 Title"),
     ])
 
-    assert "[Leader / control fields](#record-field-fixed)" in markdown
-    assert "[245 Title](#record-field-245)" in markdown
-    assert "position: sticky" not in markdown
+    assert "position: fixed" in html
+    assert "<details" in html
+    assert "<summary" in html
+    assert 'href="#record-field-fixed"' in html
+    assert 'href="#record-field-245"' in html
+    assert "Leader / control fields" in html
 
 
 def test_fixed_save_gate_blocks_viewer(monkeypatch):
