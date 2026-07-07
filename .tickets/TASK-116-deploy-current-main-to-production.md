@@ -21,4 +21,7 @@ Success Criteria:
 - Cataloger signs in with Google; bootstrap admin (roconnell@smith.edu) lands
   approved with the admin role; WebSocket still connects (101).
 
-Status: In-Progress
+Status: Completed (2026-07-07: deploy.sh healthcheck OK on libtools2; WebSocket
+handshake re-verified 101 post-deploy; Google OAuth configured in server
+secrets.toml; bootstrap admin roconnell@smith.edu, five-college domains
+auto-approved)
