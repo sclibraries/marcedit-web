@@ -2,6 +2,11 @@
 headless = true
 maxUploadSize = 2048
 runOnSave = false
+# Apache on libtools2 proxies to 127.0.0.1:8501 without preserving the Host
+# header, so Tornado sees the browser's Origin as cross-origin and rejects
+# the /_stcore/stream WebSocket with 403 (TASK-115). Allowlist the public
+# origin instead of disabling CORS. Requires Streamlit >= 1.46.
+corsAllowedOrigins = ["https://libtools2.smith.edu"]
 
 [browser]
 gatherUsageStats = false
