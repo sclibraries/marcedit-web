@@ -19,12 +19,35 @@ from marcedit_web.lib.identity import is_anonymous
 
 session.init_page()
 
+_PENDING_CURRENT_JOB_ID = "pending_current_job_id"
+
 
 def _job_label(job: dict) -> str:
     role = job.get("access_role")
     if role and role != "owner":
         return f"{job['name']} ({role})"
     return job["name"]
+
+
+def _set_current_job(job_id: int) -> None:
+    st.session_state["current_job_id"] = job_id
+
+
+def _apply_pending_job(job_ids: list[int]) -> int:
+    pending_job_id = st.session_state.pop(_PENDING_CURRENT_JOB_ID, None)
+    current_job_id = pending_job_id or st.session_state.get("current_job_id")
+    if current_job_id not in job_ids:
+        current_job_id = job_ids[0]
+        _set_current_job(current_job_id)
+    elif pending_job_id is not None:
+        _set_current_job(current_job_id)
+    return int(current_job_id)
+
+
+def _activate_quick_load(default_job_id: int | None) -> None:
+    st.session_state["quick_load_mode"] = True
+    if default_job_id is not None:
+        _set_current_job(default_job_id)
 
 
 # --- Upload widget (handled FIRST so the sidebar reads fresh state) --------
@@ -36,120 +59,121 @@ st.caption("MARC21 viewer, validator, editor, and diff — in your browser.")
 st.header("Upload a MARC file")
 
 user = session.current_user_id()
+default_job = None
+job_rows: list[dict] = []
 if not is_anonymous(user):
+    default_job = jobs.ensure_default_job(user)
     job_rows = jobs.list_jobs(user)
-    if not job_rows:
-        job_rows = [jobs.ensure_default_job(user)]
-
-    current_job_id = st.session_state.get("current_job_id")
     job_ids = [job["id"] for job in job_rows]
-    if current_job_id not in job_ids:
-        current_job_id = job_ids[0]
-        st.session_state["current_job_id"] = current_job_id
+    if default_job["id"] not in job_ids:
+        job_rows = [default_job, *job_rows]
 
-    selected_job_id = st.selectbox(
-        "Job",
-        options=job_ids,
-        index=job_ids.index(current_job_id),
-        format_func=lambda job_id: next(
-            _job_label(job) for job in job_rows if job["id"] == job_id
+quick_tab, job_tab = st.tabs(["Quick Load", "Job Workspace"])
+
+upload_summary = None
+with quick_tab:
+    st.subheader("Quick Load")
+    st.caption("Use this for one-off viewing, validation, reports, editing, or conversion.")
+    if default_job is not None and st.session_state.get("quick_load_mode"):
+        _set_current_job(default_job["id"])
+
+    uploaded = st.file_uploader(
+        "Choose a .mrc file",
+        type=["mrc", "marc"],
+        accept_multiple_files=False,
+        help=(
+            "Binary MARC21. Upload limit is set in `.streamlit/config.toml` "
+            "(currently 2 GB). Large files may take a moment to parse."
         ),
-        help="Uploads attach to the selected job.",
-        key="current_job_id",
+        key="home_quick_load_upload",
+        on_change=(
+            None
+            if default_job is None
+            else lambda: _activate_quick_load(int(default_job["id"]))
+        ),
     )
-    current_job_id = int(selected_job_id)
+    if uploaded is not None:
+        # Parsing a large .mrc can take several seconds; without a spinner
+        # the page appears frozen and the cataloger doesn't know whether
+        # to wait or refresh.
+        with st.spinner(f"Parsing {uploaded.name}…"):
+            upload_summary = session.handle_upload(uploaded)
+        if upload_summary.get("error"):
+            st.error(
+                f"Upload rejected: {upload_summary['error']}. Contact ops if "
+                "you need a higher limit for this batch."
+            )
+        elif upload_summary["total"] == 0 and upload_summary["malformed"] == 0:
+            st.error("No records found in the uploaded file.")
+        else:
+            st.success(
+                f"Loaded **{upload_summary['total']}** record"
+                f"{'s' if upload_summary['total'] != 1 else ''} from "
+                f"`{upload_summary['filename']}`."
+            )
+            if upload_summary["malformed"]:
+                st.warning(
+                    f"{upload_summary['malformed']} record"
+                    f"{'s' if upload_summary['malformed'] != 1 else ''} could not be "
+                    "parsed and will be skipped."
+                )
+            st.write("Next actions")
+            cols = st.columns(5)
+            if cols[0].button("View records", key="next_view"):
+                st.switch_page("views/1_View.py")
+            if cols[1].button("Validate", key="next_validate"):
+                st.switch_page("views/2_Validate.py")
+            if cols[2].button("Report", key="next_report"):
+                st.switch_page("views/3_Report.py")
+            if cols[3].button("Edit", key="next_edit"):
+                st.switch_page("views/5_MarcEditor.py")
+            if cols[4].button("Tools", key="next_tools"):
+                st.switch_page("views/9_MarcTools.py")
 
-    with st.expander("Create job", expanded=False):
-        new_job_name = st.text_input(
-            "Job name",
-            placeholder="e.g. Vendor load June",
-            key="new_job_name",
+with job_tab:
+    st.subheader("Job Workspace")
+    st.caption("Use jobs for shared vendor loads, review, and handoff.")
+    if is_anonymous(user):
+        st.info("Sign in to create or continue shared jobs.")
+    else:
+        job_ids = [job["id"] for job in job_rows]
+        current_job_id = _apply_pending_job(job_ids)
+        selected_job_id = st.selectbox(
+            "Job",
+            options=job_ids,
+            index=job_ids.index(current_job_id),
+            format_func=lambda job_id: next(
+                _job_label(job) for job in job_rows if job["id"] == job_id
+            ),
+            help="Use the Jobs page for sharing, review, and handoff details.",
+            key="current_job_id",
         )
-        if st.button("Create job", key="create_job_btn"):
-            try:
-                created = jobs.create_job(user, new_job_name)
-            except jobs.JobError as exc:
-                st.error(str(exc))
-            else:
-                st.session_state["current_job_id"] = created["id"]
-                st.success(f"Created job `{created['name']}`.")
-                st.rerun()
+        current_job_id = int(selected_job_id)
+        st.session_state["quick_load_mode"] = False
 
-    role = jobs.get_access_role(current_job_id, user)
-    if role == "owner":
-        with st.expander("Share job", expanded=False):
-            share_email = st.text_input(
-                "Cataloger email",
-                placeholder="name@example.edu",
-                key="share_job_email",
+        with st.expander("Create job", expanded=False):
+            new_job_name = st.text_input(
+                "Job name",
+                placeholder="e.g. Vendor load June",
+                key="new_job_name",
             )
-            share_role = st.selectbox(
-                "Role",
-                ["editor", "viewer"],
-                key="share_job_role",
-            )
-            if st.button("Grant access", key="share_job_grant"):
+            if st.button("Create job", key="create_job_btn"):
                 try:
-                    jobs.grant_access(
-                        current_job_id,
-                        share_email,
-                        share_role,
-                        by=user,
-                    )
+                    created = jobs.create_job(user, new_job_name)
                 except jobs.JobError as exc:
                     st.error(str(exc))
                 else:
-                    st.success("Access granted.")
+                    st.session_state[_PENDING_CURRENT_JOB_ID] = created["id"]
                     st.rerun()
 
-            access_rows = jobs.list_access(current_job_id)
-            st.dataframe(access_rows, hide_index=True, use_container_width=True)
-
-            revoke_options = [
-                row["user_email"] for row in access_rows
-                if row["role"] != "owner"
-            ]
-            if revoke_options:
-                revoke_email = st.selectbox(
-                    "Remove access",
-                    revoke_options,
-                    key="share_job_revoke_email",
-                )
-                if st.button("Revoke access", key="share_job_revoke"):
-                    try:
-                        jobs.revoke_access(
-                            current_job_id,
-                            revoke_email,
-                            by=user,
-                        )
-                    except jobs.JobError as exc:
-                        st.error(str(exc))
-                    else:
-                        st.success("Access revoked.")
-                        st.rerun()
-
-uploaded = st.file_uploader(
-    "Choose a .mrc file",
-    type=["mrc", "marc"],
-    accept_multiple_files=False,
-    help=(
-        "Binary MARC21. Upload limit is set in `.streamlit/config.toml` "
-        "(currently 2 GB). Large files may take a moment to parse."
-    ),
-)
-
-upload_summary = None
-if uploaded is not None:
-    # Parsing a large .mrc can take several seconds; without a spinner
-    # the page appears frozen and the cataloger doesn't know whether
-    # to wait or refresh.
-    with st.spinner(f"Parsing {uploaded.name}…"):
-        upload_summary = session.handle_upload(uploaded)
-    if upload_summary.get("error"):
-        st.error(
-            f"Upload rejected: {upload_summary['error']}. Contact ops if "
-            "you need a higher limit for this batch."
-        )
+        summaries = jobs.list_job_summaries(user)
+        for row in summaries[:5]:
+            cols = st.columns([4, 2, 1])
+            cols[0].write(row["name"])
+            cols[1].write(row["status"].replace("_", " ").capitalize())
+            if cols[2].button("Open", key=f"home_open_job_{row['id']}"):
+                st.session_state["selected_job_detail_id"] = row["id"]
+                st.switch_page("views/B_Jobs.py")
 
 
 # --- Sidebar ---------------------------------------------------------------
@@ -168,26 +192,6 @@ with st.sidebar:
         st.caption(f"{session.record_count()} records")
     else:
         st.caption("No file loaded yet.")
-
-
-# --- Inline upload feedback ------------------------------------------------
-
-
-if upload_summary is not None and not upload_summary.get("error"):
-    if upload_summary["total"] == 0 and upload_summary["malformed"] == 0:
-        st.error("No records found in the uploaded file.")
-    else:
-        st.success(
-            f"Loaded **{upload_summary['total']}** record"
-            f"{'s' if upload_summary['total'] != 1 else ''} from "
-            f"`{upload_summary['filename']}`."
-        )
-        if upload_summary["malformed"]:
-            st.warning(
-                f"{upload_summary['malformed']} record"
-                f"{'s' if upload_summary['malformed'] != 1 else ''} could not be "
-                "parsed and will be skipped."
-            )
 
 
 # --- Loaded-batch summary + download ---------------------------------------
@@ -215,13 +219,6 @@ if session.has_upload():
             ),
         )
 
-    st.divider()
-    st.markdown(
-        "**Next steps:** pick a page from the sidebar — **Inspect** for "
-        "viewing / validation / reports, **Edit** for the .mrk editor "
-        "and Tasks transforms, **Reconcile** for Diff / Dedupe / format "
-        "conversion."
-    )
 else:
     st.info(
         "Upload a `.mrc` file above to begin. Nothing persists across "
