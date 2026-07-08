@@ -177,3 +177,82 @@ def test_list_job_uploads_returns_all_files_for_job():
     uploads = jobs.list_job_uploads(job["id"])
 
     assert [row["filename"] for row in uploads] == ["first.mrc", "second.mrc"]
+
+
+def test_new_job_defaults_to_active_status():
+    """New shared workspaces begin as active, not review-blocked."""
+    created = jobs.create_job("alice@example.edu", "Vendor load July")
+
+    assert created["status"] == jobs.STATUS_ACTIVE
+    assert created["active"] == 1
+
+
+def test_owner_or_editor_can_change_job_status_and_activity_records_it():
+    """Review status is coordination metadata with an auditable trail."""
+    job = jobs.create_job("owner@example.edu", "Vendor load July")
+    jobs.grant_access(
+        job["id"],
+        "editor@example.edu",
+        "editor",
+        by="owner@example.edu",
+    )
+
+    updated = jobs.set_status(
+        job["id"],
+        jobs.STATUS_NEEDS_REVIEW,
+        by="editor@example.edu",
+        note="Please check 856 proxy prefixes.",
+    )
+
+    assert updated["status"] == jobs.STATUS_NEEDS_REVIEW
+    activity = jobs.list_activity(job["id"])
+    assert activity[-1]["kind"] == "status-changed"
+    assert activity[-1]["actor_email"] == "editor@example.edu"
+    assert "Please check 856 proxy prefixes." in activity[-1]["message"]
+
+
+def test_viewer_cannot_change_job_status():
+    """Viewers may inspect review state but cannot move the workflow."""
+    job = jobs.create_job("owner@example.edu", "Vendor load July")
+    jobs.grant_access(
+        job["id"],
+        "viewer@example.edu",
+        "viewer",
+        by="owner@example.edu",
+    )
+
+    with pytest.raises(jobs.JobError, match="access denied"):
+        jobs.set_status(
+            job["id"],
+            jobs.STATUS_APPROVED,
+            by="viewer@example.edu",
+        )
+
+
+def test_archive_is_owner_only_and_hides_job_from_active_list():
+    """Archive is a reversible soft delete that preserves history."""
+    job = jobs.create_job("owner@example.edu", "Old vendor load")
+    jobs.grant_access(
+        job["id"],
+        "editor@example.edu",
+        "editor",
+        by="owner@example.edu",
+    )
+
+    with pytest.raises(jobs.JobError, match="owner"):
+        jobs.archive_job(job["id"], by="editor@example.edu")
+
+    archived = jobs.archive_job(job["id"], by="owner@example.edu")
+
+    assert archived["active"] == 0
+    assert archived["status"] == jobs.STATUS_ARCHIVED
+    assert [row["id"] for row in jobs.list_jobs("owner@example.edu")] == []
+    assert jobs.get_job(job["id"])["id"] == job["id"]
+
+
+def test_default_personal_uploads_job_cannot_be_archived():
+    """Quick Load needs a permanent default job target."""
+    default = jobs.ensure_default_job("alice@example.edu")
+
+    with pytest.raises(jobs.JobError, match="Personal uploads"):
+        jobs.archive_job(default["id"], by="alice@example.edu")

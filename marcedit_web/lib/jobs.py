@@ -9,6 +9,25 @@ from typing import Any
 from . import db
 
 DEFAULT_JOB_NAME = "Personal uploads"
+STATUS_ACTIVE = "active"
+STATUS_NEEDS_REVIEW = "needs_review"
+STATUS_CHANGES_REQUESTED = "changes_requested"
+STATUS_APPROVED = "approved"
+STATUS_READY_TO_LOAD = "ready_to_load"
+STATUS_COMPLETE = "complete"
+STATUS_ARCHIVED = "archived"
+
+JOB_STATUSES = (
+    STATUS_ACTIVE,
+    STATUS_NEEDS_REVIEW,
+    STATUS_CHANGES_REQUESTED,
+    STATUS_APPROVED,
+    STATUS_READY_TO_LOAD,
+    STATUS_COMPLETE,
+    STATUS_ARCHIVED,
+)
+
+
 class JobError(ValueError):
     """Raised when a job operation is invalid."""
 
@@ -168,10 +187,91 @@ def get_access_role(job_id: int, user_email: str) -> str | None:
 
 def require_role(job_id: int, user_email: str, allowed: set[str]) -> str:
     """Return the user's role or raise if it is not in ``allowed``."""
-    role = get_access_role(job_id, user_email)
-    if role not in allowed:
-        raise JobError("job access denied")
-    return role
+    db.init_schema()
+    with db.connect() as conn:
+        return _require_role(conn, job_id, user_email, allowed)
+
+
+def set_status(
+    job_id: int,
+    status: str,
+    *,
+    by: str,
+    note: str = "",
+) -> dict[str, Any]:
+    """Set advisory workflow status for a job."""
+    if status not in JOB_STATUSES:
+        raise JobError("invalid job status")
+    if status == STATUS_ARCHIVED:
+        return archive_job(job_id, by=by)
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_role(conn, job_id, by, {"owner", "editor"})
+        conn.execute(
+            "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, job_id),
+        )
+        message = f"Status changed to {status}"
+        if note.strip():
+            message = f"{message}: {note.strip()}"
+        _record_activity(conn, job_id, "status-changed", message, by, now)
+        row = _job_row(conn, job_id)
+    return _dict(row)
+
+
+def archive_job(job_id: int, *, by: str) -> dict[str, Any]:
+    """Soft archive a job. Upload and review history remains available."""
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_owner(conn, job_id, by)
+        row = _job_row(conn, job_id)
+        if row is None:
+            raise JobError("job not found")
+        if row["name"] == DEFAULT_JOB_NAME:
+            raise JobError("Personal uploads cannot be archived")
+        conn.execute(
+            "UPDATE jobs"
+            " SET active = 0, status = ?, archived_at = ?, archived_by = ?,"
+            " updated_at = ?"
+            " WHERE id = ?",
+            (STATUS_ARCHIVED, now, by, now, job_id),
+        )
+        _record_activity(conn, job_id, "job-archived", "Job archived", by, now)
+        row = _job_row(conn, job_id)
+    return _dict(row)
+
+
+def restore_job(job_id: int, *, by: str) -> dict[str, Any]:
+    """Restore an archived job to active status."""
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_owner(conn, job_id, by)
+        conn.execute(
+            "UPDATE jobs"
+            " SET active = 1, status = ?, archived_at = NULL, archived_by = NULL,"
+            " updated_at = ?"
+            " WHERE id = ?",
+            (STATUS_ACTIVE, now, job_id),
+        )
+        _record_activity(conn, job_id, "job-restored", "Job restored", by, now)
+        row = _job_row(conn, job_id)
+    return _dict(row)
+
+
+def list_activity(job_id: int) -> list[dict[str, Any]]:
+    db.init_schema()
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM job_activity WHERE job_id = ? ORDER BY id",
+            (job_id,),
+        ).fetchall()
+    return [_dict(row) for row in rows]
 
 
 def _job_row(conn, job_id: int):
@@ -190,6 +290,33 @@ def _require_owner(conn, job_id: int, user_email: str) -> None:
     row = _access_row(conn, job_id, user_email)
     if row is None or row["role"] != "owner":
         raise JobError("only the job owner can manage access")
+
+
+def _require_role(
+    conn,
+    job_id: int,
+    user_email: str,
+    allowed: set[str],
+) -> str:
+    row = _access_row(conn, job_id, user_email)
+    if row is None or row["role"] not in allowed:
+        raise JobError("job access denied")
+    return row["role"]
+
+
+def _record_activity(
+    conn,
+    job_id: int,
+    kind: str,
+    message: str,
+    actor_email: str,
+    now: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO job_activity(job_id, kind, message, actor_email, created_at)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (job_id, kind, message, actor_email, now),
+    )
 
 
 def _dict(row) -> dict[str, Any]:

@@ -70,3 +70,42 @@ def test_v6_migrates_existing_uploads_to_default_personal_job(tmp_path, monkeypa
     assert job["name"] == "Personal uploads"
     assert job["visibility"] == "private"
     assert version["version"] == db.SCHEMA_VERSION
+
+
+def test_v9_adds_job_workflow_columns_notes_and_activity():
+    """TASK-118 needs status, review notes, and activity for shared review."""
+    db.init_schema()
+
+    with db.connect() as conn:
+        job_cols = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+        note_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(job_review_notes)")
+        }
+        activity_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(job_activity)")
+        }
+
+    assert {"status", "archived_at", "archived_by"}.issubset(job_cols)
+    assert {
+        "id",
+        "job_id",
+        "anchor_kind",
+        "anchor_value",
+        "note",
+        "author_email",
+        "category",
+        "resolved",
+        "created_at",
+        "resolved_at",
+        "resolved_by",
+    }.issubset(note_cols)
+    assert {
+        "id",
+        "job_id",
+        "kind",
+        "message",
+        "actor_email",
+        "created_at",
+    }.issubset(activity_cols)

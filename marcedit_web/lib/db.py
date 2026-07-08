@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -143,6 +143,8 @@ def init_schema() -> None:
                 _migrate_v1_to_v2(conn)
             if current_version < 6:
                 _migrate_to_v6(conn)
+            if current_version < 9:
+                _migrate_to_v9(conn)
             # After all pending steps land, set the version row to the
             # newest. INSERT OR REPLACE keeps the table single-row.
             conn.execute("DELETE FROM _schema_version")
@@ -256,6 +258,48 @@ def _migrate_to_v6(conn: sqlite3.Connection) -> None:
             " WHERE user_email = ? AND job_id IS NULL",
             (job_id, user),
         )
+
+
+def _migrate_to_v9(conn: sqlite3.Connection) -> None:
+    """Add job workflow status, review notes, and activity (TASK-118)."""
+    job_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(jobs)")
+    }
+    if "status" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if "archived_at" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN archived_at TEXT")
+    if "archived_by" not in job_cols:
+        conn.execute("ALTER TABLE jobs ADD COLUMN archived_by TEXT")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS job_review_notes (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id        INTEGER NOT NULL,
+            anchor_kind   TEXT    NOT NULL,
+            anchor_value  TEXT    NOT NULL DEFAULT '',
+            note          TEXT    NOT NULL,
+            author_email  TEXT    NOT NULL,
+            category      TEXT    NOT NULL DEFAULT 'note',
+            resolved      INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT    NOT NULL,
+            resolved_at   TEXT,
+            resolved_by   TEXT,
+            FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_notes_job ON job_review_notes(job_id)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS job_activity (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id       INTEGER NOT NULL,
+            kind         TEXT    NOT NULL,
+            message      TEXT    NOT NULL,
+            actor_email  TEXT    NOT NULL,
+            created_at   TEXT    NOT NULL,
+            FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_activity_job ON job_activity(job_id)")
 
 
 def _ensure_default_job(
