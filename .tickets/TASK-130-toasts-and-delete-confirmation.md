@@ -1,6 +1,6 @@
 # TASK-130 — Action toasts and delete confirmation for job files table
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 2 — Data-loss guard + feedback
 **Depends on:** TASK-129
 **Spec:** docs/superpowers/specs/2026-07-08-toasts-and-delete-confirmation-design.md (local)
@@ -39,3 +39,28 @@ unrecoverable.
 4. Confirmed delete calls `remove_upload(delete_file=True)`, detaches the
    loaded batch (TASK-128), queues the 🗑️ toast, clears the flag.
 5. Focused suites pass locally and in Docker.
+
+## Outcome
+
+- `session.queue_toast` + flush at the end of `session.init()`; the shared
+  table queues 📂/🗂️/🗑️ toasts on load/remove/delete success.
+- Delete trigger sets `{key_prefix}_pending_delete` and reruns; the
+  lazily-decorated `@st.dialog` confirmation (filename, record count,
+  cannot-be-undone warning, primary Delete permanently / Cancel) is the
+  only path to `remove_upload(delete_file=True)`, which still runs the
+  TASK-128 detach. Stale pending ids are dropped silently; JobError keeps
+  the dialog open with the error shown.
+- Verification:
+  - RED: 9 targeted failures for the intended reasons before
+    implementation; toast-plumbing test failed on missing `queue_toast`.
+  - GREEN local + Docker (Python 3.9 / Streamlit 1.50): 79 passed each
+    (includes 2 review-requested regression tests: delete-error keeps the
+    dialog, stale flag dropped).
+  - Live browser check: modal renders with warning copy, confirmed delete
+    removes the file, non-uploader rows show no delete action, remove
+    toast appeared 200 ms after the click.
+- Code review: Ready to merge (after adding the two regression tests).
+- Accepted behavior (review Minor): navigating away mid-confirmation and
+  returning to the same job/file reopens the dialog — the pending flag is
+  keyed per page prefix, not per visit; it cannot cause an unconfirmed
+  delete.
