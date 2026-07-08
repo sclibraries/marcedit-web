@@ -1,6 +1,6 @@
 # TASK-118 — Jobs management UI
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 4 — Cataloger workflow clarity
 **Depends on:** TASK-081, TASK-093
 **Design:** `docs/superpowers/specs/2026-07-07-jobs-workspace-ui-design.md`
@@ -33,3 +33,16 @@ archive/delete actions.
    history/audit.
 5. Focused UI/helper tests pass, and the relevant broader test slice passes
    before completion.
+
+## Outcome
+
+- Added schema/helper support for advisory job status, review notes, activity,
+  archive/restore, and job summaries.
+- Added a private Jobs page with list/detail views, attached upload visibility,
+  sharing, review notes, status controls, activity, and archive/restore.
+- Cleaned Home into Quick Load and Job Workspace paths.
+- Verification:
+  - `python3 -m pytest tests/test_job_schema.py tests/test_jobs.py tests/test_jobs_page.py tests/test_home_page_jobs.py tests/test_app_pages.py -q`
+    passed with `43 passed`.
+  - `docker compose run --rm marcedit-web python -m pytest -q` passed with
+    `920 passed, 5 skipped`.
