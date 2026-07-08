@@ -20,6 +20,15 @@ from marcedit_web.lib.identity import is_anonymous
 session.init_page()
 
 _PENDING_CURRENT_JOB_ID = "pending_current_job_id"
+_START_PATH_KEY = "home_start_path"
+_START_PATH_QUERY_KEY = "start"
+_START_PATH_QUICK = "Quick Load"
+_START_PATH_JOB = "Job Workspace"
+_START_PATH_TO_QUERY = {
+    _START_PATH_QUICK: "quick",
+    _START_PATH_JOB: "jobs",
+}
+_QUERY_TO_START_PATH = {value: key for key, value in _START_PATH_TO_QUERY.items()}
 
 
 def _job_label(job: dict) -> str:
@@ -27,6 +36,10 @@ def _job_label(job: dict) -> str:
     if role and role != "owner":
         return f"{job['name']} ({role})"
     return job["name"]
+
+
+def _can_edit_job(role: str | None) -> bool:
+    return role in {"owner", "editor"}
 
 
 def _set_current_job(job_id: int) -> None:
@@ -50,6 +63,130 @@ def _activate_quick_load(default_job_id: int | None) -> None:
         _set_current_job(default_job_id)
 
 
+def _query_param(name: str) -> str | None:
+    value = st.query_params.get(name)
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _default_start_path() -> str:
+    query_path = _QUERY_TO_START_PATH.get(_query_param(_START_PATH_QUERY_KEY))
+    if query_path is not None:
+        return query_path
+    if st.session_state.get("quick_load_mode"):
+        return _START_PATH_QUICK
+    return _START_PATH_QUICK
+
+
+def _sync_start_path_query() -> None:
+    path = st.session_state.get(_START_PATH_KEY, _START_PATH_QUICK)
+    st.query_params[_START_PATH_QUERY_KEY] = _START_PATH_TO_QUERY[path]
+
+
+def _handle_uploaded_file(uploaded_file):
+    # Parsing a large .mrc can take several seconds; without a spinner
+    # the page appears frozen and the cataloger doesn't know whether
+    # to wait or refresh.
+    with st.spinner(f"Parsing {uploaded_file.name}…"):
+        return session.handle_upload(uploaded_file)
+
+
+def _render_next_actions() -> None:
+    st.write("Next actions")
+    cols = st.columns(5)
+    if cols[0].button("View records", key="next_view"):
+        st.switch_page("views/1_View.py")
+    if cols[1].button("Validate", key="next_validate"):
+        st.switch_page("views/2_Validate.py")
+    if cols[2].button("Report", key="next_report"):
+        st.switch_page("views/3_Report.py")
+    if cols[3].button("Edit", key="next_edit"):
+        st.switch_page("views/5_MarcEditor.py")
+    if cols[4].button("Tools", key="next_tools"):
+        st.switch_page("views/9_MarcTools.py")
+
+
+def _render_upload_feedback(upload_summary: dict) -> None:
+    if upload_summary.get("error"):
+        st.error(
+            f"Upload rejected: {upload_summary['error']}. Contact ops if "
+            "you need a higher limit for this batch."
+        )
+    elif upload_summary["total"] == 0 and upload_summary["malformed"] == 0:
+        st.error("No records found in the uploaded file.")
+    else:
+        st.success(
+            f"Loaded **{upload_summary['total']}** record"
+            f"{'s' if upload_summary['total'] != 1 else ''} from "
+            f"`{upload_summary['filename']}`."
+        )
+        if upload_summary["malformed"]:
+            st.warning(
+                f"{upload_summary['malformed']} record"
+                f"{'s' if upload_summary['malformed'] != 1 else ''} could not be "
+                "parsed and will be skipped."
+            )
+        _render_next_actions()
+
+
+def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
+    uploads = jobs.list_job_uploads(job_id)
+    st.subheader("Files in this job")
+    if not uploads:
+        st.caption("No MARC files have been added to this job yet.")
+        return
+    st.dataframe(
+        [
+            {
+                "Filename": row["filename"],
+                "Records": row["record_count"],
+                "Uploaded": row["uploaded_at"],
+                "Active": bool(row["active"]),
+            }
+            for row in uploads
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+    for row in uploads:
+        cols = st.columns([4, 1, 1, 1])
+        active_marker = "current" if row["active"] else "available"
+        cols[0].write(
+            f"{row['filename']} · {row['record_count']} records · {active_marker}"
+        )
+        if cols[1].button("Load", key=f"home_job_upload_load_{row['id']}"):
+            try:
+                summary = session.load_persisted_upload(int(row["id"]))
+            except jobs.JobError as exc:
+                st.error(str(exc))
+            else:
+                if summary.get("error"):
+                    st.error(summary["error"])
+                else:
+                    st.switch_page("views/1_View.py")
+        if _can_edit_job(role):
+            if cols[2].button("Remove", key=f"home_job_upload_remove_{row['id']}"):
+                try:
+                    jobs.remove_upload(int(row["id"]), by=user)
+                except jobs.JobError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
+        if row["user_email"] == user:
+            if cols[3].button("Delete file", key=f"home_job_upload_delete_{row['id']}"):
+                try:
+                    jobs.remove_upload(
+                        int(row["id"]),
+                        by=user,
+                        delete_file=True,
+                    )
+                except jobs.JobError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
+
+
 # --- Upload widget (handled FIRST so the sidebar reads fresh state) --------
 
 
@@ -68,10 +205,18 @@ if not is_anonymous(user):
     if default_job["id"] not in job_ids:
         job_rows = [default_job, *job_rows]
 
-quick_tab, job_tab = st.tabs(["Quick Load", "Job Workspace"])
+start_path = st.radio(
+    "Start path",
+    [_START_PATH_QUICK, _START_PATH_JOB],
+    index=[_START_PATH_QUICK, _START_PATH_JOB].index(_default_start_path()),
+    horizontal=True,
+    key=_START_PATH_KEY,
+    on_change=_sync_start_path_query,
+)
+_sync_start_path_query()
 
 upload_summary = None
-with quick_tab:
+if start_path == _START_PATH_QUICK:
     st.subheader("Quick Load")
     st.caption("Use this for one-off viewing, validation, reports, editing, or conversion.")
     if default_job is not None and st.session_state.get("quick_load_mode"):
@@ -93,44 +238,10 @@ with quick_tab:
         ),
     )
     if uploaded is not None:
-        # Parsing a large .mrc can take several seconds; without a spinner
-        # the page appears frozen and the cataloger doesn't know whether
-        # to wait or refresh.
-        with st.spinner(f"Parsing {uploaded.name}…"):
-            upload_summary = session.handle_upload(uploaded)
-        if upload_summary.get("error"):
-            st.error(
-                f"Upload rejected: {upload_summary['error']}. Contact ops if "
-                "you need a higher limit for this batch."
-            )
-        elif upload_summary["total"] == 0 and upload_summary["malformed"] == 0:
-            st.error("No records found in the uploaded file.")
-        else:
-            st.success(
-                f"Loaded **{upload_summary['total']}** record"
-                f"{'s' if upload_summary['total'] != 1 else ''} from "
-                f"`{upload_summary['filename']}`."
-            )
-            if upload_summary["malformed"]:
-                st.warning(
-                    f"{upload_summary['malformed']} record"
-                    f"{'s' if upload_summary['malformed'] != 1 else ''} could not be "
-                    "parsed and will be skipped."
-                )
-            st.write("Next actions")
-            cols = st.columns(5)
-            if cols[0].button("View records", key="next_view"):
-                st.switch_page("views/1_View.py")
-            if cols[1].button("Validate", key="next_validate"):
-                st.switch_page("views/2_Validate.py")
-            if cols[2].button("Report", key="next_report"):
-                st.switch_page("views/3_Report.py")
-            if cols[3].button("Edit", key="next_edit"):
-                st.switch_page("views/5_MarcEditor.py")
-            if cols[4].button("Tools", key="next_tools"):
-                st.switch_page("views/9_MarcTools.py")
+        upload_summary = _handle_uploaded_file(uploaded)
+        _render_upload_feedback(upload_summary)
 
-with job_tab:
+if start_path == _START_PATH_JOB:
     st.subheader("Job Workspace")
     st.caption("Use jobs for shared vendor loads, review, and handoff.")
     if is_anonymous(user):
@@ -165,6 +276,30 @@ with job_tab:
                 else:
                     st.session_state[_PENDING_CURRENT_JOB_ID] = created["id"]
                     st.rerun()
+
+        job_upload = st.file_uploader(
+            "Add a .mrc file to this job",
+            type=["mrc", "marc"],
+            accept_multiple_files=False,
+            help=(
+                "Uploads here attach to the selected job and appear in that "
+                "job's Files list."
+            ),
+            key="home_job_workspace_upload",
+        )
+        if job_upload is not None:
+            upload_summary = _handle_uploaded_file(job_upload)
+            _render_upload_feedback(upload_summary)
+
+        current_job = next(job for job in job_rows if job["id"] == current_job_id)
+        current_role = current_job.get("access_role")
+        if current_role is None and current_job.get("owner_email") == user:
+            current_role = "owner"
+        _render_job_uploads(
+            current_job_id,
+            user,
+            current_role,
+        )
 
         summaries = jobs.list_job_summaries(user)
         for row in summaries[:5]:

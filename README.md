@@ -8,6 +8,9 @@ RHEL 8.10.
 See `docs/application-overview.md` for the current architecture and
 recommended speed, consistency, and hardening improvements.
 
+See `docs/jobs.md` for how Jobs work as shared cataloging workspaces,
+including how to add MARC files to a job.
+
 ## Local development
 
 Prerequisite: Python 3.9 (pinned in `pyproject.toml`). On macOS:
