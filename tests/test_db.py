@@ -182,9 +182,8 @@ def test_collaboration_schema_adds_job_versions_table():
     assert {"job_id", "version", "updated_at"}.issubset(cols)
 
 
-def test_schema_version_is_8():
+def test_schema_version_is_current():
     db.init_schema()
     with db.connect() as conn:
         row = conn.execute("SELECT version FROM _schema_version").fetchone()
-    assert row["version"] == 8
-    assert db.SCHEMA_VERSION == 8
+    assert row["version"] == db.SCHEMA_VERSION
