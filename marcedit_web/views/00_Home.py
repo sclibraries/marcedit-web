@@ -136,43 +136,70 @@ def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
     if not uploads:
         st.caption("No MARC files have been added to this job yet.")
         return
-    for row in uploads:
-        cols = st.columns([4, 1, 1, 1])
-        active_marker = "current" if row["active"] else "available"
-        cols[0].write(
-            f"{row['filename']} · {row['record_count']} records · "
-            f"{row['uploaded_at']} · {active_marker}"
-        )
-        if cols[1].button("Load", key=f"home_job_upload_load_{row['id']}"):
+    rows = [
+        {
+            "Filename": row["filename"],
+            "Records": row["record_count"],
+            "Uploaded": row["uploaded_at"],
+            "Status": "Current" if row["active"] else "Available",
+        }
+        for row in uploads
+    ]
+    event = st.dataframe(
+        rows,
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"home_job_uploads_{job_id}",
+    )
+    selected_rows = _selected_dataframe_rows(event)
+    if not selected_rows:
+        st.caption("Select a file row to load or manage it.")
+        return
+    selected = uploads[int(selected_rows[0])]
+    cols = st.columns([1, 1, 1])
+    if cols[0].button("Load", key=f"home_job_upload_load_{selected['id']}"):
+        try:
+            summary = session.load_persisted_upload(int(selected["id"]))
+        except jobs.JobError as exc:
+            st.error(str(exc))
+        else:
+            if summary.get("error"):
+                st.error(summary["error"])
+            else:
+                st.switch_page("views/1_View.py")
+    if _can_edit_job(role):
+        if cols[1].button("Remove", key=f"home_job_upload_remove_{selected['id']}"):
             try:
-                summary = session.load_persisted_upload(int(row["id"]))
+                jobs.remove_upload(int(selected["id"]), by=user)
             except jobs.JobError as exc:
                 st.error(str(exc))
             else:
-                if summary.get("error"):
-                    st.error(summary["error"])
-                else:
-                    st.switch_page("views/1_View.py")
-        if _can_edit_job(role):
-            if cols[2].button("Remove", key=f"home_job_upload_remove_{row['id']}"):
-                try:
-                    jobs.remove_upload(int(row["id"]), by=user)
-                except jobs.JobError as exc:
-                    st.error(str(exc))
-                else:
-                    st.rerun()
-        if row["user_email"] == user:
-            if cols[3].button("Delete file", key=f"home_job_upload_delete_{row['id']}"):
-                try:
-                    jobs.remove_upload(
-                        int(row["id"]),
-                        by=user,
-                        delete_file=True,
-                    )
-                except jobs.JobError as exc:
-                    st.error(str(exc))
-                else:
-                    st.rerun()
+                st.rerun()
+    if selected["user_email"] == user:
+        if cols[2].button("Delete file", key=f"home_job_upload_delete_{selected['id']}"):
+            try:
+                jobs.remove_upload(
+                    int(selected["id"]),
+                    by=user,
+                    delete_file=True,
+                )
+            except jobs.JobError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+
+
+def _selected_dataframe_rows(event) -> list[int]:
+    if event is None:
+        return []
+    if isinstance(event, dict):
+        return event.get("selection", {}).get("rows", [])
+    selection = getattr(event, "selection", None)
+    if isinstance(selection, dict):
+        return selection.get("rows", [])
+    return getattr(selection, "rows", []) if selection is not None else []
 
 
 # --- Upload widget (handled FIRST so the sidebar reads fresh state) --------

@@ -92,6 +92,7 @@ class _FakeStreamlit:
         self.warnings: list[str] = []
         self.errors: list[str] = []
         self.dataframes: list[tuple[Any, dict[str, Any]]] = []
+        self.selected_dataframe_rows: list[int] = []
         self.switch_pages: list[str] = []
         self.rerun_called = False
         self.button_calls: list[tuple[str, dict[str, Any]]] = []
@@ -152,6 +153,7 @@ class _FakeStreamlit:
 
     def dataframe(self, data: Any, **kwargs: Any) -> None:
         self.dataframes.append((data, kwargs))
+        return {"selection": {"rows": self.selected_dataframe_rows}}
 
     def divider(self) -> None:
         return None
@@ -337,11 +339,22 @@ def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch):
         }
     )
     fake_st = _FakeStreamlit(session_state=state)
+    fake_st.selected_dataframe_rows = [0]
 
     _run_home(monkeypatch, fake_st)
 
-    assert fake_st.dataframes == []
-    assert any("vendor.mrc" in str(value) for value in fake_st.writes)
+    assert len(fake_st.dataframes) == 1
+    rows, kwargs = fake_st.dataframes[0]
+    assert rows == [
+        {
+            "Filename": "vendor.mrc",
+            "Records": 12,
+            "Uploaded": rows[0]["Uploaded"],
+            "Status": "Current",
+        }
+    ]
+    assert kwargs["selection_mode"] == "single-row"
+    assert "Active" not in rows[0]
 
 
 def test_job_workspace_loads_selected_file_from_home(monkeypatch):
@@ -367,6 +380,7 @@ def test_job_workspace_loads_selected_file_from_home(monkeypatch):
         session_state=state,
         clicked_keys={f"home_job_upload_load_{upload_id}"},
     )
+    fake_st.selected_dataframe_rows = [0]
     loaded: list[int] = []
     _run_home(monkeypatch, fake_st, load_upload_ids=loaded)
 
@@ -397,6 +411,7 @@ def test_job_workspace_soft_removes_selected_file_from_home(monkeypatch):
         session_state=state,
         clicked_keys={f"home_job_upload_remove_{upload_id}"},
     )
+    fake_st.selected_dataframe_rows = [0]
     removed: list[tuple[int, str, bool]] = []
     monkeypatch.setattr(
         jobs,
