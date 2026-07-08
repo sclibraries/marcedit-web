@@ -203,6 +203,84 @@ def test_load_persisted_upload_reattaches_exact_job_file(
     assert upload_persistence.get_active_upload("alice@example.edu")["id"] == first["id"]
 
 
+class _WidgetOwnedState(dict):
+    """session_state stand-in where selected keys refuse writes.
+
+    Mirrors real Streamlit: once a widget is instantiated with
+    ``key=<name>``, any assignment to ``st.session_state[<name>]`` in the
+    same script run raises — even an assignment of the identical value.
+    """
+
+    def __init__(self, *args, widget_keys=(), **kwargs):
+        super().__init__(*args, **kwargs)
+        self._widget_keys = set(widget_keys)
+
+    def __setitem__(self, key, value):
+        if key in self._widget_keys:
+            raise RuntimeError(
+                f"st.session_state.{key} cannot be modified after the "
+                f"widget with key {key} is instantiated"
+            )
+        super().__setitem__(key, value)
+
+
+def test_load_persisted_upload_tolerates_widget_owned_current_job_id(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Load from Home must not crash on the widget-owned job key (TASK-127).
+
+    Home's Job selectbox is created with ``key="current_job_id"``, so by the
+    time the table's Load button handler runs, that key is widget-owned and
+    Streamlit forbids assigning to it. Home only lists the selected job's
+    files, so the value would be unchanged anyway — the load must succeed
+    without touching the key.
+    """
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    job = jobs.create_job("alice@example.edu", "Vendor load June")
+    st.session_state["current_job_id"] = job["id"]
+    session.handle_upload(_FakeUpload("first.mrc", _serialize([record])))
+    upload = upload_persistence.get_active_upload("alice@example.edu")
+
+    st.session_state = _WidgetOwnedState(
+        st.session_state, widget_keys={"current_job_id"}
+    )
+
+    summary = session.load_persisted_upload(upload["id"])
+
+    assert summary["error"] is None
+    assert st.session_state["current_job_id"] == job["id"]
+    assert st.session_state["store"].filename == "first.mrc"
+
+
+def test_load_persisted_upload_switches_job_when_key_is_free(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Loading another job's upload must still retarget the session (TASK-127).
+
+    The Jobs page has no widget keyed ``current_job_id``, and its file list
+    can span jobs other than the session's current one. Loading such an
+    upload must keep updating ``current_job_id`` so later uploads and page
+    logic attach to the right job.
+    """
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    vendor_job = jobs.create_job("alice@example.edu", "Vendor load June")
+    st.session_state["current_job_id"] = vendor_job["id"]
+    session.handle_upload(_FakeUpload("vendor.mrc", _serialize([record])))
+    upload = upload_persistence.get_active_upload("alice@example.edu")
+
+    other_job = jobs.create_job("alice@example.edu", "Authority cleanup")
+    st.session_state["current_job_id"] = other_job["id"]
+
+    summary = session.load_persisted_upload(upload["id"])
+
+    assert summary["error"] is None
+    assert st.session_state["current_job_id"] == vendor_job["id"]
+
+
 # ---------------------------------------------------------------------------
 # restore_active_upload — refresh-resume
 # ---------------------------------------------------------------------------

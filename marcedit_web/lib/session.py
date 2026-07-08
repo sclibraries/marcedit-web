@@ -424,7 +424,13 @@ def load_persisted_upload(upload_id: int) -> dict:
     store = RecordStore.from_path(path)
     store._filename = row["filename"]
     st.session_state["store"] = store
-    st.session_state["current_job_id"] = row["job_id"]
+    # On Home the Job selectbox owns ``current_job_id`` (key=...), and
+    # Streamlit rejects ANY assignment to a widget-owned key — even of the
+    # identical value. Home only lists the selected job's files, so the
+    # value is already right there; only write when actually switching jobs
+    # (Jobs-page flow, where no widget owns the key). TASK-127.
+    if st.session_state.get("current_job_id") != row["job_id"]:
+        st.session_state["current_job_id"] = row["job_id"]
     st.session_state["issues_cache"] = {}
     st.session_state["editor_text"] = None
     st.session_state["editor_dirty"] = False
