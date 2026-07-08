@@ -205,7 +205,7 @@ def test_owner_or_editor_can_change_job_status_and_activity_records_it():
     )
 
     assert updated["status"] == jobs.STATUS_NEEDS_REVIEW
-    activity = jobs.list_activity(job["id"])
+    activity = jobs.list_activity(job["id"], user_email="editor@example.edu")
     assert activity[-1]["kind"] == "status-changed"
     assert activity[-1]["actor_email"] == "editor@example.edu"
     assert "Please check 856 proxy prefixes." in activity[-1]["message"]
@@ -256,3 +256,71 @@ def test_default_personal_uploads_job_cannot_be_archived():
 
     with pytest.raises(jobs.JobError, match="Personal uploads"):
         jobs.archive_job(default["id"], by="alice@example.edu")
+
+
+def test_archived_job_status_can_only_change_via_owner_restore():
+    """Archived jobs stay archived until the owner explicitly restores them."""
+    job = jobs.create_job("owner@example.edu", "Old vendor load")
+    jobs.grant_access(
+        job["id"],
+        "editor@example.edu",
+        "editor",
+        by="owner@example.edu",
+    )
+    jobs.archive_job(job["id"], by="owner@example.edu")
+
+    with pytest.raises(jobs.JobError, match="restore"):
+        jobs.set_status(
+            job["id"],
+            jobs.STATUS_APPROVED,
+            by="editor@example.edu",
+        )
+
+    archived = jobs.get_job(job["id"])
+    assert archived["active"] == 0
+    assert archived["status"] == jobs.STATUS_ARCHIVED
+
+
+def test_list_activity_requires_membership_but_allows_viewers():
+    """Activity is visible to job members, including viewers, but not outsiders."""
+    job = jobs.create_job("owner@example.edu", "Vendor load July")
+    jobs.grant_access(
+        job["id"],
+        "viewer@example.edu",
+        "viewer",
+        by="owner@example.edu",
+    )
+    jobs.set_status(
+        job["id"],
+        jobs.STATUS_NEEDS_REVIEW,
+        by="owner@example.edu",
+    )
+
+    viewer_rows = jobs.list_activity(job["id"], user_email="viewer@example.edu")
+
+    assert viewer_rows[-1]["kind"] == "status-changed"
+    with pytest.raises(jobs.JobError, match="access denied"):
+        jobs.list_activity(job["id"], user_email="outsider@example.edu")
+
+
+def test_restore_job_is_owner_only_and_records_activity():
+    """Only the owner may restore an archived job, and the restore is audited."""
+    job = jobs.create_job("owner@example.edu", "Vendor load July")
+    jobs.grant_access(
+        job["id"],
+        "editor@example.edu",
+        "editor",
+        by="owner@example.edu",
+    )
+    jobs.archive_job(job["id"], by="owner@example.edu")
+
+    with pytest.raises(jobs.JobError, match="owner"):
+        jobs.restore_job(job["id"], by="editor@example.edu")
+
+    restored = jobs.restore_job(job["id"], by="owner@example.edu")
+
+    assert restored["active"] == 1
+    assert restored["status"] == jobs.STATUS_ACTIVE
+    activity = jobs.list_activity(job["id"], user_email="owner@example.edu")
+    assert activity[-1]["kind"] == "job-restored"
+    assert activity[-1]["actor_email"] == "owner@example.edu"

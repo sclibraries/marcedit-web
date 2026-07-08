@@ -209,6 +209,11 @@ def set_status(
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         _require_role(conn, job_id, by, {"owner", "editor"})
+        row = _job_row(conn, job_id)
+        if row is None:
+            raise JobError("job not found")
+        if row["active"] == 0 or row["status"] == STATUS_ARCHIVED:
+            raise JobError("archived jobs must be restored before status changes")
         conn.execute(
             "UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?",
             (status, now, job_id),
@@ -252,6 +257,9 @@ def restore_job(job_id: int, *, by: str) -> dict[str, Any]:
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         _require_owner(conn, job_id, by)
+        row = _job_row(conn, job_id)
+        if row is None:
+            raise JobError("job not found")
         conn.execute(
             "UPDATE jobs"
             " SET active = 1, status = ?, archived_at = NULL, archived_by = NULL,"
@@ -264,9 +272,10 @@ def restore_job(job_id: int, *, by: str) -> dict[str, Any]:
     return _dict(row)
 
 
-def list_activity(job_id: int) -> list[dict[str, Any]]:
+def list_activity(job_id: int, *, user_email: str) -> list[dict[str, Any]]:
     db.init_schema()
     with db.connect() as conn:
+        _require_role(conn, job_id, user_email, {"owner", "editor", "viewer"})
         rows = conn.execute(
             "SELECT * FROM job_activity WHERE job_id = ? ORDER BY id",
             (job_id,),
