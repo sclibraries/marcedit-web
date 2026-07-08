@@ -22,6 +22,14 @@ def _can_manage(role: str | None) -> bool:
     return role == "owner"
 
 
+def _workflow_statuses() -> tuple[str, ...]:
+    return tuple(status for status in jobs.JOB_STATUSES if status != jobs.STATUS_ARCHIVED)
+
+
+def _can_archive(job: dict[str, object]) -> bool:
+    return str(job.get("name")) != jobs.DEFAULT_JOB_NAME
+
+
 def _format_size(num_bytes: int) -> str:
     if num_bytes < 1024:
         return f"{num_bytes} B"
@@ -70,11 +78,13 @@ def _render_detail(user: str, job_id: int) -> None:
     st.caption(f"{_status_label(job['status'])} · {role} · owned by {job['owner_email']}")
 
     st.subheader("Status")
-    if _can_edit(role):
-        current_index = jobs.JOB_STATUSES.index(job["status"])
+    if _can_edit(role) and job["active"]:
+        workflow_statuses = _workflow_statuses()
+        current_status = str(job["status"])
+        current_index = workflow_statuses.index(current_status)
         selected_status = st.selectbox(
             "Workflow status",
-            jobs.JOB_STATUSES,
+            workflow_statuses,
             index=current_index,
             format_func=_status_label,
             key=f"job_status_{job_id}",
@@ -214,7 +224,7 @@ def _render_detail(user: str, job_id: int) -> None:
     else:
         st.caption("No activity recorded yet.")
 
-    if _can_manage(role):
+    if _can_manage(role) and (not job["active"] or _can_archive(job)):
         st.subheader("Archive")
         if job["active"]:
             if st.button("Archive job", key=f"archive_job_{job_id}"):

@@ -286,6 +286,81 @@ def test_render_detail_loads_sharing_and_review_notes_for_job_members(monkeypatc
     ]
 
 
+def test_render_detail_status_select_excludes_archived(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "needs_review",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(page.jobs, "list_job_uploads", lambda job_id: [])
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(
+        page.jobs,
+        "list_review_notes",
+        lambda job_id, *, user_email, include_resolved=True: [],
+    )
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    status_select = next(
+        call for call in fake_st.selectbox_calls if call[0] == "Workflow status"
+    )
+    assert "archived" not in status_select[1]
+
+
+def test_render_detail_hides_archive_action_for_default_personal_uploads_job(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "owner")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": page.jobs.DEFAULT_JOB_NAME,
+            "status": "active",
+            "owner_email": "alice@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(page.jobs, "list_job_uploads", lambda job_id: [])
+    monkeypatch.setattr(
+        page.jobs,
+        "list_access",
+        lambda job_id: [{
+            "job_id": job_id,
+            "user_email": "alice@example.edu",
+            "role": "owner",
+            "created_at": "2026-07-08T12:00:00Z",
+        }],
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_review_notes",
+        lambda job_id, *, user_email, include_resolved=True: [],
+    )
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert "Archive" not in fake_st.subheaders
+    assert "Archive job" not in [label for label, _ in fake_st.button_calls]
+
+
 def test_render_detail_unauthorized_uses_generic_error_without_loading_job(monkeypatch):
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit()
