@@ -7,6 +7,8 @@ import streamlit as st
 from marcedit_web.lib import jobs, session
 from marcedit_web.lib.identity import is_anonymous
 
+_DETAIL_UNAVAILABLE = "Job not found or unavailable."
+
 
 def _status_label(status: str) -> str:
     return status.replace("_", " ").capitalize()
@@ -44,13 +46,13 @@ def _render_list(user: str) -> None:
 
 
 def _render_detail(user: str, job_id: int) -> None:
-    job = jobs.get_job(job_id)
-    if job is None:
-        st.error("Job not found.")
-        return
     role = jobs.get_access_role(job_id, user)
     if role is None:
-        st.error("You do not have access to this job.")
+        st.error(_DETAIL_UNAVAILABLE)
+        return
+    job = jobs.get_job(job_id)
+    if job is None:
+        st.error(_DETAIL_UNAVAILABLE)
         return
 
     if st.button("Back to jobs", key="jobs_back"):
