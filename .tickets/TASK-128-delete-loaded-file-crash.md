@@ -1,6 +1,6 @@
 # TASK-128 — Deleting the loaded file crashes the session
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 1 — Production crash in cataloger flow
 **Depends on:** TASK-120, TASK-126
 
@@ -50,3 +50,26 @@ unaffected — it keeps the file on disk.
    tests click the delete button and assert the store is cleared).
 3. Focused suites pass locally and in Docker (same command set as
    TASK-126/127).
+
+## Outcome
+
+- Added `session.detach_loaded_batch(file_path)` and called it from both
+  delete handlers (`00_Home.py`, `B_Jobs.py`) after successful
+  `remove_upload(..., delete_file=True)`, before `st.rerun()`.
+- `current_raw_bytes()` now returns `None` on `FileNotFoundError`
+  (collaborator-deleted shared file).
+- Verification:
+  - RED: 5 new tests failed first for the intended reasons
+    (AttributeError missing helper ×2, FileNotFoundError, store not
+    cleared, detach not called).
+  - GREEN local: `python3 -m pytest tests/test_session_restore.py
+    tests/test_home_page_jobs.py tests/test_app_pages.py
+    tests/test_jobs_page.py tests/test_jobs.py -q` → 73 passed.
+  - GREEN Docker (Python 3.9 / Streamlit 1.50): same five files →
+    73 passed.
+- Code review: ready to merge, no Critical/Important findings. Two
+  pre-existing minor observations logged for follow-up consideration:
+  `current_raw_bytes` can't distinguish deleted-file from misconfigured
+  uploads root, and `remove_upload` marks the DB row removed before
+  unlinking (a non-FileNotFoundError unlink failure leaves a
+  partially-deleted state).
