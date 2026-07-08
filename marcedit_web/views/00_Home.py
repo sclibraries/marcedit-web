@@ -136,70 +136,49 @@ def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
     if not uploads:
         st.caption("No MARC files have been added to this job yet.")
         return
-    rows = [
-        {
-            "Filename": row["filename"],
-            "Records": row["record_count"],
-            "Uploaded": row["uploaded_at"],
-            "Status": "Current" if row["active"] else "Available",
-        }
-        for row in uploads
-    ]
-    event = st.dataframe(
-        rows,
-        hide_index=True,
-        use_container_width=True,
-        on_select="rerun",
-        selection_mode="single-row",
-        key=f"home_job_uploads_{job_id}",
-    )
-    selected_rows = _selected_dataframe_rows(event)
-    if not selected_rows:
-        st.caption("Select a file row to load or manage it.")
-        return
-    selected = uploads[int(selected_rows[0])]
-    cols = st.columns([1, 1, 1])
-    if cols[0].button("Load", key=f"home_job_upload_load_{selected['id']}"):
-        try:
-            summary = session.load_persisted_upload(int(selected["id"]))
-        except jobs.JobError as exc:
-            st.error(str(exc))
-        else:
-            if summary.get("error"):
-                st.error(summary["error"])
-            else:
-                st.switch_page("views/1_View.py")
-    if _can_edit_job(role):
-        if cols[1].button("Remove", key=f"home_job_upload_remove_{selected['id']}"):
+    headers = st.columns([4, 1, 2, 1, 3])
+    headers[0].write("Filename")
+    headers[1].write("Records")
+    headers[2].write("Uploaded")
+    headers[3].write("Status")
+    headers[4].write("Actions")
+    for row in uploads:
+        cols = st.columns([4, 1, 2, 1, 3])
+        cols[0].write(row["filename"])
+        cols[1].write(row["record_count"])
+        cols[2].write(row["uploaded_at"])
+        cols[3].write("Current" if row["active"] else "Available")
+        actions = cols[4].columns([1, 1, 1])
+        if actions[0].button("Load", key=f"home_job_upload_load_{row['id']}"):
             try:
-                jobs.remove_upload(int(selected["id"]), by=user)
+                summary = session.load_persisted_upload(int(row["id"]))
             except jobs.JobError as exc:
                 st.error(str(exc))
             else:
-                st.rerun()
-    if selected["user_email"] == user:
-        if cols[2].button("Delete file", key=f"home_job_upload_delete_{selected['id']}"):
-            try:
-                jobs.remove_upload(
-                    int(selected["id"]),
-                    by=user,
-                    delete_file=True,
-                )
-            except jobs.JobError as exc:
-                st.error(str(exc))
-            else:
-                st.rerun()
-
-
-def _selected_dataframe_rows(event) -> list[int]:
-    if event is None:
-        return []
-    if isinstance(event, dict):
-        return event.get("selection", {}).get("rows", [])
-    selection = getattr(event, "selection", None)
-    if isinstance(selection, dict):
-        return selection.get("rows", [])
-    return getattr(selection, "rows", []) if selection is not None else []
+                if summary.get("error"):
+                    st.error(summary["error"])
+                else:
+                    st.switch_page("views/1_View.py")
+        if _can_edit_job(role):
+            if actions[1].button("Remove", key=f"home_job_upload_remove_{row['id']}"):
+                try:
+                    jobs.remove_upload(int(row["id"]), by=user)
+                except jobs.JobError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
+        if row["user_email"] == user:
+            if actions[2].button("Delete file", key=f"home_job_upload_delete_{row['id']}"):
+                try:
+                    jobs.remove_upload(
+                        int(row["id"]),
+                        by=user,
+                        delete_file=True,
+                    )
+                except jobs.JobError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
 
 
 # --- Upload widget (handled FIRST so the sidebar reads fresh state) --------

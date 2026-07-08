@@ -67,6 +67,9 @@ class _FakeColumn:
     def button(self, label: str, **kwargs: Any) -> bool:
         return self._st.button(label, **kwargs)
 
+    def columns(self, spec: int | list[int]) -> list["_FakeColumn"]:
+        return self._st.columns(spec)
+
 
 class _FakeStreamlit:
     def __init__(
@@ -339,22 +342,17 @@ def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch):
         }
     )
     fake_st = _FakeStreamlit(session_state=state)
-    fake_st.selected_dataframe_rows = [0]
 
     _run_home(monkeypatch, fake_st)
 
-    assert len(fake_st.dataframes) == 1
-    rows, kwargs = fake_st.dataframes[0]
-    assert rows == [
-        {
-            "Filename": "vendor.mrc",
-            "Records": 12,
-            "Uploaded": rows[0]["Uploaded"],
-            "Status": "Current",
-        }
-    ]
-    assert kwargs["selection_mode"] == "single-row"
-    assert "Active" not in rows[0]
+    assert fake_st.dataframes == []
+    assert "Filename" in fake_st.writes
+    assert "Records" in fake_st.writes
+    assert "Uploaded" in fake_st.writes
+    assert "Status" in fake_st.writes
+    assert "Actions" in fake_st.writes
+    assert any("vendor.mrc" in str(value) for value in fake_st.writes)
+    assert any("Current" in str(value) for value in fake_st.writes)
 
 
 def test_job_workspace_loads_selected_file_from_home(monkeypatch):
@@ -380,7 +378,6 @@ def test_job_workspace_loads_selected_file_from_home(monkeypatch):
         session_state=state,
         clicked_keys={f"home_job_upload_load_{upload_id}"},
     )
-    fake_st.selected_dataframe_rows = [0]
     loaded: list[int] = []
     _run_home(monkeypatch, fake_st, load_upload_ids=loaded)
 
@@ -411,7 +408,6 @@ def test_job_workspace_soft_removes_selected_file_from_home(monkeypatch):
         session_state=state,
         clicked_keys={f"home_job_upload_remove_{upload_id}"},
     )
-    fake_st.selected_dataframe_rows = [0]
     removed: list[tuple[int, str, bool]] = []
     monkeypatch.setattr(
         jobs,
