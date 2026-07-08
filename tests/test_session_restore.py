@@ -132,6 +132,31 @@ def test_handle_upload_re_upload_replaces_active_row(
     assert second["record_count"] == 2
 
 
+def test_handle_upload_keeps_each_signed_in_upload_on_disk(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Job history needs each upload row to point at its own real file."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    job = jobs.create_job("alice@example.edu", "Vendor load June")
+    st.session_state["current_job_id"] = job["id"]
+
+    session.handle_upload(_FakeUpload("first.mrc", _serialize([record])))
+    first = upload_persistence.get_active_upload("alice@example.edu")
+    first_path = Path(first["file_path"])
+
+    session.handle_upload(_FakeUpload("second.mrc", _serialize([record, record])))
+    second = upload_persistence.get_active_upload("alice@example.edu")
+    second_path = Path(second["file_path"])
+
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()
+    assert first_path.read_bytes() == _serialize([record])
+    assert second_path.read_bytes() == _serialize([record, record])
+
+
 def test_handle_upload_attaches_to_selected_job(
     fake_st, record, tmp_path, monkeypatch,
 ):
@@ -146,6 +171,36 @@ def test_handle_upload_attaches_to_selected_job(
 
     row = upload_persistence.get_active_upload("alice@example.edu")
     assert row["job_id"] == job["id"]
+
+
+def test_load_persisted_upload_reattaches_exact_job_file(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Catalogers need to switch back to a specific durable job upload."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    job = jobs.create_job("alice@example.edu", "Vendor load June")
+    st.session_state["current_job_id"] = job["id"]
+
+    first_bytes = _serialize([record])
+    second_bytes = _serialize([record, record])
+    session.handle_upload(_FakeUpload("first.mrc", first_bytes))
+    first = upload_persistence.get_active_upload("alice@example.edu")
+    session.handle_upload(_FakeUpload("second.mrc", second_bytes))
+
+    summary = session.load_persisted_upload(first["id"])
+
+    store = st.session_state["store"]
+    assert summary == {
+        "filename": "first.mrc",
+        "total": 1,
+        "malformed": 0,
+        "error": None,
+    }
+    assert store.filename == "first.mrc"
+    assert store.path.read_bytes() == first_bytes
+    assert upload_persistence.get_active_upload("alice@example.edu")["id"] == first["id"]
 
 
 # ---------------------------------------------------------------------------

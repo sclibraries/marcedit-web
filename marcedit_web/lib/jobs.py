@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from . import db
@@ -130,15 +131,84 @@ def get_job(job_id: int) -> dict[str, Any] | None:
     return _dict(row) if row else None
 
 
-def list_job_uploads(job_id: int) -> list[dict[str, Any]]:
+def list_job_uploads(
+    job_id: int,
+    *,
+    include_removed: bool = False,
+) -> list[dict[str, Any]]:
     """List uploads attached to a job, oldest first."""
     db.init_schema()
+    removed_clause = "" if include_removed else " AND removed_at IS NULL"
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM uploads WHERE job_id = ? ORDER BY id",
+            "SELECT * FROM uploads WHERE job_id = ?"
+            + removed_clause
+            + " ORDER BY id",
             (job_id,),
         ).fetchall()
     return [_dict(row) for row in rows]
+
+
+def get_upload_for_user(upload_id: int, user_email: str) -> dict[str, Any]:
+    """Return an upload row the user can access, or raise ``JobError``."""
+    db.init_schema()
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM uploads WHERE id = ? AND removed_at IS NULL",
+            (upload_id,),
+        ).fetchone()
+        if row is None:
+            raise JobError("upload not found")
+        upload = _dict(row)
+        if upload["job_id"] is not None:
+            _require_role(
+                conn,
+                int(upload["job_id"]),
+                user_email,
+                {"owner", "editor", "viewer"},
+            )
+        elif upload["user_email"] != user_email:
+            raise JobError("access denied")
+    return upload
+
+
+def remove_upload(
+    upload_id: int,
+    *,
+    by: str,
+    delete_file: bool = False,
+) -> None:
+    """Soft-remove an upload, optionally deleting bytes for its uploader."""
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT uploads.*"
+            " FROM uploads"
+            " LEFT JOIN jobs ON uploads.job_id = jobs.id"
+            " WHERE uploads.id = ?",
+            (upload_id,),
+        ).fetchone()
+        if row is None:
+            raise JobError("upload not found")
+        upload = _dict(row)
+        if delete_file and upload["user_email"] != by:
+            raise JobError("only the original uploader can delete the file")
+        if upload["job_id"] is not None:
+            _require_role(conn, int(upload["job_id"]), by, {"owner", "editor"})
+        elif upload["user_email"] != by:
+            raise JobError("access denied")
+
+        conn.execute(
+            "UPDATE uploads"
+            " SET active = 0, removed_at = COALESCE(removed_at, ?),"
+            " removed_by = COALESCE(removed_by, ?)"
+            " WHERE id = ?",
+            (now, by, upload_id),
+        )
+
+    if delete_file:
+        Path(upload["file_path"]).unlink(missing_ok=True)
 
 
 def grant_access(

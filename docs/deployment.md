@@ -32,7 +32,7 @@ That's the entire operator contract.
 │   ├── marcedit.db-shm
 │   ├── audit/audit-YYYY-MM-DD.log
 │   ├── tasks/
-│   └── uploads/<user>/upload.mrc
+│   └── uploads/<user>/jobs/<job-id>/<upload-id>/upload.mrc
 ├── .streamlit/secrets.toml      # gitignored (Google OAuth)
 ├── .env                         # gitignored (systemd EnvironmentFile)
 └── scripts/, deploy/, docs/     # source-controlled

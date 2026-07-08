@@ -36,7 +36,7 @@ from typing import Any, Optional
 
 from pymarc import Record
 
-from . import quotas, runmode, upload_persistence
+from . import jobs, quotas, runmode, upload_persistence
 from .audit import audit_event
 from .identity import ANONYMOUS, current_user, is_anonymous, is_prod
 from .record_store import RecordStore
@@ -317,10 +317,14 @@ def handle_upload(uploaded_file) -> dict:
     #   * anonymous → per-session tmp (wiped on container restart;
     #     not retained across refresh — by design)
     #   * signed-in → stable per-user dir under data/uploads/
+    selected_job_id = st.session_state.get("current_job_id")
     if is_anonymous(user):
         store_dir = _session_records_dir()
     else:
-        store_dir = upload_persistence.persisted_upload_dir(user)
+        store_dir = upload_persistence.persisted_job_upload_dir(
+            user,
+            selected_job_id,
+        )
 
     store = RecordStore.from_bytes(
         raw,
@@ -328,7 +332,6 @@ def handle_upload(uploaded_file) -> dict:
         filename=uploaded_file.name,
     )
     if not is_anonymous(user):
-        selected_job_id = st.session_state.get("current_job_id")
         upload_persistence.record_upload(
             user=user,
             filename=uploaded_file.name,
@@ -382,7 +385,7 @@ def replace_current_store_from_bytes(
     if is_anonymous(user):
         store_dir = _session_records_dir()
     else:
-        store_dir = upload_persistence.persisted_upload_dir(user)
+        store_dir = upload_persistence.persisted_job_upload_dir(user, job_id)
 
     store = RecordStore.from_bytes(raw, tmp_dir=store_dir, filename=filename)
     if not is_anonymous(user):
@@ -400,6 +403,39 @@ def replace_current_store_from_bytes(
     st.session_state["editor_text"] = None
     st.session_state["editor_dirty"] = False
     return store
+
+
+def load_persisted_upload(upload_id: int) -> dict:
+    """Load one durable upload row into the current Streamlit session."""
+    import streamlit as st
+
+    user = current_user_id()
+    row = jobs.get_upload_for_user(upload_id, user)
+    path = Path(row["file_path"])
+    if not path.exists():
+        upload_persistence.clear_active_upload(user)
+        return {
+            "filename": row["filename"],
+            "total": 0,
+            "malformed": 0,
+            "error": "The stored MARC file is missing.",
+        }
+
+    store = RecordStore.from_path(path)
+    store._filename = row["filename"]
+    st.session_state["store"] = store
+    st.session_state["current_job_id"] = row["job_id"]
+    st.session_state["issues_cache"] = {}
+    st.session_state["editor_text"] = None
+    st.session_state["editor_dirty"] = False
+    if row["user_email"] == user:
+        upload_persistence.activate_upload(user, upload_id)
+    return {
+        "filename": row["filename"],
+        "total": store.count(),
+        "malformed": store.malformed_count(),
+        "error": None,
+    }
 
 
 def has_upload() -> bool:

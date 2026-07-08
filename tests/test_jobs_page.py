@@ -37,17 +37,25 @@ class _FakeColumn:
 
     def button(self, label: str, **kwargs: Any) -> bool:
         self._st.button_calls.append((label, kwargs))
-        return False
+        return kwargs.get("key") in self._st.clicked_keys
 
 
 class _FakeStreamlit:
-    def __init__(self, *, session_state: dict[str, Any] | None = None, toggle_value: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        session_state: dict[str, Any] | None = None,
+        toggle_value: bool = False,
+        clicked_keys: set[str] | None = None,
+    ) -> None:
         self.session_state = session_state or {}
         self.toggle_value = toggle_value
+        self.clicked_keys = clicked_keys or set()
         self.titles: list[str] = []
         self.captions: list[str] = []
         self.infos: list[str] = []
         self.errors: list[str] = []
+        self.successes: list[str] = []
         self.subheaders: list[str] = []
         self.writes: list[Any] = []
         self.dataframes: list[tuple[Any, dict[str, Any]]] = []
@@ -70,6 +78,9 @@ class _FakeStreamlit:
     def error(self, text: str) -> None:
         self.errors.append(text)
 
+    def success(self, text: str) -> None:
+        self.successes.append(text)
+
     def toggle(self, label: str, **kwargs: Any) -> bool:
         self.toggle_calls.append((label, kwargs))
         return self.toggle_value
@@ -82,7 +93,7 @@ class _FakeStreamlit:
 
     def button(self, label: str, **kwargs: Any) -> bool:
         self.button_calls.append((label, kwargs))
-        return False
+        return kwargs.get("key") in self.clicked_keys
 
     def rerun(self) -> None:
         self.rerun_called = True
@@ -109,6 +120,9 @@ class _FakeStreamlit:
     def text_area(self, label: str, **kwargs: Any) -> str:
         self.text_area_calls.append((label, kwargs))
         return ""
+
+    def switch_page(self, path: str) -> None:
+        self.session_state["switched_to"] = path
 
 
 def _load_jobs_page(monkeypatch):
@@ -186,6 +200,8 @@ def test_render_detail_calls_uploads_and_activity_for_selected_job(monkeypatch):
         page.jobs,
         "list_job_uploads",
         lambda job_id: upload_calls.append(job_id) or [{
+            "id": 99,
+            "user_email": "alice@example.edu",
             "filename": "batch.mrc",
             "record_count": 42,
             "file_bytes": 2048,
@@ -224,6 +240,191 @@ def test_render_detail_calls_uploads_and_activity_for_selected_job(monkeypatch):
     assert activity_calls == [(17, "alice@example.edu")]
     assert fake_st.titles == ["Vendor load"]
     assert len(fake_st.dataframes) == 2
+
+
+def test_render_detail_shows_file_actions_for_editors(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "needs_review",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_job_uploads",
+        lambda job_id: [{
+            "id": 99,
+            "user_email": "alice@example.edu",
+            "filename": "batch.mrc",
+            "record_count": 42,
+            "file_bytes": 2048,
+            "uploaded_at": "2026-07-08T12:00:00Z",
+            "active": 1,
+        }],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    labels = [label for label, _kwargs in fake_st.button_calls]
+    assert "Load" in labels
+    assert "Remove" in labels
+    assert "Delete file" in labels
+
+
+def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(clicked_keys={"job_upload_load_99"})
+    loaded: list[int] = []
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
+    monkeypatch.setattr(
+        page.session,
+        "load_persisted_upload",
+        lambda upload_id: loaded.append(upload_id) or {
+            "filename": "batch.mrc",
+            "total": 42,
+            "malformed": 0,
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_job_uploads",
+        lambda job_id: [{
+            "id": 99,
+            "user_email": "alice@example.edu",
+            "filename": "batch.mrc",
+            "record_count": 42,
+            "file_bytes": 2048,
+            "uploaded_at": "2026-07-08T12:00:00Z",
+            "active": 0,
+        }],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert loaded == [99]
+    assert fake_st.session_state["switched_to"] == "views/1_View.py"
+
+
+def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(clicked_keys={"job_upload_remove_99"})
+    removed: list[tuple[int, str, bool]] = []
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
+    monkeypatch.setattr(
+        page.jobs,
+        "remove_upload",
+        lambda upload_id, *, by, delete_file=False: removed.append((upload_id, by, delete_file)),
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_job_uploads",
+        lambda job_id: [{
+            "id": 99,
+            "user_email": "alice@example.edu",
+            "filename": "batch.mrc",
+            "record_count": 42,
+            "file_bytes": 2048,
+            "uploaded_at": "2026-07-08T12:00:00Z",
+            "active": 1,
+        }],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert removed == [(99, "alice@example.edu", False)]
+    assert fake_st.rerun_called is True
+
+
+def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.session, "current_user_id", lambda: "viewer@example.edu")
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "viewer")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "needs_review",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_job_uploads",
+        lambda job_id: [{
+            "id": 99,
+            "user_email": "alice@example.edu",
+            "filename": "batch.mrc",
+            "record_count": 42,
+            "file_bytes": 2048,
+            "uploaded_at": "2026-07-08T12:00:00Z",
+            "active": 1,
+        }],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("viewer@example.edu", 17)
+
+    labels = [label for label, _kwargs in fake_st.button_calls]
+    assert "Load" in labels
+    assert "Remove" not in labels
+    assert "Delete file" not in labels
 
 
 def test_render_detail_loads_sharing_and_review_notes_for_job_members(monkeypatch):

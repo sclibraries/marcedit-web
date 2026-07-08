@@ -178,6 +178,6 @@ The mutable state lives in `/var/www/html/marcedit-web/data/`:
 - `marcedit.db` (+ `.db-wal`, `.db-shm`) — SQLite audit + tasks + uploads index
 - `audit/*.log` — JSONL audit log
 - `tasks/*.py` — legacy file-backed tasks (kept as backup; SQL is canonical)
-- `uploads/<user>/upload.mrc` — persisted per-user uploads
+- `uploads/<user>/jobs/<job-id>/<upload-id>/upload.mrc` — persisted per-upload MARC files
 
 `rsync` this directory to your preferred backup target.

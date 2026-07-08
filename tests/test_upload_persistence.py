@@ -157,14 +157,14 @@ def test_concurrent_uploads_for_different_users_each_keep_active_row():
     }
 
 
-def test_clear_active_upload_removes_file_and_flips_row(tmp_path):
+def test_clear_active_upload_preserves_file_and_flips_row(tmp_path):
     path = tmp_path / "upload.mrc"
     path.write_bytes(b"x")
     _record(path=str(path))
     upload_persistence.clear_active_upload("alice@example.edu")
 
     assert upload_persistence.get_active_upload("alice@example.edu") is None
-    assert not path.exists()
+    assert path.exists()
     with db.connect() as conn:
         n = conn.execute(
             "SELECT COUNT(*) FROM uploads WHERE user_email = ? AND active = 1",

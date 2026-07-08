@@ -28,17 +28,14 @@ the new one. The DB write is atomic within a single transaction.
 from __future__ import annotations
 
 import datetime as dt
-import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
 from . import db, jobs
 from .identity import ANONYMOUS, is_anonymous
 from .task_storage import safe_user_slug
-
-logger = logging.getLogger("marcedit_web.upload_persistence")
-
 
 def _uploads_root() -> Path:
     """Root for persisted uploads.
@@ -61,6 +58,14 @@ def persisted_upload_dir(user: str) -> Path:
     dir — matches the existing ``RecordStore.from_bytes`` contract.
     """
     path = _uploads_root() / safe_user_slug(user)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def persisted_job_upload_dir(user: str, job_id: int | None) -> Path:
+    """Return a unique directory for one durable signed-in upload."""
+    job_part = str(job_id) if job_id is not None else "unassigned"
+    path = persisted_upload_dir(user) / "jobs" / job_part / uuid.uuid4().hex
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -121,30 +126,37 @@ def get_active_upload(user: str) -> dict[str, Any] | None:
         row = conn.execute(
             "SELECT * FROM uploads"
             " WHERE user_email = ? AND active = 1"
+            " AND removed_at IS NULL"
             " ORDER BY id DESC LIMIT 1",
             (user,),
         ).fetchone()
     return {k: row[k] for k in row.keys()} if row else None
 
 
-def clear_active_upload(user: str) -> None:
-    """Drop the user's active upload — file + row.
+def activate_upload(user: str, upload_id: int) -> None:
+    """Make an existing upload row the active refresh-restore target."""
+    if is_anonymous(user):
+        return
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE uploads SET active = 0 WHERE user_email = ? AND active = 1",
+            (user,),
+        )
+        conn.execute(
+            "UPDATE uploads SET active = 1 WHERE id = ? AND user_email = ?",
+            (upload_id, user),
+        )
 
-    No-op for anonymous users. Unlinks the on-disk file
-    best-effort; failure to remove the file still flips the row.
+
+def clear_active_upload(user: str) -> None:
+    """Clear the user's active upload row without deleting durable bytes.
+
+    No-op for anonymous users. File deletion is intentionally handled
+    only by explicit job upload removal, not by session clearing.
     """
     if is_anonymous(user):
         return
-    row = get_active_upload(user)
-    if row is None:
-        return
-    file_path = Path(row["file_path"])
-    try:
-        file_path.unlink(missing_ok=True)
-    except OSError as exc:
-        logger.warning(
-            "could not remove persisted upload %s: %s", file_path, exc
-        )
     with db.connect() as conn:
         conn.execute(
             "UPDATE uploads SET active = 0"

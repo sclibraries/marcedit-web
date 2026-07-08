@@ -179,6 +179,55 @@ def test_list_job_uploads_returns_all_files_for_job():
     assert [row["filename"] for row in uploads] == ["first.mrc", "second.mrc"]
 
 
+def test_remove_upload_hides_file_without_deleting_bytes(tmp_path):
+    """Normal removal detaches a file from the job list but preserves bytes."""
+    job = jobs.create_job("alice@example.edu", "Vendor load June")
+    path = tmp_path / "vendor.mrc"
+    path.write_bytes(b"marc")
+    upload_persistence.record_upload(
+        user="alice@example.edu",
+        filename="vendor.mrc",
+        file_path=path,
+        record_count=2,
+        file_bytes=100,
+        job_id=job["id"],
+    )
+    upload = jobs.list_job_uploads(job["id"])[0]
+
+    jobs.remove_upload(upload["id"], by="alice@example.edu")
+
+    assert jobs.list_job_uploads(job["id"]) == []
+    assert path.exists()
+    removed = jobs.list_job_uploads(job["id"], include_removed=True)
+    assert [row["filename"] for row in removed] == ["vendor.mrc"]
+
+
+def test_delete_upload_file_requires_original_uploader(tmp_path):
+    """Hard deletion is explicit and limited to the cataloger who uploaded it."""
+    job = jobs.create_job("alice@example.edu", "Vendor load June")
+    jobs.grant_access(job["id"], "bob@example.edu", "editor", by="alice@example.edu")
+    path = tmp_path / "vendor.mrc"
+    path.write_bytes(b"marc")
+    upload_persistence.record_upload(
+        user="alice@example.edu",
+        filename="vendor.mrc",
+        file_path=path,
+        record_count=2,
+        file_bytes=100,
+        job_id=job["id"],
+    )
+    upload = jobs.list_job_uploads(job["id"])[0]
+
+    with pytest.raises(jobs.JobError, match="original uploader"):
+        jobs.remove_upload(upload["id"], by="bob@example.edu", delete_file=True)
+
+    assert path.exists()
+
+    jobs.remove_upload(upload["id"], by="alice@example.edu", delete_file=True)
+
+    assert not path.exists()
+
+
 def test_new_job_defaults_to_active_status():
     """New shared workspaces begin as active, not review-blocked."""
     created = jobs.create_job("alice@example.edu", "Vendor load July")

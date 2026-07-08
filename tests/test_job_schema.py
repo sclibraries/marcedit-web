@@ -26,6 +26,16 @@ def test_v6_creates_jobs_job_access_and_upload_job_id():
     assert {"job_id", "user_email", "role"}.issubset(access_cols)
 
 
+def test_v10_adds_upload_removal_metadata():
+    """Upload removal needs audit columns without deleting MARC bytes."""
+    db.init_schema()
+
+    with db.connect() as conn:
+        upload_cols = {row["name"] for row in conn.execute("PRAGMA table_info(uploads)")}
+
+    assert {"removed_at", "removed_by"}.issubset(upload_cols)
+
+
 def test_v6_migrates_existing_uploads_to_default_personal_job(tmp_path, monkeypatch):
     """Existing upload rows should gain a default job without data loss."""
     db_path = tmp_path / "legacy.db"

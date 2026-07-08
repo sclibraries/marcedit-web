@@ -38,6 +38,42 @@ def _format_size(num_bytes: int) -> str:
     return f"{num_bytes / (1024 * 1024):.1f} MB"
 
 
+def _render_file_actions(user: str, role: str | None, uploads: list[dict]) -> None:
+    for row in uploads:
+        cols = st.columns([4, 1, 1, 1])
+        active_marker = "current" if row["active"] else "available"
+        cols[0].write(
+            f"{row['filename']} · {row['record_count']} records · "
+            f"{_format_size(row['file_bytes'])} · {active_marker}"
+        )
+        if cols[1].button("Load", key=f"job_upload_load_{row['id']}"):
+            try:
+                summary = session.load_persisted_upload(int(row["id"]))
+            except jobs.JobError as exc:
+                st.error(str(exc))
+            else:
+                if summary.get("error"):
+                    st.error(summary["error"])
+                else:
+                    st.switch_page("views/1_View.py")
+        if _can_edit(role):
+            if cols[2].button("Remove", key=f"job_upload_remove_{row['id']}"):
+                try:
+                    jobs.remove_upload(int(row["id"]), by=user)
+                except jobs.JobError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
+        if row["user_email"] == user:
+            if cols[3].button("Delete file", key=f"job_upload_delete_{row['id']}"):
+                try:
+                    jobs.remove_upload(int(row["id"]), by=user, delete_file=True)
+                except jobs.JobError as exc:
+                    st.error(str(exc))
+                else:
+                    st.rerun()
+
+
 def _render_list(user: str) -> None:
     st.title("Jobs")
     st.caption("Shared cataloging workspaces for vendor loads, review, and handoff.")
@@ -126,6 +162,7 @@ def _render_detail(user: str, job_id: int) -> None:
             hide_index=True,
             use_container_width=True,
         )
+        _render_file_actions(user, role, uploads)
     else:
         st.caption("No files uploaded to this job yet.")
 

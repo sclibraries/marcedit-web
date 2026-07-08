@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -145,6 +145,8 @@ def init_schema() -> None:
                 _migrate_to_v6(conn)
             if current_version < 9:
                 _migrate_to_v9(conn)
+            if current_version < 10:
+                _migrate_to_v10(conn)
             # After all pending steps land, set the version row to the
             # newest. INSERT OR REPLACE keeps the table single-row.
             conn.execute("DELETE FROM _schema_version")
@@ -302,6 +304,17 @@ def _migrate_to_v9(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_job_activity_job ON job_activity(job_id)")
 
 
+def _migrate_to_v10(conn: sqlite3.Connection) -> None:
+    """Add upload soft-removal metadata for durable job files (TASK-120)."""
+    upload_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(uploads)")
+    }
+    if "removed_at" not in upload_cols:
+        conn.execute("ALTER TABLE uploads ADD COLUMN removed_at TEXT")
+    if "removed_by" not in upload_cols:
+        conn.execute("ALTER TABLE uploads ADD COLUMN removed_by TEXT")
+
+
 def _ensure_default_job(
     conn: sqlite3.Connection,
     owner_email: str,
@@ -382,6 +395,8 @@ CREATE TABLE IF NOT EXISTS uploads (
     file_bytes    INTEGER NOT NULL,
     uploaded_at   TEXT    NOT NULL,
     active        INTEGER NOT NULL DEFAULT 1,
+    removed_at    TEXT,
+    removed_by    TEXT,
     FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE SET NULL
 );
 
