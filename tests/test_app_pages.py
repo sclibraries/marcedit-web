@@ -5,6 +5,9 @@ from __future__ import annotations
 import importlib
 
 PUBLIC_ALLOWED = {"Home", "View", "Validate", "Report", "MarcTools"}
+PRIVATE_ONLY = {
+    "Workspace", "Jobs", "Find", "MarcEditor", "Tasks", "Diff", "Dedupe", "Admin",
+}
 SANDBOX = "Tasks"
 ADMIN = "Admin"
 
@@ -33,3 +36,16 @@ def test_private_mode_includes_sandbox(monkeypatch):
     assert SANDBOX in paths
     assert PUBLIC_ALLOWED.issubset(paths)
     assert ADMIN in paths
+    assert PRIVATE_ONLY.issubset(paths)
+
+
+def test_private_mode_includes_jobs_page(monkeypatch):
+    app = _load_app(monkeypatch, "private")
+    paths = _url_paths(app.build_pages(public=False))
+    assert "Jobs" in paths
+
+
+def test_public_mode_does_not_register_jobs_page(monkeypatch):
+    app = _load_app(monkeypatch, "public")
+    paths = _url_paths(app.build_pages(public=True))
+    assert "Jobs" not in paths
