@@ -109,6 +109,8 @@ class _FakeStreamlit:
         self.button_calls: list[tuple[str, dict[str, Any]]] = []
         self.popovers: list[str] = []
         self.column_calls: list[tuple[Any, dict[str, Any]]] = []
+        self.dialogs: list[str] = []
+        self.toasts: list[tuple[str, Any]] = []
 
     @property
     def sidebar(self) -> _FakeContext:
@@ -217,6 +219,19 @@ class _FakeStreamlit:
 
     def rerun(self) -> None:
         self.rerun_called = True
+
+    def toast(self, message: str, icon: Any = None) -> None:
+        self.toasts.append((message, icon))
+
+    def dialog(self, title: str, **kwargs: Any):
+        # Passthrough decorator: the dialog body renders inline so
+        # clicked_keys can drive its buttons.
+        self.dialogs.append(title)
+
+        def _decorator(func):
+            return func
+
+        return _decorator
 
     def cache_data(self, *args: Any, **kwargs: Any):
         # marcedit_web.render's __init__ decorates a loader with
@@ -430,6 +445,9 @@ def test_job_workspace_loads_selected_file_from_home(monkeypatch):
 
     assert loaded == [upload_id]
     assert fake_st.switch_pages == ["views/1_View.py"]
+    assert fake_st.session_state["pending_toasts"] == [
+        ("Loaded vendor.mrc — 1 record", "📂")
+    ]
 
 
 def test_job_workspace_soft_removes_selected_file_from_home(monkeypatch):
@@ -468,6 +486,9 @@ def test_job_workspace_soft_removes_selected_file_from_home(monkeypatch):
 
     assert removed == [(upload_id, "cataloger@example.edu", False)]
     assert fake_st.rerun_called is True
+    assert fake_st.session_state["pending_toasts"] == [
+        ("Removed vendor.mrc from this job.", "🗂️")
+    ]
 
 
 def test_job_workspace_delete_file_only_for_original_uploader(monkeypatch):
@@ -499,8 +520,45 @@ def test_job_workspace_delete_file_only_for_original_uploader(monkeypatch):
     assert "Remove from job" in labels
 
 
-def test_job_workspace_delete_detaches_loaded_batch(monkeypatch):
-    """Deleting the loaded file must drop the session batch (TASK-128).
+def test_home_delete_click_only_opens_confirmation(monkeypatch):
+    """A single click must never destroy a file (TASK-130)."""
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    upload_persistence.record_upload(
+        user="cataloger@example.edu",
+        filename="vendor.mrc",
+        file_path="/tmp/vendor.mrc",
+        record_count=12,
+        file_bytes=345,
+        job_id=shared["id"],
+    )
+    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+        }
+    )
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        clicked_keys={f"home_job_upload_delete_{upload_id}"},
+    )
+    removed: list = []
+    monkeypatch.setattr(
+        jobs,
+        "remove_upload",
+        lambda upload_id, *, by, delete_file=False: removed.append(upload_id),
+    )
+
+    _run_home(monkeypatch, fake_st)
+
+    assert removed == []
+    assert state["home_job_upload_pending_delete"] == upload_id
+    assert fake_st.rerun_called is True
+
+
+def test_home_confirmed_delete_detaches_and_toasts(monkeypatch):
+    """Deleting the loaded file must drop the session batch (TASK-128/130).
 
     Otherwise the rerun's "Loaded batch" footer reads the just-unlinked
     file and crashes with FileNotFoundError.
@@ -522,21 +580,67 @@ def test_job_workspace_delete_detaches_loaded_batch(monkeypatch):
             "current_job_id": shared["id"],
             "home_start_path": "Job Workspace",
             "store": loaded_store,
+            "home_job_upload_pending_delete": upload_id,
         }
     )
     fake_st = _FakeStreamlit(
         session_state=state,
-        clicked_keys={f"home_job_upload_delete_{upload_id}"},
+        clicked_keys={f"home_job_upload_confirm_delete_{upload_id}"},
     )
+    removed: list[tuple[int, str, bool]] = []
     monkeypatch.setattr(
         jobs,
         "remove_upload",
-        lambda upload_id, *, by, delete_file=False: None,
+        lambda upload_id, *, by, delete_file=False: removed.append(
+            (upload_id, by, delete_file)
+        ),
     )
 
     _run_home(monkeypatch, fake_st)
 
+    assert removed == [(upload_id, "cataloger@example.edu", True)]
     assert state["store"] is None
+    assert state["pending_toasts"] == [("Deleted vendor.mrc permanently.", "🗑️")]
+    assert "home_job_upload_pending_delete" not in state
+    assert fake_st.dialogs == ["Delete file permanently?"]
+    assert fake_st.rerun_called is True
+
+
+def test_home_cancelled_delete_keeps_file(monkeypatch):
+    """Cancel must delete nothing and clear the pending flag (TASK-130)."""
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    upload_persistence.record_upload(
+        user="cataloger@example.edu",
+        filename="vendor.mrc",
+        file_path="/tmp/vendor.mrc",
+        record_count=12,
+        file_bytes=345,
+        job_id=shared["id"],
+    )
+    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+            "home_job_upload_pending_delete": upload_id,
+        }
+    )
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        clicked_keys={f"home_job_upload_cancel_delete_{upload_id}"},
+    )
+    removed: list = []
+    monkeypatch.setattr(
+        jobs,
+        "remove_upload",
+        lambda upload_id, *, by, delete_file=False: removed.append(upload_id),
+    )
+
+    _run_home(monkeypatch, fake_st)
+
+    assert removed == []
+    assert "home_job_upload_pending_delete" not in state
     assert fake_st.rerun_called is True
 
 
