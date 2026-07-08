@@ -136,24 +136,12 @@ def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
     if not uploads:
         st.caption("No MARC files have been added to this job yet.")
         return
-    st.dataframe(
-        [
-            {
-                "Filename": row["filename"],
-                "Records": row["record_count"],
-                "Uploaded": row["uploaded_at"],
-                "Active": bool(row["active"]),
-            }
-            for row in uploads
-        ],
-        hide_index=True,
-        use_container_width=True,
-    )
     for row in uploads:
         cols = st.columns([4, 1, 1, 1])
         active_marker = "current" if row["active"] else "available"
         cols[0].write(
-            f"{row['filename']} · {row['record_count']} records · {active_marker}"
+            f"{row['filename']} · {row['record_count']} records · "
+            f"{row['uploaded_at']} · {active_marker}"
         )
         if cols[1].button("Load", key=f"home_job_upload_load_{row['id']}"):
             try:

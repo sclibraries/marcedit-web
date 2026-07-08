@@ -340,11 +340,8 @@ def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch):
 
     _run_home(monkeypatch, fake_st)
 
-    assert any(
-        row["Filename"] == "vendor.mrc"
-        for dataframe, _kwargs in fake_st.dataframes
-        for row in dataframe
-    )
+    assert fake_st.dataframes == []
+    assert any("vendor.mrc" in str(value) for value in fake_st.writes)
 
 
 def test_job_workspace_loads_selected_file_from_home(monkeypatch):
