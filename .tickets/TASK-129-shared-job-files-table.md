@@ -1,6 +1,6 @@
 # TASK-129 — Shared job files table on Home and Jobs pages
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 3 — Cataloger workflow clarity
 **Depends on:** TASK-126, TASK-127, TASK-128
 
@@ -50,3 +50,27 @@ column added everywhere.
    dataframe + old rows, Jobs delete label parity, shared helpers.
 4. Focused suites pass locally and in Docker; visual spot-check of the Jobs
    page shows the new table.
+
+## Outcome
+
+- Added `marcedit_web/render/job_files.py` (UPLOADS_GRID, format_size,
+  format_uploaded_at, render_job_files_table with key_prefix). Home and
+  B_Jobs delegate to it; B_Jobs's duplicate dataframe and old action rows
+  removed; Home gains a Size column; delete/remove labels now match on
+  both pages.
+- Verification:
+  - RED: 5 targeted failures (missing shared module, missing Size header,
+    Jobs dataframe count, old labels) before implementation.
+  - GREEN local + Docker (Python 3.9 / Streamlit 1.50): 73 passed each.
+  - Browser check of the Jobs detail page at layout="wide": new table,
+    no duplicate dataframe, no wrapped labels, ⋮ menu correct.
+- Code review: mergeable; extraction verified byte-faithful, permission
+  gates and widget keys intact.
+
+## Follow-up (tracked, not fixed here)
+
+- `marcedit_web/render/__init__.py` binds `st` at package-import time.
+  If a test process imports the package while `sys.modules["streamlit"]`
+  is a fake, the package keeps the fake forever (module cache). Currently
+  masked by suite ordering; convert the package's `st` usage to late
+  imports (as `job_files.py` does) in a future ticket.
