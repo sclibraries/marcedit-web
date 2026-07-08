@@ -94,6 +94,35 @@ def list_jobs(user_email: str) -> list[dict[str, Any]]:
     return [_dict(row) for row in rows]
 
 
+def list_job_summaries(
+    user_email: str,
+    *,
+    include_archived: bool = False,
+) -> list[dict[str, Any]]:
+    """List jobs with counts needed by the Jobs page."""
+    db.init_schema()
+    active_clause = "" if include_archived else " AND jobs.active = 1"
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT jobs.id, jobs.name, jobs.owner_email, jobs.status,"
+            " jobs.updated_at, jobs.active, job_access.role AS access_role,"
+            " COUNT(DISTINCT uploads.id) AS file_count,"
+            " COUNT(DISTINCT CASE WHEN job_review_notes.resolved = 0"
+            " THEN job_review_notes.id END) AS open_note_count"
+            " FROM jobs"
+            " JOIN job_access ON job_access.job_id = jobs.id"
+            " LEFT JOIN uploads ON uploads.job_id = jobs.id"
+            " LEFT JOIN job_review_notes ON job_review_notes.job_id = jobs.id"
+            " WHERE job_access.user_email = ?"
+            + active_clause
+            + " GROUP BY jobs.id, jobs.name, jobs.owner_email, jobs.status,"
+            " jobs.updated_at, jobs.active, job_access.role"
+            " ORDER BY jobs.updated_at DESC, jobs.id DESC",
+            (user_email,),
+        ).fetchall()
+    return [_dict(row) for row in rows]
+
+
 def get_job(job_id: int) -> dict[str, Any] | None:
     db.init_schema()
     with db.connect() as conn:
@@ -283,8 +312,103 @@ def list_activity(job_id: int, *, user_email: str) -> list[dict[str, Any]]:
     return [_dict(row) for row in rows]
 
 
+def add_review_note(
+    job_id: int,
+    *,
+    anchor_kind: str,
+    note: str,
+    author: str,
+    anchor_value: str = "",
+    category: str = "note",
+) -> dict[str, Any]:
+    clean_note = note.strip()
+    clean_anchor = anchor_kind.strip()
+    clean_category = category.strip() or "note"
+    if not clean_anchor:
+        raise JobError("note anchor is required")
+    if not clean_note:
+        raise JobError("note text is required")
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _require_role(conn, job_id, author, {"owner", "editor"})
+        cur = conn.execute(
+            "INSERT INTO job_review_notes"
+            "(job_id, anchor_kind, anchor_value, note, author_email, category,"
+            " created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                job_id,
+                clean_anchor,
+                anchor_value.strip(),
+                clean_note,
+                author,
+                clean_category,
+                now,
+            ),
+        )
+        note_id = int(cur.lastrowid)
+        conn.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ?",
+            (now, job_id),
+        )
+        _record_activity(conn, job_id, "note-added", clean_note, author, now)
+        row = _review_note_row(conn, note_id)
+    return _dict(row)
+
+
+def resolve_review_note(note_id: int, *, by: str) -> dict[str, Any]:
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _review_note_row(conn, note_id)
+        if row is None:
+            raise JobError("review note not found")
+        job_id = int(row["job_id"])
+        _require_role(conn, job_id, by, {"owner", "editor"})
+        conn.execute(
+            "UPDATE job_review_notes"
+            " SET resolved = 1, resolved_at = ?, resolved_by = ?"
+            " WHERE id = ?",
+            (now, by, note_id),
+        )
+        conn.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ?",
+            (now, job_id),
+        )
+        _record_activity(conn, job_id, "note-resolved", row["note"], by, now)
+        row = _review_note_row(conn, note_id)
+    return _dict(row)
+
+
+def list_review_notes(
+    job_id: int,
+    *,
+    include_resolved: bool = True,
+) -> list[dict[str, Any]]:
+    db.init_schema()
+    resolved_clause = "" if include_resolved else " AND resolved = 0"
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM job_review_notes WHERE job_id = ?"
+            + resolved_clause
+            + " ORDER BY resolved, id",
+            (job_id,),
+        ).fetchall()
+    return [_dict(row) for row in rows]
+
+
 def _job_row(conn, job_id: int):
     return conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+
+
+def _review_note_row(conn, note_id: int):
+    return conn.execute(
+        "SELECT * FROM job_review_notes WHERE id = ?",
+        (note_id,),
+    ).fetchone()
 
 
 def _access_row(conn, job_id: int, user_email: str):

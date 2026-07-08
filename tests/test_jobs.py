@@ -324,3 +324,95 @@ def test_restore_job_is_owner_only_and_records_activity():
     activity = jobs.list_activity(job["id"], user_email="owner@example.edu")
     assert activity[-1]["kind"] == "job-restored"
     assert activity[-1]["actor_email"] == "owner@example.edu"
+
+
+def test_list_job_summaries_includes_file_and_open_note_counts():
+    """Jobs page needs scannable workspace metadata without page-level SQL."""
+    job = jobs.create_job("owner@example.edu", "Vendor load July")
+    upload_persistence.record_upload(
+        user="owner@example.edu",
+        filename="vendor.mrc",
+        file_path="/tmp/vendor.mrc",
+        record_count=12,
+        file_bytes=345,
+        job_id=job["id"],
+    )
+    jobs.add_review_note(
+        job["id"],
+        anchor_kind="record",
+        anchor_value="7",
+        note="Check 856 proxy.",
+        author="owner@example.edu",
+    )
+
+    rows = jobs.list_job_summaries("owner@example.edu")
+
+    assert rows == [
+        {
+            "id": job["id"],
+            "name": "Vendor load July",
+            "owner_email": "owner@example.edu",
+            "access_role": "owner",
+            "status": jobs.STATUS_ACTIVE,
+            "active": 1,
+            "file_count": 1,
+            "open_note_count": 1,
+            "updated_at": job["updated_at"],
+        }
+    ]
+
+
+def test_review_notes_are_record_or_issue_anchored_and_resolvable():
+    """Catalogers need ad hoc notes tied to the exact review concern."""
+    job = jobs.create_job("owner@example.edu", "Vendor load July")
+    jobs.grant_access(
+        job["id"],
+        "editor@example.edu",
+        "editor",
+        by="owner@example.edu",
+    )
+
+    note = jobs.add_review_note(
+        job["id"],
+        anchor_kind="control_number",
+        anchor_value="ocn123456",
+        note="Confirm provider-neutral fields.",
+        author="editor@example.edu",
+        category="question",
+    )
+    resolved = jobs.resolve_review_note(note["id"], by="owner@example.edu")
+
+    assert note["resolved"] == 0
+    assert resolved["resolved"] == 1
+    assert resolved["resolved_by"] == "owner@example.edu"
+    assert jobs.list_review_notes(job["id"], include_resolved=False) == []
+    assert jobs.list_activity(
+        job["id"], user_email="owner@example.edu"
+    )[-1]["kind"] == "note-resolved"
+
+
+def test_viewer_cannot_add_or_resolve_review_notes():
+    """Viewer access is inspect-only for review comments."""
+    job = jobs.create_job("owner@example.edu", "Vendor load July")
+    note = jobs.add_review_note(
+        job["id"],
+        anchor_kind="job",
+        note="Owner note.",
+        author="owner@example.edu",
+    )
+    jobs.grant_access(
+        job["id"],
+        "viewer@example.edu",
+        "viewer",
+        by="owner@example.edu",
+    )
+
+    with pytest.raises(jobs.JobError, match="access denied"):
+        jobs.add_review_note(
+            job["id"],
+            anchor_kind="job",
+            note="Viewer note.",
+            author="viewer@example.edu",
+        )
+    with pytest.raises(jobs.JobError, match="access denied"):
+        jobs.resolve_review_note(note["id"], by="viewer@example.edu")
