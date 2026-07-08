@@ -6,6 +6,7 @@ import streamlit as st
 
 from marcedit_web.lib import jobs, session
 from marcedit_web.lib.identity import is_anonymous
+from marcedit_web.render import job_files
 
 _DETAIL_UNAVAILABLE = "Job not found or unavailable."
 
@@ -28,53 +29,6 @@ def _workflow_statuses() -> tuple[str, ...]:
 
 def _can_archive(job: dict[str, object]) -> bool:
     return str(job.get("name")) != jobs.DEFAULT_JOB_NAME
-
-
-def _format_size(num_bytes: int) -> str:
-    if num_bytes < 1024:
-        return f"{num_bytes} B"
-    if num_bytes < 1024 * 1024:
-        return f"{num_bytes / 1024:.1f} KB"
-    return f"{num_bytes / (1024 * 1024):.1f} MB"
-
-
-def _render_file_actions(user: str, role: str | None, uploads: list[dict]) -> None:
-    for row in uploads:
-        cols = st.columns([4, 1, 1, 1])
-        active_marker = "current" if row["active"] else "available"
-        cols[0].write(
-            f"{row['filename']} · {row['record_count']} records · "
-            f"{_format_size(row['file_bytes'])} · {active_marker}"
-        )
-        if cols[1].button("Load", key=f"job_upload_load_{row['id']}"):
-            try:
-                summary = session.load_persisted_upload(int(row["id"]))
-            except jobs.JobError as exc:
-                st.error(str(exc))
-            else:
-                if summary.get("error"):
-                    st.error(summary["error"])
-                else:
-                    st.switch_page("views/1_View.py")
-        if _can_edit(role):
-            if cols[2].button("Remove", key=f"job_upload_remove_{row['id']}"):
-                try:
-                    jobs.remove_upload(int(row["id"]), by=user)
-                except jobs.JobError as exc:
-                    st.error(str(exc))
-                else:
-                    st.rerun()
-        if row["user_email"] == user:
-            if cols[3].button("Delete file", key=f"job_upload_delete_{row['id']}"):
-                try:
-                    jobs.remove_upload(int(row["id"]), by=user, delete_file=True)
-                except jobs.JobError as exc:
-                    st.error(str(exc))
-                else:
-                    # The deleted file may back the loaded batch; a dangling
-                    # store crashes the rerun (TASK-128).
-                    session.detach_loaded_batch(row["file_path"])
-                    st.rerun()
 
 
 def _render_list(user: str) -> None:
@@ -151,21 +105,12 @@ def _render_detail(user: str, job_id: int) -> None:
     uploads = jobs.list_job_uploads(job_id)
     st.subheader("Files")
     if uploads:
-        st.dataframe(
-            [
-                {
-                    "Filename": row["filename"],
-                    "Records": row["record_count"],
-                    "Size": _format_size(row["file_bytes"]),
-                    "Uploaded": row["uploaded_at"],
-                    "Active": bool(row["active"]),
-                }
-                for row in uploads
-            ],
-            hide_index=True,
-            use_container_width=True,
+        job_files.render_job_files_table(
+            uploads,
+            user=user,
+            role=role,
+            key_prefix="job_upload",
         )
-        _render_file_actions(user, role, uploads)
     else:
         st.caption("No files uploaded to this job yet.")
 

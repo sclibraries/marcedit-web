@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import sys
 from typing import Any
 
 
@@ -35,9 +36,16 @@ class _FakeColumn:
     def write(self, value: Any) -> None:
         self._st.writes.append(value)
 
+    def markdown(self, text: str) -> None:
+        self._st.writes.append(text)
+
     def button(self, label: str, **kwargs: Any) -> bool:
         self._st.button_calls.append((label, kwargs))
         return kwargs.get("key") in self._st.clicked_keys
+
+    def popover(self, label: str, **kwargs: Any) -> _FakeContainer:
+        self._st.popovers.append(label)
+        return _FakeContainer(self._st)
 
 
 class _FakeStreamlit:
@@ -64,6 +72,8 @@ class _FakeStreamlit:
         self.selectbox_calls: list[tuple[str, Any, dict[str, Any]]] = []
         self.text_input_calls: list[tuple[str, dict[str, Any]]] = []
         self.text_area_calls: list[tuple[str, dict[str, Any]]] = []
+        self.popovers: list[str] = []
+        self.column_calls: list[tuple[Any, dict[str, Any]]] = []
         self.rerun_called = False
 
     def title(self, text: str) -> None:
@@ -88,8 +98,15 @@ class _FakeStreamlit:
     def container(self, **kwargs: Any) -> _FakeContainer:
         return _FakeContainer(self)
 
-    def columns(self, spec: list[int]) -> list[_FakeColumn]:
+    def columns(self, spec: list[Any], **kwargs: Any) -> list[_FakeColumn]:
+        self.column_calls.append((spec, kwargs))
         return [_FakeColumn(self) for _ in spec]
+
+    def divider(self) -> None:
+        return None
+
+    def markdown(self, text: str) -> None:
+        self.writes.append(text)
 
     def button(self, label: str, **kwargs: Any) -> bool:
         self.button_calls.append((label, kwargs))
@@ -140,11 +157,11 @@ def test_status_label_is_cataloger_readable(monkeypatch):
 
 
 def test_format_size_uses_human_units(monkeypatch):
-    page = _load_jobs_page(monkeypatch)
+    from marcedit_web.render.job_files import format_size
 
-    assert page._format_size(999) == "999 B"
-    assert page._format_size(1536) == "1.5 KB"
-    assert page._format_size(2 * 1024 * 1024) == "2.0 MB"
+    assert format_size(999) == "999 B"
+    assert format_size(1536) == "1.5 KB"
+    assert format_size(2 * 1024 * 1024) == "2.0 MB"
 
 
 def test_job_page_permissions_are_role_based(monkeypatch):
@@ -163,6 +180,7 @@ def test_render_list_calls_list_job_summaries_for_authenticated_user(monkeypatch
     calls: list[tuple[str, bool]] = []
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(
         page.jobs,
@@ -183,6 +201,7 @@ def test_render_detail_calls_uploads_and_activity_for_selected_job(monkeypatch):
     activity_calls: list[tuple[int, str]] = []
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
     monkeypatch.setattr(
@@ -239,7 +258,12 @@ def test_render_detail_calls_uploads_and_activity_for_selected_job(monkeypatch):
     assert upload_calls == [17]
     assert activity_calls == [(17, "alice@example.edu")]
     assert fake_st.titles == ["Vendor load"]
-    assert len(fake_st.dataframes) == 2
+    # Files render as the shared actionable table now (TASK-129); the only
+    # remaining dataframe is the Activity feed.
+    assert len(fake_st.dataframes) == 1
+    assert "**Filename**" in fake_st.writes
+    assert "**Size**" in fake_st.writes
+    assert "2.0 KB" in fake_st.writes
 
 
 def test_render_detail_shows_file_actions_for_editors(monkeypatch):
@@ -247,6 +271,7 @@ def test_render_detail_shows_file_actions_for_editors(monkeypatch):
     fake_st = _FakeStreamlit()
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
     monkeypatch.setattr(
@@ -281,8 +306,9 @@ def test_render_detail_shows_file_actions_for_editors(monkeypatch):
 
     labels = [label for label, _kwargs in fake_st.button_calls]
     assert "Load" in labels
-    assert "Remove" in labels
-    assert "Delete file" in labels
+    assert "Remove from job" in labels
+    assert "Delete file permanently" in labels
+    assert fake_st.popovers == ["⋮"]
 
 
 def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
@@ -291,6 +317,7 @@ def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
     loaded: list[int] = []
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(
         page.session,
@@ -343,6 +370,7 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
     removed: list[tuple[int, str, bool]] = []
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
     monkeypatch.setattr(
@@ -396,6 +424,7 @@ def test_render_detail_delete_button_detaches_loaded_batch(monkeypatch):
     detached: list[str] = []
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(
         page.session,
@@ -452,6 +481,7 @@ def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):
     fake_st = _FakeStreamlit()
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "viewer@example.edu")
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "viewer")
     monkeypatch.setattr(
@@ -486,8 +516,10 @@ def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):
 
     labels = [label for label, _kwargs in fake_st.button_calls]
     assert "Load" in labels
-    assert "Remove" not in labels
-    assert "Delete file" not in labels
+    assert "Remove from job" not in labels
+    assert "Delete file permanently" not in labels
+    # Viewers get no ⋮ action menu at all.
+    assert fake_st.popovers == []
 
 
 def test_render_detail_loads_sharing_and_review_notes_for_job_members(monkeypatch):
@@ -497,6 +529,7 @@ def test_render_detail_loads_sharing_and_review_notes_for_job_members(monkeypatc
     note_calls: list[tuple[int, str, bool]] = []
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "owner")
     monkeypatch.setattr(
         page.jobs,
@@ -555,6 +588,7 @@ def test_render_detail_status_select_excludes_archived(monkeypatch):
     fake_st = _FakeStreamlit()
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
     monkeypatch.setattr(
         page.jobs,
@@ -589,6 +623,7 @@ def test_render_detail_hides_archive_action_for_default_personal_uploads_job(mon
     fake_st = _FakeStreamlit()
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "owner")
     monkeypatch.setattr(
         page.jobs,
@@ -630,6 +665,7 @@ def test_render_detail_unauthorized_uses_generic_error_without_loading_job(monke
     fake_st = _FakeStreamlit()
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: None)
     monkeypatch.setattr(
         page.jobs,
@@ -647,6 +683,7 @@ def test_render_detail_missing_job_uses_same_generic_error(monkeypatch):
     fake_st = _FakeStreamlit()
 
     monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "viewer")
     monkeypatch.setattr(page.jobs, "get_job", lambda job_id: None)
     monkeypatch.setattr(

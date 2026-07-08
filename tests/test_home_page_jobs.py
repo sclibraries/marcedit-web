@@ -218,6 +218,17 @@ class _FakeStreamlit:
     def rerun(self) -> None:
         self.rerun_called = True
 
+    def cache_data(self, *args: Any, **kwargs: Any):
+        # marcedit_web.render's __init__ decorates a loader with
+        # @st.cache_data(show_spinner=False) at import time; pass through.
+        if args and callable(args[0]) and not kwargs:
+            return args[0]
+
+        def _decorator(func):
+            return func
+
+        return _decorator
+
 
 @pytest.fixture(autouse=True)
 def _schema() -> None:
@@ -357,34 +368,38 @@ def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch):
     )
     fake_st = _FakeStreamlit(session_state=state)
 
-    module = _run_home(monkeypatch, fake_st)
+    _run_home(monkeypatch, fake_st)
+
+    from marcedit_web.render import job_files
 
     assert fake_st.dataframes == []
     assert "**Filename**" in fake_st.writes
     assert "**Records**" in fake_st.writes
+    assert "**Size**" in fake_st.writes
     assert "**Uploaded**" in fake_st.writes
     assert "**Status**" in fake_st.writes
     # Actions live in per-row widgets now; a header over them is noise.
     assert "Actions" not in fake_st.writes
     assert any("vendor.mrc" in str(value) for value in fake_st.writes)
     assert "1,204" in fake_st.writes
+    assert "345 B" in fake_st.writes
     assert ":green[● Current]" in fake_st.writes
     # Single-height rows: every grid row must be vertically centered.
     grid_calls = [
         kwargs
         for spec, kwargs in fake_st.column_calls
-        if spec == module._UPLOADS_GRID
+        if spec == job_files.UPLOADS_GRID
     ]
-    assert grid_calls, "expected header + file rows to use _UPLOADS_GRID"
+    assert grid_calls, "expected header + file rows to use UPLOADS_GRID"
     assert all(k.get("vertical_alignment") == "center" for k in grid_calls)
 
 
 def test_uploaded_at_renders_human_readable(monkeypatch):
     """Catalogers scan upload dates; raw ISO strings defeat that."""
-    module = _run_home(monkeypatch, _FakeStreamlit())
+    from marcedit_web.render import job_files
 
-    assert module._format_uploaded_at("2026-07-01T09:14:32Z") == "Jul 1, 2026 09:14"
-    assert module._format_uploaded_at("not-a-date") == "not-a-date"
+    assert job_files.format_uploaded_at("2026-07-01T09:14:32Z") == "Jul 1, 2026 09:14"
+    assert job_files.format_uploaded_at("not-a-date") == "not-a-date"
 
 
 def test_job_workspace_loads_selected_file_from_home(monkeypatch):
