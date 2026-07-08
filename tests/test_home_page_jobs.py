@@ -61,14 +61,21 @@ class _FakeColumn:
     def write(self, value: Any) -> None:
         self._st.writes.append(value)
 
+    def markdown(self, text: str) -> None:
+        self._st.writes.append(text)
+
     def metric(self, label: str, value: Any) -> None:
         self._st.metrics.append((label, value))
 
     def button(self, label: str, **kwargs: Any) -> bool:
         return self._st.button(label, **kwargs)
 
-    def columns(self, spec: int | list[int]) -> list["_FakeColumn"]:
-        return self._st.columns(spec)
+    def columns(self, spec: int | list[Any], **kwargs: Any) -> list["_FakeColumn"]:
+        return self._st.columns(spec, **kwargs)
+
+    def popover(self, label: str, **kwargs: Any) -> _FakeContext:
+        self._st.popovers.append(label)
+        return _FakeContext()
 
 
 class _FakeStreamlit:
@@ -99,6 +106,8 @@ class _FakeStreamlit:
         self.switch_pages: list[str] = []
         self.rerun_called = False
         self.button_calls: list[tuple[str, dict[str, Any]]] = []
+        self.popovers: list[str] = []
+        self.column_calls: list[tuple[Any, dict[str, Any]]] = []
 
     @property
     def sidebar(self) -> _FakeContext:
@@ -117,11 +126,15 @@ class _FakeStreamlit:
             self.session_state.set_widget_value(key, value)
         return value
 
-    def columns(self, spec: int | list[int]) -> list[_FakeColumn]:
+    def columns(self, spec: int | list[Any], **kwargs: Any) -> list[_FakeColumn]:
+        self.column_calls.append((spec, kwargs))
         count = spec if isinstance(spec, int) else len(spec)
         return [_FakeColumn(self) for _ in range(count)]
 
     def expander(self, label: str, expanded: bool = False) -> _FakeContext:
+        return _FakeContext()
+
+    def container(self, **kwargs: Any) -> _FakeContext:
         return _FakeContext()
 
     def spinner(self, text: str) -> _FakeContext:
@@ -324,13 +337,13 @@ def test_job_workspace_url_overrides_quick_load_state(monkeypatch):
 
 
 def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch):
-    """The selected job should visibly list its attached MARC files."""
+    """The selected job should list its files as aligned single-line table rows."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
     upload_persistence.record_upload(
         user="cataloger@example.edu",
         filename="vendor.mrc",
         file_path="/tmp/vendor.mrc",
-        record_count=12,
+        record_count=1204,
         file_bytes=345,
         job_id=shared["id"],
     )
@@ -343,16 +356,34 @@ def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch):
     )
     fake_st = _FakeStreamlit(session_state=state)
 
-    _run_home(monkeypatch, fake_st)
+    module = _run_home(monkeypatch, fake_st)
 
     assert fake_st.dataframes == []
-    assert "Filename" in fake_st.writes
-    assert "Records" in fake_st.writes
-    assert "Uploaded" in fake_st.writes
-    assert "Status" in fake_st.writes
-    assert "Actions" in fake_st.writes
+    assert "**Filename**" in fake_st.writes
+    assert "**Records**" in fake_st.writes
+    assert "**Uploaded**" in fake_st.writes
+    assert "**Status**" in fake_st.writes
+    # Actions live in per-row widgets now; a header over them is noise.
+    assert "Actions" not in fake_st.writes
     assert any("vendor.mrc" in str(value) for value in fake_st.writes)
-    assert any("Current" in str(value) for value in fake_st.writes)
+    assert "1,204" in fake_st.writes
+    assert ":green[● Current]" in fake_st.writes
+    # Single-height rows: every grid row must be vertically centered.
+    grid_calls = [
+        kwargs
+        for spec, kwargs in fake_st.column_calls
+        if spec == module._UPLOADS_GRID
+    ]
+    assert grid_calls, "expected header + file rows to use _UPLOADS_GRID"
+    assert all(k.get("vertical_alignment") == "center" for k in grid_calls)
+
+
+def test_uploaded_at_renders_human_readable(monkeypatch):
+    """Catalogers scan upload dates; raw ISO strings defeat that."""
+    module = _run_home(monkeypatch, _FakeStreamlit())
+
+    assert module._format_uploaded_at("2026-07-01T09:14:32Z") == "Jul 1, 2026 09:14"
+    assert module._format_uploaded_at("not-a-date") == "not-a-date"
 
 
 def test_job_workspace_loads_selected_file_from_home(monkeypatch):
@@ -445,7 +476,46 @@ def test_job_workspace_delete_file_only_for_original_uploader(monkeypatch):
 
     _run_home(monkeypatch, fake_st)
 
-    assert "Delete file" not in [label for label, _kwargs in fake_st.button_calls]
+    labels = [label for label, _kwargs in fake_st.button_calls]
+    assert "Delete file permanently" not in labels
+    # Owner can still soft-remove, so the ⋮ menu renders with Remove only.
+    assert fake_st.popovers == ["⋮"]
+    assert "Remove from job" in labels
+
+
+def test_job_workspace_viewer_sees_load_but_no_action_menu(monkeypatch):
+    """Viewers may load files but must not see remove/delete affordances."""
+    shared = jobs.create_job("owner@example.edu", "Vendor load June")
+    jobs.grant_access(
+        shared["id"], "cataloger@example.edu", "viewer", by="owner@example.edu"
+    )
+    upload_persistence.record_upload(
+        user="owner@example.edu",
+        filename="vendor.mrc",
+        file_path="/tmp/vendor.mrc",
+        record_count=12,
+        file_bytes=345,
+        job_id=shared["id"],
+    )
+    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+        }
+    )
+    fake_st = _FakeStreamlit(session_state=state)
+
+    _run_home(monkeypatch, fake_st)
+
+    assert fake_st.popovers == []
+    load_keys = [
+        kwargs.get("key")
+        for label, kwargs in fake_st.button_calls
+        if label == "Load"
+    ]
+    assert f"home_job_upload_load_{upload_id}" in load_keys
 
 
 def test_create_job_uses_rerun_handoff_instead_of_mutating_widget_state(monkeypatch):

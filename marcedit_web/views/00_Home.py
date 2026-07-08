@@ -12,6 +12,8 @@ now — only one call per render is allowed.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import streamlit as st
 
 from marcedit_web.lib import jobs, session
@@ -29,6 +31,11 @@ _START_PATH_TO_QUERY = {
     _START_PATH_JOB: "jobs",
 }
 _QUERY_TO_START_PATH = {value: key for key, value in _START_PATH_TO_QUERY.items()}
+
+# One line per file: Filename | Records | Uploaded | Status | Load | ⋮.
+# Weights tuned so "Load" and the ⋮ trigger never wrap (TASK-126).
+_UPLOADS_GRID = [4, 1, 2, 1.4, 1, 0.6]
+_UPLOADS_HEADERS = ("Filename", "Records", "Uploaded", "Status", "", "")
 
 
 def _job_label(job: dict) -> str:
@@ -130,55 +137,89 @@ def _render_upload_feedback(upload_summary: dict) -> None:
         _render_next_actions()
 
 
+def _format_uploaded_at(value) -> str:
+    # uploads.uploaded_at is ISO-8601 UTC ("2026-07-01T09:14:32Z");
+    # catalogers scan dates, so render "Jul 1, 2026 09:14" instead.
+    try:
+        parsed = dt.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return str(value)
+    return f"{parsed.strftime('%b')} {parsed.day}, {parsed.strftime('%Y %H:%M')}"
+
+
 def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
     uploads = jobs.list_job_uploads(job_id)
     st.subheader("Files in this job")
     if not uploads:
         st.caption("No MARC files have been added to this job yet.")
         return
-    headers = st.columns([4, 1, 2, 1, 3])
-    headers[0].write("Filename")
-    headers[1].write("Records")
-    headers[2].write("Uploaded")
-    headers[3].write("Status")
-    headers[4].write("Actions")
-    for row in uploads:
-        cols = st.columns([4, 1, 2, 1, 3])
-        cols[0].write(row["filename"])
-        cols[1].write(row["record_count"])
-        cols[2].write(row["uploaded_at"])
-        cols[3].write("Current" if row["active"] else "Available")
-        actions = cols[4].columns([1, 1, 1])
-        if actions[0].button("Load", key=f"home_job_upload_load_{row['id']}"):
-            try:
-                summary = session.load_persisted_upload(int(row["id"]))
-            except jobs.JobError as exc:
-                st.error(str(exc))
-            else:
-                if summary.get("error"):
-                    st.error(summary["error"])
-                else:
-                    st.switch_page("views/1_View.py")
-        if _can_edit_job(role):
-            if actions[1].button("Remove", key=f"home_job_upload_remove_{row['id']}"):
+    with st.container(border=True):
+        headers = st.columns(
+            _UPLOADS_GRID, vertical_alignment="center", gap="small"
+        )
+        for col, title in zip(headers, _UPLOADS_HEADERS):
+            if title:
+                col.markdown(f"**{title}**")
+        st.divider()
+        for row in uploads:
+            cols = st.columns(
+                _UPLOADS_GRID, vertical_alignment="center", gap="small"
+            )
+            cols[0].write(row["filename"])
+            cols[1].write(f"{row['record_count']:,}")
+            cols[2].write(_format_uploaded_at(row["uploaded_at"]))
+            cols[3].markdown(
+                ":green[● Current]" if row["active"] else ":gray[Available]"
+            )
+            if cols[4].button(
+                "Load",
+                key=f"home_job_upload_load_{row['id']}",
+                use_container_width=True,
+            ):
                 try:
-                    jobs.remove_upload(int(row["id"]), by=user)
+                    summary = session.load_persisted_upload(int(row["id"]))
                 except jobs.JobError as exc:
                     st.error(str(exc))
                 else:
-                    st.rerun()
-        if row["user_email"] == user:
-            if actions[2].button("Delete file", key=f"home_job_upload_delete_{row['id']}"):
-                try:
-                    jobs.remove_upload(
-                        int(row["id"]),
-                        by=user,
-                        delete_file=True,
-                    )
-                except jobs.JobError as exc:
-                    st.error(str(exc))
-                else:
-                    st.rerun()
+                    if summary.get("error"):
+                        st.error(summary["error"])
+                    else:
+                        st.switch_page("views/1_View.py")
+            can_remove = _can_edit_job(role)
+            can_delete = row["user_email"] == user
+            if not (can_remove or can_delete):
+                continue
+            with cols[5].popover("⋮"):
+                if can_remove:
+                    if st.button(
+                        "Remove from job",
+                        key=f"home_job_upload_remove_{row['id']}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            jobs.remove_upload(int(row["id"]), by=user)
+                        except jobs.JobError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.rerun()
+                    st.caption("Keeps the stored file; hides it from this job.")
+                if can_delete:
+                    if st.button(
+                        "Delete file permanently",
+                        key=f"home_job_upload_delete_{row['id']}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            jobs.remove_upload(
+                                int(row["id"]),
+                                by=user,
+                                delete_file=True,
+                            )
+                        except jobs.JobError as exc:
+                            st.error(str(exc))
+                        else:
+                            st.rerun()
+                    st.caption("Deletes the stored file for everyone in the job.")
 
 
 # --- Upload widget (handled FIRST so the sidebar reads fresh state) --------
