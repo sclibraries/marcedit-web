@@ -384,6 +384,69 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
     assert fake_st.rerun_called is True
 
 
+def test_render_detail_delete_button_detaches_loaded_batch(monkeypatch):
+    """Hard delete must also drop the session's loaded batch (TASK-128).
+
+    The deleted file may be the one loaded in this session; leaving the
+    store attached crashes the next disk read with FileNotFoundError.
+    """
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(clicked_keys={"job_upload_delete_99"})
+    removed: list[tuple[int, str, bool]] = []
+    detached: list[str] = []
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
+    monkeypatch.setattr(
+        page.session,
+        "detach_loaded_batch",
+        lambda file_path: detached.append(file_path),
+        raising=False,
+    )
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
+    monkeypatch.setattr(
+        page.jobs,
+        "remove_upload",
+        lambda upload_id, *, by, delete_file=False: removed.append(
+            (upload_id, by, delete_file)
+        ),
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_job_uploads",
+        lambda job_id: [{
+            "id": 99,
+            "user_email": "alice@example.edu",
+            "filename": "batch.mrc",
+            "file_path": "/tmp/batch.mrc",
+            "record_count": 42,
+            "file_bytes": 2048,
+            "uploaded_at": "2026-07-08T12:00:00Z",
+            "active": 1,
+        }],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert removed == [(99, "alice@example.edu", True)]
+    assert detached == ["/tmp/batch.mrc"]
+    assert fake_st.rerun_called is True
+
+
 def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit()

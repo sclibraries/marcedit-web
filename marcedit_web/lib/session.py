@@ -483,6 +483,28 @@ def current_store() -> Optional[RecordStore]:
     return st.session_state.get("store")
 
 
+def detach_loaded_batch(file_path) -> None:
+    """Drop the loaded batch when it is backed by ``file_path`` (TASK-128).
+
+    Hard-deleting a durable upload unlinks its bytes; if that file backs
+    the session's store, every later disk read (Loaded-batch download,
+    View, Editor) would raise FileNotFoundError. Delete handlers call this
+    after ``jobs.remove_upload(..., delete_file=True)`` so the session
+    falls back to the "no file loaded" state. Resets the same keys
+    :func:`load_persisted_upload` writes.
+    """
+    import streamlit as st
+
+    store = st.session_state.get("store")
+    store_path = getattr(store, "path", None)
+    if store_path is None or Path(store_path) != Path(file_path):
+        return
+    st.session_state["store"] = None
+    st.session_state["issues_cache"] = {}
+    st.session_state["editor_text"] = None
+    st.session_state["editor_dirty"] = False
+
+
 def current_filename() -> Optional[str]:
     store = current_store()
     return store.filename if store is not None else None
@@ -549,4 +571,10 @@ def current_raw_bytes() -> Optional[bytes]:
     store = current_store()
     if store is None:
         return None
-    return store.to_mrc_bytes()
+    try:
+        return store.to_mrc_bytes()
+    except FileNotFoundError:
+        # The backing file can vanish outside this session's control — a
+        # collaborator hard-deleting a shared upload we have loaded. Treat
+        # it as "nothing to download" rather than crashing the page.
+        return None

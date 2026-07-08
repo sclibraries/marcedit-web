@@ -281,6 +281,67 @@ def test_load_persisted_upload_switches_job_when_key_is_free(
     assert st.session_state["current_job_id"] == vendor_job["id"]
 
 
+def test_detach_loaded_batch_clears_store_for_deleted_file(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Hard-deleting the loaded upload must drop the session batch (TASK-128).
+
+    ``jobs.remove_upload(delete_file=True)`` unlinks the backing file; if
+    the store stays attached, the next disk read (e.g. Home's Loaded batch
+    download) crashes with FileNotFoundError.
+    """
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    session.handle_upload(_FakeUpload("vendor.mrc", _serialize([record])))
+    upload = upload_persistence.get_active_upload("alice@example.edu")
+    st.session_state["editor_text"] = "007 stale"
+    st.session_state["editor_dirty"] = True
+
+    jobs.remove_upload(upload["id"], by="alice@example.edu", delete_file=True)
+    session.detach_loaded_batch(upload["file_path"])
+
+    assert st.session_state["store"] is None
+    assert st.session_state["issues_cache"] == {}
+    assert st.session_state["editor_text"] is None
+    assert st.session_state["editor_dirty"] is False
+
+
+def test_detach_loaded_batch_ignores_other_files(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Deleting an upload that is NOT loaded must leave the batch alone."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    session.handle_upload(_FakeUpload("first.mrc", _serialize([record])))
+    first = upload_persistence.get_active_upload("alice@example.edu")
+    session.handle_upload(_FakeUpload("second.mrc", _serialize([record, record])))
+    loaded_store = st.session_state["store"]
+
+    jobs.remove_upload(first["id"], by="alice@example.edu", delete_file=True)
+    session.detach_loaded_batch(first["file_path"])
+
+    assert st.session_state["store"] is loaded_store
+
+
+def test_current_raw_bytes_returns_none_when_backing_file_missing(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """A dangling store must degrade to no-download, not a crash (TASK-128).
+
+    The deleter's own session is detached explicitly, but a collaborator's
+    session can still hold a store whose file another user deleted.
+    """
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    session.handle_upload(_FakeUpload("vendor.mrc", _serialize([record])))
+    Path(st.session_state["store"].path).unlink()
+
+    assert session.current_raw_bytes() is None
+
+
 # ---------------------------------------------------------------------------
 # restore_active_upload — refresh-resume
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import types
 from pathlib import Path
 from typing import Any
 
@@ -481,6 +482,47 @@ def test_job_workspace_delete_file_only_for_original_uploader(monkeypatch):
     # Owner can still soft-remove, so the ⋮ menu renders with Remove only.
     assert fake_st.popovers == ["⋮"]
     assert "Remove from job" in labels
+
+
+def test_job_workspace_delete_detaches_loaded_batch(monkeypatch):
+    """Deleting the loaded file must drop the session batch (TASK-128).
+
+    Otherwise the rerun's "Loaded batch" footer reads the just-unlinked
+    file and crashes with FileNotFoundError.
+    """
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    upload_persistence.record_upload(
+        user="cataloger@example.edu",
+        filename="vendor.mrc",
+        file_path="/tmp/vendor.mrc",
+        record_count=12,
+        file_bytes=345,
+        job_id=shared["id"],
+    )
+    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    loaded_store = types.SimpleNamespace(path=Path("/tmp/vendor.mrc"))
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+            "store": loaded_store,
+        }
+    )
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        clicked_keys={f"home_job_upload_delete_{upload_id}"},
+    )
+    monkeypatch.setattr(
+        jobs,
+        "remove_upload",
+        lambda upload_id, *, by, delete_file=False: None,
+    )
+
+    _run_home(monkeypatch, fake_st)
+
+    assert state["store"] is None
+    assert fake_st.rerun_called is True
 
 
 def test_job_workspace_viewer_sees_load_but_no_action_menu(monkeypatch):

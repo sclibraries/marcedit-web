@@ -71,6 +71,9 @@ def _render_file_actions(user: str, role: str | None, uploads: list[dict]) -> No
                 except jobs.JobError as exc:
                     st.error(str(exc))
                 else:
+                    # The deleted file may back the loaded batch; a dangling
+                    # store crashes the rerun (TASK-128).
+                    session.detach_loaded_batch(row["file_path"])
                     st.rerun()
 
 

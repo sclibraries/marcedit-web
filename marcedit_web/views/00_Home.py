@@ -218,6 +218,9 @@ def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
                         except jobs.JobError as exc:
                             st.error(str(exc))
                         else:
+                            # The deleted file may back the loaded batch;
+                            # a dangling store crashes the rerun (TASK-128).
+                            session.detach_loaded_batch(row["file_path"])
                             st.rerun()
                     st.caption("Deletes the stored file for everyone in the job.")
 
