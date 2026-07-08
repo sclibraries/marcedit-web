@@ -606,6 +606,81 @@ def test_home_confirmed_delete_detaches_and_toasts(monkeypatch):
     assert fake_st.rerun_called is True
 
 
+def test_home_confirmed_delete_error_keeps_confirmation_open(monkeypatch):
+    """A failed delete must surface the error and keep the confirm flow.
+
+    Clearing the flag (or rerunning) on JobError would close the dialog
+    and swallow the failure; the cataloger must be able to retry or
+    cancel deliberately.
+    """
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    upload_persistence.record_upload(
+        user="cataloger@example.edu",
+        filename="vendor.mrc",
+        file_path="/tmp/vendor.mrc",
+        record_count=12,
+        file_bytes=345,
+        job_id=shared["id"],
+    )
+    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+            "home_job_upload_pending_delete": upload_id,
+        }
+    )
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        clicked_keys={f"home_job_upload_confirm_delete_{upload_id}"},
+    )
+
+    def _locked(upload_id, *, by, delete_file=False):
+        raise jobs.JobError("upload is locked")
+
+    monkeypatch.setattr(jobs, "remove_upload", _locked)
+
+    _run_home(monkeypatch, fake_st)
+
+    assert fake_st.errors == ["upload is locked"]
+    assert state["home_job_upload_pending_delete"] == upload_id
+    assert "pending_toasts" not in state
+    assert fake_st.rerun_called is False
+
+
+def test_home_stale_pending_delete_flag_is_dropped(monkeypatch):
+    """A pending id that matches no listed file must be dropped silently.
+
+    Otherwise a file removed elsewhere leaves the dialog reopening
+    forever (or crashes the render) for a row that no longer exists.
+    """
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    upload_persistence.record_upload(
+        user="cataloger@example.edu",
+        filename="vendor.mrc",
+        file_path="/tmp/vendor.mrc",
+        record_count=12,
+        file_bytes=345,
+        job_id=shared["id"],
+    )
+    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+            "home_job_upload_pending_delete": upload_id + 999,
+        }
+    )
+    fake_st = _FakeStreamlit(session_state=state)
+
+    _run_home(monkeypatch, fake_st)
+
+    assert "home_job_upload_pending_delete" not in state
+    assert fake_st.dialogs == []
+
+
 def test_home_cancelled_delete_keeps_file(monkeypatch):
     """Cancel must delete nothing and clear the pending flag (TASK-130)."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
