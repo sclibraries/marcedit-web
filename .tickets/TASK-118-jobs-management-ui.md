@@ -1,6 +1,6 @@
 # TASK-118 — Jobs management UI
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 4 — Cataloger workflow clarity
 **Depends on:** TASK-081, TASK-093
 **Design:** `docs/superpowers/specs/2026-07-07-jobs-workspace-ui-design.md`

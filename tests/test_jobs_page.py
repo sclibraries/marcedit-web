@@ -7,11 +7,22 @@ from typing import Any
 
 
 class _FakeContainer:
+    def __init__(self, st: "_FakeStreamlit" | None = None) -> None:
+        self._st = st
+
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+    def write(self, value: Any) -> None:
+        if self._st is not None:
+            self._st.writes.append(value)
+
+    def caption(self, text: str) -> None:
+        if self._st is not None:
+            self._st.captions.append(text)
 
 
 class _FakeColumn:
@@ -42,6 +53,9 @@ class _FakeStreamlit:
         self.dataframes: list[tuple[Any, dict[str, Any]]] = []
         self.button_calls: list[tuple[str, dict[str, Any]]] = []
         self.toggle_calls: list[tuple[str, dict[str, Any]]] = []
+        self.selectbox_calls: list[tuple[str, Any, dict[str, Any]]] = []
+        self.text_input_calls: list[tuple[str, dict[str, Any]]] = []
+        self.text_area_calls: list[tuple[str, dict[str, Any]]] = []
         self.rerun_called = False
 
     def title(self, text: str) -> None:
@@ -61,7 +75,7 @@ class _FakeStreamlit:
         return self.toggle_value
 
     def container(self, **kwargs: Any) -> _FakeContainer:
-        return _FakeContainer()
+        return _FakeContainer(self)
 
     def columns(self, spec: list[int]) -> list[_FakeColumn]:
         return [_FakeColumn(self) for _ in spec]
@@ -81,6 +95,20 @@ class _FakeStreamlit:
 
     def write(self, value: Any) -> None:
         self.writes.append(value)
+
+    def selectbox(self, label: str, options: Any, **kwargs: Any) -> Any:
+        self.selectbox_calls.append((label, options, kwargs))
+        if "index" in kwargs:
+            return options[kwargs["index"]]
+        return options[0]
+
+    def text_input(self, label: str, **kwargs: Any) -> str:
+        self.text_input_calls.append((label, kwargs))
+        return ""
+
+    def text_area(self, label: str, **kwargs: Any) -> str:
+        self.text_area_calls.append((label, kwargs))
+        return ""
 
 
 def _load_jobs_page(monkeypatch):
@@ -103,6 +131,16 @@ def test_format_size_uses_human_units(monkeypatch):
     assert page._format_size(999) == "999 B"
     assert page._format_size(1536) == "1.5 KB"
     assert page._format_size(2 * 1024 * 1024) == "2.0 MB"
+
+
+def test_job_page_permissions_are_role_based(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+
+    assert page._can_edit("owner") is True
+    assert page._can_edit("editor") is True
+    assert page._can_edit("viewer") is False
+    assert page._can_manage("owner") is True
+    assert page._can_manage("editor") is False
 
 
 def test_render_list_calls_list_job_summaries_for_authenticated_user(monkeypatch):
@@ -141,6 +179,7 @@ def test_render_detail_calls_uploads_and_activity_for_selected_job(monkeypatch):
             "name": "Vendor load",
             "status": "needs_review",
             "owner_email": "owner@example.edu",
+            "active": 1,
         },
     )
     monkeypatch.setattr(
@@ -163,13 +202,88 @@ def test_render_detail_calls_uploads_and_activity_for_selected_job(monkeypatch):
             "message": "Uploaded batch.mrc",
         }],
     )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_access",
+        lambda job_id: [{
+            "job_id": job_id,
+            "user_email": "owner@example.edu",
+            "role": "owner",
+            "created_at": "2026-07-08T12:00:00Z",
+        }],
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_review_notes",
+        lambda job_id, *, user_email, include_resolved=True: [],
+    )
 
     page._render()
 
     assert upload_calls == [17]
     assert activity_calls == [(17, "alice@example.edu")]
     assert fake_st.titles == ["Vendor load"]
-    assert len(fake_st.dataframes) == 1
+    assert len(fake_st.dataframes) == 2
+
+
+def test_render_detail_loads_sharing_and_review_notes_for_job_members(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+    access_calls: list[int] = []
+    note_calls: list[tuple[int, str, bool]] = []
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "owner")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "needs_review",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(page.jobs, "list_job_uploads", lambda job_id: [])
+    monkeypatch.setattr(
+        page.jobs,
+        "list_access",
+        lambda job_id: access_calls.append(job_id) or [{
+            "job_id": job_id,
+            "user_email": "owner@example.edu",
+            "role": "owner",
+            "created_at": "2026-07-08T12:00:00Z",
+        }],
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_review_notes",
+        lambda job_id, *, user_email, include_resolved=True: note_calls.append(
+            (job_id, user_email, include_resolved)
+        ) or [],
+    )
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert access_calls == [17]
+    assert note_calls == [(17, "alice@example.edu", True)]
+    assert fake_st.subheaders == [
+        "Status",
+        "Files",
+        "Sharing",
+        "Review notes",
+        "Activity",
+        "Archive",
+    ]
+    assert [label for label, _ in fake_st.button_calls] == [
+        "Back to jobs",
+        "Update status",
+        "Grant access",
+        "Add note",
+        "Archive job",
+    ]
 
 
 def test_render_detail_unauthorized_uses_generic_error_without_loading_job(monkeypatch):
