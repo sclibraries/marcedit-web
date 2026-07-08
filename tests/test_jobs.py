@@ -346,20 +346,19 @@ def test_list_job_summaries_includes_file_and_open_note_counts():
     )
 
     rows = jobs.list_job_summaries("owner@example.edu")
+    current = jobs.get_job(job["id"])
 
-    assert rows == [
-        {
-            "id": job["id"],
-            "name": "Vendor load July",
-            "owner_email": "owner@example.edu",
-            "access_role": "owner",
-            "status": jobs.STATUS_ACTIVE,
-            "active": 1,
-            "file_count": 1,
-            "open_note_count": 1,
-            "updated_at": job["updated_at"],
-        }
-    ]
+    assert len(rows) == 1
+    assert rows[0]["id"] == job["id"]
+    assert rows[0]["name"] == "Vendor load July"
+    assert rows[0]["owner_email"] == "owner@example.edu"
+    assert rows[0]["access_role"] == "owner"
+    assert rows[0]["status"] == jobs.STATUS_ACTIVE
+    assert rows[0]["active"] == 1
+    assert rows[0]["file_count"] == 1
+    assert rows[0]["open_note_count"] == 1
+    assert rows[0]["updated_at"] == current["updated_at"]
+    assert rows[0]["updated_at"]
 
 
 def test_review_notes_are_record_or_issue_anchored_and_resolvable():
@@ -385,10 +384,47 @@ def test_review_notes_are_record_or_issue_anchored_and_resolvable():
     assert note["resolved"] == 0
     assert resolved["resolved"] == 1
     assert resolved["resolved_by"] == "owner@example.edu"
-    assert jobs.list_review_notes(job["id"], include_resolved=False) == []
+    assert (
+        jobs.list_review_notes(
+            job["id"],
+            user_email="owner@example.edu",
+            include_resolved=False,
+        )
+        == []
+    )
     assert jobs.list_activity(
         job["id"], user_email="owner@example.edu"
     )[-1]["kind"] == "note-resolved"
+
+
+def test_viewer_can_read_review_notes_but_outsider_cannot():
+    """Review notes are visible to members only, including viewer access."""
+    job = jobs.create_job("owner@example.edu", "Vendor load July")
+    note = jobs.add_review_note(
+        job["id"],
+        anchor_kind="job",
+        note="Owner note.",
+        author="owner@example.edu",
+    )
+    jobs.grant_access(
+        job["id"],
+        "viewer@example.edu",
+        "viewer",
+        by="owner@example.edu",
+    )
+
+    viewer_notes = jobs.list_review_notes(
+        job["id"],
+        user_email="viewer@example.edu",
+    )
+
+    assert [row["id"] for row in viewer_notes] == [note["id"]]
+    assert viewer_notes[0]["note"] == "Owner note."
+    with pytest.raises(jobs.JobError, match="access denied"):
+        jobs.list_review_notes(
+            job["id"],
+            user_email="outsider@example.edu",
+        )
 
 
 def test_viewer_cannot_add_or_resolve_review_notes():

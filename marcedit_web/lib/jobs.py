@@ -386,11 +386,13 @@ def resolve_review_note(note_id: int, *, by: str) -> dict[str, Any]:
 def list_review_notes(
     job_id: int,
     *,
+    user_email: str,
     include_resolved: bool = True,
 ) -> list[dict[str, Any]]:
     db.init_schema()
     resolved_clause = "" if include_resolved else " AND resolved = 0"
     with db.connect() as conn:
+        _require_role(conn, job_id, user_email, {"owner", "editor", "viewer"})
         rows = conn.execute(
             "SELECT * FROM job_review_notes WHERE job_id = ?"
             + resolved_clause
