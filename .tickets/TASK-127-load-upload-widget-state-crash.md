@@ -1,6 +1,6 @@
 # TASK-127 — Load from Home crashes on widget-owned current_job_id
 
-**Status:** In-Progress
+**Status:** Completed
 **Priority:** Tier 1 — Production crash in primary cataloger flow
 **Depends on:** TASK-120, TASK-126
 
@@ -48,3 +48,21 @@ against a plain dict that doesn't enforce the rule.
 3. Focused suites pass: `tests/test_session_restore.py`,
    `tests/test_home_page_jobs.py`, `tests/test_app_pages.py`.
 4. Docker suite passes (same command as TASK-126).
+
+## Outcome
+
+- Guarded the `current_job_id` assignment in `load_persisted_upload`
+  (`marcedit_web/lib/session.py`): write only when the value differs from
+  the session's current job. Comment documents the widget-ownership rule.
+- Added `_WidgetOwnedState` stand-in and two tests in
+  `tests/test_session_restore.py`: the widget-owned regression (failed
+  first with the exact production error, RuntimeError on the write) and
+  the Jobs-page job-switch behavior pin.
+- Verification:
+  - RED: `python3 -m pytest tests/test_session_restore.py -q -k "widget_owned or switches_job"`
+    → 1 failed (the regression, pre-fix), 1 passed.
+  - GREEN local: `python3 -m pytest tests/test_session_restore.py tests/test_home_page_jobs.py tests/test_app_pages.py tests/test_jobs_page.py tests/test_jobs.py -q`
+    → 68 passed.
+  - GREEN Docker (Python 3.9 / Streamlit 1.50, the crashing environment):
+    same five files → 68 passed.
+- Code review: ready to merge, no Critical/Important findings.
