@@ -173,8 +173,13 @@ class RecordStore:
         The file is left in place; the store points at it directly.
         Useful for tests + future cross-session persistence.
         """
-        data = path.read_bytes()
-        locations, malformed = _index_bytes(data)
+        if path.stat().st_size == 0:
+            locations: list[RecordLocation] = []
+            malformed = 0
+        else:
+            with open(path, "rb") as fh:
+                with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    locations, malformed = _index_bytes(mm)
         return cls(
             path=path,
             locations=locations,

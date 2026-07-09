@@ -40,4 +40,3 @@ Add load and remove actions for files attached to a job.
     passed with `66 passed`.
   - `docker compose run --rm marcedit-web python -m pytest -q` passed with
     `929 passed, 5 skipped`.
-

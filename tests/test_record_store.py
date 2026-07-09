@@ -79,6 +79,22 @@ def test_from_path_reads_existing_file(tmp_path):
     assert s.path == target
 
 
+def test_from_path_indexes_without_materializing_file(tmp_path, monkeypatch):
+    """Persisted reload must not reintroduce full-file RAM copies (TASK-132)."""
+    target = tmp_path / "sample.mrc"
+    target.write_bytes(FIXTURE.read_bytes())
+
+    def _read_bytes(self):
+        raise AssertionError("from_path must not materialize persisted uploads")
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+
+    s = RecordStore.from_path(target)
+
+    assert s.count() == 7
+    assert s.malformed_count() == 0
+
+
 def test_from_records_builds_fresh_store(store, tmp_path):
     records = list(store.iter_records())
     s2 = RecordStore.from_records(records, tmp_dir=tmp_path / "rebuilt")

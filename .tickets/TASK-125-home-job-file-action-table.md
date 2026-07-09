@@ -32,4 +32,3 @@ Put Home job file actions in table columns.
     passed with `13 passed`.
   - `docker compose run --rm marcedit-web python -m pytest tests/test_home_page_jobs.py tests/test_app_pages.py tests/test_jobs_page.py tests/test_session_restore.py tests/test_jobs.py -q`
     passed with `64 passed`.
-
