@@ -2245,6 +2245,13 @@ def _render_quick_batch_preview(preview) -> None:
         st.info("This operation would not change the loaded batch.")
         return
 
+    if preview.detail_counts:
+        rows = [
+            {"Detail": detail, "Count": count}
+            for detail, count in sorted(preview.detail_counts.items())
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
     apply_col, _, _ = st.columns([1, 1, 4])
     if apply_col.button(
         "Apply to batch",
@@ -2259,7 +2266,7 @@ def _apply_quick_batch_preview(preview) -> None:
     if store is None:
         st.error("No loaded batch — upload one on Home first.")
         return
-    result = quick_batch.apply_request(store, preview.request)
+    result = quick_batch.apply_preview(store, preview)
     if result.error:
         st.error(result.error)
         return

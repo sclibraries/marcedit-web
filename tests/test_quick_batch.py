@@ -7,6 +7,7 @@ import pytest
 
 from marcedit_web.lib.quick_batch import (
     QuickBatchRequest,
+    apply_preview,
     apply_request,
     build_preview,
     validate_request,
@@ -151,6 +152,7 @@ def test_856_delete_matching_url_removes_matching_fields(tmp_path):
 
     assert preview.changed_count == 1
     assert preview.output_records[0].get("856")["u"] == "https://keep.example/book"
+    assert preview.detail_counts == {"856 removed: https://vendor.example/book": 1}
 
 
 def test_035_oclc_cleanup_normalizes_duplicates_and_preserves_035_9(tmp_path):
@@ -170,15 +172,52 @@ def test_035_oclc_cleanup_normalizes_duplicates_and_preserves_035_9(tmp_path):
     assert fields[1].get_subfields("9") == ["(FCMUSEOA)"]
 
 
+def test_035_oclc_cleanup_preserves_attached_035_9_on_duplicate(tmp_path):
+    record = _record(
+        _field("035", ("a", "(OCoLC)123")),
+        _field("035", ("a", "(OCoLC)ocn000123"), ("9", "(FCMUSEOA)")),
+    )
+    store = _store(tmp_path, record)
+
+    preview = build_preview(store, QuickBatchRequest(kind="035-oclc"))
+
+    fields = preview.output_records[0].get_fields("035")
+    assert fields[0].get_subfields("a") == ["(OCoLC)123"]
+    assert fields[1].get_subfields("a") == []
+    assert fields[1].get_subfields("9") == ["(FCMUSEOA)"]
+
+
+def test_035_oclc_cleanup_keeps_distinct_oclc_values_in_one_field(tmp_path):
+    record = _record(_field("035", ("a", "(OCoLC)123"), ("z", "(OCoLC)456")))
+    store = _store(tmp_path, record)
+
+    preview = build_preview(store, QuickBatchRequest(kind="035-oclc"))
+
+    field = preview.output_records[0].get("035")
+    assert field.get_subfields("a") == ["(OCoLC)123"]
+    assert field.get_subfields("z") == ["(OCoLC)456"]
+
+
 def test_9xx_delete_exact_tag_and_range(tmp_path):
-    exact = _store(tmp_path / "exact", _record(_field("949", ("a", "delete")), _field("950", ("a", "keep"))))
-    range_store = _store(tmp_path / "range", _record(_field("949", ("a", "delete")), _field("950", ("a", "delete"))))
+    exact = _store(
+        tmp_path / "exact",
+        _record(_field("949", ("a", "delete")), _field("950", ("a", "keep"))),
+    )
+    range_store = _store(
+        tmp_path / "range",
+        _record(_field("949", ("a", "delete")), _field("950", ("a", "delete"))),
+    )
 
     exact_preview = build_preview(exact, QuickBatchRequest(kind="9xx-delete", tag="949"))
-    range_preview = build_preview(range_store, QuickBatchRequest(kind="9xx-delete", tag="9XX"))
+    range_preview = build_preview(
+        range_store,
+        QuickBatchRequest(kind="9xx-delete", tag="9XX"),
+    )
 
     assert [field.tag for field in exact_preview.output_records[0].fields] == ["001", "950"]
+    assert exact_preview.detail_counts == {"949 removed": 1}
     assert range_preview.output_records[0].get_fields("949", "950") == []
+    assert range_preview.detail_counts == {"949 removed": 1, "950 removed": 1}
 
 
 def test_655_cleanup_adds_standard_field_and_deletes_unwanted_text(tmp_path):
@@ -198,6 +237,7 @@ def test_655_cleanup_adds_standard_field_and_deletes_unwanted_text(tmp_path):
     assert len(fields) == 1
     assert fields[0].get_subfields("a") == ["Electronic books."]
     assert fields[0].get_subfields("2") == ["lcgft"]
+    assert preview.detail_counts == {"655 removed: Electronic books.": 1}
 
 
 def test_build_preview_reports_changed_and_skipped_counts(tmp_path):
@@ -217,6 +257,18 @@ def test_apply_request_replaces_store_records(tmp_path):
     assert result.applied
     assert result.changed_count == 1
     assert str(store.get(0).leader)[5] == "c"
+
+
+def test_apply_preview_refuses_stale_store(tmp_path):
+    store = _store(tmp_path, _record())
+    preview = build_preview(store, QuickBatchRequest(kind="leader", position="05", value="c"))
+    store.replace(0, _record(_field("245", ("a", "External edit."))))
+
+    result = apply_preview(store, preview)
+
+    assert not result.applied
+    assert "changed since preview" in (result.error or "")
+    assert str(store.get(0).leader)[5] == "n"
 
 
 @pytest.mark.parametrize(

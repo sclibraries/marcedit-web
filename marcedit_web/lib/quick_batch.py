@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 
 import pymarc
@@ -128,6 +130,9 @@ class QuickBatchPreview:
     output_records: list[pymarc.Record] = field(default_factory=list)
     changed_indices: list[int] = field(default_factory=list)
     skipped_indices: list[int] = field(default_factory=list)
+    fingerprints: dict[int, str] = field(default_factory=dict)
+    batch_identity: tuple[str, int] | None = None
+    detail_counts: dict[str, int] = field(default_factory=dict)
     error: str | None = None
 
     @property
@@ -143,11 +148,12 @@ class QuickBatchPreview:
 class QuickBatchResult:
     changed_count: int = 0
     skipped_count: int = 0
+    stale_indices: list[int] = field(default_factory=list)
     error: str | None = None
 
     @property
     def applied(self) -> bool:
-        return self.error is None and self.changed_count > 0
+        return self.error is None and self.changed_count > 0 and not self.stale_indices
 
 
 def validate_request(request: QuickBatchRequest) -> str | None:
@@ -192,7 +198,10 @@ def build_preview(store, request: QuickBatchRequest) -> QuickBatchPreview:
     output_records: list[pymarc.Record] = []
     changed_indices: list[int] = []
     skipped_indices: list[int] = []
+    fingerprints: dict[int, str] = {}
+    detail_counts: Counter[str] = Counter()
     for idx, record in enumerate(store.iter_records()):
+        fingerprints[idx] = fingerprint_record(record)
         new_record = copy.deepcopy(record)
         before = new_record.as_marc()
         _apply_to_record(new_record, request)
@@ -200,6 +209,7 @@ def build_preview(store, request: QuickBatchRequest) -> QuickBatchPreview:
         output_records.append(new_record)
         if after != before:
             changed_indices.append(idx)
+            detail_counts.update(_detail_counts_for(record, new_record, request))
         else:
             skipped_indices.append(idx)
     return QuickBatchPreview(
@@ -207,18 +217,51 @@ def build_preview(store, request: QuickBatchRequest) -> QuickBatchPreview:
         output_records=output_records,
         changed_indices=changed_indices,
         skipped_indices=skipped_indices,
+        fingerprints=fingerprints,
+        batch_identity=_batch_identity(store),
+        detail_counts=dict(detail_counts),
     )
 
 
 def apply_request(store, request: QuickBatchRequest) -> QuickBatchResult:
     preview = build_preview(store, request)
+    return apply_preview(store, preview)
+
+
+def apply_preview(store, preview: QuickBatchPreview) -> QuickBatchResult:
     if preview.error:
         return QuickBatchResult(error=preview.error)
+    if preview.batch_identity != _batch_identity(store):
+        return QuickBatchResult(error="Loaded batch changed since preview.")
+    stale_indices = _stale_indices(store, preview)
+    if stale_indices:
+        return QuickBatchResult(
+            stale_indices=stale_indices,
+            error="Loaded records changed since preview.",
+        )
     store.replace_all(preview.output_records)
     return QuickBatchResult(
         changed_count=preview.changed_count,
         skipped_count=preview.skipped_count,
     )
+
+
+def fingerprint_record(record: pymarc.Record) -> str:
+    return hashlib.sha256(record.as_marc()).hexdigest()
+
+
+def _batch_identity(store) -> tuple[str, int]:
+    filename = getattr(store, "filename", None) or "(unnamed)"
+    return (filename, store.count())
+
+
+def _stale_indices(store, preview: QuickBatchPreview) -> list[int]:
+    stale: list[int] = []
+    for idx, expected in preview.fingerprints.items():
+        record = store.get(idx)
+        if record is None or fingerprint_record(record) != expected:
+            stale.append(idx)
+    return stale
 
 
 def _apply_to_record(record: pymarc.Record, request: QuickBatchRequest) -> None:
@@ -236,6 +279,84 @@ def _apply_to_record(record: pymarc.Record, request: QuickBatchRequest) -> None:
         transforms.delete_tags(record, request.tag.upper())
     elif request.kind == "655-cleanup":
         _cleanup_655(record, request)
+
+
+def _detail_counts_for(
+    before: pymarc.Record,
+    after: pymarc.Record,
+    request: QuickBatchRequest,
+) -> Counter[str]:
+    if request.kind == "9xx-delete":
+        return _removed_tag_counts(before, after, request.tag.upper())
+    if request.kind == "856-url" and request.action == "delete-matching":
+        return _removed_856_url_counts(before, request.url_contains)
+    if request.kind == "655-cleanup" and request.unwanted_text.strip():
+        return _removed_655_counts(before, request.unwanted_text.strip())
+    return Counter({_operation_detail_label(request): 1})
+
+
+def _removed_tag_counts(
+    before: pymarc.Record,
+    after: pymarc.Record,
+    tag: str,
+) -> Counter[str]:
+    before_counts = Counter(
+        field.tag for field in before.fields if _tag_matches(field.tag, tag)
+    )
+    after_counts = Counter(
+        field.tag for field in after.fields if _tag_matches(field.tag, tag)
+    )
+    out: Counter[str] = Counter()
+    for field_tag, count in sorted((before_counts - after_counts).items()):
+        out[f"{field_tag} removed"] = count
+    return out
+
+
+def _tag_matches(field_tag: str, requested: str) -> bool:
+    if requested == "9XX":
+        return re.fullmatch(r"9\d\d", field_tag) is not None
+    return field_tag == requested
+
+
+def _removed_856_url_counts(record: pymarc.Record, contains: str) -> Counter[str]:
+    needle = contains.lower().strip()
+    out: Counter[str] = Counter()
+    if not needle:
+        return out
+    for field in record.get_fields("856"):
+        for url in field.get_subfields("u"):
+            if needle in url.lower():
+                out[f"856 removed: {url}"] += 1
+    return out
+
+
+def _removed_655_counts(record: pymarc.Record, contains: str) -> Counter[str]:
+    needle = contains.lower().strip()
+    out: Counter[str] = Counter()
+    if not needle:
+        return out
+    for field in record.get_fields("655"):
+        values = field.get_subfields("a")
+        if any(needle in value.lower() for value in values):
+            label = values[0] if values else contains
+            out[f"655 removed: {label}"] += 1
+    return out
+
+
+def _operation_detail_label(request: QuickBatchRequest) -> str:
+    if request.kind == "leader":
+        return f"Leader {request.position} set to {request.value!r}"
+    if request.kind == "008-form":
+        return f"008 form of item set to {request.value!r}"
+    if request.kind == "040-cleanup":
+        return "040 cleanup"
+    if request.kind == "856-url":
+        return f"856 {request.action}"
+    if request.kind == "035-oclc":
+        return "035 OCLC cleanup"
+    if request.kind == "655-cleanup":
+        return "655 cleanup"
+    return request.kind
 
 
 def _set_leader_value(record: pymarc.Record, position: str, value: str) -> None:
@@ -299,21 +420,13 @@ def _cleanup_oclc_035(record: pymarc.Record) -> None:
     seen: set[str] = set()
     keep: list[Field] = []
     for field in record.get_fields("035"):
-        normalized_values = [
-            _canonical_oclc_value(value)
-            for code in ("a", "z")
-            for value in field.get_subfields(code)
-        ]
-        normalized_values = [value for value in normalized_values if value is not None]
-        if not normalized_values:
+        normalized_subfields = _deduped_oclc_subfields(field, seen)
+        if not normalized_subfields and _has_non_oclc_data(field):
             keep.append(field)
             continue
-        unique_values = [value for value in normalized_values if value not in seen]
-        if not unique_values:
+        if not normalized_subfields:
             continue
-        for value in unique_values:
-            seen.add(value)
-        field.subfields = _normalized_oclc_subfields(field, unique_values[0])
+        field.subfields = normalized_subfields
         keep.append(field)
     record.remove_fields("035")
     for field in keep:
@@ -330,18 +443,29 @@ def _canonical_oclc_value(value: str) -> str | None:
     return f"(OCoLC){digits}"
 
 
-def _normalized_oclc_subfields(field: Field, canonical_value: str) -> list[Subfield]:
-    replaced = False
+def _deduped_oclc_subfields(field: Field, seen: set[str]) -> list[Subfield]:
     out: list[Subfield] = []
     for subfield in field.subfields:
-        if subfield.code in {"a", "z"} and _canonical_oclc_value(subfield.value):
-            if replaced:
-                continue
-            out.append(Subfield(subfield.code, canonical_value))
-            replaced = True
-        else:
+        canonical_value = (
+            _canonical_oclc_value(subfield.value)
+            if subfield.code in {"a", "z"}
+            else None
+        )
+        if canonical_value is None:
             out.append(subfield)
+        elif canonical_value not in seen:
+            seen.add(canonical_value)
+            out.append(Subfield(subfield.code, canonical_value))
     return out
+
+
+def _has_non_oclc_data(field: Field) -> bool:
+    for subfield in field.subfields:
+        if subfield.code not in {"a", "z"}:
+            return True
+        if _canonical_oclc_value(subfield.value) is None:
+            return True
+    return False
 
 
 def _cleanup_655(record: pymarc.Record, request: QuickBatchRequest) -> None:
