@@ -107,6 +107,7 @@ class _FakeStreamlit:
         self.switch_pages: list[str] = []
         self.rerun_called = False
         self.button_calls: list[tuple[str, dict[str, Any]]] = []
+        self.download_buttons: list[dict[str, Any]] = []
         self.popovers: list[str] = []
         self.column_calls: list[tuple[Any, dict[str, Any]]] = []
 
@@ -179,6 +180,7 @@ class _FakeStreamlit:
         self.writes.append(text)
 
     def download_button(self, **kwargs: Any) -> None:
+        self.download_buttons.append(kwargs)
         return None
 
     def button(self, label: str, **kwargs: Any) -> bool:
@@ -240,23 +242,33 @@ def _run_home(
     fake_st: _FakeStreamlit,
     upload_job_ids=None,
     load_upload_ids=None,
+    has_upload: bool = False,
+    upload_error: str | None = None,
+    upload_total: int = 1,
+    raw_bytes_calls=None,
 ):
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(session, "init_page", lambda: None)
     monkeypatch.setattr(session, "current_user_id", lambda: "cataloger@example.edu")
-    monkeypatch.setattr(session, "has_upload", lambda: False)
+    monkeypatch.setattr(session, "has_upload", lambda: has_upload)
     monkeypatch.setattr(session, "current_filename", lambda: None)
     monkeypatch.setattr(session, "record_count", lambda: 0)
     monkeypatch.setattr(session, "current_store", lambda: None)
-    monkeypatch.setattr(session, "current_raw_bytes", lambda: None)
+
+    def _current_raw_bytes():
+        if raw_bytes_calls is not None:
+            raw_bytes_calls.append(1)
+        return b"fake-mrc-bytes"
+
+    monkeypatch.setattr(session, "current_raw_bytes", _current_raw_bytes)
     def _handle_upload(uploaded):
         if upload_job_ids is not None:
             upload_job_ids.append(fake_st.session_state.get("current_job_id"))
         return {
             "filename": getattr(uploaded, "name", "upload.mrc"),
-            "total": 1,
+            "total": 0 if upload_error else upload_total,
             "malformed": 0,
-            "error": None,
+            "error": upload_error,
         }
 
     monkeypatch.setattr(session, "handle_upload", _handle_upload)
@@ -317,7 +329,7 @@ def test_job_workspace_upload_uses_selected_job(monkeypatch):
 
     fake_st = _FakeStreamlit(
         session_state=state,
-        uploaded_files={"home_job_workspace_upload": uploaded},
+        uploaded_files={"home_job_workspace_upload_0": uploaded},
     )
 
     _run_home(
@@ -590,3 +602,226 @@ def test_create_job_uses_rerun_handoff_instead_of_mutating_widget_state(monkeypa
     pending_job_id = state[module._PENDING_CURRENT_JOB_ID]
     assert pending_job_id != default["id"]
     assert state["current_job_id"] == default["id"]
+
+
+# ---------------------------------------------------------------------------
+# TASK-131 — release uploader widget memory after ingest
+# ---------------------------------------------------------------------------
+# Streamlit keeps the full uploaded file in server RAM for as long as it
+# sits in the file_uploader widget (the memory pattern implicated in the
+# TASK-117 overnight outage). After a successful ingest the batch lives
+# on disk in the RecordStore, so Home must rotate the uploader key (the
+# fresh widget is empty → RAM released) and rerun, rendering feedback
+# from the persisted summary instead of re-ingesting on every rerun.
+
+
+def test_quick_load_upload_releases_widget_after_ingest(monkeypatch):
+    """A successful Quick Load ingest must rotate the uploader key and rerun."""
+    jobs.ensure_default_job("cataloger@example.edu")
+    state = _SessionState({"quick_load_mode": True})
+    uploaded = type("Upload", (), {"name": "big.mrc"})()
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        uploaded_files={"home_quick_load_upload_0": uploaded},
+    )
+
+    _run_home(monkeypatch, fake_st)
+
+    assert state["home_quick_upload_nonce"] == 1
+    assert fake_st.rerun_called
+    assert state["home_quick_upload_summary"]["filename"] == "big.mrc"
+
+
+def test_quick_load_feedback_survives_widget_release(monkeypatch):
+    """The rerun after ingest still shows the summary without re-ingesting."""
+    jobs.ensure_default_job("cataloger@example.edu")
+    state = _SessionState(
+        {
+            "quick_load_mode": True,
+            "home_quick_upload_nonce": 1,
+            "home_quick_upload_summary": {
+                "filename": "big.mrc",
+                "total": 1,
+                "malformed": 0,
+                "error": None,
+            },
+        }
+    )
+    upload_calls: list = []
+    fake_st = _FakeStreamlit(session_state=state)
+
+    _run_home(monkeypatch, fake_st, upload_job_ids=upload_calls, has_upload=True)
+
+    assert upload_calls == []
+    assert any("Loaded" in s for s in fake_st.successes)
+    assert not fake_st.rerun_called
+
+
+def test_quick_load_rejected_upload_keeps_widget_and_shows_error(monkeypatch):
+    """A rejected upload must stay in the widget next to its error message."""
+    jobs.ensure_default_job("cataloger@example.edu")
+    state = _SessionState({"quick_load_mode": True})
+    uploaded = type("Upload", (), {"name": "toobig.mrc"})()
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        uploaded_files={"home_quick_load_upload_0": uploaded},
+    )
+
+    _run_home(
+        monkeypatch,
+        fake_st,
+        upload_error="File exceeds the 200 MB limit.",
+    )
+
+    assert state.get("home_quick_upload_nonce", 0) == 0
+    assert not fake_st.rerun_called
+    assert any("File exceeds" in e for e in fake_st.errors)
+
+
+def test_job_workspace_upload_releases_widget_after_ingest(monkeypatch):
+    """A successful Job Workspace ingest must rotate its uploader key too."""
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+        }
+    )
+    uploaded = type("Upload", (), {"name": "vendor.mrc"})()
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        uploaded_files={"home_job_workspace_upload_0": uploaded},
+    )
+
+    _run_home(monkeypatch, fake_st)
+
+    assert state["home_job_upload_nonce"] == 1
+    assert fake_st.rerun_called
+    assert state["home_job_upload_summary"]["filename"] == "vendor.mrc"
+    # The banner must be attributable to the job it was uploaded to,
+    # or a later job selection inherits it (review finding).
+    assert state["home_job_upload_summary"]["job_id"] == shared["id"]
+
+
+def test_quick_load_zero_record_upload_shows_error_without_rotation(monkeypatch):
+    """A 0-record file must show 'No records found', not silently vanish.
+
+    Rotating on total==0 would rerun into a state where has_upload() is
+    False (empty store), suppressing all feedback — the file disappears
+    from the widget with no explanation (review finding on TASK-131).
+    """
+    jobs.ensure_default_job("cataloger@example.edu")
+    state = _SessionState({"quick_load_mode": True})
+    uploaded = type("Upload", (), {"name": "empty.mrc"})()
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        uploaded_files={"home_quick_load_upload_0": uploaded},
+    )
+
+    _run_home(monkeypatch, fake_st, upload_total=0)
+
+    assert state.get("home_quick_upload_nonce", 0) == 0
+    assert not fake_st.rerun_called
+    assert any("No records found" in e for e in fake_st.errors)
+
+
+def test_job_workspace_does_not_render_quick_load_summary(monkeypatch):
+    """A Quick Load banner under a job's uploader implies the file was
+    attached to that job — it never was (review finding on TASK-131)."""
+    jobs.ensure_default_job("cataloger@example.edu")
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    state = _SessionState({"quick_load_mode": True})
+    uploaded = type("Upload", (), {"name": "batch.mrc"})()
+    fake1 = _FakeStreamlit(
+        session_state=state,
+        uploaded_files={"home_quick_load_upload_0": uploaded},
+    )
+    _run_home(monkeypatch, fake1)  # quick-load success stores its summary
+
+    # Next run: cataloger switches to Job Workspace with a shared job.
+    state.set_widget_value("home_start_path", "Job Workspace")
+    state["quick_load_mode"] = False
+    state["current_job_id"] = shared["id"]
+    fake2 = _FakeStreamlit(session_state=state)
+
+    _run_home(monkeypatch, fake2, has_upload=True)
+
+    assert not any("Loaded" in s for s in fake2.successes)
+
+
+def test_job_summary_only_renders_for_its_own_job(monkeypatch):
+    """The job upload banner must follow its job, not the page."""
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    other = jobs.create_job("cataloger@example.edu", "Vendor load July")
+    summary = {
+        "filename": "vendor.mrc",
+        "total": 12,
+        "malformed": 0,
+        "error": None,
+        "job_id": other["id"],
+    }
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+            "home_job_upload_summary": summary,
+        }
+    )
+    fake_st = _FakeStreamlit(session_state=state)
+
+    _run_home(monkeypatch, fake_st, has_upload=True)
+
+    assert not any("Loaded" in s for s in fake_st.successes)
+
+    state2 = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": other["id"],
+            "home_start_path": "Job Workspace",
+            "home_job_upload_summary": summary,
+        }
+    )
+    fake_st2 = _FakeStreamlit(session_state=state2)
+
+    _run_home(monkeypatch, fake_st2, has_upload=True)
+
+    assert any("Loaded" in s for s in fake_st2.successes)
+
+
+# ---------------------------------------------------------------------------
+# TASK-135 — gate batch download materialization
+# ---------------------------------------------------------------------------
+
+
+def test_home_render_does_not_materialize_batch_bytes(monkeypatch):
+    """Rendering Home with a loaded batch must not rebuild the full MRC
+    blob — to_mrc_bytes on every rerun re-creates the O(file) RAM
+    footprint TASK-131/132 removed (TASK-117 review finding)."""
+    jobs.ensure_default_job("cataloger@example.edu")
+    state = _SessionState({"quick_load_mode": True})
+    calls: list = []
+    fake_st = _FakeStreamlit(session_state=state)
+
+    _run_home(monkeypatch, fake_st, has_upload=True, raw_bytes_calls=calls)
+
+    assert calls == []
+    assert fake_st.download_buttons == []
+
+
+def test_prepare_download_materializes_once_and_renders_button(monkeypatch):
+    jobs.ensure_default_job("cataloger@example.edu")
+    state = _SessionState({"quick_load_mode": True})
+    calls: list = []
+    fake_st = _FakeStreamlit(
+        session_state=state,
+        clicked_keys={"home_prepare_download"},
+    )
+
+    _run_home(monkeypatch, fake_st, has_upload=True, raw_bytes_calls=calls)
+
+    prepare_keys = [kwargs.get("key") for _, kwargs in fake_st.button_calls]
+    assert "home_prepare_download" in prepare_keys
+    assert len(calls) == 1
+    assert len(fake_st.download_buttons) == 1

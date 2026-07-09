@@ -21,6 +21,10 @@ from marcedit_web.render import job_files
 session.init_page()
 
 _PENDING_CURRENT_JOB_ID = "pending_current_job_id"
+_QUICK_UPLOAD_SUMMARY_KEY = "home_quick_upload_summary"
+_JOB_UPLOAD_SUMMARY_KEY = "home_job_upload_summary"
+_QUICK_UPLOAD_NONCE_KEY = "home_quick_upload_nonce"
+_JOB_UPLOAD_NONCE_KEY = "home_job_upload_nonce"
 _START_PATH_KEY = "home_start_path"
 _START_PATH_QUERY_KEY = "start"
 _START_PATH_QUICK = "Quick Load"
@@ -127,6 +131,37 @@ def _render_upload_feedback(upload_summary: dict) -> None:
         _render_next_actions()
 
 
+def _finish_upload(upload_summary: dict, nonce_key: str, summary_key: str) -> None:
+    """Render errors inline; on success release the uploader widget.
+
+    The widget keeps the full file bytes in server RAM until it is
+    cleared, and re-runs re-ingest whatever sits in it (TASK-131,
+    memory pattern behind the TASK-117 outage). The batch already
+    lives on disk in the RecordStore, so: persist the summary for
+    feedback, rotate the widget key (next run remakes it empty), and
+    rerun. Rejections AND zero-record files skip rotation — after a
+    rotation has_upload() gates the feedback, and an empty store fails
+    that gate, so rotating would swallow the "No records found" error.
+    """
+    if upload_summary.get("error") or not upload_summary.get("total"):
+        _render_upload_feedback(upload_summary)
+        return
+    st.session_state[summary_key] = upload_summary
+    st.session_state[nonce_key] = st.session_state.get(nonce_key, 0) + 1
+    st.rerun()
+
+
+def _render_persisted_upload_feedback(summary_key: str, job_id: int | None = None) -> None:
+    summary = st.session_state.get(summary_key)
+    if not summary or not session.has_upload():
+        return
+    # A job-workspace banner follows its job: rendering it under a
+    # different selected job would claim the file was attached there.
+    if job_id is not None and summary.get("job_id") != job_id:
+        return
+    _render_upload_feedback(summary)
+
+
 def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
     uploads = jobs.list_job_uploads(job_id)
     st.subheader("Files in this job")
@@ -181,10 +216,14 @@ if start_path == _START_PATH_QUICK:
         type=["mrc", "marc"],
         accept_multiple_files=False,
         help=(
-            "Binary MARC21. Upload limit is set in `.streamlit/config.toml` "
-            "(currently 2 GB). Large files may take a moment to parse."
+            "Binary MARC21. Upload limit is "
+            f"{session.max_upload_bytes() // (1024 * 1024)} MB. "
+            "Large files may take a moment to parse."
         ),
-        key="home_quick_load_upload",
+        key=(
+            "home_quick_load_upload_"
+            f"{st.session_state.get(_QUICK_UPLOAD_NONCE_KEY, 0)}"
+        ),
         on_change=(
             None
             if default_job is None
@@ -193,7 +232,11 @@ if start_path == _START_PATH_QUICK:
     )
     if uploaded is not None:
         upload_summary = _handle_uploaded_file(uploaded)
-        _render_upload_feedback(upload_summary)
+        _finish_upload(
+            upload_summary, _QUICK_UPLOAD_NONCE_KEY, _QUICK_UPLOAD_SUMMARY_KEY
+        )
+    else:
+        _render_persisted_upload_feedback(_QUICK_UPLOAD_SUMMARY_KEY)
 
 if start_path == _START_PATH_JOB:
     st.subheader("Job Workspace")
@@ -239,11 +282,22 @@ if start_path == _START_PATH_JOB:
                 "Uploads here attach to the selected job and appear in that "
                 "job's Files list."
             ),
-            key="home_job_workspace_upload",
+            key=(
+                "home_job_workspace_upload_"
+                f"{st.session_state.get(_JOB_UPLOAD_NONCE_KEY, 0)}"
+            ),
         )
         if job_upload is not None:
             upload_summary = _handle_uploaded_file(job_upload)
-            _render_upload_feedback(upload_summary)
+            _finish_upload(
+                {**upload_summary, "job_id": current_job_id},
+                _JOB_UPLOAD_NONCE_KEY,
+                _JOB_UPLOAD_SUMMARY_KEY,
+            )
+        else:
+            _render_persisted_upload_feedback(
+                _JOB_UPLOAD_SUMMARY_KEY, job_id=current_job_id
+            )
 
         current_job = next(job for job in job_rows if job["id"] == current_job_id)
         current_role = current_job.get("access_role")
@@ -295,18 +349,28 @@ if session.has_upload():
     store = session.current_store()
     col_c.metric("Malformed", store.malformed_count() if store else 0)
 
-    raw = session.current_raw_bytes()
-    if raw is not None:
-        st.download_button(
-            label="Download current batch (.mrc)",
-            data=raw,
-            file_name=session.current_filename() or "current.mrc",
-            mime="application/marc",
-            help=(
-                "Returns the current in-session record bytes. Edits from "
-                "MarcEditor / Tasks / Quick find/replace are reflected."
-            ),
-        )
+    # TASK-135: serializing the batch on every render pins O(file) RAM
+    # (the TASK-117 pattern). Build the bytes only on the run where the
+    # cataloger asks; Streamlit frees the payload once a later run stops
+    # rendering the download button.
+    if st.button(
+        "Prepare download (.mrc)",
+        key="home_prepare_download",
+        help=(
+            "Serializes the current in-session records. Edits from "
+            "MarcEditor / Tasks / Quick find/replace are reflected. "
+            "The download link appears next to this button — use it "
+            "before interacting elsewhere, or prepare again."
+        ),
+    ):
+        raw = session.current_raw_bytes()
+        if raw is not None:
+            st.download_button(
+                label="Download current batch (.mrc)",
+                data=raw,
+                file_name=session.current_filename() or "current.mrc",
+                mime="application/marc",
+            )
 
 else:
     st.info(
