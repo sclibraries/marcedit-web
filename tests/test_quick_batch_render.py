@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pymarc
@@ -46,6 +47,8 @@ class _FakeStreamlit:
         self.session_state = {}
         self.captions: list[str] = []
         self.markdowns: list[str] = []
+        self.buttons: list[dict] = []
+        self.clicked_keys: set[str] = set()
         self.download_buttons: list[dict] = []
         self.errors: list[str] = []
         self.successes: list[str] = []
@@ -67,6 +70,10 @@ class _FakeStreamlit:
 
     def success(self, message):
         self.successes.append(str(message))
+
+    def button(self, label, **kwargs):
+        self.buttons.append({"label": label, **kwargs})
+        return kwargs.get("key") in self.clicked_keys
 
     def spinner(self, message):
         self.spinners.append(str(message))
@@ -173,6 +180,14 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
     fake_st = _FakeStreamlit()
     fake_st.session_state["issues_cache"] = {"stale": object()}
     fake_st.session_state["current_job_id"] = 42
+    stale_export = tmp_path / "stale-export.mrc"
+    stale_export.write_bytes(b"stale")
+    fake_st.session_state["quick_batch_export"] = {
+        "filename": "stale.mrc",
+        "path": str(stale_export),
+        "snapshot_id": None,
+        "temporary": True,
+    }
     tasks_render = _tasks_render(monkeypatch, fake_st)
     store = _store(tmp_path)
     events: list[dict] = []
@@ -208,7 +223,11 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
     assert export["filename"].startswith("quick-ui_quickbatch_")
     assert export["filename"].endswith(".mrc")
     assert export["filename"] != "quick-ui.mrc"
+    assert "data" not in export
+    assert Path(export["path"]).exists()
+    assert export["temporary"] is True
     assert export["snapshot_id"] == 7
+    assert not stale_export.exists()
     assert snapshots[0]["kind"] == "quick-batch"
     assert snapshots[0]["label"] == "Leader value"
     assert snapshots[0]["summary"]["operation_kind"] == "leader"
@@ -240,12 +259,16 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
     assert fake_st.rerun_called is True
 
 
-def test_render_quick_batch_export_shows_download_and_history_location(monkeypatch):
+def test_render_quick_batch_export_shows_download_and_history_location(
+    monkeypatch, tmp_path,
+):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
+    export_path = tmp_path / "quick-ui-export.mrc"
+    export_path.write_bytes(b"updated")
     fake_st.session_state[tasks_render._K_QB_EXPORT] = {
         "filename": "quick-ui_quickbatch_20260709_190000.mrc",
-        "data": b"updated",
+        "path": str(export_path),
         "snapshot_id": 7,
     }
 
@@ -255,6 +278,26 @@ def test_render_quick_batch_export_shows_download_and_history_location(monkeypat
     assert fake_st.captions == [
         "Rollback and before/after downloads are available under Job snapshots on this Tasks page."
     ]
+    assert fake_st.download_buttons == []
+    assert fake_st.session_state.get("quick_batch_download_ready") is None
+
+
+def test_render_quick_batch_export_download_reads_path_only_after_prepare(
+    monkeypatch, tmp_path,
+):
+    fake_st = _FakeStreamlit()
+    fake_st.session_state["quick_batch_download_ready"] = True
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    export_path = tmp_path / "quick-ui-export-ready.mrc"
+    export_path.write_bytes(b"updated")
+    fake_st.session_state[tasks_render._K_QB_EXPORT] = {
+        "filename": "quick-ui_quickbatch_20260709_190000.mrc",
+        "path": str(export_path),
+        "snapshot_id": 7,
+    }
+
+    tasks_render._render_quick_batch_export()
+
     assert fake_st.download_buttons == [
         {
             "label": "Download updated MARC",

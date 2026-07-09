@@ -95,6 +95,7 @@ K_AI_DRAFT_NOTES = "tasks_ai_draft_notes"
 K_AI_DRAFT_REVIEW = "tasks_ai_draft_review"
 K_AI_DRAFT_ERROR = "tasks_ai_draft_error"
 K_AI_DRAFT_BLOCKING_ACK = "tasks_ai_draft_blocking_ack"
+K_QB_DOWNLOAD_READY = "quick_batch_download_ready"
 
 
 def _materialized_dir(user: str) -> Path:
@@ -1350,8 +1351,8 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
 
     st.session_state[K_RUN_RESULTS] = {
         "issues": issues,
-        "out_bytes": result.records_bytes,
         "out_filename": _export_filename(session.current_filename(), "tasks"),
+        "out_path": str(sandbox_output_path),
         "input_count": store.count(),
         "output_count": len(out_records),
         "ran_tasks": list(selection),
@@ -1481,11 +1482,11 @@ def _render_run_results() -> None:
 
     st.markdown("**Updated task output is ready as a separate export.**")
     st.caption(_history_location_caption(results.get("snapshot_id")))
-    st.download_button(
-        label=f"Download {results['out_filename']}",
-        data=results["out_bytes"],
-        file_name=results["out_filename"],
-        mime="application/marc",
+    _offer_history_download(
+        st,
+        results.get("out_path"),
+        f"Download {results['out_filename']}",
+        results["out_filename"],
         key="tasks_download",
     )
 
@@ -1697,27 +1698,24 @@ def _offer_history_download(
 def _render_diff_review(results: dict) -> None:
     """Render the post-run diff review (summary + per-record drill-down).
 
-    Computation is lazy — the diff is built on first render and cached
-    in session_state under the run-results key so re-renders (after a
-    pagination click, say) reuse the same TaskDiffSummary.
+    The diff is computed when the task completes. Rendering does not
+    rebuild it from output bytes because that would re-read large MARC
+    files on ordinary page refreshes.
     """
     input_path_str = results.get("sandbox_input_path")
-    out_bytes = results.get("out_bytes") or b""
-    if not input_path_str or not out_bytes:
+    out_path_str = results.get("out_path")
+    if not input_path_str or not out_path_str:
         return
     input_path = Path(input_path_str)
-    if not input_path.exists():
+    out_path = Path(out_path_str)
+    if not input_path.exists() or not out_path.exists():
         # Sandbox workdir was cleaned out (container restart, ops
         # cleanup). Nothing we can do — the user can re-run.
         return
 
     summary = results.get("_diff_summary")
     if summary is None:
-        with st.spinner("Building diff…"):
-            summary = task_diff.compute_task_diff(input_path, out_bytes)
-        # Stash on the in-memory dict; survives reruns within the
-        # session until a new run replaces K_RUN_RESULTS wholesale.
-        results["_diff_summary"] = summary
+        return
 
     st.divider()
     st.markdown("**Review changes before download**")
@@ -1856,6 +1854,50 @@ def _export_filename(orig: str | None, operation: str) -> str:
         return session.stamped_filename(f"transformed_{operation}")
     p = Path(orig)
     return session.stamped_filename(f"{p.stem}_{operation}", p.suffix or ".mrc")
+
+
+def _disk_backed_export(
+    *,
+    filename: str,
+    data: bytes,
+    snapshot: dict | None,
+    prefix: str,
+) -> dict:
+    snapshot_path = snapshot.get("after_path") if snapshot else None
+    if snapshot_path and Path(snapshot_path).exists():
+        path = Path(snapshot_path)
+        temporary_dir = None
+        temporary = False
+    else:
+        export_dir = Path(tempfile.mkdtemp(prefix=prefix))
+        path = export_dir / filename
+        path.write_bytes(data)
+        temporary_dir = str(export_dir)
+        temporary = True
+    return {
+        "filename": filename,
+        "path": str(path),
+        "temporary": temporary,
+        "temporary_dir": temporary_dir,
+        "snapshot_id": snapshot["id"] if snapshot is not None else None,
+    }
+
+
+def _cleanup_disk_backed_export(export: dict | None) -> None:
+    if not export or not export.get("temporary"):
+        return
+    path_str = export.get("path")
+    if path_str:
+        try:
+            Path(path_str).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("could not remove temporary export file: %s", exc)
+    temp_dir = export.get("temporary_dir")
+    if temp_dir:
+        try:
+            Path(temp_dir).rmdir()
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -2333,11 +2375,14 @@ def _apply_quick_batch_preview(preview) -> None:
     )
     st.session_state["issues_cache"] = {}
     st.session_state.pop(_K_QB_PREVIEW, None)
-    st.session_state[_K_QB_EXPORT] = {
-        "filename": export_filename,
-        "data": after_bytes,
-        "snapshot_id": snapshot["id"] if snapshot is not None else None,
-    }
+    st.session_state.pop(K_QB_DOWNLOAD_READY, None)
+    _cleanup_disk_backed_export(st.session_state.get(_K_QB_EXPORT))
+    st.session_state[_K_QB_EXPORT] = _disk_backed_export(
+        filename=export_filename,
+        data=after_bytes,
+        snapshot=snapshot,
+        prefix="marcedit-web-quickbatch-",
+    )
     st.success(
         f"Applied quick batch operation to {result.changed_count} record(s)."
     )
@@ -2353,9 +2398,36 @@ def _render_quick_batch_export() -> None:
         st.caption(_history_location_caption(export.get("snapshot_id")))
     else:
         st.caption(_history_location_caption(None))
+    path_str = export.get("path")
+    if not path_str:
+        st.caption("Updated export file is not available in this session.")
+        return
+    path = Path(path_str)
+    if not path.exists():
+        st.button(
+            "Download updated MARC",
+            disabled=True,
+            help="The temporary export file is no longer available.",
+            key="quick_batch_download_missing",
+        )
+        return
+    if not st.session_state.get(K_QB_DOWNLOAD_READY):
+        if st.button(
+            "Prepare Download updated MARC",
+            key="quick_batch_prepare_download",
+            help=(
+                "Loads the updated MARC file from disk and offers a "
+                "download button. This avoids re-reading large files on "
+                "every page refresh."
+            ),
+        ):
+            st.session_state[K_QB_DOWNLOAD_READY] = True
+            st.rerun()
+        return
+
     st.download_button(
         label="Download updated MARC",
-        data=export["data"],
+        data=path.read_bytes(),
         file_name=export["filename"],
         mime="application/marc",
         key="quick_batch_download_updated",
