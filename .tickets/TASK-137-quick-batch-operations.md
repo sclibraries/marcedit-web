@@ -17,4 +17,11 @@ Success Criteria:
 - Advanced conditional or exception-heavy workflows remain in the existing task
   builder/code path.
 
-Status: In-Progress
+Status: Completed
+
+Verification:
+- 2026-07-09: `docker compose exec marcedit-web pytest -ra` passed
+  (986 passed, 7 expected deploy/Docker context skips).
+- 2026-07-09: `env PYTHONPATH=. pytest -ra tests/test_deploy_units.py
+  tests/test_docker_compose_config.py` passed (8 passed).
+- 2026-07-09: `git diff --check origin/main...HEAD` passed.
