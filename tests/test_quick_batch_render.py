@@ -44,6 +44,9 @@ class _Status:
 class _FakeStreamlit:
     def __init__(self):
         self.session_state = {}
+        self.captions: list[str] = []
+        self.markdowns: list[str] = []
+        self.download_buttons: list[dict] = []
         self.errors: list[str] = []
         self.successes: list[str] = []
         self.spinners: list[str] = []
@@ -55,6 +58,12 @@ class _FakeStreamlit:
 
     def error(self, message):
         self.errors.append(str(message))
+
+    def caption(self, message):
+        self.captions.append(str(message))
+
+    def markdown(self, message):
+        self.markdowns.append(str(message))
 
     def success(self, message):
         self.successes.append(str(message))
@@ -69,6 +78,9 @@ class _FakeStreamlit:
 
     def empty(self):
         return _Status(self)
+
+    def download_button(self, **kwargs):
+        self.download_buttons.append(kwargs)
 
     def rerun(self):
         self.rerun_called = True
@@ -160,9 +172,11 @@ def test_quick_batch_progress_callback_is_throttled(monkeypatch):
 def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     fake_st.session_state["issues_cache"] = {"stale": object()}
+    fake_st.session_state["current_job_id"] = 42
     tasks_render = _tasks_render(monkeypatch, fake_st)
     store = _store(tmp_path)
     events: list[dict] = []
+    snapshots: list[dict] = []
 
     monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
     monkeypatch.setattr(tasks_render.session, "current_user_id", lambda: "cataloger")
@@ -171,6 +185,15 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
         events.append({"event": kind, **payload})
 
     monkeypatch.setattr(tasks_render, "audit_event", fake_audit_event)
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **kwargs: snapshots.append(kwargs) or {
+            "id": 7,
+            "job_id": kwargs["job_id"],
+            "kind": kwargs["kind"],
+        },
+    )
 
     request = QuickBatchRequest(kind="leader", position="05", value="c")
     preview = tasks_render.quick_batch.build_preview(store, request)
@@ -181,7 +204,22 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
     assert str(store.get(0).leader)[5] == "c"
     assert fake_st.session_state["issues_cache"] == {}
     assert tasks_render._K_QB_PREVIEW not in fake_st.session_state
+    export = fake_st.session_state[tasks_render._K_QB_EXPORT]
+    assert export["filename"].startswith("quick-ui_quickbatch_")
+    assert export["filename"].endswith(".mrc")
+    assert export["filename"] != "quick-ui.mrc"
+    assert export["snapshot_id"] == 7
+    assert snapshots[0]["kind"] == "quick-batch"
+    assert snapshots[0]["label"] == "Leader value"
+    assert snapshots[0]["summary"]["operation_kind"] == "leader"
     assert events == [
+        {
+            "event": "job-snapshot-created",
+            "user": "cataloger",
+            "snapshot_id": 7,
+            "job_id": 42,
+            "snapshot_kind": "quick-batch",
+        },
         {
             "event": "quick-batch-applied",
             "user": "cataloger",
@@ -200,3 +238,29 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
     assert fake_st.progress_cleared == 1
     assert fake_st.status_cleared == 1
     assert fake_st.rerun_called is True
+
+
+def test_render_quick_batch_export_shows_download_and_history_location(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render._K_QB_EXPORT] = {
+        "filename": "quick-ui_quickbatch_20260709_190000.mrc",
+        "data": b"updated",
+        "snapshot_id": 7,
+    }
+
+    tasks_render._render_quick_batch_export()
+
+    assert fake_st.markdowns == ["**Updated batch is loaded in this session.**"]
+    assert fake_st.captions == [
+        "Rollback and before/after downloads are available under Job snapshots on this Tasks page."
+    ]
+    assert fake_st.download_buttons == [
+        {
+            "label": "Download updated MARC",
+            "data": b"updated",
+            "file_name": "quick-ui_quickbatch_20260709_190000.mrc",
+            "mime": "application/marc",
+            "key": "quick_batch_download_updated",
+        }
+    ]

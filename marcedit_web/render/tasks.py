@@ -1345,13 +1345,13 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             user=user,
             snapshot_id=snapshot["id"],
             job_id=snapshot["job_id"],
-            kind=snapshot["kind"],
+            snapshot_kind=snapshot["kind"],
         )
 
     st.session_state[K_RUN_RESULTS] = {
         "issues": issues,
         "out_bytes": result.records_bytes,
-        "out_filename": _stamped_filename(session.current_filename()),
+        "out_filename": _export_filename(session.current_filename(), "tasks"),
         "input_count": store.count(),
         "output_count": len(out_records),
         "ran_tasks": list(selection),
@@ -1364,6 +1364,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         # Pre-computed diff summary so _render_diff_review reuses it
         # instead of rebuilding.
         "_diff_summary": diff_summary,
+        "snapshot_id": snapshot["id"] if snapshot is not None else None,
     }
 
     # TASK-034 + TASK-035: append to per-session run history with
@@ -1478,6 +1479,8 @@ def _render_run_results() -> None:
     # exporting.
     _render_diff_review(results)
 
+    st.markdown("**Updated task output is ready as a separate export.**")
+    st.caption(_history_location_caption(results.get("snapshot_id")))
     st.download_button(
         label=f"Download {results['out_filename']}",
         data=results["out_bytes"],
@@ -1560,7 +1563,7 @@ def _render_job_snapshot_entry(row: dict) -> None:
             user=session.current_user_id(),
             snapshot_id=row["id"],
             job_id=row["job_id"],
-            kind=row["kind"],
+            snapshot_kind=row["kind"],
         )
         st.success("Restored the pre-change version into the current session.")
         st.rerun()
@@ -1845,10 +1848,14 @@ def _render_diff_rows(
 
 
 def _stamped_filename(orig: str | None) -> str:
+    return _export_filename(orig, "transformed")
+
+
+def _export_filename(orig: str | None, operation: str) -> str:
     if not orig:
-        return session.stamped_filename("transformed")
+        return session.stamped_filename(f"transformed_{operation}")
     p = Path(orig)
-    return session.stamped_filename(p.stem, p.suffix or ".mrc")
+    return session.stamped_filename(f"{p.stem}_{operation}", p.suffix or ".mrc")
 
 
 # ---------------------------------------------------------------------------
@@ -2066,6 +2073,7 @@ def _apply_quick_preview(preview) -> None:
 
 
 _K_QB_PREVIEW = "quick_batch_preview"
+_K_QB_EXPORT = "quick_batch_export"
 
 _QB_OPERATION_LABELS = {
     "leader": "Leader value",
@@ -2116,6 +2124,7 @@ def _render_quick_batch_operations() -> None:
         preview = st.session_state.get(_K_QB_PREVIEW)
         if preview is not None:
             _render_quick_batch_preview(preview)
+        _render_quick_batch_export()
 
 
 def _quick_batch_request_from_widgets(kind: str) -> QuickBatchRequest:
@@ -2277,6 +2286,7 @@ def _apply_quick_batch_preview(preview) -> None:
         return
     record_count = len(preview.output_records)
     on_progress, progress, status = _quick_batch_progress("Checking")
+    before_bytes = store.to_mrc_bytes()
 
     with st.spinner(
         f"Applying quick batch operation to {record_count:,} record"
@@ -2288,6 +2298,30 @@ def _apply_quick_batch_preview(preview) -> None:
     if result.error:
         st.error(result.error)
         return
+    after_bytes = store.to_mrc_bytes()
+    export_filename = _export_filename(session.current_filename(), "quickbatch")
+    snapshot = snapshot_actions.record_job_snapshot(
+        job_id=st.session_state.get("current_job_id"),
+        user_email=session.current_user_id(),
+        kind="quick-batch",
+        label=_QB_OPERATION_LABELS.get(preview.request.kind, preview.request.kind),
+        before_bytes=before_bytes,
+        after_bytes=after_bytes,
+        summary={
+            "operation_kind": preview.request.kind,
+            "changed_count": result.changed_count,
+            "skipped_count": result.skipped_count,
+            "export_filename": export_filename,
+        },
+    )
+    if snapshot is not None:
+        audit_event(
+            "job-snapshot-created",
+            user=session.current_user_id(),
+            snapshot_id=snapshot["id"],
+            job_id=snapshot["job_id"],
+            snapshot_kind=snapshot["kind"],
+        )
 
     audit_event(
         "quick-batch-applied",
@@ -2299,10 +2333,33 @@ def _apply_quick_batch_preview(preview) -> None:
     )
     st.session_state["issues_cache"] = {}
     st.session_state.pop(_K_QB_PREVIEW, None)
+    st.session_state[_K_QB_EXPORT] = {
+        "filename": export_filename,
+        "data": after_bytes,
+        "snapshot_id": snapshot["id"] if snapshot is not None else None,
+    }
     st.success(
         f"Applied quick batch operation to {result.changed_count} record(s)."
     )
     st.rerun()
+
+
+def _render_quick_batch_export() -> None:
+    export = st.session_state.get(_K_QB_EXPORT)
+    if not export:
+        return
+    st.markdown("**Updated batch is loaded in this session.**")
+    if export.get("snapshot_id"):
+        st.caption(_history_location_caption(export.get("snapshot_id")))
+    else:
+        st.caption(_history_location_caption(None))
+    st.download_button(
+        label="Download updated MARC",
+        data=export["data"],
+        file_name=export["filename"],
+        mime="application/marc",
+        key="quick_batch_download_updated",
+    )
 
 
 def _quick_batch_progress(verb: str, *, min_step: int = 250):
@@ -2326,6 +2383,18 @@ def _quick_batch_progress(verb: str, *, min_step: int = 250):
         status.markdown(f"{verb} record {processed:,} of {total:,}…")
 
     return on_progress, progress, status
+
+
+def _history_location_caption(snapshot_id) -> str:
+    if snapshot_id:
+        return (
+            "Rollback and before/after downloads are available under Job "
+            "snapshots on this Tasks page."
+        )
+    return (
+        "Rollback history is only available for signed-in job files. "
+        "Download the updated MARC file below."
+    )
 
 
 def _format_leader_position(position: str) -> str:
