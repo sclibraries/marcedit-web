@@ -1,4 +1,4 @@
-# TASK-130 — Action toasts and delete confirmation for job files table
+# TASK-136 — Action toasts and delete confirmation for job files table
 
 **Status:** Completed
 **Priority:** Tier 2 — Data-loss guard + feedback
@@ -64,3 +64,7 @@ unrecoverable.
   returning to the same job/file reopens the dialog — the pending flag is
   keyed per page prefix, not per visit; it cannot cause an unconfirmed
   delete.
+
+> Note: originally opened as TASK-130 in this session; renumbered to
+> TASK-136 because a parallel session claimed TASK-130 (align max upload
+> size) on main first.

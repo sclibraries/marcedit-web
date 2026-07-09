@@ -438,7 +438,7 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
 
 
 def test_render_detail_delete_click_only_opens_confirmation(monkeypatch):
-    """A single click must never destroy a file (TASK-130)."""
+    """A single click must never destroy a file (TASK-136)."""
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit(clicked_keys={"job_upload_delete_99"})
     removed: list = []

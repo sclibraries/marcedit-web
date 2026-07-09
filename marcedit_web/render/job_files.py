@@ -125,7 +125,7 @@ def render_job_files_table(
                         key=f"{key_prefix}_delete_{row['id']}",
                         use_container_width=True,
                     ):
-                        # Confirmation gate (TASK-130): a single click must
+                        # Confirmation gate (TASK-136): a single click must
                         # never destroy a file — open the dialog instead.
                         st.session_state[f"{key_prefix}_pending_delete"] = int(
                             row["id"]

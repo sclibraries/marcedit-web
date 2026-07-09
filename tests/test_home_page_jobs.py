@@ -521,7 +521,7 @@ def test_job_workspace_delete_file_only_for_original_uploader(monkeypatch):
 
 
 def test_home_delete_click_only_opens_confirmation(monkeypatch):
-    """A single click must never destroy a file (TASK-130)."""
+    """A single click must never destroy a file (TASK-136)."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
     upload_persistence.record_upload(
         user="cataloger@example.edu",
@@ -682,7 +682,7 @@ def test_home_stale_pending_delete_flag_is_dropped(monkeypatch):
 
 
 def test_home_cancelled_delete_keeps_file(monkeypatch):
-    """Cancel must delete nothing and clear the pending flag (TASK-130)."""
+    """Cancel must delete nothing and clear the pending flag (TASK-136)."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
     upload_persistence.record_upload(
         user="cataloger@example.edu",

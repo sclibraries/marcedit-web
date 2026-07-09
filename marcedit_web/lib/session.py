@@ -96,7 +96,7 @@ def init() -> None:
     if not st.session_state.get("user"):
         st.session_state["user"] = current_user()
     restore_active_upload()
-    # Flush toasts queued by the PREVIOUS run's action handlers (TASK-130):
+    # Flush toasts queued by the PREVIOUS run's action handlers (TASK-136):
     # queue_toast + this flush is what lets feedback survive st.rerun()
     # and st.switch_page.
     for message, icon in st.session_state.pop("pending_toasts", []):
@@ -511,7 +511,7 @@ def detach_loaded_batch(file_path) -> None:
 
 
 def queue_toast(message: str, icon: str | None = None) -> None:
-    """Queue a toast for the NEXT script run (TASK-130).
+    """Queue a toast for the NEXT script run (TASK-136).
 
     Action handlers end in ``st.rerun()`` or ``st.switch_page`` — a direct
     ``st.toast`` there dies with the current run. ``init()`` flushes the
