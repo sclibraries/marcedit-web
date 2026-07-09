@@ -25,11 +25,15 @@ class _FakeSt:
 
     def __init__(self):
         self.session_state: dict = {}
+        self.toasts: list[tuple[str, str | None]] = []
         self.runtime = types.SimpleNamespace(
             scriptrunner=types.SimpleNamespace(
                 get_script_run_ctx=lambda: None
             )
         )
+
+    def toast(self, message: str, icon: str | None = None) -> None:
+        self.toasts.append((message, icon))
 
 
 @pytest.fixture
@@ -343,6 +347,27 @@ def test_current_raw_bytes_returns_none_when_backing_file_missing(
     Path(st.session_state["store"].path).unlink()
 
     assert session.current_raw_bytes() is None
+
+
+def test_queue_toast_flushes_once_on_next_init(fake_st):
+    """Action feedback must survive rerun/switch_page and fire exactly once."""
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+
+    session.queue_toast("Deleted vendor.mrc permanently.", icon="🗑️")
+    session.queue_toast("Removed other.mrc from this job.")
+
+    session.init()
+
+    assert st.toasts == [
+        ("Deleted vendor.mrc permanently.", "🗑️"),
+        ("Removed other.mrc from this job.", None),
+    ]
+    assert "pending_toasts" not in st.session_state
+
+    session.init()
+
+    assert len(st.toasts) == 2
 
 
 # ---------------------------------------------------------------------------

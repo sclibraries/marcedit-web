@@ -74,10 +74,29 @@ class _FakeStreamlit:
         self.text_area_calls: list[tuple[str, dict[str, Any]]] = []
         self.popovers: list[str] = []
         self.column_calls: list[tuple[Any, dict[str, Any]]] = []
+        self.dialogs: list[str] = []
+        self.toasts: list[tuple[str, Any]] = []
+        self.warnings: list[str] = []
         self.rerun_called = False
 
     def title(self, text: str) -> None:
         self.titles.append(text)
+
+    def warning(self, text: str) -> None:
+        self.warnings.append(text)
+
+    def toast(self, message: str, icon: Any = None) -> None:
+        self.toasts.append((message, icon))
+
+    def dialog(self, title: str, **kwargs: Any):
+        # Passthrough decorator: the dialog body renders inline so
+        # clicked_keys can drive its buttons.
+        self.dialogs.append(title)
+
+        def _decorator(func):
+            return func
+
+        return _decorator
 
     def caption(self, text: str) -> None:
         self.captions.append(text)
@@ -362,6 +381,9 @@ def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
 
     assert loaded == [99]
     assert fake_st.session_state["switched_to"] == "views/1_View.py"
+    assert fake_st.session_state["pending_toasts"] == [
+        ("Loaded batch.mrc — 42 records", "📂")
+    ]
 
 
 def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
@@ -410,16 +432,73 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
 
     assert removed == [(99, "alice@example.edu", False)]
     assert fake_st.rerun_called is True
+    assert fake_st.session_state["pending_toasts"] == [
+        ("Removed batch.mrc from this job.", "🗂️")
+    ]
 
 
-def test_render_detail_delete_button_detaches_loaded_batch(monkeypatch):
-    """Hard delete must also drop the session's loaded batch (TASK-128).
+def test_render_detail_delete_click_only_opens_confirmation(monkeypatch):
+    """A single click must never destroy a file (TASK-136)."""
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(clicked_keys={"job_upload_delete_99"})
+    removed: list = []
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
+    monkeypatch.setattr(
+        page.jobs,
+        "remove_upload",
+        lambda upload_id, *, by, delete_file=False: removed.append(upload_id),
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "list_job_uploads",
+        lambda job_id: [{
+            "id": 99,
+            "user_email": "alice@example.edu",
+            "filename": "batch.mrc",
+            "file_path": "/tmp/batch.mrc",
+            "record_count": 42,
+            "file_bytes": 2048,
+            "uploaded_at": "2026-07-08T12:00:00Z",
+            "active": 1,
+        }],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert removed == []
+    assert fake_st.session_state["job_upload_pending_delete"] == 99
+    assert fake_st.rerun_called is True
+
+
+def test_render_detail_confirmed_delete_detaches_loaded_batch(monkeypatch):
+    """Confirmed delete must drop the session's loaded batch (TASK-128/130).
 
     The deleted file may be the one loaded in this session; leaving the
     store attached crashes the next disk read with FileNotFoundError.
     """
     page = _load_jobs_page(monkeypatch)
-    fake_st = _FakeStreamlit(clicked_keys={"job_upload_delete_99"})
+    fake_st = _FakeStreamlit(
+        session_state={"job_upload_pending_delete": 99},
+        clicked_keys={"job_upload_confirm_delete_99"},
+    )
     removed: list[tuple[int, str, bool]] = []
     detached: list[str] = []
 
@@ -473,6 +552,11 @@ def test_render_detail_delete_button_detaches_loaded_batch(monkeypatch):
 
     assert removed == [(99, "alice@example.edu", True)]
     assert detached == ["/tmp/batch.mrc"]
+    assert fake_st.session_state["pending_toasts"] == [
+        ("Deleted batch.mrc permanently.", "🗑️")
+    ]
+    assert "job_upload_pending_delete" not in fake_st.session_state
+    assert fake_st.dialogs == ["Delete file permanently?"]
     assert fake_st.rerun_called is True
 
 

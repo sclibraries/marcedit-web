@@ -90,6 +90,12 @@ def render_job_files_table(
                     if summary.get("error"):
                         st.error(summary["error"])
                     else:
+                        total = int(summary.get("total", 0))
+                        session.queue_toast(
+                            f"Loaded {row['filename']} — {total:,} "
+                            f"record{'s' if total != 1 else ''}",
+                            icon="📂",
+                        )
                         st.switch_page("views/1_View.py")
             can_remove = role in _EDIT_ROLES
             can_delete = row["user_email"] == user
@@ -107,6 +113,10 @@ def render_job_files_table(
                         except jobs.JobError as exc:
                             st.error(str(exc))
                         else:
+                            session.queue_toast(
+                                f"Removed {row['filename']} from this job.",
+                                icon="🗂️",
+                            )
                             st.rerun()
                     st.caption("Keeps the stored file; hides it from this job.")
                 if can_delete:
@@ -115,17 +125,68 @@ def render_job_files_table(
                         key=f"{key_prefix}_delete_{row['id']}",
                         use_container_width=True,
                     ):
-                        try:
-                            jobs.remove_upload(
-                                int(row["id"]),
-                                by=user,
-                                delete_file=True,
-                            )
-                        except jobs.JobError as exc:
-                            st.error(str(exc))
-                        else:
-                            # The deleted file may back the loaded batch;
-                            # a dangling store crashes the rerun (TASK-128).
-                            session.detach_loaded_batch(row["file_path"])
-                            st.rerun()
+                        # Confirmation gate (TASK-136): a single click must
+                        # never destroy a file — open the dialog instead.
+                        st.session_state[f"{key_prefix}_pending_delete"] = int(
+                            row["id"]
+                        )
+                        st.rerun()
                     st.caption("Deletes the stored file for everyone in the job.")
+    pending_key = f"{key_prefix}_pending_delete"
+    pending_id = st.session_state.get(pending_key)
+    if pending_id is not None:
+        pending_row = next(
+            (r for r in uploads if int(r["id"]) == int(pending_id)), None
+        )
+        if pending_row is None:
+            # Stale flag (file removed elsewhere) — drop it silently.
+            st.session_state.pop(pending_key, None)
+        else:
+            _open_delete_confirmation(
+                pending_row, user=user, key_prefix=key_prefix
+            )
+
+
+def _open_delete_confirmation(row: dict, *, user: str, key_prefix: str) -> None:
+    # Decorated lazily, NOT at module level: the page test harnesses swap
+    # sys.modules["streamlit"] for a fake, and a module-level @st.dialog
+    # would bind whichever streamlit was imported first (the same
+    # fragility TASK-129's review flagged in render/__init__.py).
+    import streamlit as st
+
+    @st.dialog("Delete file permanently?")
+    def _confirm() -> None:
+        st.markdown(
+            f"**{row['filename']}** — {row['record_count']:,} record"
+            f"{'s' if row['record_count'] != 1 else ''}"
+        )
+        st.warning(
+            "This deletes the stored file for everyone in the job. "
+            "It cannot be undone."
+        )
+        confirm_col, cancel_col = st.columns([1, 1])
+        if confirm_col.button(
+            "Delete permanently",
+            type="primary",
+            key=f"{key_prefix}_confirm_delete_{row['id']}",
+        ):
+            try:
+                jobs.remove_upload(int(row["id"]), by=user, delete_file=True)
+            except jobs.JobError as exc:
+                st.error(str(exc))
+            else:
+                # The deleted file may back the loaded batch (TASK-128).
+                session.detach_loaded_batch(row["file_path"])
+                session.queue_toast(
+                    f"Deleted {row['filename']} permanently.", icon="🗑️"
+                )
+                st.session_state.pop(f"{key_prefix}_pending_delete", None)
+                st.rerun()
+        if cancel_col.button(
+            "Cancel",
+            key=f"{key_prefix}_cancel_delete_{row['id']}",
+        ):
+            st.session_state.pop(f"{key_prefix}_pending_delete", None)
+            st.rerun()
+
+    _confirm()

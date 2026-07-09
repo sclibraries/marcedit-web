@@ -96,6 +96,11 @@ def init() -> None:
     if not st.session_state.get("user"):
         st.session_state["user"] = current_user()
     restore_active_upload()
+    # Flush toasts queued by the PREVIOUS run's action handlers (TASK-136):
+    # queue_toast + this flush is what lets feedback survive st.rerun()
+    # and st.switch_page.
+    for message, icon in st.session_state.pop("pending_toasts", []):
+        st.toast(message, icon=icon)
 
 
 def restore_active_upload() -> None:
@@ -507,6 +512,19 @@ def detach_loaded_batch(file_path) -> None:
     st.session_state["issues_cache"] = {}
     st.session_state["editor_text"] = None
     st.session_state["editor_dirty"] = False
+
+
+def queue_toast(message: str, icon: str | None = None) -> None:
+    """Queue a toast for the NEXT script run (TASK-136).
+
+    Action handlers end in ``st.rerun()`` or ``st.switch_page`` — a direct
+    ``st.toast`` there dies with the current run. ``init()`` flushes the
+    queue at the top of every page, so the toast shows wherever the
+    cataloger lands.
+    """
+    import streamlit as st
+
+    st.session_state.setdefault("pending_toasts", []).append((message, icon))
 
 
 def current_filename() -> Optional[str]:
