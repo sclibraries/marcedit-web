@@ -167,11 +167,10 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
     monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
     monkeypatch.setattr(tasks_render.session, "current_user_id", lambda: "cataloger")
     monkeypatch.setattr(tasks_render.session, "current_filename", lambda: "quick-ui.mrc")
-    monkeypatch.setattr(
-        tasks_render,
-        "audit_event",
-        lambda event, **payload: events.append({"event": event, **payload}),
-    )
+    def fake_audit_event(kind, **payload):
+        events.append({"event": kind, **payload})
+
+    monkeypatch.setattr(tasks_render, "audit_event", fake_audit_event)
 
     request = QuickBatchRequest(kind="leader", position="05", value="c")
     preview = tasks_render.quick_batch.build_preview(store, request)
@@ -187,7 +186,7 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
             "event": "quick-batch-applied",
             "user": "cataloger",
             "filename": "quick-ui.mrc",
-            "kind": "leader",
+            "operation_kind": "leader",
             "changed_count": 1,
             "skipped_count": 0,
         }

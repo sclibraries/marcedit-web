@@ -2293,7 +2293,7 @@ def _apply_quick_batch_preview(preview) -> None:
         "quick-batch-applied",
         user=session.current_user_id(),
         filename=session.current_filename(),
-        kind=preview.request.kind,
+        operation_kind=preview.request.kind,
         changed_count=result.changed_count,
         skipped_count=result.skipped_count,
     )
