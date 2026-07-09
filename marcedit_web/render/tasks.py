@@ -2229,14 +2229,7 @@ def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
         st.error("No loaded batch — upload a `.mrc` on Home first.")
         return
 
-    progress = st.progress(0.0)
-    status = st.empty()
-
-    def on_progress(processed: int, total: int) -> None:
-        if total <= 0:
-            return
-        progress.progress(processed / total)
-        status.markdown(f"Previewing record {processed:,} of {total:,}…")
+    on_progress, progress, status = _quick_batch_progress("Previewing")
 
     with st.spinner("Building preview…"):
         preview = quick_batch.build_preview(store, request, progress=on_progress)
@@ -2283,14 +2276,7 @@ def _apply_quick_batch_preview(preview) -> None:
         st.error("No loaded batch — upload one on Home first.")
         return
     record_count = len(preview.output_records)
-    progress = st.progress(0.0)
-    status = st.empty()
-
-    def on_progress(processed: int, total: int) -> None:
-        if total <= 0:
-            return
-        progress.progress(processed / total)
-        status.markdown(f"Checking record {processed:,} of {total:,}…")
+    on_progress, progress, status = _quick_batch_progress("Checking")
 
     with st.spinner(
         f"Applying quick batch operation to {record_count:,} record"
@@ -2317,6 +2303,29 @@ def _apply_quick_batch_preview(preview) -> None:
         f"Applied quick batch operation to {result.changed_count} record(s)."
     )
     st.rerun()
+
+
+def _quick_batch_progress(verb: str, *, min_step: int = 250):
+    progress = st.progress(0.0)
+    status = st.empty()
+    last_rendered = 0
+
+    def on_progress(processed: int, total: int) -> None:
+        nonlocal last_rendered
+        if total <= 0:
+            return
+        if (
+            processed != 1
+            and processed != total
+            and processed % min_step != 0
+            and processed - last_rendered < min_step
+        ):
+            return
+        last_rendered = processed
+        progress.progress(processed / total)
+        status.markdown(f"{verb} record {processed:,} of {total:,}…")
+
+    return on_progress, progress, status
 
 
 def _format_leader_position(position: str) -> str:

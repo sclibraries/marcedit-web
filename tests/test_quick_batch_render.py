@@ -133,6 +133,30 @@ def test_quick_batch_preview_clears_quick_find_replace_preview(monkeypatch, tmp_
     assert tasks_render._K_QB_PREVIEW in fake_st.session_state
 
 
+def test_quick_batch_progress_callback_is_throttled(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+
+    callback, progress, status = tasks_render._quick_batch_progress(
+        "Previewing",
+        min_step=200,
+    )
+    for processed in range(1, 1001):
+        callback(processed, 1000)
+    progress.empty()
+    status.empty()
+
+    assert fake_st.status_messages == [
+        "Previewing record 1 of 1,000…",
+        "Previewing record 200 of 1,000…",
+        "Previewing record 400 of 1,000…",
+        "Previewing record 600 of 1,000…",
+        "Previewing record 800 of 1,000…",
+        "Previewing record 1,000 of 1,000…",
+    ]
+    assert fake_st.progress_updates == [0.0, 0.001, 0.2, 0.4, 0.6, 0.8, 1.0]
+
+
 def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     fake_st.session_state["issues_cache"] = {"stale": object()}
