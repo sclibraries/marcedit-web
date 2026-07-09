@@ -43,6 +43,7 @@ from marcedit_web.lib import (
     note_task_draft,
     quotas,
     provenance,
+    quick_batch,
     run_history,
     sandbox,
     session,
@@ -55,6 +56,7 @@ from marcedit_web.lib import (
 )
 from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.batch_replace import BatchReplaceRequest
+from marcedit_web.lib.quick_batch import QuickBatchRequest
 from marcedit_web.lib.run_history import TaskRunRecord
 from marcedit_web.lib.errors import Issue, transform_issue
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
@@ -279,6 +281,7 @@ def render() -> None:
     _render_run_history()
     _render_persisted_job_snapshots()
     _render_quick_find_replace()
+    _render_quick_batch_operations()
 
 
 # ---------------------------------------------------------------------------
@@ -2051,3 +2054,246 @@ def _apply_quick_preview(preview) -> None:
         "Other records are unchanged."
     )
     st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# TASK-137: Quick batch operation wizard
+# ---------------------------------------------------------------------------
+
+
+_K_QB_PREVIEW = "quick_batch_preview"
+
+_QB_OPERATION_LABELS = {
+    "leader": "Leader value",
+    "008-form": "008 form of item",
+    "040-cleanup": "040 cleanup",
+    "856-url": "856 URL tools",
+    "035-oclc": "OCLC 035 cleanup",
+    "9xx-delete": "Local 9xx cleanup",
+    "655-cleanup": "655 genre/form cleanup",
+}
+
+_QB_856_ACTION_LABELS = {
+    "add-proxy": "Add proxy prefix",
+    "remove-proxy": "Remove proxy prefix",
+    "delete-matching": "Delete 856 fields by URL text",
+}
+
+
+def _render_quick_batch_operations() -> None:
+    """Render one-shot canned MARC cleanup operations."""
+    if not session.has_upload():
+        return
+
+    st.divider()
+    with st.expander(
+        "Quick batch operations (no saved task)",
+        expanded=False,
+    ):
+        st.caption(
+            "Run a structured cleanup across the loaded batch. Preview first; "
+            "nothing is saved to your task list."
+        )
+        kind = st.selectbox(
+            "Operation",
+            options=list(_QB_OPERATION_LABELS),
+            format_func=lambda value: _QB_OPERATION_LABELS.get(value, value),
+            key="qb_kind",
+        )
+        request = _quick_batch_request_from_widgets(kind)
+
+        btn_preview, btn_reset, _ = st.columns([1, 1, 4])
+        if btn_preview.button("Preview", type="primary", key="qb_preview_btn"):
+            _build_and_store_quick_batch_preview(request)
+        if btn_reset.button("Reset", key="qb_reset_btn"):
+            st.session_state.pop(_K_QB_PREVIEW, None)
+            st.rerun()
+
+        preview = st.session_state.get(_K_QB_PREVIEW)
+        if preview is not None:
+            _render_quick_batch_preview(preview)
+
+
+def _quick_batch_request_from_widgets(kind: str) -> QuickBatchRequest:
+    if kind == "leader":
+        positions = list(quick_batch.LEADER_OPTIONS)
+        position = st.selectbox(
+            "Leader position",
+            options=positions,
+            format_func=_format_leader_position,
+            key="qb_leader_position",
+        )
+        options = quick_batch.LEADER_OPTIONS[position]
+        value = st.selectbox(
+            "Value",
+            options=[option.value for option in options],
+            format_func=lambda code: _format_code_option(code, options),
+            key="qb_leader_value",
+        )
+        return QuickBatchRequest(kind=kind, position=position, value=value)
+
+    if kind == "008-form":
+        value = st.selectbox(
+            "Form of item",
+            options=[option.value for option in quick_batch.FORM_OF_ITEM_OPTIONS],
+            format_func=lambda code: _format_code_option(
+                code,
+                quick_batch.FORM_OF_ITEM_OPTIONS,
+            ),
+            key="qb_008_form",
+        )
+        return QuickBatchRequest(kind=kind, value=value)
+
+    if kind == "040-cleanup":
+        agency = st.text_input(
+            "Cataloging agency for 040 $d",
+            value=st.session_state.get("qb_040_agency", ""),
+            key="qb_040_agency",
+        )
+        return QuickBatchRequest(kind=kind, agency=agency)
+
+    if kind == "856-url":
+        action = st.selectbox(
+            "856 URL action",
+            options=list(_QB_856_ACTION_LABELS),
+            format_func=lambda value: _QB_856_ACTION_LABELS.get(value, value),
+            key="qb_856_action",
+        )
+        url_contains = st.text_input(
+            "URL contains",
+            value=st.session_state.get("qb_856_contains", ""),
+            key="qb_856_contains",
+        )
+        proxy_prefix = ""
+        if action in {"add-proxy", "remove-proxy"}:
+            proxy_prefix = st.text_input(
+                "Proxy prefix",
+                value=st.session_state.get("qb_856_proxy_prefix", ""),
+                key="qb_856_proxy_prefix",
+            )
+        return QuickBatchRequest(
+            kind=kind,
+            action=action,
+            url_contains=url_contains,
+            proxy_prefix=proxy_prefix,
+        )
+
+    if kind == "035-oclc":
+        st.caption("Normalizes OCLC-style 035 $a/$z values and leaves 035 $9 alone.")
+        return QuickBatchRequest(kind=kind)
+
+    if kind == "9xx-delete":
+        tag = st.text_input(
+            "Tag to delete",
+            value=st.session_state.get("qb_9xx_tag", "9XX"),
+            max_chars=3,
+            key="qb_9xx_tag",
+        )
+        return QuickBatchRequest(kind=kind, tag=tag)
+
+    genre_term = st.text_input(
+        "655 $a term",
+        value=st.session_state.get("qb_655_term", "Electronic books."),
+        key="qb_655_term",
+    )
+    genre_source = st.text_input(
+        "655 $2 source",
+        value=st.session_state.get("qb_655_source", "lcgft"),
+        key="qb_655_source",
+    )
+    unwanted_text = st.text_input(
+        "Remove existing 655 fields containing",
+        value=st.session_state.get("qb_655_unwanted", ""),
+        key="qb_655_unwanted",
+    )
+    return QuickBatchRequest(
+        kind=kind,
+        genre_term=genre_term,
+        genre_source=genre_source,
+        unwanted_text=unwanted_text,
+    )
+
+
+def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
+    err = quick_batch.validate_request(request)
+    if err:
+        st.error(err)
+        return
+
+    store = session.current_store()
+    if store is None:
+        st.error("No loaded batch — upload a `.mrc` on Home first.")
+        return
+
+    with st.spinner("Building preview…"):
+        preview = quick_batch.build_preview(store, request)
+    st.session_state[_K_QB_PREVIEW] = preview
+
+
+def _render_quick_batch_preview(preview) -> None:
+    st.divider()
+    if preview.error:
+        st.error(preview.error)
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Records", len(preview.output_records))
+    c2.metric("Changed", preview.changed_count)
+    c3.metric("Unchanged", preview.skipped_count)
+
+    if preview.changed_count == 0:
+        st.info("This operation would not change the loaded batch.")
+        return
+
+    apply_col, _, _ = st.columns([1, 1, 4])
+    if apply_col.button(
+        "Apply to batch",
+        type="primary",
+        key="qb_apply_btn",
+    ):
+        _apply_quick_batch_preview(preview)
+
+
+def _apply_quick_batch_preview(preview) -> None:
+    store = session.current_store()
+    if store is None:
+        st.error("No loaded batch — upload one on Home first.")
+        return
+    result = quick_batch.apply_request(store, preview.request)
+    if result.error:
+        st.error(result.error)
+        return
+
+    audit_event(
+        "quick-batch-applied",
+        user=session.current_user_id(),
+        filename=session.current_filename(),
+        kind=preview.request.kind,
+        changed_count=result.changed_count,
+        skipped_count=result.skipped_count,
+    )
+    st.session_state["issues_cache"] = {}
+    st.session_state.pop(_K_QB_PREVIEW, None)
+    st.success(
+        f"Applied quick batch operation to {result.changed_count} record(s)."
+    )
+    st.rerun()
+
+
+def _format_leader_position(position: str) -> str:
+    labels = {
+        "05": "05 — Record status",
+        "06": "06 — Type of record",
+        "07": "07 — Bibliographic level",
+        "08": "08 — Type of control",
+        "17": "17 — Encoding level",
+        "18": "18 — Descriptive cataloging form",
+        "19": "19 — Multipart resource record level",
+    }
+    return labels.get(position, position)
+
+
+def _format_code_option(value: str, options) -> str:
+    labels = {option.value: option.label for option in options}
+    display = "blank" if value == " " else repr(value)
+    return f"{display} — {labels.get(value, value)}"
