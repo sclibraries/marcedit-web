@@ -250,6 +250,19 @@ def test_build_preview_reports_changed_and_skipped_counts(tmp_path):
     assert preview.skipped_count == 2
 
 
+def test_build_preview_reports_progress(tmp_path):
+    store = _store(tmp_path, _record(), _record())
+    events: list[tuple[int, int]] = []
+
+    build_preview(
+        store,
+        QuickBatchRequest(kind="leader", position="05", value="c"),
+        progress=lambda processed, total: events.append((processed, total)),
+    )
+
+    assert events == [(1, 2), (2, 2)]
+
+
 def test_apply_request_replaces_store_records(tmp_path):
     store = _store(tmp_path, _record())
     result = apply_request(store, QuickBatchRequest(kind="leader", position="05", value="c"))
@@ -269,6 +282,21 @@ def test_apply_preview_refuses_stale_store(tmp_path):
     assert not result.applied
     assert "changed since preview" in (result.error or "")
     assert str(store.get(0).leader)[5] == "n"
+
+
+def test_apply_preview_reports_progress(tmp_path):
+    store = _store(tmp_path, _record(), _record())
+    preview = build_preview(store, QuickBatchRequest(kind="leader", position="05", value="c"))
+    events: list[tuple[int, int]] = []
+
+    result = apply_preview(
+        store,
+        preview,
+        progress=lambda processed, total: events.append((processed, total)),
+    )
+
+    assert result.applied
+    assert events == [(1, 2), (2, 2)]
 
 
 @pytest.mark.parametrize(

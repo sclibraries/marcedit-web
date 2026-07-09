@@ -2229,8 +2229,19 @@ def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
         st.error("No loaded batch — upload a `.mrc` on Home first.")
         return
 
+    progress = st.progress(0.0)
+    status = st.empty()
+
+    def on_progress(processed: int, total: int) -> None:
+        if total <= 0:
+            return
+        progress.progress(processed / total)
+        status.markdown(f"Previewing record {processed:,} of {total:,}…")
+
     with st.spinner("Building preview…"):
-        preview = quick_batch.build_preview(store, request)
+        preview = quick_batch.build_preview(store, request, progress=on_progress)
+    progress.empty()
+    status.empty()
     st.session_state.pop(_K_BR_PREVIEW, None)
     st.session_state[_K_QB_PREVIEW] = preview
 
@@ -2272,11 +2283,22 @@ def _apply_quick_batch_preview(preview) -> None:
         st.error("No loaded batch — upload one on Home first.")
         return
     record_count = len(preview.output_records)
+    progress = st.progress(0.0)
+    status = st.empty()
+
+    def on_progress(processed: int, total: int) -> None:
+        if total <= 0:
+            return
+        progress.progress(processed / total)
+        status.markdown(f"Checking record {processed:,} of {total:,}…")
+
     with st.spinner(
         f"Applying quick batch operation to {record_count:,} record"
         f"{'s' if record_count != 1 else ''}…"
     ):
-        result = quick_batch.apply_preview(store, preview)
+        result = quick_batch.apply_preview(store, preview, progress=on_progress)
+    progress.empty()
+    status.empty()
     if result.error:
         st.error(result.error)
         return

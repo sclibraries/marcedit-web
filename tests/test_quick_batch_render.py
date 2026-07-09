@@ -19,12 +19,38 @@ class _Spinner:
         return False
 
 
+class _Progress:
+    def __init__(self, st: "_FakeStreamlit"):
+        self._st = st
+
+    def progress(self, value):
+        self._st.progress_updates.append(value)
+
+    def empty(self):
+        self._st.progress_cleared += 1
+
+
+class _Status:
+    def __init__(self, st: "_FakeStreamlit"):
+        self._st = st
+
+    def markdown(self, message):
+        self._st.status_messages.append(str(message))
+
+    def empty(self):
+        self._st.status_cleared += 1
+
+
 class _FakeStreamlit:
     def __init__(self):
         self.session_state = {}
         self.errors: list[str] = []
         self.successes: list[str] = []
         self.spinners: list[str] = []
+        self.progress_updates: list[float] = []
+        self.progress_cleared = 0
+        self.status_messages: list[str] = []
+        self.status_cleared = 0
         self.rerun_called = False
 
     def error(self, message):
@@ -36,6 +62,13 @@ class _FakeStreamlit:
     def spinner(self, message):
         self.spinners.append(str(message))
         return _Spinner()
+
+    def progress(self, value):
+        self.progress_updates.append(value)
+        return _Progress(self)
+
+    def empty(self):
+        return _Status(self)
 
     def rerun(self):
         self.rerun_called = True
@@ -80,6 +113,10 @@ def test_quick_batch_preview_stores_non_mutating_preview(monkeypatch, tmp_path):
     assert preview.changed_count == 1
     assert str(preview.output_records[0].leader)[5] == "c"
     assert str(store.get(0).leader)[5] == "n"
+    assert fake_st.progress_updates == [0.0, 1.0]
+    assert fake_st.status_messages == ["Previewing record 1 of 1…"]
+    assert fake_st.progress_cleared == 1
+    assert fake_st.status_cleared == 1
 
 
 def test_quick_batch_preview_clears_quick_find_replace_preview(monkeypatch, tmp_path):
@@ -135,4 +172,8 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
     assert fake_st.spinners == [
         "Applying quick batch operation to 1 record…"
     ]
+    assert fake_st.progress_updates == [0.0, 1.0]
+    assert fake_st.status_messages == ["Checking record 1 of 1…"]
+    assert fake_st.progress_cleared == 1
+    assert fake_st.status_cleared == 1
     assert fake_st.rerun_called is True

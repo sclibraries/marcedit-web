@@ -7,6 +7,7 @@ import hashlib
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import Callable
 
 import pymarc
 from pymarc import Field, Subfield
@@ -108,6 +109,8 @@ QUICK_BATCH_KINDS: tuple[str, ...] = (
     "655-cleanup",
 )
 
+ProgressCallback = Callable[[int, int], None]
+
 
 @dataclass(frozen=True)
 class QuickBatchRequest:
@@ -190,7 +193,12 @@ def validate_request(request: QuickBatchRequest) -> str | None:
     return None
 
 
-def build_preview(store, request: QuickBatchRequest) -> QuickBatchPreview:
+def build_preview(
+    store,
+    request: QuickBatchRequest,
+    *,
+    progress: ProgressCallback | None = None,
+) -> QuickBatchPreview:
     error = validate_request(request)
     if error:
         return QuickBatchPreview(request=request, error=error)
@@ -200,6 +208,7 @@ def build_preview(store, request: QuickBatchRequest) -> QuickBatchPreview:
     skipped_indices: list[int] = []
     fingerprints: dict[int, str] = {}
     detail_counts: Counter[str] = Counter()
+    total = store.count()
     for idx, record in enumerate(store.iter_records()):
         fingerprints[idx] = fingerprint_record(record)
         new_record = copy.deepcopy(record)
@@ -212,6 +221,8 @@ def build_preview(store, request: QuickBatchRequest) -> QuickBatchPreview:
             detail_counts.update(_detail_counts_for(record, new_record, request))
         else:
             skipped_indices.append(idx)
+        if progress is not None:
+            progress(idx + 1, total)
     return QuickBatchPreview(
         request=request,
         output_records=output_records,
@@ -228,12 +239,17 @@ def apply_request(store, request: QuickBatchRequest) -> QuickBatchResult:
     return apply_preview(store, preview)
 
 
-def apply_preview(store, preview: QuickBatchPreview) -> QuickBatchResult:
+def apply_preview(
+    store,
+    preview: QuickBatchPreview,
+    *,
+    progress: ProgressCallback | None = None,
+) -> QuickBatchResult:
     if preview.error:
         return QuickBatchResult(error=preview.error)
     if preview.batch_identity != _batch_identity(store):
         return QuickBatchResult(error="Loaded batch changed since preview.")
-    stale_indices = _stale_indices(store, preview)
+    stale_indices = _stale_indices(store, preview, progress=progress)
     if stale_indices:
         return QuickBatchResult(
             stale_indices=stale_indices,
@@ -255,12 +271,36 @@ def _batch_identity(store) -> tuple[str, int]:
     return (filename, store.count())
 
 
-def _stale_indices(store, preview: QuickBatchPreview) -> list[int]:
+def _stale_indices(
+    store,
+    preview: QuickBatchPreview,
+    *,
+    progress: ProgressCallback | None = None,
+) -> list[int]:
     stale: list[int] = []
-    for idx, expected in preview.fingerprints.items():
-        record = store.get(idx)
-        if record is None or fingerprint_record(record) != expected:
+    fingerprints = preview.fingerprints
+    seen: set[int] = set()
+    total = len(preview.fingerprints)
+    processed = 0
+    for idx, record in enumerate(store.iter_records()):
+        expected = fingerprints.get(idx)
+        if expected is None:
+            continue
+        seen.add(idx)
+        if fingerprint_record(record) != expected:
             stale.append(idx)
+        processed += 1
+        if progress is not None:
+            progress(processed, total)
+        if processed >= total:
+            break
+    for idx in fingerprints:
+        if idx in seen:
+            continue
+        stale.append(idx)
+        processed += 1
+        if progress is not None:
+            progress(processed, total)
     return stale
 
 
