@@ -288,8 +288,12 @@ def handle_upload(uploaded_file) -> dict:
         upload_persistence.clear_active_upload(user)
         return {"filename": None, "total": 0, "malformed": 0}
 
-    raw = uploaded_file.getvalue()
-    size = len(raw)
+    # TASK-132: never materialize the upload — the widget already holds
+    # one full copy in server RAM; ingest streams straight to disk.
+    size = getattr(uploaded_file, "size", None)
+    if size is None:
+        uploaded_file.seek(0, os.SEEK_END)
+        size = uploaded_file.tell()
 
     try:
         quotas.check_upload(size, kind="upload")
@@ -326,8 +330,8 @@ def handle_upload(uploaded_file) -> dict:
             selected_job_id,
         )
 
-    store = RecordStore.from_bytes(
-        raw,
+    store = RecordStore.from_file(
+        uploaded_file,
         tmp_dir=store_dir,
         filename=uploaded_file.name,
     )

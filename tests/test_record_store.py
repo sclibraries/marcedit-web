@@ -85,6 +85,62 @@ def test_from_records_builds_fresh_store(store, tmp_path):
     assert s2.count() == 7
 
 
+class _ChunkOnlyFile(io.BytesIO):
+    """File object that forbids whole-body materialization.
+
+    Mirrors how ``RecordStore.from_file`` must consume Streamlit's
+    UploadedFile (TASK-132): bounded ``read(n)`` calls only. A
+    ``getvalue()`` or unbounded ``read()`` would put the entire upload
+    back in RAM, defeating the point of streaming ingest — the memory
+    blowout implicated in the TASK-117 outage.
+    """
+
+    def getvalue(self):
+        raise AssertionError("from_file must not call getvalue()")
+
+    def read(self, size=-1):
+        assert size is not None and 0 < size <= 8 * 1024 * 1024, (
+            f"unbounded read({size}) materializes the whole upload"
+        )
+        return super().read(size)
+
+
+def test_from_file_matches_from_bytes(fixture_bytes, tmp_path, store):
+    s = RecordStore.from_file(
+        _ChunkOnlyFile(fixture_bytes),
+        tmp_dir=tmp_path / "ff",
+        filename="sample.mrc",
+    )
+    assert s.count() == store.count() == 7
+    assert s.malformed_count() == 0
+    assert s.filename == "sample.mrc"
+    assert s.path.read_bytes() == fixture_bytes
+    assert s.to_mrc_bytes() == store.to_mrc_bytes()
+
+
+def test_from_file_rewinds_before_reading(fixture_bytes, tmp_path):
+    # The uploader widget may hand over a file object whose position is
+    # at EOF (a previous consumer read it); ingest must not silently
+    # produce an empty store because of that.
+    fh = _ChunkOnlyFile(fixture_bytes)
+    fh.seek(0, io.SEEK_END)
+    s = RecordStore.from_file(fh, tmp_dir=tmp_path / "rw")
+    assert s.count() == 7
+
+
+def test_from_file_handles_empty(tmp_path):
+    s = RecordStore.from_file(_ChunkOnlyFile(b""), tmp_dir=tmp_path / "empty")
+    assert s.count() == 0
+    assert s.malformed_count() == 0
+
+
+def test_from_file_handles_truncated(tmp_path):
+    # Same malformed semantics as from_bytes: stop the walk, count one.
+    s = RecordStore.from_file(_ChunkOnlyFile(b"00100abc"), tmp_dir=tmp_path / "tr")
+    assert s.count() == 0
+    assert s.malformed_count() == 1
+
+
 # ---------------------------------------------------------------------------
 # Lazy parse + reads
 # ---------------------------------------------------------------------------

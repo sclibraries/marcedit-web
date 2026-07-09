@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import io
 import logging
+import mmap
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +44,10 @@ import pymarc
 from .marc_diff import _iter_records
 
 logger = logging.getLogger("marcedit_web.record_store")
+
+# Chunk size for streaming an upload to disk (TASK-132). 1 MB keeps the
+# per-copy RAM footprint negligible without measurable copy slowdown.
+_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,48 @@ class RecordStore:
         logger.info(
             "RecordStore built: %d records, %d malformed, %s bytes on disk",
             len(locations), malformed, len(data or b""),
+        )
+        return cls(
+            path=path,
+            locations=locations,
+            malformed=malformed,
+            filename=filename,
+        )
+
+    @classmethod
+    def from_file(
+        cls,
+        fileobj,
+        *,
+        tmp_dir: Optional[Path] = None,
+        filename: Optional[str] = None,
+    ) -> "RecordStore":
+        """Build a store by chunk-copying an open binary file to disk.
+
+        Streaming counterpart to :py:meth:`from_bytes` (TASK-132): the
+        payload reaches ``<tmp_dir>/upload.mrc`` via bounded reads and
+        the offsets index is built over an mmap of the on-disk bytes,
+        so peak memory stays O(chunk) instead of O(file). Rewinds
+        ``fileobj`` first — the uploader widget may hand it over at EOF.
+        """
+        if tmp_dir is None:
+            tmp_dir = Path(tempfile.mkdtemp(prefix="marcedit-web-records-"))
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        path = tmp_dir / "upload.mrc"
+        fileobj.seek(0)
+        with open(path, "wb") as out:
+            shutil.copyfileobj(fileobj, out, _COPY_CHUNK_BYTES)
+        size = path.stat().st_size
+        if size == 0:
+            locations: list[RecordLocation] = []
+            malformed = 0
+        else:
+            with open(path, "rb") as fh:
+                with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    locations, malformed = _index_bytes(mm)
+        logger.info(
+            "RecordStore built (streamed): %d records, %d malformed, %s bytes on disk",
+            len(locations), malformed, size,
         )
         return cls(
             path=path,

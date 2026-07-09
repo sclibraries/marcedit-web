@@ -55,15 +55,18 @@ def _serialize(records):
     return out.getvalue()
 
 
-class _FakeUpload:
-    """Stand-in for whatever Streamlit's file_uploader returns."""
+class _FakeUpload(io.BytesIO):
+    """Stand-in for Streamlit's UploadedFile.
+
+    The real object is a BytesIO subclass with ``name`` and ``size``;
+    handle_upload streams from it via read/seek (TASK-132), so the fake
+    must be file-shaped, not just a getvalue() bag.
+    """
 
     def __init__(self, name: str, data: bytes):
+        super().__init__(data)
         self.name = name
-        self._data = data
-
-    def getvalue(self) -> bytes:
-        return self._data
+        self.size = len(data)
 
 
 # ---------------------------------------------------------------------------
