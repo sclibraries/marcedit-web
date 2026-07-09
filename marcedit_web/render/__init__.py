@@ -18,6 +18,7 @@ import streamlit as st
 
 from marcedit_web.lib import rules as rules_mod
 from marcedit_web.lib import session
+from marcedit_web.render.batch_status import loaded_batch_status
 
 
 _RULES_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "marc-rules.txt"

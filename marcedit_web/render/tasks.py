@@ -60,6 +60,7 @@ from marcedit_web.lib.quick_batch import QuickBatchRequest
 from marcedit_web.lib.run_history import TaskRunRecord
 from marcedit_web.lib.errors import Issue, transform_issue
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
+from marcedit_web.render.batch_status import loaded_batch_status
 
 logger = logging.getLogger("marcedit_web.render.tasks")
 
@@ -150,6 +151,8 @@ def render() -> None:
     # Load the materialized dir so the importer sees the user's tasks.
     tasks.load_user_tasks(tasks_dir, force_reload=False)
     registered = tasks.all_tasks()
+
+    loaded_batch_status()
 
     # --- Counts banner + admin badge --------------------------------------
 
@@ -1963,6 +1966,7 @@ def _build_and_store_preview(request: BatchReplaceRequest) -> None:
             st.error(str(exc))
             return
 
+    st.session_state.pop(_K_QB_PREVIEW, None)
     st.session_state[_K_BR_PREVIEW] = preview
 
 
@@ -2227,6 +2231,7 @@ def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
 
     with st.spinner("Building preview…"):
         preview = quick_batch.build_preview(store, request)
+    st.session_state.pop(_K_BR_PREVIEW, None)
     st.session_state[_K_QB_PREVIEW] = preview
 
 
@@ -2266,7 +2271,12 @@ def _apply_quick_batch_preview(preview) -> None:
     if store is None:
         st.error("No loaded batch — upload one on Home first.")
         return
-    result = quick_batch.apply_preview(store, preview)
+    record_count = len(preview.output_records)
+    with st.spinner(
+        f"Applying quick batch operation to {record_count:,} record"
+        f"{'s' if record_count != 1 else ''}…"
+    ):
+        result = quick_batch.apply_preview(store, preview)
     if result.error:
         st.error(result.error)
         return

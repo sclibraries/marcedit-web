@@ -24,6 +24,7 @@ class _FakeStreamlit:
         self.session_state = {}
         self.errors: list[str] = []
         self.successes: list[str] = []
+        self.spinners: list[str] = []
         self.rerun_called = False
 
     def error(self, message):
@@ -32,7 +33,8 @@ class _FakeStreamlit:
     def success(self, message):
         self.successes.append(str(message))
 
-    def spinner(self, _message):
+    def spinner(self, message):
+        self.spinners.append(str(message))
         return _Spinner()
 
     def rerun(self):
@@ -80,6 +82,20 @@ def test_quick_batch_preview_stores_non_mutating_preview(monkeypatch, tmp_path):
     assert str(store.get(0).leader)[5] == "n"
 
 
+def test_quick_batch_preview_clears_quick_find_replace_preview(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    fake_st.session_state[tasks_render._K_BR_PREVIEW] = object()
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+
+    request = QuickBatchRequest(kind="leader", position="05", value="c")
+    tasks_render._build_and_store_quick_batch_preview(request)
+
+    assert tasks_render._K_BR_PREVIEW not in fake_st.session_state
+    assert tasks_render._K_QB_PREVIEW in fake_st.session_state
+
+
 def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     fake_st.session_state["issues_cache"] = {"stale": object()}
@@ -116,4 +132,7 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
         }
     ]
     assert fake_st.successes == ["Applied quick batch operation to 1 record(s)."]
+    assert fake_st.spinners == [
+        "Applying quick batch operation to 1 record…"
+    ]
     assert fake_st.rerun_called is True

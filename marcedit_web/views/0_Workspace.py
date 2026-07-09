@@ -20,6 +20,7 @@ from marcedit_web.lib import session
 from marcedit_web.render import (
     dedupe,
     edit,
+    loaded_batch_status,
     report,
     rules_and_warnings_for_page,
     sidebar_status,
@@ -38,6 +39,7 @@ st.caption(
 )
 
 sidebar_status()
+loaded_batch_status()
 
 
 # --- Tabs -----------------------------------------------------------------
