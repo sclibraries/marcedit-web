@@ -1,0 +1,32 @@
+[Unit]
+Description=marcedit-web health watchdog
+Documentation=https://github.com/smith-libraries/marcedit-web
+
+# TASK-133 / TASK-117: a dead Streamlit Runtime leaves the process alive —
+# health returns 503 and websockets are refused while systemd still sees
+# "active (running)", so Restart=on-failure never fires. This oneshot is
+# the automatic recovery for that zombie state: it demands an HTTP 200
+# from the real health endpoint (a zombie still answers TCP connects),
+# retries three times over ~20s to ride out a restart already in
+# progress, and only then restarts the service.
+#
+# The is-active guard keeps an intentionally stopped service stopped —
+# maintenance and migrations must not race a resurrecting watchdog.
+#
+# Two-tier hosts (docs/deployment.md "Two-tier deployment"): port 8501
+# is served by marcedit-web-private.service there and marcedit-web is
+# disabled — change BOTH unit names below to marcedit-web-private
+# before installing, or the watchdog will restart the wrong unit.
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '\
+    systemctl is-active --quiet marcedit-web || exit 0; \
+    for i in 1 2 3; do \
+        code=$(curl -s -o /dev/null -m 10 -w "%%{http_code}" \
+            http://127.0.0.1:8501/marcedit-web/_stcore/health); \
+        [ "$code" = "200" ] && exit 0; \
+        sleep 10; \
+    done; \
+    echo "health check failed 3x (last HTTP $code); restarting marcedit-web"; \
+    systemctl restart marcedit-web'

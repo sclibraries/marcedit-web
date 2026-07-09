@@ -30,3 +30,42 @@ def test_public_systemd_unit_stays_db_free():
 
     assert "marcedit_web.ops.health" not in unit
     assert "MARCEDIT_WEB_DB_PATH" not in unit
+
+
+def _deploy_file(path: str) -> str:
+    """Like _repo_file, but a missing file is a FAILURE when deploy/
+    exists (host checkout) — skip only inside the built image, where
+    the whole deploy/ tree is unmounted. A silently-skipped watchdog
+    test would defeat its purpose (Rule 12)."""
+    if not Path("deploy").exists():
+        pytest.skip(f"{path} not in build context (running inside the built image)")
+    return Path(path).read_text()
+
+
+def test_watchdog_service_restarts_on_repeated_health_failure():
+    """TASK-133: a dead Streamlit Runtime leaves the process alive
+    (health 503, ws refused) — invisible to Restart=on-failure by
+    construction (TASK-117). The watchdog is the only automatic
+    recovery for that state, so it must probe the real health endpoint
+    more than once and restart the unit when the probes fail.
+    """
+    unit = _deploy_file("deploy/marcedit-web-watchdog.service")
+
+    assert "Type=oneshot" in unit
+    assert "http://127.0.0.1:8501/marcedit-web/_stcore/health" in unit
+    assert "systemctl restart marcedit-web" in unit
+    # Probe must demand HTTP 200, not just a TCP connect: the zombie
+    # runtime answers connects and returns 503.
+    assert "http_code" in unit
+    # An intentionally stopped service must stay stopped (maintenance,
+    # migrations) — the watchdog only recovers a unit that systemd
+    # believes is running (review finding on TASK-133).
+    assert "systemctl is-active --quiet marcedit-web" in unit
+
+
+def test_watchdog_timer_runs_every_two_minutes():
+    unit = _deploy_file("deploy/marcedit-web-watchdog.timer")
+
+    assert "OnUnitActiveSec=2min" in unit
+    assert "OnBootSec=" in unit
+    assert "WantedBy=timers.target" in unit

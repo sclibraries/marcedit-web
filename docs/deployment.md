@@ -158,6 +158,42 @@ layer:
   is writable; a sandboxed task that escapes its workdir can't
   overwrite the venv or app code.
 
+### Health watchdog (TASK-133)
+
+The TASK-117 outage showed Streamlit's Runtime can die inside a live
+process: `/_stcore/health` returns 503 and websockets are refused while
+systemd still reports `active (running)`, so `Restart=on-failure` never
+fires. `marcedit-web-watchdog.{service,timer}` closes that gap — every
+2 minutes it demands an HTTP 200 from the health endpoint (three
+attempts over ~20s) and restarts `marcedit-web` when all fail.
+
+```bash
+sudo cp deploy/marcedit-web-watchdog.service /etc/systemd/system/
+sudo cp deploy/marcedit-web-watchdog.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now marcedit-web-watchdog.timer
+systemctl list-timers marcedit-web-watchdog.timer   # verify scheduling
+```
+
+The watchdog only acts on a unit systemd reports as active — a service
+stopped on purpose (`systemctl stop marcedit-web` for maintenance or a
+migration) stays stopped. To verify the restart path once, simulate the
+zombie by freezing the process (unit stays active, health times out):
+
+```bash
+sudo systemctl kill -s SIGSTOP marcedit-web    # freeze: active but unresponsive
+sudo systemctl start marcedit-web-watchdog.service   # takes ~30s, then restarts
+journalctl -u marcedit-web-watchdog --no-pager | tail -5
+sudo systemctl status marcedit-web             # fresh PID, running again
+```
+
+On a two-tier host the 8501 tier is `marcedit-web-private.service` —
+edit both unit names inside the watchdog service before installing.
+
+Memory guardrails (`MemoryHigh`/`MemoryMax`/`MemorySwapMax`) ship
+commented in `marcedit-web.service` — size them to the box RAM before
+enabling (see comments in the unit).
+
 ## Audit log
 
 Two surfaces, both written for every event:

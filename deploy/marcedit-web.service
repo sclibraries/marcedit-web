@@ -19,6 +19,16 @@ ExecStart=/var/www/html/marcedit-web/.venv/bin/streamlit run marcedit_web/App.py
 Restart=on-failure
 RestartSec=5
 
+# TASK-133 memory guardrails — uncomment once ITS confirms box RAM
+# (`free -h`) and cgroup version (`stat -fc %T /sys/fs/cgroup` →
+# "cgroup2fs" required for MemorySwapMax). Sizing rule: MemoryHigh ≈
+# 60% of RAM (kernel reclaims/throttles before crisis), MemoryMax ≈
+# 75% (kill + Restart=on-failure beats the TASK-117 overnight zombie),
+# swap disabled so pressure fails fast instead of thrashing silently.
+#MemoryHigh=4G
+#MemoryMax=5G
+#MemorySwapMax=0
+
 # Recreate the container-side hardening (TASK-029) at the systemd layer:
 # read-only filesystem except for the data dir; no privilege escalation.
 NoNewPrivileges=true

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the marcedit-web health watchdog every 2 minutes
+
+[Timer]
+# First probe shortly after boot so a wedged unit doesn't wait for the
+# first full interval; thereafter every 2 minutes. Worst-case downtime
+# from a zombie runtime becomes ~2.5 minutes instead of overnight
+# (TASK-117).
+OnBootSec=2min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target
