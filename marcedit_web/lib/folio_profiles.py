@@ -269,6 +269,8 @@ def apply_record_fix(
     updated = copy.deepcopy(record)
     operation = rule.fix.get("operation", "none")
     if operation == "remove_field":
+        if not _is_safe_remove_field_fix(rule, context):
+            return updated
         for field in list(updated.get_fields(str(rule.fix["tag"]))):
             updated.remove_field(field)
         return updated
@@ -330,6 +332,8 @@ def _fix_available(
 ) -> bool:
     operation = rule.fix.get("operation", "none")
     if operation == "remove_field":
+        if not _is_safe_remove_field_fix(rule, context):
+            return False
         return record.get(str(rule.fix.get("tag", ""))) is not None
     if operation == "add_field":
         return True
@@ -342,6 +346,15 @@ def _fix_available(
         )
         return bool(suffix and any(value.strip() for value in values))
     return False
+
+
+def _is_safe_remove_field_fix(rule: FolioRule, context: FolioContext) -> bool:
+    return (
+        rule.key == "folio-new-load-forbidden-001"
+        and rule.profile_key == "folio-new-instance"
+        and context.profile_key == "folio-new-instance"
+        and str(rule.fix.get("tag", "")) == "001"
+    )
 
 
 def _identifier(record: pymarc.Record) -> str | None:

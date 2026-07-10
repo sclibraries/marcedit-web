@@ -9,6 +9,19 @@ def _rule(key):
     return next(rule for rule in folio_profiles.default_rules_for_tests() if rule.key == key)
 
 
+def _unsafe_remove_245_rule():
+    return folio_profiles.FolioRule(
+        key="folio-test-unsafe-remove-245",
+        profile_key="folio-new-instance",
+        label="245 removal is not a safe v1 FOLIO fix",
+        severity="warning",
+        target={"kind": "field", "tag": "245"},
+        requirement={"kind": "forbidden"},
+        fix={"operation": "remove_field", "tag": "245"},
+        enabled=True,
+    )
+
+
 def test_apply_new_load_001_fix_removes_only_001(make_record):
     """The new-load 001 safe fix deletes the forbidden control field only."""
     record = make_record()
@@ -83,3 +96,19 @@ def test_plan_record_fixes_reports_before_after_without_mutating(make_record):
     assert plans[0].rule_key == "folio-new-load-forbidden-001"
     assert "=001" in plans[0].before
     assert "=001" not in plans[0].after
+
+
+def test_configured_remove_field_fix_is_limited_to_safe_001_delete(make_record):
+    """Configured deletions other than new-load 001 remain check-only."""
+    record = make_record()
+    rule = _unsafe_remove_245_rule()
+    context = folio_profiles.FolioContext(profile_key="folio-new-instance")
+
+    issues = folio_profiles.evaluate_record(record, [rule], context)
+    plans = folio_profiles.plan_record_fixes(record, [rule], context)
+    updated = folio_profiles.apply_record_fix(record, rule, context)
+
+    assert [item.issue.code for item in issues] == ["folio-test-unsafe-remove-245"]
+    assert issues[0].fix_available is False
+    assert plans == []
+    assert updated.get("245") is not None
