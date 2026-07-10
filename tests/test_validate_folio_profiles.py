@@ -322,6 +322,7 @@ def test_record_folio_snapshot_records_safe_fix_provenance(monkeypatch, tmp_path
     validate._record_folio_snapshot(
         store,
         label="FOLIO safe fix",
+        record_index=2,
         summary={
             "rule": "folio-new-load-forbidden-001",
             "record_index": 2,
@@ -338,7 +339,7 @@ def test_record_folio_snapshot_records_safe_fix_provenance(monkeypatch, tmp_path
                 "user_email": "user@example.org",
                 "label": "FOLIO safe fix",
                 "after_path": staged_path,
-                "record_index": None,
+                "record_index": 2,
                 "source": "folio-safe-fix",
                 "summary": {
                     "rule": "folio-new-load-forbidden-001",

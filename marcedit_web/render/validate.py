@@ -101,14 +101,20 @@ def _folio_context_from_state() -> folio_profiles.FolioContext | None:
     )
 
 
-def _record_folio_snapshot(store, *, label: str, summary: dict[str, object]) -> None:
+def _record_folio_snapshot(
+    store,
+    *,
+    label: str,
+    summary: dict[str, object],
+    record_index: int | None = None,
+) -> None:
     with snapshot_actions.staged_store_path(store) as after_path:
         snapshot_actions.record_edit_snapshot(
             job_id=st.session_state.get("current_job_id"),
             user_email=session.current_user_id(),
             label=label,
             after_path=after_path,
-            record_index=None,
+            record_index=record_index,
             source="folio-safe-fix",
             summary=summary,
         )
@@ -619,6 +625,7 @@ def render(
                         _record_folio_snapshot(
                             store,
                             label="FOLIO safe fix",
+                            record_index=record_no,
                             summary={
                                 "rule": _rule.key,
                                 "record_index": record_no,
