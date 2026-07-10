@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 import json
+from pathlib import Path
+import tempfile
 from typing import Any, Iterable
 
 import pymarc
@@ -404,20 +406,28 @@ def apply_batch_fixes_to_store(
     samples: list[FolioFixPlan] = []
     affected = 0
     total = 0
-    for idx, record in enumerate(store.iter_records(), start=1):
-        plans = plan_record_fixes(record, rules, context, record_index=idx)
-        if not plans:
-            continue
-        updated = record
-        for plan in plans:
-            rule = next(rule for rule in rules if rule.key == plan.rule_key)
-            updated = apply_record_fix(updated, rule, context)
-            by_rule[plan.rule_key] = by_rule.get(plan.rule_key, 0) + 1
-            total += 1
-            if len(samples) < 10:
-                samples.append(plan)
-        affected += 1
-        store.replace(idx - 1, updated)
+
+    with tempfile.TemporaryDirectory(prefix="marcedit-folio-fixes-") as temp_dir:
+        temp_path = Path(temp_dir) / "batch.mrc"
+        with temp_path.open("wb") as fh:
+            writer = pymarc.MARCWriter(fh)
+            for idx, record in enumerate(store.iter_records(), start=1):
+                plans = plan_record_fixes(record, rules, context, record_index=idx)
+                updated = record
+                if plans:
+                    for plan in plans:
+                        rule = next(
+                            rule for rule in rules if rule.key == plan.rule_key
+                        )
+                        updated = apply_record_fix(updated, rule, context)
+                        by_rule[plan.rule_key] = by_rule.get(plan.rule_key, 0) + 1
+                        total += 1
+                        if len(samples) < 10:
+                            samples.append(plan)
+                    affected += 1
+                writer.write(updated)
+        store.replace_from_path(temp_path)
+
     return FolioBatchPreview(
         total_fixes=total,
         affected_records=affected,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pymarc import Field, Subfield
 
 from marcedit_web.lib import folio_profiles
@@ -170,3 +171,36 @@ def test_apply_batch_fixes_to_store_replaces_changed_records(make_record, tmp_pa
 
     assert preview.total_fixes == 2
     assert all(record.get("001") is None for record in store.iter_records())
+
+
+def test_apply_batch_fixes_to_store_leaves_store_unchanged_on_failure(
+    make_record, monkeypatch, tmp_path
+):
+    """Failed batch application must not leave partial safe fixes in the store."""
+    store = RecordStore.from_records(
+        [make_record(), make_record()],
+        tmp_dir=tmp_path,
+        filename="sample.mrc",
+    )
+    rule = _rule("folio-new-load-forbidden-001")
+    original_apply = folio_profiles.apply_record_fix
+    calls = 0
+
+    def fail_on_third_fix(record, rule, context):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise RuntimeError("simulated write failure")
+        return original_apply(record, rule, context)
+
+    monkeypatch.setattr(folio_profiles, "apply_record_fix", fail_on_third_fix)
+
+    with pytest.raises(RuntimeError, match="simulated write failure"):
+        folio_profiles.apply_batch_fixes_to_store(
+            store,
+            [rule],
+            folio_profiles.FolioContext(profile_key="folio-new-instance"),
+        )
+
+    assert calls == 3
+    assert all(record.get("001") is not None for record in store.iter_records())
