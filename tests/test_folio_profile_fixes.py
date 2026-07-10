@@ -3,6 +3,7 @@ from __future__ import annotations
 from pymarc import Field, Subfield
 
 from marcedit_web.lib import folio_profiles
+from marcedit_web.lib.record_store import RecordStore
 
 
 def _rule(key):
@@ -131,3 +132,41 @@ def test_apply_035_container_fix_adds_configured_field(make_record):
     field = updated.get_fields("035")[0]
     assert list(field.indicators) == ["9", "\\"]
     assert field.get_subfields("a") == ["FC-ABC"]
+
+
+def test_preview_batch_fixes_counts_without_mutating(make_record):
+    """Batch preview reports compact counts and samples without changing records."""
+    records = [make_record(), make_record()]
+    rule = _rule("folio-new-load-forbidden-001")
+
+    preview = folio_profiles.preview_batch_fixes(
+        records,
+        [rule],
+        folio_profiles.FolioContext(profile_key="folio-new-instance"),
+        sample_limit=1,
+    )
+
+    assert preview.total_fixes == 2
+    assert preview.affected_records == 2
+    assert preview.by_rule == {"folio-new-load-forbidden-001": 2}
+    assert len(preview.samples) == 1
+    assert records[0].get("001") is not None
+
+
+def test_apply_batch_fixes_to_store_replaces_changed_records(make_record, tmp_path):
+    """Confirmed batch application mutates the disk-backed store records."""
+    store = RecordStore.from_records(
+        [make_record(), make_record()],
+        tmp_dir=tmp_path,
+        filename="sample.mrc",
+    )
+    rule = _rule("folio-new-load-forbidden-001")
+
+    preview = folio_profiles.apply_batch_fixes_to_store(
+        store,
+        [rule],
+        folio_profiles.FolioContext(profile_key="folio-new-instance"),
+    )
+
+    assert preview.total_fixes == 2
+    assert all(record.get("001") is None for record in store.iter_records())

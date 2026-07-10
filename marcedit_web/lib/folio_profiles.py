@@ -65,6 +65,14 @@ class FolioFixPlan:
     operation: str
 
 
+@dataclass(frozen=True)
+class FolioBatchPreview:
+    total_fixes: int
+    affected_records: int
+    by_rule: dict[str, int]
+    samples: list[FolioFixPlan]
+
+
 _DEFAULT_RULES: tuple[FolioRule, ...] = (
     FolioRule(
         key="folio-new-load-forbidden-001",
@@ -356,6 +364,66 @@ def plan_record_fixes(
                 )
             )
     return plans
+
+
+def preview_batch_fixes(
+    records: Iterable[pymarc.Record],
+    rules: list[FolioRule],
+    context: FolioContext,
+    *,
+    sample_limit: int = 10,
+) -> FolioBatchPreview:
+    by_rule: dict[str, int] = {}
+    samples: list[FolioFixPlan] = []
+    affected = 0
+    total = 0
+    for idx, record in enumerate(records, start=1):
+        plans = plan_record_fixes(record, rules, context, record_index=idx)
+        if not plans:
+            continue
+        affected += 1
+        total += len(plans)
+        for plan in plans:
+            by_rule[plan.rule_key] = by_rule.get(plan.rule_key, 0) + 1
+            if len(samples) < sample_limit:
+                samples.append(plan)
+    return FolioBatchPreview(
+        total_fixes=total,
+        affected_records=affected,
+        by_rule=by_rule,
+        samples=samples,
+    )
+
+
+def apply_batch_fixes_to_store(
+    store,
+    rules: list[FolioRule],
+    context: FolioContext,
+) -> FolioBatchPreview:
+    by_rule: dict[str, int] = {}
+    samples: list[FolioFixPlan] = []
+    affected = 0
+    total = 0
+    for idx, record in enumerate(store.iter_records(), start=1):
+        plans = plan_record_fixes(record, rules, context, record_index=idx)
+        if not plans:
+            continue
+        updated = record
+        for plan in plans:
+            rule = next(rule for rule in rules if rule.key == plan.rule_key)
+            updated = apply_record_fix(updated, rule, context)
+            by_rule[plan.rule_key] = by_rule.get(plan.rule_key, 0) + 1
+            total += 1
+            if len(samples) < 10:
+                samples.append(plan)
+        affected += 1
+        store.replace(idx - 1, updated)
+    return FolioBatchPreview(
+        total_fixes=total,
+        affected_records=affected,
+        by_rule=by_rule,
+        samples=samples,
+    )
 
 
 def apply_record_fix(
