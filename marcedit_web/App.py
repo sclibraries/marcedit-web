@@ -146,8 +146,8 @@ def _render_auth_header() -> None:
 
     Sits above the page body because anything written before
     ``st.navigation(_pages).run()`` runs on every page render.
-    Right-aligned via an empty spacer column. No-op when OAuth
-    isn't configured — the dev path stays visually unchanged.
+    Right-aligned via a content-sized keyed container. No-op when
+    OAuth isn't configured — the dev path stays visually unchanged.
 
     Streamlit's framework toolbar (top-right of the browser chrome)
     isn't user-content; that's why this lives at the top of the page
@@ -156,17 +156,27 @@ def _render_auth_header() -> None:
     if not identity.is_oauth_configured():
         return
     try:
-        # Wide spacer + narrow control column → control sits flush right.
-        # The ratio is empirical; small enough that the popover label
-        # ("Account") doesn't wrap.
-        _, right = st.columns([6, 1])
-        with right:
+        # Right-aligned, content-sized control. The previous spacer-column
+        # layout ([6, 1]) squeezed the control below its label width on
+        # narrow viewports and the text broke mid-word ("Accoun / t") —
+        # TASK-146. Columns can't declare a minimum width, so instead the
+        # keyed container's children are sized to their content and pushed
+        # right, and the label is pinned to a single line.
+        with st.container(key="auth_header"):
+            st.markdown(
+                "<style>"
+                ".st-key-auth_header > div"
+                " { width: max-content; margin-left: auto; }"
+                ".st-key-auth_header button p"
+                " { white-space: nowrap; }"
+                "</style>",
+                unsafe_allow_html=True,
+            )
             email = identity.oauth_user()
             if email:
                 with st.popover(
                     "Account",
                     icon=":material/account_circle:",
-                    width="stretch",
                 ):
                     st.caption(email)
                     if st.button(
@@ -179,7 +189,6 @@ def _render_auth_header() -> None:
                     key="auth_signin",
                     icon=":material/login:",
                     type="primary",
-                    width="stretch",
                 ):
                     st.login("google")
     except Exception:
