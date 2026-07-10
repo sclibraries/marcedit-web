@@ -38,3 +38,17 @@ Self-Review Notes:
 
 Concerns:
 - docker compose compileall cannot be used against this container mount because source is read-only and bytecode writes fail. A no-write compile check was used instead.
+
+Review Fix:
+- Added a DB seed parity regression test proving SQLite contains the same enabled default rule keys as folio_profiles.default_rules_for_tests() for each profile/add-on.
+- Verified the new parity test failed before the seed fix with missing folio-008-byte-29-not-govdoc, folio-loading-path-required, and folio-949-barcode-suffix.
+- Added the missing seed entries to _seed_folio_profiles().
+- Changed add_context_field fix availability to require the configured context value instead of always returning true.
+
+Review Fix Verification:
+- docker compose run --rm marcedit-web pytest tests/test_folio_profile_db.py::test_seeded_rule_keys_match_default_rules_by_profile -q
+  - 1 passed in 0.06s.
+- docker compose run --rm marcedit-web pytest tests/test_folio_profile_db.py tests/test_folio_profiles.py tests/test_folio_profile_fixes.py -q
+  - 23 passed in 0.24s.
+- git diff --check
+  - passed.

@@ -43,6 +43,28 @@ def test_folio_seed_migration_is_idempotent(tmp_path, monkeypatch):
     assert rules.count("folio-new-load-forbidden-001") == 1
 
 
+def test_seeded_rule_keys_match_default_rules_by_profile(tmp_path, monkeypatch):
+    """SQLite seeds must include every enabled default rule used at runtime."""
+    monkeypatch.setenv("MARCEDIT_WEB_DB_PATH", str(tmp_path / "folio.db"))
+    db.reset_for_tests()
+    db.init_schema()
+
+    profile_keys = {
+        rule.profile_key for rule in folio_profiles.default_rules_for_tests()
+    }
+    for profile_key in profile_keys:
+        seeded = {
+            rule.key for rule in folio_profiles.rules_for_profile(profile_key)
+        }
+        defaults = {
+            rule.key
+            for rule in folio_profiles.default_rules_for_tests()
+            if rule.profile_key == profile_key and rule.enabled
+        }
+
+        assert seeded == defaults
+
+
 def test_rules_for_profile_can_include_addon_rules(tmp_path, monkeypatch):
     """The ebook add-on layers onto a primary workflow profile."""
     monkeypatch.setenv("MARCEDIT_WEB_DB_PATH", str(tmp_path / "folio.db"))

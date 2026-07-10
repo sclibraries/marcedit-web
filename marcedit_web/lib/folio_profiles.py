@@ -458,7 +458,8 @@ def _fix_available(
     if operation == "add_field":
         return True
     if operation == "add_context_field":
-        return True
+        context_key = str(rule.requirement.get("context_key", ""))
+        return bool(_context_value(context, context_key))
     if operation == "normalize_barcode_suffix":
         suffix = _normalized_suffix(context.institution_suffix)
         values = _subfield_values(
