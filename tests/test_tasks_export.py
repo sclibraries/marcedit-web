@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 
@@ -117,6 +118,48 @@ def test_history_location_caption_explains_unsigned_fallback():
         "Rollback history is only available for signed-in job files. "
         "Download the updated MARC file below."
     )
+
+
+def test_batch_operation_uses_shared_gate_and_telemetry(monkeypatch, tmp_path):
+    tasks_render = _tasks_render()
+    source_path = tmp_path / "source.mrc"
+    source_path.write_bytes(b"batch-bytes")
+    store = SimpleNamespace(count=lambda: 100_000, path=source_path)
+    events = []
+
+    @contextmanager
+    def _slot(operation):
+        events.append(("slot", operation))
+        yield
+
+    @contextmanager
+    def _measure(operation, **dimensions):
+        events.append(("measure", operation, dimensions))
+        yield
+
+    monkeypatch.setattr(tasks_render.batch_runtime, "batch_slot", _slot)
+    monkeypatch.setattr(
+        tasks_render.batch_runtime, "measure_operation", _measure
+    )
+
+    with tasks_render._batch_operation(
+        "quick-batch", phase="preview", store=store
+    ):
+        events.append(("body",))
+
+    assert events == [
+        ("slot", "quick-batch"),
+        (
+            "measure",
+            "quick-batch",
+            {
+                "phase": "preview",
+                "records": 100_000,
+                "bytes": len(b"batch-bytes"),
+            },
+        ),
+        ("body",),
+    ]
 
 
 def test_render_run_results_uses_output_path_without_session_bytes(

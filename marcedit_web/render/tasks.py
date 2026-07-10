@@ -26,6 +26,7 @@ import logging
 import shutil
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from streamlit_ace import st_ace
 
 from marcedit_web.lib import (
     ai_task_draft,
+    batch_runtime,
     batch_replace,
     editor,
     gemini_task_draft,
@@ -62,6 +64,23 @@ from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
 from marcedit_web.render.batch_status import loaded_batch_status
 
 logger = logging.getLogger("marcedit_web.render.tasks")
+
+
+@contextmanager
+def _batch_operation(operation: str, *, phase: str, store):
+    """Apply the shared gate and consistent dimensions to heavy work."""
+    try:
+        file_bytes = store.path.stat().st_size
+    except OSError:
+        file_bytes = 0
+    with batch_runtime.batch_slot(operation):
+        with batch_runtime.measure_operation(
+            operation,
+            phase=phase,
+            records=store.count(),
+            bytes=file_bytes,
+        ):
+            yield
 
 
 # ---------------------------------------------------------------------------
@@ -1289,11 +1308,12 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             f"⚙️ Running {len(specs)} task(s) in the sandbox: "
             + ", ".join(f"`{s.name}`" for s in specs)
         )
-        result = sandbox.run_tasks_subprocess(
-            specs,
-            input_path=sandbox_input,
-            tmp_dir=sandbox_workdir,
-        )
+        with _batch_operation("saved-task", phase="sandbox", store=store):
+            result = sandbox.run_tasks_subprocess(
+                specs,
+                input_path=sandbox_input,
+                tmp_dir=sandbox_workdir,
+            )
         if result.timed_out:
             status.update(
                 label="⚠️ Run hit the wall-clock limit",
@@ -1909,7 +1929,10 @@ def _build_and_store_preview(request: BatchReplaceRequest) -> None:
 
     with st.spinner("Building preview…"):
         try:
-            preview = batch_replace.build_preview(store, request)
+            with _batch_operation(
+                "quick-replace", phase="preview", store=store
+            ):
+                preview = batch_replace.build_preview(store, request)
         except ValueError as exc:
             st.error(str(exc))
             return
@@ -1976,7 +1999,10 @@ def _apply_quick_preview(preview) -> None:
         st.error("No loaded batch — upload one on Home first.")
         return
     with snapshot_actions.staged_store_path(store) as before_path:
-        result = batch_replace.apply_preview(store, preview)
+        with _batch_operation(
+            "quick-replace", phase="apply", store=store
+        ):
+            result = batch_replace.apply_preview(store, preview)
         if result.error:
             st.error(result.error)
             return
@@ -2208,7 +2234,12 @@ def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
     on_progress, progress, status = _quick_batch_progress("Previewing")
 
     with st.spinner("Building preview…"):
-        preview = quick_batch.build_preview(store, request, progress=on_progress)
+        with _batch_operation(
+            "quick-batch", phase="preview", store=store
+        ):
+            preview = quick_batch.build_preview(
+                store, request, progress=on_progress
+            )
     progress.empty()
     status.empty()
     batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
@@ -2259,9 +2290,12 @@ def _apply_quick_batch_preview(preview) -> None:
             f"Applying quick batch operation to {record_count:,} record"
             f"{'s' if record_count != 1 else ''}…"
         ):
-            result = quick_batch.apply_preview(
-                store, preview, progress=on_progress
-            )
+            with _batch_operation(
+                "quick-batch", phase="apply", store=store
+            ):
+                result = quick_batch.apply_preview(
+                    store, preview, progress=on_progress
+                )
         progress.empty()
         status.empty()
         if result.error:

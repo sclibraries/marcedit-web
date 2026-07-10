@@ -101,10 +101,10 @@
 - Produces: `batch_slot(operation: str)` context manager
 - Produces: `measure_operation(operation: str, **dimensions)` context manager
 
-- [ ] Add failing tests for the default two-slot gate, env override, waiting/release behavior, exception release, and normalized RSS logging.
-- [ ] Run the tests and confirm the missing module/behavior failures.
-- [ ] Implement the process-wide semaphore and structured timer, then wrap saved-task and quick-operation execution.
-- [ ] Run focused and concurrency tests and commit the runtime guardrail.
+- [x] Add failing tests for the default two-slot gate, env override, waiting/release behavior, exception release, and normalized RSS logging.
+- [x] Run the tests and confirm the missing module/behavior failures.
+- [x] Implement the process-wide semaphore and structured timer, then wrap saved-task and quick-operation execution.
+- [x] Run focused and concurrency tests and commit the runtime guardrail.
 
 ### Task 6: Red Hat Configuration, Benchmarks, And Completion
 
