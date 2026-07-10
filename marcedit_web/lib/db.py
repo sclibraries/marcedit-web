@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -147,6 +147,9 @@ def init_schema() -> None:
                 _migrate_to_v9(conn)
             if current_version < 10:
                 _migrate_to_v10(conn)
+            if current_version < 11:
+                _migrate_to_v11(conn)
+            _seed_folio_profiles(conn)
             # After all pending steps land, set the version row to the
             # newest. INSERT OR REPLACE keeps the table single-row.
             conn.execute("DELETE FROM _schema_version")
@@ -313,6 +316,132 @@ def _migrate_to_v10(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE uploads ADD COLUMN removed_at TEXT")
     if "removed_by" not in upload_cols:
         conn.execute("ALTER TABLE uploads ADD COLUMN removed_by TEXT")
+
+
+def _migrate_to_v11(conn: sqlite3.Connection) -> None:
+    """Add configurable FOLIO profile/rule storage (TASK-148)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS folio_profiles (
+            key         TEXT PRIMARY KEY,
+            label       TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            is_addon    INTEGER NOT NULL DEFAULT 0,
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS folio_rules (
+            key              TEXT PRIMARY KEY,
+            profile_key      TEXT NOT NULL,
+            label            TEXT NOT NULL,
+            severity         TEXT NOT NULL CHECK(severity IN ('error','warning','info')),
+            target_json      TEXT NOT NULL,
+            requirement_json TEXT NOT NULL,
+            fix_json         TEXT NOT NULL DEFAULT '{}',
+            enabled          INTEGER NOT NULL DEFAULT 1,
+            created_at       TEXT NOT NULL,
+            updated_at       TEXT NOT NULL,
+            FOREIGN KEY(profile_key) REFERENCES folio_profiles(key) ON DELETE CASCADE
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_folio_rules_profile"
+        " ON folio_rules(profile_key)"
+    )
+
+
+def _seed_folio_profiles(conn: sqlite3.Connection) -> None:
+    """Seed default FOLIO profiles and rules without overwriting local edits."""
+    import json
+
+    now = _utc_now_iso()
+    profiles = [
+        (
+            "folio-new-instance",
+            "FOLIO - New Instance/SRS load",
+            "Checks records before creating new FOLIO Instance and MARC SRS records.",
+            0,
+        ),
+        (
+            "folio-round-trip",
+            "FOLIO - Round-trip Instance/SRS",
+            "Checks records that must preserve their existing FOLIO Instance/SRS link.",
+            0,
+        ),
+        (
+            "folio-ecollection-ebook",
+            "FOLIO - E-collection ebook",
+            "Adds e-collection ebook standards to the selected FOLIO workflow.",
+            1,
+        ),
+    ]
+    for key, label, description, is_addon in profiles:
+        conn.execute(
+            "INSERT OR IGNORE INTO folio_profiles"
+            "(key, label, description, is_addon, enabled, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, 1, ?, ?)",
+            (key, label, description, is_addon, now, now),
+        )
+
+    rules = [
+        (
+            "folio-new-load-forbidden-001",
+            "folio-new-instance",
+            "001 must be absent for new FOLIO Instance/SRS loads",
+            "warning",
+            {"kind": "field", "tag": "001"},
+            {"kind": "forbidden"},
+            {"operation": "remove_field", "tag": "001"},
+        ),
+        (
+            "folio-roundtrip-required-001",
+            "folio-round-trip",
+            "001 must be present when round-tripping FOLIO Instance/SRS records",
+            "error",
+            {"kind": "field", "tag": "001"},
+            {"kind": "required"},
+            {"operation": "none"},
+        ),
+        (
+            "folio-ebook-required-655",
+            "folio-ecollection-ebook",
+            "Electronic books genre/form term should be present",
+            "warning",
+            {
+                "kind": "field",
+                "tag": "655",
+                "indicators": [" ", "7"],
+                "subfields": {"a": "Electronic books.", "2": "local"},
+            },
+            {"kind": "field_with_subfields"},
+            {
+                "operation": "add_field",
+                "tag": "655",
+                "indicators": [" ", "7"],
+                "subfields": [["a", "Electronic books."], ["2", "local"]],
+            },
+        ),
+    ]
+    for key, profile_key, label, severity, target, requirement, fix in rules:
+        conn.execute(
+            "INSERT OR IGNORE INTO folio_rules"
+            "(key, profile_key, label, severity, target_json, requirement_json,"
+            " fix_json, enabled, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (
+                key,
+                profile_key,
+                label,
+                severity,
+                json.dumps(target, sort_keys=True),
+                json.dumps(requirement, sort_keys=True),
+                json.dumps(fix, sort_keys=True),
+                now,
+                now,
+            ),
+        )
 
 
 def _ensure_default_job(
