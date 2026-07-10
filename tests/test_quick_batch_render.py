@@ -276,7 +276,7 @@ def test_render_quick_batch_export_shows_download_and_history_location(
 
     assert fake_st.markdowns == ["**Updated batch is loaded in this session.**"]
     assert fake_st.captions == [
-        "Rollback and before/after downloads are available under Job snapshots on this Tasks page."
+        "Rollback and before/after downloads are available on the History page."
     ]
     assert fake_st.download_buttons == []
     assert fake_st.session_state.get("quick_batch_download_ready") is None

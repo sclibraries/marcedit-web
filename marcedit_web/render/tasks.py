@@ -2387,8 +2387,8 @@ def _quick_batch_progress(verb: str, *, min_step: int = 250):
 def _history_location_caption(snapshot_id) -> str:
     if snapshot_id:
         return (
-            "Rollback and before/after downloads are available under Job "
-            "snapshots on this Tasks page."
+            "Rollback and before/after downloads are available on the "
+            "History page."
         )
     return (
         "Rollback history is only available for signed-in job files. "

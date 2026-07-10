@@ -40,6 +40,11 @@ st.caption(
 
 sidebar_status()
 loaded_batch_status()
+st.page_link(
+    "views/C_History.py",
+    label="History & export of this file",
+    icon=":material/history:",
+)
 
 
 # --- Tabs -----------------------------------------------------------------
