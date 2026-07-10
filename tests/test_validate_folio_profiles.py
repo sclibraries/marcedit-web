@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from types import SimpleNamespace
+
 from marcedit_web.lib import folio_profiles
 from marcedit_web.lib.errors import Issue
 from marcedit_web.lib.rules import RuleSet
@@ -288,3 +291,60 @@ def test_find_single_folio_fix_rule_returns_matching_rule(make_record):
     )
 
     assert rule.key == "folio-new-load-forbidden-001"
+
+
+def test_record_folio_snapshot_records_safe_fix_provenance(monkeypatch, tmp_path):
+    """FOLIO fixes must create History provenance under the active job."""
+    staged_path = tmp_path / "after.mrc"
+    calls = []
+
+    @contextmanager
+    def fake_staged_store_path(store):
+        calls.append(("stage", store))
+        yield staged_path
+
+    def fake_record_edit_snapshot(**kwargs):
+        calls.append(("snapshot", kwargs))
+
+    monkeypatch.setattr(validate.st, "session_state", {"current_job_id": 12})
+    monkeypatch.setattr(validate.session, "current_user_id", lambda: "user@example.org")
+    monkeypatch.setattr(
+        validate,
+        "snapshot_actions",
+        SimpleNamespace(
+            staged_store_path=fake_staged_store_path,
+            record_edit_snapshot=fake_record_edit_snapshot,
+        ),
+        raising=False,
+    )
+    store = object()
+
+    validate._record_folio_snapshot(
+        store,
+        label="FOLIO safe fix",
+        summary={
+            "rule": "folio-new-load-forbidden-001",
+            "record_index": 2,
+            "mode": "single-record",
+        },
+    )
+
+    assert calls == [
+        ("stage", store),
+        (
+            "snapshot",
+            {
+                "job_id": 12,
+                "user_email": "user@example.org",
+                "label": "FOLIO safe fix",
+                "after_path": staged_path,
+                "record_index": None,
+                "source": "folio-safe-fix",
+                "summary": {
+                    "rule": "folio-new-load-forbidden-001",
+                    "record_index": 2,
+                    "mode": "single-record",
+                },
+            },
+        ),
+    ]

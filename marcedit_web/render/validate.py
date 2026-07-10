@@ -15,6 +15,7 @@ from marcedit_web.lib import (
     rules as rules_mod,
     rules_validate,
     session,
+    snapshot_actions,
 )
 from marcedit_web.lib.errors import Issue
 from marcedit_web.render._record_modal import open_record_modal
@@ -98,6 +99,19 @@ def _folio_context_from_state() -> folio_profiles.FolioContext | None:
         use_949=bool(st.session_state.get("folio_use_949", False)),
         multi_institution=bool(st.session_state.get("folio_multi_institution", False)),
     )
+
+
+def _record_folio_snapshot(store, *, label: str, summary: dict[str, object]) -> None:
+    with snapshot_actions.staged_store_path(store) as after_path:
+        snapshot_actions.record_edit_snapshot(
+            job_id=st.session_state.get("current_job_id"),
+            user_email=session.current_user_id(),
+            label=label,
+            after_path=after_path,
+            record_index=None,
+            source="folio-safe-fix",
+            summary=summary,
+        )
 
 
 def _compute_issues(
@@ -508,10 +522,20 @@ def render(
                     )
                     st.rerun()
                 else:
-                    folio_profiles.apply_batch_fixes_to_store(
+                    applied = folio_profiles.apply_batch_fixes_to_store(
                         store,
                         profile_rules,
                         folio_context,
+                    )
+                    _record_folio_snapshot(
+                        store,
+                        label="FOLIO batch safe fixes",
+                        summary={
+                            "mode": "batch",
+                            "total_fixes": applied.total_fixes,
+                            "affected_records": applied.affected_records,
+                            "by_rule": applied.by_rule,
+                        },
                     )
                     st.session_state.pop("folio_safe_fix_preview", None)
                     st.session_state.pop("issues_cache", None)
@@ -592,6 +616,15 @@ def render(
                             folio_context,
                         )
                         store.replace(record_no - 1, updated)
+                        _record_folio_snapshot(
+                            store,
+                            label="FOLIO safe fix",
+                            summary={
+                                "rule": _rule.key,
+                                "record_index": record_no,
+                                "mode": "single-record",
+                            },
+                        )
                         st.session_state.pop("issues_cache", None)
 
             open_record_modal(
