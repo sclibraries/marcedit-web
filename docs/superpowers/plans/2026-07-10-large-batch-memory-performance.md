@@ -31,10 +31,10 @@
 - Produces: `RecordStore.replace_from_path(source_path: Path) -> int`
 - Preserves: `get`, `iter_records`, `replace`, `delete`, `append`, `persist_to_disk`
 
-- [ ] Add failing tests proving last-position `get` parses one record, mutations preserve live order, revision changes on content mutation, reindex avoids `Path.read_bytes`, and path replacement is atomic.
-- [ ] Run the focused tests and confirm each fails for the intended missing behavior.
-- [ ] Implement the compact live-index mapping, direct reads, revision, mmap reindex helper, and path-backed replacement.
-- [ ] Run all RecordStore tests and commit the independently usable storage change.
+- [x] Add failing tests proving last-position `get` parses one record, mutations preserve live order, revision changes on content mutation, reindex avoids `Path.read_bytes`, and path replacement is atomic.
+- [x] Run the focused tests and confirm each fails for the intended missing behavior.
+- [x] Implement the compact live-index mapping, direct reads, revision, mmap reindex helper, and path-backed replacement.
+- [x] Run all RecordStore tests and commit the independently usable storage change.
 
 ### Task 2: O(1) View Navigation And Revision-Bound Search
 

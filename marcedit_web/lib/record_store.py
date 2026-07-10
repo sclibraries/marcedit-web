@@ -14,9 +14,8 @@ Storage layout
   ``<tmp_dir>/upload.mrc`` (caller picks ``tmp_dir``).
 * The offsets index ``list[RecordLocation]`` is built in a single
   linear pass over the bytes via ``marc_diff._iter_records``.
-* Edits, deletes, and appends are tracked in an in-memory override
-  map ``dict[int, pymarc.Record | None]`` (None = deleted, indices
-  beyond ``len(_locations)`` are appended records).
+* A compact list maps live positions directly to raw locations. Edits,
+  deletes, and appends are tracked in an override map and appended list.
 * ``to_mrc_bytes`` walks the merged index, pulling each record from
   the override map or reading + parsing the on-disk bytes, then
   re-emits via ``pymarc.MARCWriter``.
@@ -84,10 +83,12 @@ class RecordStore:
     ) -> None:
         self._path = path
         self._locations: list[RecordLocation] = locations
+        self._live_raw_indices: list[int] = list(range(len(locations)))
         self._overrides: dict[int, Optional[pymarc.Record]] = {}
         self._appended: list[pymarc.Record] = []
         self._malformed = malformed
         self._filename = filename
+        self._revision = 0
 
     # ------------------------------------------------------------------ factories
 
@@ -148,13 +149,7 @@ class RecordStore:
         with open(path, "wb") as out:
             shutil.copyfileobj(fileobj, out, _COPY_CHUNK_BYTES)
         size = path.stat().st_size
-        if size == 0:
-            locations: list[RecordLocation] = []
-            malformed = 0
-        else:
-            with open(path, "rb") as fh:
-                with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                    locations, malformed = _index_bytes(mm)
+        locations, malformed = _index_path(path)
         logger.info(
             "RecordStore built (streamed): %d records, %d malformed, %s bytes on disk",
             len(locations), malformed, size,
@@ -173,13 +168,7 @@ class RecordStore:
         The file is left in place; the store points at it directly.
         Useful for tests + future cross-session persistence.
         """
-        if path.stat().st_size == 0:
-            locations: list[RecordLocation] = []
-            malformed = 0
-        else:
-            with open(path, "rb") as fh:
-                with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                    locations, malformed = _index_bytes(mm)
+        locations, malformed = _index_path(path)
         return cls(
             path=path,
             locations=locations,
@@ -217,13 +206,17 @@ class RecordStore:
     def path(self) -> Path:
         return self._path
 
+    @property
+    def revision(self) -> int:
+        """Monotonic content generation for invalidating derived state."""
+        return self._revision
+
     def malformed_count(self) -> int:
         return self._malformed
 
     def count(self) -> int:
         """Number of LIVE records (after deletes and appends)."""
-        deletes = sum(1 for v in self._overrides.values() if v is None)
-        return len(self._locations) + len(self._appended) - deletes
+        return len(self._live_raw_indices) + len(self._appended)
 
     def raw_count(self) -> int:
         """Number of records originally indexed (ignores edits)."""
@@ -237,10 +230,15 @@ class RecordStore:
         ``idx`` indexes into the LIVE sequence (so it skips deletions).
         Returns ``None`` if ``idx`` is out of range.
         """
-        for live_idx, record in enumerate(self.iter_records()):
-            if live_idx == idx:
-                return record
-        return None
+        raw_idx = self._raw_idx_for_live(idx)
+        if raw_idx is None:
+            return None
+        if raw_idx >= len(self._locations):
+            return self._appended[raw_idx - len(self._locations)]
+        if raw_idx in self._overrides:
+            return self._overrides[raw_idx]
+        with self._path.open("rb") as fh:
+            return self._read_raw_record(fh, raw_idx)
 
     def iter_records(
         self, start: int = 0, stop: Optional[int] = None
@@ -254,41 +252,27 @@ class RecordStore:
         Opens the underlying file once per iter pass for batched record
         reads — pymarc parses each slice independently.
         """
-        live_idx = 0
-        if stop is None:
-            stop_or_inf = float("inf")
-        else:
-            stop_or_inf = stop
+        total = self.count()
+        first = max(0, start)
+        last = total if stop is None else min(total, max(first, stop))
+        raw_live_count = len(self._live_raw_indices)
+        raw_stop = min(last, raw_live_count)
 
-        with self._path.open("rb") as fh:
-            for raw_idx, loc in enumerate(self._locations):
-                if raw_idx in self._overrides:
-                    record = self._overrides[raw_idx]
-                    if record is None:
-                        continue  # deleted
-                else:
-                    fh.seek(loc.offset)
-                    chunk = fh.read(loc.length)
-                    try:
-                        record = pymarc.Record(data=chunk)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug(
-                            "skipping malformed record at offset %d: %s",
-                            loc.offset, exc,
-                        )
-                        continue
-                if live_idx >= start and live_idx < stop_or_inf:
-                    yield record
-                live_idx += 1
-                if live_idx >= stop_or_inf:
-                    return
+        if first < raw_stop:
+            with self._path.open("rb") as fh:
+                for live_idx in range(first, raw_stop):
+                    raw_idx = self._live_raw_indices[live_idx]
+                    if raw_idx in self._overrides:
+                        record = self._overrides[raw_idx]
+                    else:
+                        record = self._read_raw_record(fh, raw_idx)
+                    if record is not None:
+                        yield record
 
-        for record in self._appended:
-            if live_idx >= start and live_idx < stop_or_inf:
-                yield record
-            live_idx += 1
-            if live_idx >= stop_or_inf:
-                return
+        appended_start = max(0, first - raw_live_count)
+        appended_stop = max(0, last - raw_live_count)
+        for appended_idx in range(appended_start, appended_stop):
+            yield self._appended[appended_idx]
 
     # ------------------------------------------------------------------ writes
 
@@ -304,6 +288,7 @@ class RecordStore:
             self._overrides[raw_idx] = record
         else:
             self._appended[raw_idx - len(self._locations)] = record
+        self._revision += 1
 
     def delete(self, idx: int) -> None:
         """Tombstone the record at LIVE 0-based ``idx``.
@@ -316,14 +301,17 @@ class RecordStore:
         if raw_idx is None:
             raise IndexError(f"live record index {idx} out of range")
         if raw_idx < len(self._locations):
+            self._live_raw_indices.pop(idx)
             self._overrides[raw_idx] = None
         else:
             # Appended record — remove from the appended list.
             self._appended.pop(raw_idx - len(self._locations))
+        self._revision += 1
 
     def append(self, record: pymarc.Record) -> None:
         """Add ``record`` to the end of the live sequence."""
         self._appended.append(record)
+        self._revision += 1
 
     def replace_all(self, records: list[pymarc.Record]) -> None:
         """Replace the entire live sequence with ``records``.
@@ -334,7 +322,9 @@ class RecordStore:
         # Tombstone every original record; clear appended list.
         for raw_idx in range(len(self._locations)):
             self._overrides[raw_idx] = None
+        self._live_raw_indices.clear()
         self._appended = list(records)
+        self._revision += 1
 
     # ------------------------------------------------------------------ output
 
@@ -383,31 +373,66 @@ class RecordStore:
         temp_path = self._path.with_name(f".{self._path.name}.tmp")
         written = self.write_mrc_to(temp_path)
         os.replace(temp_path, self._path)
-        locations, malformed = _index_bytes(self._path.read_bytes())
-        self._locations = locations
-        self._overrides.clear()
-        self._appended.clear()
-        self._malformed = malformed
+        self._reindex_backing_file()
+        return written
+
+    def replace_from_path(self, source_path: Path) -> int:
+        """Copy ``source_path`` over the stable backing file and reindex it.
+
+        The source remains available to diff/history callers. Copying to a
+        sibling temporary file before ``os.replace`` prevents readers from
+        observing a partial batch and works when the source is on another
+        filesystem.
+        """
+        source_path = Path(source_path)
+        if not source_path.is_file():
+            raise FileNotFoundError(source_path)
+        temp_path = self._path.with_name(f".{self._path.name}.replace.tmp")
+        try:
+            with source_path.open("rb") as source, temp_path.open("wb") as target:
+                shutil.copyfileobj(source, target, _COPY_CHUNK_BYTES)
+            written = temp_path.stat().st_size
+            os.replace(temp_path, self._path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+        self._reindex_backing_file()
+        self._revision += 1
         return written
 
     # ------------------------------------------------------------------ helpers
 
     def _raw_idx_for_live(self, live_idx: int) -> Optional[int]:
-        """Walk the override map to find the raw index for a LIVE index."""
+        """Return the raw/appended index for a live position in O(1)."""
         if live_idx < 0:
             return None
-        live = 0
-        for raw_idx in range(len(self._locations)):
-            if self._overrides.get(raw_idx, "no-override") is None:
-                continue
-            if live == live_idx:
-                return raw_idx
-            live += 1
-        # Live indices past the underlying file fall into the appended list.
-        appended_offset = live_idx - live
+        if live_idx < len(self._live_raw_indices):
+            return self._live_raw_indices[live_idx]
+        appended_offset = live_idx - len(self._live_raw_indices)
         if 0 <= appended_offset < len(self._appended):
             return len(self._locations) + appended_offset
         return None
+
+    def _read_raw_record(self, fh, raw_idx: int) -> Optional[pymarc.Record]:
+        loc = self._locations[raw_idx]
+        fh.seek(loc.offset)
+        chunk = fh.read(loc.length)
+        try:
+            return pymarc.Record(data=chunk)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "skipping malformed record at offset %d: %s",
+                loc.offset,
+                exc,
+            )
+            return None
+
+    def _reindex_backing_file(self) -> None:
+        locations, malformed = _index_path(self._path)
+        self._locations = locations
+        self._live_raw_indices = list(range(len(locations)))
+        self._overrides.clear()
+        self._appended.clear()
+        self._malformed = malformed
 
 
 # ---------------------------------------------------------------------------
@@ -430,3 +455,12 @@ def _index_bytes(data: bytes) -> tuple[list[RecordLocation], int]:
         logger.warning("stopped indexing at malformed offset: %s", exc)
         malformed += 1
     return locations, malformed
+
+
+def _index_path(path: Path) -> tuple[list[RecordLocation], int]:
+    """Index an MRC path without materializing the file as ``bytes``."""
+    if path.stat().st_size == 0:
+        return [], 0
+    with path.open("rb") as fh:
+        with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            return _index_bytes(mm)

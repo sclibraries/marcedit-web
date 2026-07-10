@@ -173,6 +173,18 @@ def test_get_out_of_range_returns_none(store):
     assert store.get(-1) is None
 
 
+def test_get_last_record_does_not_walk_the_store(store, monkeypatch):
+    """Random access must parse only the requested record, regardless of index."""
+    expected = list(store.iter_records())[-1].get("001").data
+
+    def _sequential_read(*_args, **_kwargs):
+        raise AssertionError("get must not scan through iter_records")
+
+    monkeypatch.setattr(store, "iter_records", _sequential_read)
+
+    assert store.get(store.count() - 1).get("001").data == expected
+
+
 def test_iter_records_yields_all(store):
     records = list(store.iter_records())
     assert len(records) == 7
@@ -211,6 +223,21 @@ def test_replace_visible_on_next_get(store):
     assert store.get(0).get("001").data == "EDITED"
     # Other records unchanged.
     assert store.get(1).get("001").data == "1579014042"
+
+
+def test_content_mutations_advance_revision(store):
+    """Preview staleness needs a cheap generation token for every mutation."""
+    edited = pymarc.Record()
+    edited.leader = pymarc.Leader("00000nam a2200000 a 4500")
+    edited.add_field(pymarc.Field(tag="001", data="EDITED"))
+
+    assert store.revision == 0
+    store.replace(0, edited)
+    assert store.revision == 1
+    store.delete(1)
+    assert store.revision == 2
+    store.append(edited)
+    assert store.revision == 3
 
 
 def test_replace_survives_to_mrc_bytes_round_trip(store):
@@ -356,6 +383,47 @@ def test_persist_to_disk_survives_restore(store):
     restored = RecordStore.from_path(store.path)
     assert restored.get(0).get("001").data == "PERSISTED-0"
     assert store.get(0).get("001").data == "PERSISTED-0"
+
+
+def test_persist_to_disk_reindexes_without_materializing_file(store, monkeypatch):
+    """Committing an edit must not allocate another full-batch byte string."""
+    edited = pymarc.Record()
+    edited.leader = pymarc.Leader("00000nam a2200000 a 4500")
+    edited.add_field(pymarc.Field(tag="001", data="PERSISTED-0"))
+    store.replace(0, edited)
+
+    def _read_bytes(self):
+        raise AssertionError("persist_to_disk must reindex from the file")
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+
+    store.persist_to_disk()
+
+    assert store.get(0).get("001").data == "PERSISTED-0"
+
+
+def test_replace_from_path_adopts_batch_without_consuming_source(
+    store, fixture_bytes, tmp_path
+):
+    """Batch apply keeps the stable upload path and a reusable result artifact."""
+    replacement = RecordStore.from_bytes(
+        fixture_bytes,
+        tmp_dir=tmp_path / "replacement-store",
+        filename="replacement.mrc",
+    )
+    replacement.delete(0)
+    source_path = tmp_path / "batch-result.mrc"
+    replacement.write_mrc_to(source_path)
+    source_bytes = source_path.read_bytes()
+    stable_path = store.path
+
+    written = store.replace_from_path(source_path)
+
+    assert written == len(source_bytes)
+    assert store.path == stable_path
+    assert store.count() == 6
+    assert store.revision == 1
+    assert source_path.read_bytes() == source_bytes
 
 
 # ---------------------------------------------------------------------------
