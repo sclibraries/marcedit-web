@@ -49,6 +49,14 @@ class _ValidationResult:
     fixable_issue_keys: set[tuple[str, int | None]]
 
 
+@dataclass(frozen=True)
+class _FolioPreviewState:
+    preview: folio_profiles.FolioBatchPreview
+    store_revision: int
+    folio_context: folio_profiles.FolioContext
+    rule_keys: tuple[str, ...]
+
+
 def _build_folio_context(
     *,
     profile_key: str,
@@ -198,10 +206,48 @@ def _build_issue_rows(
 def _preview_to_rows(
     preview: folio_profiles.FolioBatchPreview,
 ) -> list[dict[str, object]]:
+    records = _format_record_numbers(preview.affected_record_numbers)
     return [
-        {"rule": rule, "fixes": count}
+        {"rule": rule, "fixes": count, "records": records}
         for rule, count in sorted(preview.by_rule.items())
     ]
+
+
+def _format_record_numbers(record_numbers: list[int]) -> str:
+    return ", ".join(str(number) for number in sorted(record_numbers))
+
+
+def _rule_keys(rules: list[folio_profiles.FolioRule]) -> tuple[str, ...]:
+    return tuple(sorted(rule.key for rule in rules))
+
+
+def _build_folio_preview_state(
+    *,
+    preview: folio_profiles.FolioBatchPreview,
+    store_revision: int,
+    folio_context: folio_profiles.FolioContext,
+    profile_rules: list[folio_profiles.FolioRule],
+) -> _FolioPreviewState:
+    return _FolioPreviewState(
+        preview=preview,
+        store_revision=store_revision,
+        folio_context=folio_context,
+        rule_keys=_rule_keys(profile_rules),
+    )
+
+
+def _folio_preview_state_is_current(
+    state: _FolioPreviewState,
+    *,
+    store_revision: int,
+    folio_context: folio_profiles.FolioContext,
+    profile_rules: list[folio_profiles.FolioRule],
+) -> bool:
+    return (
+        state.store_revision == store_revision
+        and state.folio_context == folio_context
+        and state.rule_keys == _rule_keys(profile_rules)
+    )
 
 
 def _find_single_folio_fix_rule(
@@ -394,16 +440,37 @@ def render(
             key="folio_preview_safe_fixes",
             icon=":material/rule_settings:",
         ):
-            st.session_state["folio_safe_fix_preview"] = (
-                folio_profiles.preview_batch_fixes(
+            st.session_state["folio_safe_fix_preview"] = _build_folio_preview_state(
+                preview=folio_profiles.preview_batch_fixes(
                     store.iter_records(),
                     profile_rules,
                     folio_context,
-                )
+                ),
+                store_revision=store.revision,
+                folio_context=folio_context,
+                profile_rules=profile_rules,
             )
             st.rerun()
-        preview = st.session_state.get("folio_safe_fix_preview")
-        if preview is not None:
+        preview_state = st.session_state.get("folio_safe_fix_preview")
+        if preview_state is not None and not isinstance(
+            preview_state,
+            _FolioPreviewState,
+        ):
+            preview_state = None
+            st.session_state.pop("folio_safe_fix_preview", None)
+        if preview_state is not None and not _folio_preview_state_is_current(
+            preview_state,
+            store_revision=store.revision,
+            folio_context=folio_context,
+            profile_rules=profile_rules,
+        ):
+            preview_state = None
+            st.session_state.pop("folio_safe_fix_preview", None)
+            st.warning(
+                "FOLIO safe-fix preview is stale. Preview again before applying."
+            )
+        if preview_state is not None:
+            preview = preview_state.preview
             st.subheader("FOLIO safe-fix preview")
             st.caption(
                 f"{preview.total_fixes} fix(es) across "
@@ -428,15 +495,28 @@ def render(
                 type="primary",
                 icon=":material/check:",
             ):
-                folio_profiles.apply_batch_fixes_to_store(
-                    store,
-                    profile_rules,
-                    folio_context,
-                )
-                st.session_state.pop("folio_safe_fix_preview", None)
-                st.session_state.pop("issues_cache", None)
-                st.success("FOLIO safe fixes applied.")
-                st.rerun()
+                if not _folio_preview_state_is_current(
+                    preview_state,
+                    store_revision=store.revision,
+                    folio_context=folio_context,
+                    profile_rules=profile_rules,
+                ):
+                    st.session_state.pop("folio_safe_fix_preview", None)
+                    st.warning(
+                        "FOLIO safe-fix preview is stale. "
+                        "Preview again before applying."
+                    )
+                    st.rerun()
+                else:
+                    folio_profiles.apply_batch_fixes_to_store(
+                        store,
+                        profile_rules,
+                        folio_context,
+                    )
+                    st.session_state.pop("folio_safe_fix_preview", None)
+                    st.session_state.pop("issues_cache", None)
+                    st.success("FOLIO safe fixes applied.")
+                    st.rerun()
 
     # View widget: a selectbox of the filtered record-scope issues +
     # a "View" button that opens the modal in a single click. Issues

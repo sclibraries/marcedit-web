@@ -190,6 +190,7 @@ def test_preview_to_rows_formats_rule_counts():
     preview = folio_profiles.FolioBatchPreview(
         total_fixes=3,
         affected_records=2,
+        affected_record_numbers=[3, 1],
         by_rule={"folio-new-load-forbidden-001": 2, "folio-ebook-required-655": 1},
         samples=[],
     )
@@ -197,9 +198,80 @@ def test_preview_to_rows_formats_rule_counts():
     rows = validate._preview_to_rows(preview)
 
     assert rows == [
-        {"rule": "folio-ebook-required-655", "fixes": 1},
-        {"rule": "folio-new-load-forbidden-001", "fixes": 2},
+        {"rule": "folio-ebook-required-655", "fixes": 1, "records": "1, 3"},
+        {"rule": "folio-new-load-forbidden-001", "fixes": 2, "records": "1, 3"},
     ]
+
+
+def test_folio_preview_state_detects_stale_revision():
+    """Applying a preview requires the same store revision that was previewed."""
+    context = folio_profiles.FolioContext(profile_key="folio-new-instance")
+    preview = folio_profiles.FolioBatchPreview(
+        total_fixes=1,
+        affected_records=1,
+        affected_record_numbers=[1],
+        by_rule={"folio-new-load-forbidden-001": 1},
+        samples=[],
+    )
+
+    state = validate._build_folio_preview_state(
+        preview=preview,
+        store_revision=2,
+        folio_context=context,
+        profile_rules=[
+            rule for rule in folio_profiles.default_rules_for_tests()
+            if rule.key == "folio-new-load-forbidden-001"
+        ],
+    )
+
+    assert validate._folio_preview_state_is_current(
+        state,
+        store_revision=3,
+        folio_context=context,
+        profile_rules=[
+            rule for rule in folio_profiles.default_rules_for_tests()
+            if rule.key == "folio-new-load-forbidden-001"
+        ],
+    ) is False
+
+
+def test_folio_preview_state_detects_current_context_and_rules():
+    """Preview metadata stays valid only for the same context and rule keys."""
+    context = folio_profiles.FolioContext(
+        profile_key="folio-new-instance",
+        addons=("folio-ecollection-ebook",),
+    )
+    rules = [
+        rule for rule in folio_profiles.default_rules_for_tests()
+        if rule.key in {"folio-new-load-forbidden-001", "folio-ebook-required-655"}
+    ]
+    preview = folio_profiles.FolioBatchPreview(
+        total_fixes=1,
+        affected_records=1,
+        affected_record_numbers=[1],
+        by_rule={"folio-new-load-forbidden-001": 1},
+        samples=[],
+    )
+
+    state = validate._build_folio_preview_state(
+        preview=preview,
+        store_revision=2,
+        folio_context=context,
+        profile_rules=rules,
+    )
+
+    assert validate._folio_preview_state_is_current(
+        state,
+        store_revision=2,
+        folio_context=context,
+        profile_rules=list(reversed(rules)),
+    ) is True
+    assert validate._folio_preview_state_is_current(
+        state,
+        store_revision=2,
+        folio_context=folio_profiles.FolioContext(profile_key="folio-new-instance"),
+        profile_rules=rules,
+    ) is False
 
 
 def test_find_single_folio_fix_rule_returns_matching_rule(make_record):

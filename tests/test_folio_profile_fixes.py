@@ -149,6 +149,7 @@ def test_preview_batch_fixes_counts_without_mutating(make_record):
 
     assert preview.total_fixes == 2
     assert preview.affected_records == 2
+    assert preview.affected_record_numbers == [1, 2]
     assert preview.by_rule == {"folio-new-load-forbidden-001": 2}
     assert len(preview.samples) == 1
     assert records[0].get("001") is not None
@@ -170,6 +171,7 @@ def test_apply_batch_fixes_to_store_replaces_changed_records(make_record, tmp_pa
     )
 
     assert preview.total_fixes == 2
+    assert preview.affected_record_numbers == [1, 2]
     assert all(record.get("001") is None for record in store.iter_records())
 
 

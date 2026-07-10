@@ -71,6 +71,7 @@ class FolioFixPlan:
 class FolioBatchPreview:
     total_fixes: int
     affected_records: int
+    affected_record_numbers: list[int]
     by_rule: dict[str, int]
     samples: list[FolioFixPlan]
 
@@ -377,6 +378,7 @@ def preview_batch_fixes(
 ) -> FolioBatchPreview:
     by_rule: dict[str, int] = {}
     samples: list[FolioFixPlan] = []
+    affected_record_numbers: list[int] = []
     affected = 0
     total = 0
     for idx, record in enumerate(records, start=1):
@@ -384,6 +386,7 @@ def preview_batch_fixes(
         if not plans:
             continue
         affected += 1
+        affected_record_numbers.append(idx)
         total += len(plans)
         for plan in plans:
             by_rule[plan.rule_key] = by_rule.get(plan.rule_key, 0) + 1
@@ -392,6 +395,7 @@ def preview_batch_fixes(
     return FolioBatchPreview(
         total_fixes=total,
         affected_records=affected,
+        affected_record_numbers=affected_record_numbers,
         by_rule=by_rule,
         samples=samples,
     )
@@ -404,6 +408,7 @@ def apply_batch_fixes_to_store(
 ) -> FolioBatchPreview:
     by_rule: dict[str, int] = {}
     samples: list[FolioFixPlan] = []
+    affected_record_numbers: list[int] = []
     affected = 0
     total = 0
 
@@ -425,12 +430,14 @@ def apply_batch_fixes_to_store(
                         if len(samples) < 10:
                             samples.append(plan)
                     affected += 1
+                    affected_record_numbers.append(idx)
                 writer.write(updated)
         store.replace_from_path(temp_path)
 
     return FolioBatchPreview(
         total_fixes=total,
         affected_records=affected,
+        affected_record_numbers=affected_record_numbers,
         by_rule=by_rule,
         samples=samples,
     )
