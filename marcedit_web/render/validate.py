@@ -195,6 +195,15 @@ def _build_issue_rows(
     ]
 
 
+def _preview_to_rows(
+    preview: folio_profiles.FolioBatchPreview,
+) -> list[dict[str, object]]:
+    return [
+        {"rule": rule, "fixes": count}
+        for rule, count in sorted(preview.by_rule.items())
+    ]
+
+
 def _find_single_folio_fix_rule(
     record,
     issue_code: str,
@@ -374,6 +383,60 @@ def render(
             "fix_available": st.column_config.TextColumn("Fix", width="small"),
         },
     )
+
+    if folio_context is not None and store is not None:
+        profile_rules = folio_profiles.rules_for_profile(
+            folio_context.profile_key,
+            include_addons=folio_context.addons,
+        )
+        if st.button(
+            "Preview FOLIO safe fixes",
+            key="folio_preview_safe_fixes",
+            icon=":material/rule_settings:",
+        ):
+            st.session_state["folio_safe_fix_preview"] = (
+                folio_profiles.preview_batch_fixes(
+                    store.iter_records(),
+                    profile_rules,
+                    folio_context,
+                )
+            )
+            st.rerun()
+        preview = st.session_state.get("folio_safe_fix_preview")
+        if preview is not None:
+            st.subheader("FOLIO safe-fix preview")
+            st.caption(
+                f"{preview.total_fixes} fix(es) across "
+                f"{preview.affected_records} record(s)."
+            )
+            st.dataframe(
+                pd.DataFrame(_preview_to_rows(preview)),
+                hide_index=True,
+                use_container_width=True,
+            )
+            if preview.samples:
+                with st.expander("Preview samples", expanded=False):
+                    for sample in preview.samples:
+                        st.markdown(
+                            f"**Record #{sample.record_index}: {sample.label}**"
+                        )
+                        st.code(sample.before, language=None)
+                        st.code(sample.after, language=None)
+            if st.button(
+                "Apply previewed FOLIO fixes",
+                key="folio_apply_safe_fixes",
+                type="primary",
+                icon=":material/check:",
+            ):
+                folio_profiles.apply_batch_fixes_to_store(
+                    store,
+                    profile_rules,
+                    folio_context,
+                )
+                st.session_state.pop("folio_safe_fix_preview", None)
+                st.session_state.pop("issues_cache", None)
+                st.success("FOLIO safe fixes applied.")
+                st.rerun()
 
     # View widget: a selectbox of the filtered record-scope issues +
     # a "View" button that opens the modal in a single click. Issues

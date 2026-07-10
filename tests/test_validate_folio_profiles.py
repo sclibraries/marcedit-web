@@ -185,6 +185,23 @@ def test_folio_fix_availability_uses_cached_validation_result(monkeypatch):
     assert result.fixable_issue_keys == {("folio-one", 1)}
 
 
+def test_preview_to_rows_formats_rule_counts():
+    """Batch preview summaries render as stable table rows."""
+    preview = folio_profiles.FolioBatchPreview(
+        total_fixes=3,
+        affected_records=2,
+        by_rule={"folio-new-load-forbidden-001": 2, "folio-ebook-required-655": 1},
+        samples=[],
+    )
+
+    rows = validate._preview_to_rows(preview)
+
+    assert rows == [
+        {"rule": "folio-ebook-required-655", "fixes": 1},
+        {"rule": "folio-new-load-forbidden-001", "fixes": 2},
+    ]
+
+
 def test_find_single_folio_fix_rule_returns_matching_rule(make_record):
     """Validate can map a selected FOLIO issue back to one safe fix rule."""
     rules = [
