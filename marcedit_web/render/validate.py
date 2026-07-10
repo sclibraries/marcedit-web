@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from marcedit_web.lib import (
+    folio_profiles,
     issue_tags,
     load_readiness,
     preflight,
@@ -40,10 +41,30 @@ def _decorate_severity(value: str) -> str:
 _tag_for_issue = issue_tags.tag_for_issue
 
 
+def _folio_context_from_state() -> folio_profiles.FolioContext | None:
+    profile_key = str(st.session_state.get("folio_profile_key", "")).strip()
+    if not profile_key:
+        return None
+
+    return folio_profiles.FolioContext(
+        profile_key=profile_key,
+        addons=tuple(st.session_state.get("folio_profile_addons") or ()),
+        container_code=str(st.session_state.get("folio_container_code", "")).strip(),
+        institution_suffix=str(
+            st.session_state.get("folio_institution_suffix", "")
+        ).strip(),
+        collection_name=str(st.session_state.get("folio_collection_name", "")).strip(),
+        score_loading=bool(st.session_state.get("folio_score_loading", False)),
+        use_949=bool(st.session_state.get("folio_use_949", False)),
+        multi_institution=bool(st.session_state.get("folio_multi_institution", False)),
+    )
+
+
 def _compute_issues(
     rule_set: rules_mod.RuleSet | None,
     store,
     malformed: int,
+    folio_context: folio_profiles.FolioContext | None = None,
 ) -> list[Issue]:
     """Run preflight + rules in two streaming passes, wrapped in a
     user-visible status block so the cataloger sees progress."""
@@ -72,7 +93,22 @@ def _compute_issues(
         load_issues = load_readiness.validate_records(
             store.iter_records() if store else iter([]),
         )
-        all_issues: list[Issue] = preflight_issues + rule_issues + load_issues
+        folio_issues: list[Issue] = []
+        if folio_context is not None:
+            status.update(label="Applying FOLIO profile rules...")
+            profile_rules = folio_profiles.rules_for_profile(
+                folio_context.profile_key,
+                include_addons=folio_context.addons,
+            )
+            folio_results = folio_profiles.evaluate_records(
+                store.iter_records() if store else iter([]),
+                profile_rules,
+                folio_context,
+            )
+            folio_issues = [result.issue for result in folio_results]
+        all_issues: list[Issue] = (
+            preflight_issues + rule_issues + load_issues + folio_issues
+        )
         status.update(
             label=f"Done — {len(all_issues)} issue(s) found.",
             state="complete",
@@ -103,10 +139,12 @@ def render(
     # by every record-mutating call site (edit / tasks /
     # fixed-field), so the cache stays correct for free.
     cache = st.session_state.setdefault("issues_cache", {})
-    all_issues = cache.get("validate")
+    folio_context = _folio_context_from_state()
+    cache_key = ("validate", folio_context)
+    all_issues = cache.get(cache_key)
     if all_issues is None:
-        all_issues = _compute_issues(rule_set, store, malformed)
-        cache["validate"] = all_issues
+        all_issues = _compute_issues(rule_set, store, malformed, folio_context)
+        cache[cache_key] = all_issues
 
     col_a, col_b, col_c, col_d = st.columns(4)
     col_a.metric("Records", record_count)
