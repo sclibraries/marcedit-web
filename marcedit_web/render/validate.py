@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 
 import pandas as pd
 import streamlit as st
@@ -55,7 +56,7 @@ class _FolioPreviewState:
     preview: folio_profiles.FolioBatchPreview
     store_revision: int
     folio_context: folio_profiles.FolioContext
-    rule_keys: tuple[str, ...]
+    rule_fingerprints: tuple[str, ...]
 
 
 def _build_folio_context(
@@ -104,6 +105,7 @@ def _folio_context_from_state() -> folio_profiles.FolioContext | None:
 def _record_folio_snapshot(
     store,
     *,
+    before_path,
     label: str,
     summary: dict[str, object],
     record_index: int | None = None,
@@ -113,6 +115,7 @@ def _record_folio_snapshot(
             job_id=st.session_state.get("current_job_id"),
             user_email=session.current_user_id(),
             label=label,
+            before_path=before_path,
             after_path=after_path,
             record_index=record_index,
             source="folio-safe-fix",
@@ -226,9 +229,14 @@ def _build_issue_rows(
 def _preview_to_rows(
     preview: folio_profiles.FolioBatchPreview,
 ) -> list[dict[str, object]]:
-    records = _format_record_numbers(preview.affected_record_numbers)
     return [
-        {"rule": rule, "fixes": count, "records": records}
+        {
+            "rule": rule,
+            "fixes": count,
+            "records": _format_record_numbers(
+                preview.affected_records_by_rule.get(rule, [])
+            ),
+        }
         for rule, count in sorted(preview.by_rule.items())
     ]
 
@@ -237,8 +245,24 @@ def _format_record_numbers(record_numbers: list[int]) -> str:
     return ", ".join(str(number) for number in sorted(record_numbers))
 
 
-def _rule_keys(rules: list[folio_profiles.FolioRule]) -> tuple[str, ...]:
-    return tuple(sorted(rule.key for rule in rules))
+def _rule_fingerprints(rules: list[folio_profiles.FolioRule]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            json.dumps(
+                {
+                    "key": rule.key,
+                    "severity": rule.severity,
+                    "target": rule.target,
+                    "requirement": rule.requirement,
+                    "fix": rule.fix,
+                    "enabled": rule.enabled,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for rule in rules
+        )
+    )
 
 
 def _build_folio_preview_state(
@@ -252,7 +276,7 @@ def _build_folio_preview_state(
         preview=preview,
         store_revision=store_revision,
         folio_context=folio_context,
-        rule_keys=_rule_keys(profile_rules),
+        rule_fingerprints=_rule_fingerprints(profile_rules),
     )
 
 
@@ -266,7 +290,7 @@ def _folio_preview_state_is_current(
     return (
         state.store_revision == store_revision
         and state.folio_context == folio_context
-        and state.rule_keys == _rule_keys(profile_rules)
+        and state.rule_fingerprints == _rule_fingerprints(profile_rules)
     )
 
 
@@ -528,21 +552,23 @@ def render(
                     )
                     st.rerun()
                 else:
-                    applied = folio_profiles.apply_batch_fixes_to_store(
-                        store,
-                        profile_rules,
-                        folio_context,
-                    )
-                    _record_folio_snapshot(
-                        store,
-                        label="FOLIO batch safe fixes",
-                        summary={
-                            "mode": "batch",
-                            "total_fixes": applied.total_fixes,
-                            "affected_records": applied.affected_records,
-                            "by_rule": applied.by_rule,
-                        },
-                    )
+                    with snapshot_actions.staged_store_path(store) as before_path:
+                        applied = folio_profiles.apply_batch_fixes_to_store(
+                            store,
+                            profile_rules,
+                            folio_context,
+                        )
+                        _record_folio_snapshot(
+                            store,
+                            before_path=before_path,
+                            label="FOLIO batch safe fixes",
+                            summary={
+                                "mode": "batch",
+                                "total_fixes": applied.total_fixes,
+                                "affected_records": applied.affected_records,
+                                "by_rule": applied.by_rule,
+                            },
+                        )
                     st.session_state.pop("folio_safe_fix_preview", None)
                     st.session_state.pop("issues_cache", None)
                     st.success("FOLIO safe fixes applied.")
@@ -616,22 +642,24 @@ def render(
                     fix_label = "Apply FOLIO safe fix"
 
                     def on_fix(record_no: int, record, *, _rule=fix_rule):
-                        updated = folio_profiles.apply_record_fix(
-                            record,
-                            _rule,
-                            folio_context,
-                        )
-                        store.replace(record_no - 1, updated)
-                        _record_folio_snapshot(
-                            store,
-                            label="FOLIO safe fix",
-                            record_index=record_no,
-                            summary={
-                                "rule": _rule.key,
-                                "record_index": record_no,
-                                "mode": "single-record",
-                            },
-                        )
+                        with snapshot_actions.staged_store_path(store) as before_path:
+                            updated = folio_profiles.apply_record_fix(
+                                record,
+                                _rule,
+                                folio_context,
+                            )
+                            store.replace(record_no - 1, updated)
+                            _record_folio_snapshot(
+                                store,
+                                before_path=before_path,
+                                label="FOLIO safe fix",
+                                record_index=record_no,
+                                summary={
+                                    "rule": _rule.key,
+                                    "record_index": record_no,
+                                    "mode": "single-record",
+                                },
+                            )
                         st.session_state.pop("issues_cache", None)
 
             open_record_modal(

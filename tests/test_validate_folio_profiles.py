@@ -195,6 +195,10 @@ def test_preview_to_rows_formats_rule_counts():
         affected_records=2,
         affected_record_numbers=[3, 1],
         by_rule={"folio-new-load-forbidden-001": 2, "folio-ebook-required-655": 1},
+        affected_records_by_rule={
+            "folio-new-load-forbidden-001": [3, 1],
+            "folio-ebook-required-655": [3, 1],
+        },
         samples=[],
     )
 
@@ -206,6 +210,28 @@ def test_preview_to_rows_formats_rule_counts():
     ]
 
 
+def test_preview_to_rows_uses_rule_specific_affected_records():
+    """Batch preview rule rows must not inherit unrelated affected records."""
+    preview = folio_profiles.FolioBatchPreview(
+        total_fixes=2,
+        affected_records=2,
+        affected_record_numbers=[1, 2],
+        by_rule={"folio-new-load-forbidden-001": 1, "folio-ebook-required-655": 1},
+        affected_records_by_rule={
+            "folio-new-load-forbidden-001": [1],
+            "folio-ebook-required-655": [2],
+        },
+        samples=[],
+    )
+
+    rows = validate._preview_to_rows(preview)
+
+    assert rows == [
+        {"rule": "folio-ebook-required-655", "fixes": 1, "records": "2"},
+        {"rule": "folio-new-load-forbidden-001", "fixes": 1, "records": "1"},
+    ]
+
+
 def test_folio_preview_state_detects_stale_revision():
     """Applying a preview requires the same store revision that was previewed."""
     context = folio_profiles.FolioContext(profile_key="folio-new-instance")
@@ -214,6 +240,7 @@ def test_folio_preview_state_detects_stale_revision():
         affected_records=1,
         affected_record_numbers=[1],
         by_rule={"folio-new-load-forbidden-001": 1},
+        affected_records_by_rule={"folio-new-load-forbidden-001": [1]},
         samples=[],
     )
 
@@ -253,6 +280,7 @@ def test_folio_preview_state_detects_current_context_and_rules():
         affected_records=1,
         affected_record_numbers=[1],
         by_rule={"folio-new-load-forbidden-001": 1},
+        affected_records_by_rule={"folio-new-load-forbidden-001": [1]},
         samples=[],
     )
 
@@ -277,6 +305,47 @@ def test_folio_preview_state_detects_current_context_and_rules():
     ) is False
 
 
+def test_folio_preview_state_detects_rule_definition_changes():
+    """Changing structured rule data under the same key makes a preview stale."""
+    context = folio_profiles.FolioContext(profile_key="folio-new-instance")
+    original_rule = next(
+        rule for rule in folio_profiles.default_rules_for_tests()
+        if rule.key == "folio-new-load-forbidden-001"
+    )
+    changed_rule = folio_profiles.FolioRule(
+        key=original_rule.key,
+        profile_key=original_rule.profile_key,
+        label=original_rule.label,
+        severity=original_rule.severity,
+        target={"kind": "field", "tag": "999"},
+        requirement=original_rule.requirement,
+        fix={"operation": "remove_field", "tag": "999"},
+        enabled=original_rule.enabled,
+    )
+    preview = folio_profiles.FolioBatchPreview(
+        total_fixes=1,
+        affected_records=1,
+        affected_record_numbers=[1],
+        by_rule={original_rule.key: 1},
+        affected_records_by_rule={original_rule.key: [1]},
+        samples=[],
+    )
+
+    state = validate._build_folio_preview_state(
+        preview=preview,
+        store_revision=2,
+        folio_context=context,
+        profile_rules=[original_rule],
+    )
+
+    assert validate._folio_preview_state_is_current(
+        state,
+        store_revision=2,
+        folio_context=context,
+        profile_rules=[changed_rule],
+    ) is False
+
+
 def test_find_single_folio_fix_rule_returns_matching_rule(make_record):
     """Validate can map a selected FOLIO issue back to one safe fix rule."""
     rules = [
@@ -295,6 +364,7 @@ def test_find_single_folio_fix_rule_returns_matching_rule(make_record):
 
 def test_record_folio_snapshot_records_safe_fix_provenance(monkeypatch, tmp_path):
     """FOLIO fixes must create History provenance under the active job."""
+    before_path = tmp_path / "before.mrc"
     staged_path = tmp_path / "after.mrc"
     calls = []
 
@@ -321,6 +391,7 @@ def test_record_folio_snapshot_records_safe_fix_provenance(monkeypatch, tmp_path
 
     validate._record_folio_snapshot(
         store,
+        before_path=before_path,
         label="FOLIO safe fix",
         record_index=2,
         summary={
@@ -338,6 +409,7 @@ def test_record_folio_snapshot_records_safe_fix_provenance(monkeypatch, tmp_path
                 "job_id": 12,
                 "user_email": "user@example.org",
                 "label": "FOLIO safe fix",
+                "before_path": before_path,
                 "after_path": staged_path,
                 "record_index": 2,
                 "source": "folio-safe-fix",

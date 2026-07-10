@@ -73,6 +73,7 @@ class FolioBatchPreview:
     affected_records: int
     affected_record_numbers: list[int]
     by_rule: dict[str, int]
+    affected_records_by_rule: dict[str, list[int]]
     samples: list[FolioFixPlan]
 
 
@@ -377,6 +378,7 @@ def preview_batch_fixes(
     sample_limit: int = 10,
 ) -> FolioBatchPreview:
     by_rule: dict[str, int] = {}
+    affected_records_by_rule: dict[str, list[int]] = {}
     samples: list[FolioFixPlan] = []
     affected_record_numbers: list[int] = []
     affected = 0
@@ -390,6 +392,7 @@ def preview_batch_fixes(
         total += len(plans)
         for plan in plans:
             by_rule[plan.rule_key] = by_rule.get(plan.rule_key, 0) + 1
+            affected_records_by_rule.setdefault(plan.rule_key, []).append(idx)
             if len(samples) < sample_limit:
                 samples.append(plan)
     return FolioBatchPreview(
@@ -397,6 +400,7 @@ def preview_batch_fixes(
         affected_records=affected,
         affected_record_numbers=affected_record_numbers,
         by_rule=by_rule,
+        affected_records_by_rule=affected_records_by_rule,
         samples=samples,
     )
 
@@ -407,6 +411,7 @@ def apply_batch_fixes_to_store(
     context: FolioContext,
 ) -> FolioBatchPreview:
     by_rule: dict[str, int] = {}
+    affected_records_by_rule: dict[str, list[int]] = {}
     samples: list[FolioFixPlan] = []
     affected_record_numbers: list[int] = []
     affected = 0
@@ -426,6 +431,9 @@ def apply_batch_fixes_to_store(
                         )
                         updated = apply_record_fix(updated, rule, context)
                         by_rule[plan.rule_key] = by_rule.get(plan.rule_key, 0) + 1
+                        affected_records_by_rule.setdefault(
+                            plan.rule_key, []
+                        ).append(idx)
                         total += 1
                         if len(samples) < 10:
                             samples.append(plan)
@@ -439,6 +447,7 @@ def apply_batch_fixes_to_store(
         affected_records=affected,
         affected_record_numbers=affected_record_numbers,
         by_rule=by_rule,
+        affected_records_by_rule=affected_records_by_rule,
         samples=samples,
     )
 

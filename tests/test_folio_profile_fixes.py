@@ -155,6 +155,33 @@ def test_preview_batch_fixes_counts_without_mutating(make_record):
     assert records[0].get("001") is not None
 
 
+def test_preview_batch_fixes_tracks_affected_records_per_rule(make_record):
+    """Rule rows must list only records affected by that specific rule."""
+    record_with_001 = make_record()
+    record_missing_655 = make_record()
+    record_missing_655.remove_field(record_missing_655["001"])
+    record_missing_655.remove_fields("655")
+    rules = [
+        _rule("folio-new-load-forbidden-001"),
+        _rule("folio-ebook-required-655"),
+    ]
+
+    preview = folio_profiles.preview_batch_fixes(
+        [record_with_001, record_missing_655],
+        rules,
+        folio_profiles.FolioContext(
+            profile_key="folio-new-instance",
+            addons=("folio-ecollection-ebook",),
+        ),
+    )
+
+    assert preview.affected_record_numbers == [1, 2]
+    assert preview.affected_records_by_rule == {
+        "folio-new-load-forbidden-001": [1],
+        "folio-ebook-required-655": [2],
+    }
+
+
 def test_apply_batch_fixes_to_store_replaces_changed_records(make_record, tmp_path):
     """Confirmed batch application mutates the disk-backed store records."""
     store = RecordStore.from_records(
