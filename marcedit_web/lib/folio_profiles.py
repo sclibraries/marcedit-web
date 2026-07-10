@@ -320,6 +320,8 @@ def _has_holdings_item_path(record: pymarc.Record) -> bool:
 def _has_valid_949(record: pymarc.Record) -> bool:
     required = {"u", "y", "t", "p", "l", "b", "m"}
     for field in record.get_fields("949"):
+        if list(field.indicators) != ["\\", "\\"]:
+            continue
         codes = {
             subfield.code
             for subfield in field.subfields

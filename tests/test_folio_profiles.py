@@ -119,6 +119,35 @@ def test_loading_path_accepts_valid_949(make_record):
     assert issues == []
 
 
+def test_loading_path_rejects_wrong_949_indicators(make_record):
+    """The 949 loading path requires blank indicators."""
+    record = make_record()
+    record.add_field(
+        Field(
+            tag="949",
+            indicators=["1", "0"],
+            subfields=[
+                Subfield("u", "https://example.test/book"),
+                Subfield("y", "Connect to resource"),
+                Subfield("t", "ONLINE"),
+                Subfield("p", "EBOOK"),
+                Subfield("h", "EBOOK"),
+                Subfield("l", "elec"),
+                Subfield("b", "barcode-SC"),
+                Subfield("m", "sc"),
+            ],
+        )
+    )
+
+    issues = folio_profiles.evaluate_record(
+        record,
+        _rules("folio-loading-path-required"),
+        folio_profiles.FolioContext(profile_key="folio-new-instance"),
+    )
+
+    assert [item.issue.code for item in issues] == ["folio-loading-path-required"]
+
+
 def test_barcode_suffix_rule_uses_configured_suffix(make_record):
     """949 $b must end in the configured institution suffix."""
     record = make_record()
