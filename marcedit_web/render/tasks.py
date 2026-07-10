@@ -21,7 +21,6 @@ on every render. Save / delete / visibility writes go to SQL.
 from __future__ import annotations
 
 import copy
-import io
 import json
 import logging
 import tempfile
@@ -1329,16 +1328,20 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             stderr_excerpt=(result.stderr or "")[:512],
         )
 
-    # Re-count what we got back.
+    # Re-count what we got back without retaining parsed records.
     try:
-        out_records = list(pymarc.MARCReader(
-            io.BytesIO(result.records_bytes),
-            to_unicode=True,
-            permissive=True,
-        ))
+        with result.output_path.open("rb") as output_fh:
+            output_count = sum(
+                record is not None
+                for record in pymarc.MARCReader(
+                    output_fh,
+                    to_unicode=True,
+                    permissive=True,
+                )
+            )
     except Exception as exc:  # noqa: BLE001
         st.error(f"Could not parse sandbox output: {exc}")
-        out_records = []
+        output_count = 0
 
     issues: list[Issue] = []
     for err in result.errors:
@@ -1353,17 +1356,13 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
     # _render_diff_review. Same streaming cost either way; doing it
     # at run-completion means the audit row and TaskRunRecord carry
     # an accurate ``changed_count`` from the moment they're written.
-    sandbox_output_path = sandbox_workdir / "output.mrc"
-    try:
-        sandbox_output_path.write_bytes(result.records_bytes or b"")
-    except OSError as exc:
-        logger.warning("could not write history output snapshot: %s", exc)
+    sandbox_output_path = result.output_path
 
     diff_summary = None
     if result.returncode == 0 and not result.timed_out:
         try:
             diff_summary = task_diff.compute_task_diff(
-                sandbox_input, result.records_bytes or b"",
+                sandbox_input, sandbox_output_path,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not build task diff summary: %s", exc)
@@ -1374,11 +1373,15 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         kind="task-run",
         label=", ".join(selection) or "Task run",
         before_bytes=sandbox_input.read_bytes(),
-        after_bytes=result.records_bytes or b"",
+        after_bytes=(
+            sandbox_output_path.read_bytes()
+            if sandbox_output_path.exists()
+            else b""
+        ),
         summary={
             "task_names": list(selection),
             "input_record_count": store.count(),
-            "output_record_count": len(out_records),
+            "output_record_count": output_count,
             "changed_count": (
                 diff_summary.changed_count if diff_summary is not None else 0
             ),
@@ -1401,7 +1404,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         "out_filename": _export_filename(session.current_filename(), "tasks"),
         "out_path": str(sandbox_output_path),
         "input_count": store.count(),
-        "output_count": len(out_records),
+        "output_count": output_count,
         "ran_tasks": list(selection),
         "timed_out": result.timed_out,
         "sandbox_returncode": result.returncode,
@@ -1422,7 +1425,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         store=store,
         selection=list(selection),
         result=result,
-        out_records_count=len(out_records),
+        out_records_count=output_count,
         errors_count=len(issues),
         changed_count=(diff_summary.changed_count
                        if diff_summary is not None else 0),

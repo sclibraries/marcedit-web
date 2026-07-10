@@ -264,7 +264,7 @@ def _offer_diff(column, row: dict, before: Path, after: Path) -> None:
             st.session_state[K_OPEN_DIFF] = {
                 "snapshot_id": row["id"],
                 "summary": task_diff.compute_task_diff(
-                    before, after.read_bytes()
+                    before, after
                 ),
             }
             st.rerun()

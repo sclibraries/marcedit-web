@@ -66,10 +66,10 @@
 - Produces: `SandboxResult.output_path: Path`
 - Produces: `compute_task_diff(input_path: Path, output_path: Path, ...)`
 
-- [ ] Add failing tests that forbid reading sandbox output/input into whole-file bytes and exercise path-to-path diffing.
-- [ ] Run the tests and confirm failures identify the bytes contracts.
-- [ ] Return sandbox output paths, stream both diff inputs, and migrate task-run callers/session results to paths and counts.
-- [ ] Run sandbox/task/diff tests and commit the path-backed execution boundary.
+- [x] Add failing tests that forbid reading sandbox output/input into whole-file bytes and exercise path-to-path diffing.
+- [x] Run the tests and confirm failures identify the bytes contracts.
+- [x] Return sandbox output paths, stream both diff inputs, and migrate task-run callers/session results to paths and counts.
+- [x] Run sandbox/task/diff tests and commit the path-backed execution boundary.
 
 ### Task 4: Streamed Previews, Applies, And Snapshots
 

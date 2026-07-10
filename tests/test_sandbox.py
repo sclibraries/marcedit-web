@@ -38,6 +38,17 @@ def _serialize(records: list[pymarc.Record]) -> bytes:
     return buf.getvalue()
 
 
+def _read_output(result: SandboxResult) -> list[pymarc.Record]:
+    with result.output_path.open("rb") as fh:
+        return [
+            record
+            for record in pymarc.MARCReader(
+                fh, to_unicode=True, permissive=True
+            )
+            if record is not None
+        ]
+
+
 @pytest.fixture
 def one_record_bytes(record) -> bytes:
     """A serialized 1-record MARC blob."""
@@ -62,8 +73,7 @@ def test_noop_task_round_trips(one_record_bytes):
     )
     assert result.returncode == 0
     assert result.errors == []
-    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
-                                    to_unicode=True, permissive=True))
+    reread = _read_output(result)
     assert len(reread) == 1
     assert reread[0].get("001").data == "1234567890"
 
@@ -79,8 +89,7 @@ def test_delete_tag_via_transforms_helper(one_record_bytes):
     )
     assert result.returncode == 0
     assert result.errors == []
-    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
-                                    to_unicode=True, permissive=True))
+    reread = _read_output(result)
     assert reread[0].get("029") is None
 
 
@@ -108,8 +117,7 @@ def test_multiple_tasks_run_in_order(one_record_bytes):
         one_record_bytes,
     )
     assert result.returncode == 0
-    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
-                                    to_unicode=True, permissive=True))
+    reread = _read_output(result)
     assert reread[0].get("029") is None
     assert reread[0].get("891") is None
 
@@ -147,8 +155,7 @@ def test_task_030_new_ops_combined_smoke(one_record_bytes):
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert result.errors == [], f"errors: {result.errors}"
 
-    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
-                                    to_unicode=True, permissive=True))
+    reread = _read_output(result)
     rec = reread[0]
     # copy-field added a 956 mirror of every 856.
     assert len(rec.get_fields("956")) == len(
@@ -191,8 +198,7 @@ def test_task_exception_is_captured_not_raised(one_record_bytes):
     assert result.errors[0]["code"] == "transform-failed"
     assert "RuntimeError" in result.errors[0]["message"]
     # The record still makes it to the output (with no changes).
-    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
-                                    to_unicode=True, permissive=True))
+    reread = _read_output(result)
     assert len(reread) == 1
 
 
@@ -295,14 +301,13 @@ def test_empty_record_input_succeeds():
         b"",
     )
     assert result.returncode == 0
-    assert result.records_bytes == b""
+    assert result.output_path.read_bytes() == b""
 
 
 def test_empty_task_list_passes_records_through(one_record_bytes):
     result = run_tasks_subprocess([], one_record_bytes)
     assert result.returncode == 0
-    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
-                                    to_unicode=True, permissive=True))
+    reread = _read_output(result)
     assert len(reread) == 1
 
 
@@ -327,8 +332,7 @@ def test_input_path_supplies_records_without_in_memory_bytes(
         input_path=in_path,
     )
     assert result.returncode == 0
-    reread = list(pymarc.MARCReader(io.BytesIO(result.records_bytes),
-                                    to_unicode=True, permissive=True))
+    reread = _read_output(result)
     assert len(reread) == 1
     assert reread[0].get("001").data == "1234567890"
 
@@ -370,3 +374,29 @@ def test_input_path_is_used_directly_no_copy(one_record_bytes, tmp_path):
         tmp_dir=workdir,
     )
     assert not (workdir / "input.mrc").exists()
+
+
+def test_parent_returns_output_path_without_materializing_it(
+    one_record_bytes, tmp_path, monkeypatch
+):
+    """Large sandbox output remains on disk until a bounded consumer reads it."""
+    input_path = tmp_path / "input.mrc"
+    input_path.write_bytes(one_record_bytes)
+    workdir = tmp_path / "sandbox"
+    original_read_bytes = Path.read_bytes
+
+    def _guard_output(self):
+        if self.name == "output.mrc":
+            raise AssertionError("sandbox parent must not read all output bytes")
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _guard_output)
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        input_path=input_path,
+        tmp_dir=workdir,
+    )
+
+    assert result.output_path == workdir / "output.mrc"
+    assert result.output_path.is_file()

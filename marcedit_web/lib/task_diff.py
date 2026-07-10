@@ -15,6 +15,8 @@ preserves order, no match-key configuration.
 
 from __future__ import annotations
 
+import mmap
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
@@ -59,71 +61,83 @@ class TaskDiffSummary:
 
 def compute_task_diff(
     input_path: Path,
-    output_bytes: bytes,
+    output_path: Path,
     *,
     diff_cap: int = DEFAULT_DIFF_CAP,
 ) -> TaskDiffSummary:
     """Walk input and output in parallel; return a structured summary.
 
-    ``input_path`` is the on-disk MRC the sandbox read (typically
-    ``sandbox_workdir/input.mrc``). ``output_bytes`` is the
-    ``SandboxResult.records_bytes`` blob the child produced. Both are
-    iterated lazily — the input via a file read, the output via the
-    in-memory bytes — so this stays O(records) in memory cost.
+    ``input_path`` is the MRC the sandbox read and ``output_path`` is the
+    file it produced. Both are memory-mapped and sliced one record at a
+    time, so memory is bounded by the capped summary plus one record pair.
 
     Pairing is positional because the sandbox writes one output record
     per input record. A task that "drops" a record actually writes the
     original record on exception, so the cardinality matches.
     """
     summary = TaskDiffSummary()
-    input_data = input_path.read_bytes()
+    with _mapped_file(input_path) as input_data, _mapped_file(
+        output_path
+    ) as output_data:
+        in_iter = _iter_records_safe(input_data)
+        out_iter = _iter_records_safe(output_data)
 
-    in_iter = _iter_records_safe(input_data)
-    out_iter = _iter_records_safe(output_bytes)
+        while True:
+            in_pair = next(in_iter, None)
+            out_pair = next(out_iter, None)
+            if in_pair is None and out_pair is None:
+                break
+            if in_pair is None:
+                summary.total_out += 1
+                continue
+            if out_pair is None:
+                summary.total_in += 1
+                continue
 
-    while True:
-        in_pair = next(in_iter, None)
-        out_pair = next(out_iter, None)
-        if in_pair is None and out_pair is None:
-            break
-        if in_pair is None:
-            summary.total_out += 1
-            continue
-        if out_pair is None:
+            _, in_bytes = in_pair
+            _, out_bytes = out_pair
             summary.total_in += 1
-            continue
+            summary.total_out += 1
 
-        _, in_bytes = in_pair
-        _, out_bytes = out_pair
-        summary.total_in += 1
-        summary.total_out += 1
+            in_fp = marc_diff.fingerprint_record(
+                in_bytes, exclude_tags=frozenset()
+            )
+            out_fp = marc_diff.fingerprint_record(
+                out_bytes, exclude_tags=frozenset()
+            )
+            if in_fp == out_fp:
+                summary.unchanged_count += 1
+                continue
 
-        # Fast-path: same fingerprint = no change. Excluding NO tags
-        # here (default excludes 001/005 — but for task diffs the user
-        # cares about everything, including a 005 update).
-        in_fp = marc_diff.fingerprint_record(in_bytes, exclude_tags=frozenset())
-        out_fp = marc_diff.fingerprint_record(out_bytes, exclude_tags=frozenset())
-        if in_fp == out_fp:
-            summary.unchanged_count += 1
-            continue
+            summary.changed_count += 1
+            rows = marc_diff.field_diff(in_bytes, out_bytes)
+            _tally_per_tag(rows, summary)
 
-        summary.changed_count += 1
-        rows = marc_diff.field_diff(in_bytes, out_bytes)
-        _tally_per_tag(rows, summary)
-
-        if len(summary.per_record_diffs) < diff_cap:
-            summary.per_record_diffs.append(PerRecordDiff(
-                record_index=summary.total_in - 1,
-                identifier=_extract_001(rows),
-                rows=rows,
-            ))
-        else:
-            summary.cap_triggered = True
+            if len(summary.per_record_diffs) < diff_cap:
+                summary.per_record_diffs.append(PerRecordDiff(
+                    record_index=summary.total_in - 1,
+                    identifier=_extract_001(rows),
+                    rows=rows,
+                ))
+            else:
+                summary.cap_triggered = True
 
     return summary
 
 
-def _iter_records_safe(data: bytes) -> Iterator[tuple[int, bytes]]:
+@contextmanager
+def _mapped_file(path: Path):
+    """Yield bytes-like file content without allocating the whole file."""
+    path = Path(path)
+    with path.open("rb") as fh:
+        if path.stat().st_size == 0:
+            yield b""
+            return
+        with mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            yield mapped
+
+
+def _iter_records_safe(data) -> Iterator[tuple[int, bytes]]:
     """Yield ``(offset, record_bytes)`` and swallow late-trailer truncation.
 
     ``marc_diff._iter_records`` raises ``ValueError`` on a truncated

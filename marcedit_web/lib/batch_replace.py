@@ -22,7 +22,6 @@ function from growing another ~200 lines.
 from __future__ import annotations
 
 import hashlib
-import io
 import re
 import tempfile
 from dataclasses import dataclass, field
@@ -329,10 +328,10 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
         )
 
     try:
-        output_records = list(pymarc.MARCReader(
-            io.BytesIO(sandbox_result.records_bytes),
-            to_unicode=True, permissive=True,
-        ))
+        with sandbox_result.output_path.open("rb") as output_fh:
+            output_records = list(pymarc.MARCReader(
+                output_fh, to_unicode=True, permissive=True,
+            ))
     except Exception as exc:  # noqa: BLE001
         return BatchReplacePreview(
             request=request,
@@ -365,7 +364,9 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
             ),
         )
 
-    summary = task_diff.compute_task_diff(subset_path, sandbox_result.records_bytes)
+    summary = task_diff.compute_task_diff(
+        subset_path, sandbox_result.output_path
+    )
     return BatchReplacePreview(
         request=request,
         matched_indices=matched,
@@ -503,10 +504,10 @@ def _run_sandbox_over_matched(
         )
 
     try:
-        records = list(pymarc.MARCReader(
-            io.BytesIO(sandbox_result.records_bytes),
-            to_unicode=True, permissive=True,
-        ))
+        with sandbox_result.output_path.open("rb") as output_fh:
+            records = list(pymarc.MARCReader(
+                output_fh, to_unicode=True, permissive=True,
+            ))
     except Exception as exc:  # noqa: BLE001
         return f"Could not parse sandbox output during apply: {exc}"
 

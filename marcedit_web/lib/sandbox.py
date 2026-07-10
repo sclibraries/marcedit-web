@@ -76,15 +76,16 @@ class TaskSpec:
 class SandboxResult:
     """Outcome of a single sandbox invocation.
 
-    ``records_bytes`` is the MARC blob the child produced (possibly
-    empty when the run failed before any record was written).
+    ``output_path`` is the MARC file the child produced (possibly empty
+    when the run failed before any record was written). Keeping it on disk
+    prevents the Streamlit process from duplicating a large batch in RAM.
     ``errors`` is the structured per-record diagnostic list. ``stderr``
     is the raw child stderr — surfaced for debugging when the run
     failed outside the per-record loop (import error, segfault, etc).
     ``timed_out`` is True when the wall clock cap fired.
     """
 
-    records_bytes: bytes
+    output_path: Path
     errors: list[dict]
     stderr: str = ""
     returncode: int = 0
@@ -311,7 +312,6 @@ def run_tasks_subprocess(
         # The python interpreter wasn't found — that's a launcher bug.
         raise RuntimeError(f"sandbox could not spawn python: {exc}") from exc
 
-    out_bytes = output_path.read_bytes() if output_path.exists() else b""
     try:
         errors = json.loads(errors_path.read_text()) if errors_path.exists() else []
     except json.JSONDecodeError:
@@ -336,7 +336,7 @@ def run_tasks_subprocess(
         })
 
     return SandboxResult(
-        records_bytes=out_bytes,
+        output_path=output_path,
         errors=errors,
         stderr=stderr,
         returncode=returncode,
