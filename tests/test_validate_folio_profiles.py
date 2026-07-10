@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from marcedit_web.lib import folio_profiles
+from marcedit_web.lib.errors import Issue
 from marcedit_web.lib.rules import RuleSet
 from marcedit_web.render import validate
 
@@ -104,3 +105,81 @@ def test_build_folio_context_disabled_when_profile_blank():
         container_code="FC123",
         score_loading=False,
     ) is None
+
+
+def test_folio_fix_availability_is_per_issue_occurrence():
+    """Rows sharing a FOLIO code must not inherit another record's fix status."""
+    issues = [
+        Issue(
+            severity="warning",
+            scope="record",
+            code="folio-same-code",
+            message="fixable",
+            record_index=1,
+        ),
+        Issue(
+            severity="warning",
+            scope="record",
+            code="folio-same-code",
+            message="check only",
+            record_index=2,
+        ),
+    ]
+
+    rows = validate._build_issue_rows(
+        issues,
+        fixable_issue_keys={("folio-same-code", 1)},
+    )
+
+    assert rows[0]["fix_available"] == "yes"
+    assert rows[1]["fix_available"] == ""
+
+
+def test_folio_fix_availability_uses_cached_validation_result(monkeypatch):
+    """Render row metadata must not rescan records after validation computes it."""
+    calls = 0
+    issue = Issue(
+        severity="warning",
+        scope="record",
+        code="folio-one",
+        message="fixable",
+        record_index=1,
+    )
+
+    def fake_evaluate_records(_records, _rules, _context):
+        nonlocal calls
+        calls += 1
+        return [
+            folio_profiles.FolioIssue(
+                issue=issue,
+                rule_key="folio-one",
+                fix_available=True,
+            )
+        ]
+
+    monkeypatch.setattr(validate.st, "status", lambda *_args, **_kwargs: _FakeStatus())
+    monkeypatch.setattr(validate.preflight, "run_preflight", lambda **_kwargs: [])
+    monkeypatch.setattr(validate.rules_validate, "validate_records", lambda *_args: [])
+    monkeypatch.setattr(validate.load_readiness, "validate_records", lambda *_args: [])
+    monkeypatch.setattr(
+        validate.folio_profiles,
+        "rules_for_profile",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        validate.folio_profiles,
+        "evaluate_records",
+        fake_evaluate_records,
+    )
+
+    result = validate._compute_validation_result(
+        RuleSet(),
+        _FakeStore([object()]),
+        malformed=0,
+        folio_context=folio_profiles.FolioContext(profile_key="folio-new-instance"),
+    )
+    validate._build_issue_rows(result.issues, result.fixable_issue_keys)
+    validate._build_issue_rows(result.issues, result.fixable_issue_keys)
+
+    assert calls == 1
+    assert result.fixable_issue_keys == {("folio-one", 1)}

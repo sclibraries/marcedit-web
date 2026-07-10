@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pandas as pd
 import streamlit as st
 
@@ -39,6 +41,12 @@ def _decorate_severity(value: str) -> str:
 # this name. The actual logic now lives in ``lib/issue_tags`` so the
 # inline editor (TASK-057) can reuse it for Ace annotations.
 _tag_for_issue = issue_tags.tag_for_issue
+
+
+@dataclass(frozen=True)
+class _ValidationResult:
+    issues: list[Issue]
+    fixable_issue_keys: set[tuple[str, int | None]]
 
 
 def _build_folio_context(
@@ -90,6 +98,20 @@ def _compute_issues(
     malformed: int,
     folio_context: folio_profiles.FolioContext | None = None,
 ) -> list[Issue]:
+    return _compute_validation_result(
+        rule_set,
+        store,
+        malformed,
+        folio_context,
+    ).issues
+
+
+def _compute_validation_result(
+    rule_set: rules_mod.RuleSet | None,
+    store,
+    malformed: int,
+    folio_context: folio_profiles.FolioContext | None = None,
+) -> _ValidationResult:
     """Run preflight + rules in two streaming passes, wrapped in a
     user-visible status block so the cataloger sees progress."""
     with st.status("Validating records…", expanded=False) as status:
@@ -118,6 +140,7 @@ def _compute_issues(
             store.iter_records() if store else iter([]),
         )
         folio_issues: list[Issue] = []
+        fixable_issue_keys: set[tuple[str, int | None]] = set()
         if folio_context is not None:
             status.update(label="Applying FOLIO profile rules...")
             profile_rules = folio_profiles.rules_for_profile(
@@ -130,6 +153,11 @@ def _compute_issues(
                 folio_context,
             )
             folio_issues = [result.issue for result in folio_results]
+            fixable_issue_keys = {
+                (result.issue.code, result.issue.record_index)
+                for result in folio_results
+                if result.fix_available
+            }
         all_issues: list[Issue] = (
             preflight_issues + rule_issues + load_issues + folio_issues
         )
@@ -137,7 +165,34 @@ def _compute_issues(
             label=f"Done — {len(all_issues)} issue(s) found.",
             state="complete",
         )
-    return all_issues
+    return _ValidationResult(all_issues, fixable_issue_keys)
+
+
+def _build_issue_rows(
+    issues: list[Issue],
+    fixable_issue_keys: set[tuple[str, int | None]],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "severity": issue.severity,
+            "scope": issue.scope,
+            "code": issue.code,
+            "record": str(issue.record_index) if issue.record_index else "—",
+            "identifier": issue.identifier or "—",
+            "message": issue.message,
+            "suggestion": issue.suggestion or "",
+            "fix_available": (
+                "yes"
+                if (issue.code, issue.record_index) in fixable_issue_keys
+                else ""
+            ),
+            # Stash the derived tag on the row so the View widget
+            # can pass it to the modal without re-running the
+            # regex sweep on every selectbox change.
+            "_tag": _tag_for_issue(issue) or "",
+        }
+        for issue in issues
+    ]
 
 
 def render(
@@ -220,11 +275,17 @@ def render(
         store.revision if store else 0,
         folio_context,
     )
-    all_issues = cache.get(cache_key)
-    if all_issues is None:
-        all_issues = _compute_issues(rule_set, store, malformed, folio_context)
+    validation_result = cache.get(cache_key)
+    if validation_result is None:
+        validation_result = _compute_validation_result(
+            rule_set,
+            store,
+            malformed,
+            folio_context,
+        )
         cache.clear()
-        cache[cache_key] = all_issues
+        cache[cache_key] = validation_result
+    all_issues = validation_result.issues
 
     col_a, col_b, col_c, col_d = st.columns(4)
     col_a.metric("Records", record_count)
@@ -237,37 +298,10 @@ def render(
         st.success("No issues found.")
         return
 
-    fixable_codes: set[str] = set()
-    if folio_context is not None and store is not None:
-        profile_rules = folio_profiles.rules_for_profile(
-            folio_context.profile_key,
-            include_addons=folio_context.addons,
-        )
-        for item in folio_profiles.evaluate_records(
-            store.iter_records(),
-            profile_rules,
-            folio_context,
-        ):
-            if item.fix_available:
-                fixable_codes.add(item.issue.code)
-
-    issue_rows = [
-        {
-            "severity": i.severity,
-            "scope": i.scope,
-            "code": i.code,
-            "record": str(i.record_index) if i.record_index else "—",
-            "identifier": i.identifier or "—",
-            "message": i.message,
-            "suggestion": i.suggestion or "",
-            "fix_available": "yes" if i.code in fixable_codes else "",
-            # Stash the derived tag on the row so the View widget
-            # can pass it to the modal without re-running the
-            # regex sweep on every selectbox change.
-            "_tag": _tag_for_issue(i) or "",
-        }
-        for i in all_issues
-    ]
+    issue_rows = _build_issue_rows(
+        all_issues,
+        validation_result.fixable_issue_keys,
+    )
     df = pd.DataFrame(issue_rows)
 
     col_f1, col_f2, col_f3 = st.columns(3)
