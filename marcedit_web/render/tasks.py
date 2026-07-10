@@ -2075,6 +2075,7 @@ def _apply_quick_preview(preview) -> None:
     if store is None:
         st.error("No loaded batch — upload one on Home first.")
         return
+    before_bytes = store.to_mrc_bytes()
     result = batch_replace.apply_preview(store, preview)
     if result.error:
         st.error(result.error)
@@ -2086,6 +2087,38 @@ def _apply_quick_preview(preview) -> None:
         return
 
     user = session.current_user_id()
+    label = f"Find/replace {preview.request.tag}"
+    if preview.request.subfield:
+        label += f"${preview.request.subfield}"
+    try:
+        snapshot = snapshot_actions.record_job_snapshot(
+            job_id=st.session_state.get("current_job_id"),
+            user_email=user,
+            kind="quick-replace",
+            label=label,
+            before_bytes=before_bytes,
+            after_bytes=store.to_mrc_bytes(),
+            summary={
+                "matched_count": len(preview.matched_indices),
+                "changed_count": preview.changed_count,
+                "applied_count": len(result.applied_indices),
+            },
+        )
+    except Exception:  # noqa: BLE001 — snapshot loss must not block the apply
+        logger.exception("quick find/replace snapshot failed")
+        snapshot = None
+        st.warning(
+            "Change applied, but recording the history snapshot failed."
+        )
+    if snapshot is not None:
+        audit_event(
+            "job-snapshot-created",
+            user=user,
+            snapshot_id=snapshot["id"],
+            job_id=snapshot["job_id"],
+            snapshot_kind=snapshot["kind"],
+        )
+
     audit_event(
         "batch-replace-applied",
         user=user,
