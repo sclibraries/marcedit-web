@@ -198,24 +198,29 @@ def evaluate_record(
     identifier = _identifier(record)
     out: list[FolioIssue] = []
     for rule in rules:
-        if not rule.enabled:
+        if not rule.enabled or not _rule_applies_to_context(rule, context):
             continue
         if _rule_is_violated(record, rule, context):
+            fix_available = _fix_available(record, rule, context)
             out.append(
                 FolioIssue(
                     issue=make_record_issue(
                         rule.severity,
                         rule.key,
                         rule.label,
-                        _suggestion_for(rule, context),
+                        _suggestion_for(rule, fix_available),
                         record_index,
                         identifier,
                     ),
                     rule_key=rule.key,
-                    fix_available=_fix_available(record, rule, context),
+                    fix_available=fix_available,
                 )
             )
     return out
+
+
+def _rule_applies_to_context(rule: FolioRule, context: FolioContext) -> bool:
+    return rule.profile_key == context.profile_key or rule.profile_key in context.addons
 
 
 def _rule_is_violated(
@@ -339,20 +344,12 @@ def _normalized_suffix(raw: str) -> str:
     return value if value.startswith("-") else f"-{value}"
 
 
-def _suggestion_for(rule: FolioRule, context: FolioContext) -> str:
-    if _fix_available_empty_context(rule):
+def _suggestion_for(rule: FolioRule, fix_available: bool) -> str:
+    if fix_available:
         return "Use the FOLIO safe-fix action to apply the configured correction."
     if rule.key == "folio-roundtrip-required-001":
         return "Restore the FOLIO SRS 001 before loading; the app cannot infer it safely."
     return "Review this record against the selected FOLIO profile."
-
-
-def _fix_available_empty_context(rule: FolioRule) -> bool:
-    return rule.fix.get("operation") in {
-        "remove_field",
-        "add_field",
-        "normalize_barcode_suffix",
-    }
 
 
 def _profile_from_row(row) -> FolioProfile:

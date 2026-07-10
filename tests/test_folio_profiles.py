@@ -59,6 +59,20 @@ def test_ebook_profile_flags_missing_655_with_safe_fix(make_record):
     assert issues[0].fix_available is True
 
 
+def test_ebook_rule_does_not_fire_without_addon(make_record):
+    """Add-on rules only apply when the add-on is selected in context."""
+    record = make_record()
+    record.remove_fields("655")
+
+    issues = folio_profiles.evaluate_record(
+        record,
+        _rules("folio-ebook-required-655"),
+        folio_profiles.FolioContext(profile_key="folio-new-instance"),
+    )
+
+    assert issues == []
+
+
 def test_008_byte_29_rejects_government_document_values(make_record):
     """008 byte 29 values s/z/o are unsafe for EDS display."""
     record = make_record()
