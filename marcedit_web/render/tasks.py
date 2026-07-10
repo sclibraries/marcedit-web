@@ -23,6 +23,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import shutil
 import tempfile
 import uuid
 from datetime import datetime
@@ -1372,12 +1373,8 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         user_email=user,
         kind="task-run",
         label=", ".join(selection) or "Task run",
-        before_bytes=sandbox_input.read_bytes(),
-        after_bytes=(
-            sandbox_output_path.read_bytes()
-            if sandbox_output_path.exists()
-            else b""
-        ),
+        before_path=sandbox_input,
+        after_path=sandbox_output_path,
         summary={
             "task_names": list(selection),
             "input_record_count": store.count(),
@@ -1763,7 +1760,7 @@ def _export_filename(orig: str | None, operation: str) -> str:
 def _disk_backed_export(
     *,
     filename: str,
-    data: bytes,
+    source_path: Path,
     snapshot: dict | None,
     prefix: str,
 ) -> dict:
@@ -1775,7 +1772,7 @@ def _disk_backed_export(
     else:
         export_dir = Path(tempfile.mkdtemp(prefix=prefix))
         path = export_dir / filename
-        path.write_bytes(data)
+        shutil.copyfile(source_path, path)
         temporary_dir = str(export_dir)
         temporary = True
     return {
@@ -1888,7 +1885,9 @@ def _render_quick_find_replace() -> None:
         ):
             _build_and_store_preview(request)
         if btn_reset.button("Reset", key="br_reset_btn"):
-            st.session_state.pop(_K_BR_PREVIEW, None)
+            batch_replace.cleanup_preview(
+                st.session_state.pop(_K_BR_PREVIEW, None)
+            )
             st.rerun()
 
         preview = st.session_state.get(_K_BR_PREVIEW)
@@ -1915,7 +1914,8 @@ def _build_and_store_preview(request: BatchReplaceRequest) -> None:
             st.error(str(exc))
             return
 
-    st.session_state.pop(_K_QB_PREVIEW, None)
+    quick_batch.cleanup_preview(st.session_state.pop(_K_QB_PREVIEW, None))
+    batch_replace.cleanup_preview(st.session_state.get(_K_BR_PREVIEW))
     st.session_state[_K_BR_PREVIEW] = preview
 
 
@@ -1934,18 +1934,18 @@ def _render_quick_preview(preview) -> None:
         return
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Matched", len(preview.matched_indices))
+    c1.metric("Matched", preview.matched_count)
     c2.metric("Changed (in preview)", preview.changed_count)
     c3.metric(
         "Previewed records",
-        len(preview.output_records),
+        preview.previewed_count,
     )
 
     if preview.preview_cap_triggered:
         st.info(
             f"Sandbox preview ran against the first "
-            f"**{len(preview.output_records):,}** of "
-            f"**{len(preview.matched_indices):,}** matched records. "
+            f"**{preview.previewed_count:,}** of "
+            f"**{preview.matched_count:,}** matched records. "
             "Apply will run a fresh sandbox over the full matched set "
             "before committing — review the diff below to spot-check "
             "what the transform does."
@@ -1975,41 +1975,36 @@ def _apply_quick_preview(preview) -> None:
     if store is None:
         st.error("No loaded batch — upload one on Home first.")
         return
-    before_bytes = store.to_mrc_bytes()
-    result = batch_replace.apply_preview(store, preview)
-    if result.error:
-        st.error(result.error)
-        if result.stale_indices:
-            st.caption(
-                "Stale indices (1-based): "
-                + ", ".join(str(i + 1) for i in result.stale_indices)
-            )
-        return
+    with snapshot_actions.staged_store_path(store) as before_path:
+        result = batch_replace.apply_preview(store, preview)
+        if result.error:
+            st.error(result.error)
+            return
 
-    user = session.current_user_id()
-    label = f"Find/replace {preview.request.tag}"
-    if preview.request.subfield:
-        label += f"${preview.request.subfield}"
-    try:
-        snapshot = snapshot_actions.record_job_snapshot(
-            job_id=st.session_state.get("current_job_id"),
-            user_email=user,
-            kind="quick-replace",
-            label=label,
-            before_bytes=before_bytes,
-            after_bytes=store.to_mrc_bytes(),
-            summary={
-                "matched_count": len(preview.matched_indices),
-                "changed_count": preview.changed_count,
-                "applied_count": len(result.applied_indices),
-            },
-        )
-    except Exception:  # noqa: BLE001 — snapshot loss must not block the apply
-        logger.exception("quick find/replace snapshot failed")
-        snapshot = None
-        st.warning(
-            "Change applied, but recording the history snapshot failed."
-        )
+        user = session.current_user_id()
+        label = f"Find/replace {preview.request.tag}"
+        if preview.request.subfield:
+            label += f"${preview.request.subfield}"
+        try:
+            snapshot = snapshot_actions.record_job_snapshot(
+                job_id=st.session_state.get("current_job_id"),
+                user_email=user,
+                kind="quick-replace",
+                label=label,
+                before_path=before_path,
+                after_path=store.path,
+                summary={
+                    "matched_count": preview.matched_count,
+                    "changed_count": preview.changed_count,
+                    "applied_count": result.applied_count,
+                },
+            )
+        except Exception:  # noqa: BLE001 — snapshot loss must not block the apply
+            logger.exception("quick find/replace snapshot failed")
+            snapshot = None
+            st.warning(
+                "Change applied, but recording the history snapshot failed."
+            )
     if snapshot is not None:
         audit_event(
             "job-snapshot-created",
@@ -2027,16 +2022,16 @@ def _apply_quick_preview(preview) -> None:
         subfield=preview.request.subfield,
         regex=preview.request.regex,
         ignore_case=preview.request.ignore_case,
-        matched_count=len(preview.matched_indices),
+        matched_count=preview.matched_count,
         changed_count=preview.changed_count,
-        applied_count=len(result.applied_indices),
+        applied_count=result.applied_count,
     )
     # Stale derived state — Validate / Report / etc. cached the
     # pre-apply numbers.
     st.session_state["issues_cache"] = {}
-    st.session_state.pop(_K_BR_PREVIEW, None)
+    batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
     st.success(
-        f"Applied to {len(result.applied_indices)} record(s). "
+        f"Applied to {result.applied_count} record(s). "
         "Other records are unchanged."
     )
     st.rerun()
@@ -2216,7 +2211,8 @@ def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
         preview = quick_batch.build_preview(store, request, progress=on_progress)
     progress.empty()
     status.empty()
-    st.session_state.pop(_K_BR_PREVIEW, None)
+    batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
+    quick_batch.cleanup_preview(st.session_state.get(_K_QB_PREVIEW))
     st.session_state[_K_QB_PREVIEW] = preview
 
 
@@ -2227,7 +2223,7 @@ def _render_quick_batch_preview(preview) -> None:
         return
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Records", len(preview.output_records))
+    c1.metric("Records", preview.record_count)
     c2.metric("Changed", preview.changed_count)
     c3.metric("Unchanged", preview.skipped_count)
 
@@ -2256,36 +2252,40 @@ def _apply_quick_batch_preview(preview) -> None:
     if store is None:
         st.error("No loaded batch — upload one on Home first.")
         return
-    record_count = len(preview.output_records)
+    record_count = preview.record_count
     on_progress, progress, status = _quick_batch_progress("Checking")
-    before_bytes = store.to_mrc_bytes()
-
-    with st.spinner(
-        f"Applying quick batch operation to {record_count:,} record"
-        f"{'s' if record_count != 1 else ''}…"
-    ):
-        result = quick_batch.apply_preview(store, preview, progress=on_progress)
-    progress.empty()
-    status.empty()
-    if result.error:
-        st.error(result.error)
-        return
-    after_bytes = store.to_mrc_bytes()
-    export_filename = _export_filename(session.current_filename(), "quickbatch")
-    snapshot = snapshot_actions.record_job_snapshot(
-        job_id=st.session_state.get("current_job_id"),
-        user_email=session.current_user_id(),
-        kind="quick-batch",
-        label=_QB_OPERATION_LABELS.get(preview.request.kind, preview.request.kind),
-        before_bytes=before_bytes,
-        after_bytes=after_bytes,
-        summary={
-            "operation_kind": preview.request.kind,
-            "changed_count": result.changed_count,
-            "skipped_count": result.skipped_count,
-            "export_filename": export_filename,
-        },
-    )
+    with snapshot_actions.staged_store_path(store) as before_path:
+        with st.spinner(
+            f"Applying quick batch operation to {record_count:,} record"
+            f"{'s' if record_count != 1 else ''}…"
+        ):
+            result = quick_batch.apply_preview(
+                store, preview, progress=on_progress
+            )
+        progress.empty()
+        status.empty()
+        if result.error:
+            st.error(result.error)
+            return
+        export_filename = _export_filename(
+            session.current_filename(), "quickbatch"
+        )
+        snapshot = snapshot_actions.record_job_snapshot(
+            job_id=st.session_state.get("current_job_id"),
+            user_email=session.current_user_id(),
+            kind="quick-batch",
+            label=_QB_OPERATION_LABELS.get(
+                preview.request.kind, preview.request.kind
+            ),
+            before_path=before_path,
+            after_path=store.path,
+            summary={
+                "operation_kind": preview.request.kind,
+                "changed_count": result.changed_count,
+                "skipped_count": result.skipped_count,
+                "export_filename": export_filename,
+            },
+        )
     if snapshot is not None:
         audit_event(
             "job-snapshot-created",
@@ -2304,12 +2304,12 @@ def _apply_quick_batch_preview(preview) -> None:
         skipped_count=result.skipped_count,
     )
     st.session_state["issues_cache"] = {}
-    st.session_state.pop(_K_QB_PREVIEW, None)
+    quick_batch.cleanup_preview(st.session_state.pop(_K_QB_PREVIEW, None))
     st.session_state.pop(K_QB_DOWNLOAD_READY, None)
     _cleanup_disk_backed_export(st.session_state.get(_K_QB_EXPORT))
     st.session_state[_K_QB_EXPORT] = _disk_backed_export(
         filename=export_filename,
-        data=after_bytes,
+        source_path=store.path,
         snapshot=snapshot,
         prefix="marcedit-web-quickbatch-",
     )

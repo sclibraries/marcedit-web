@@ -10,6 +10,7 @@ readable ``.mrc``.
 from __future__ import annotations
 
 import io
+import mmap
 
 import pymarc
 import pytest
@@ -129,6 +130,32 @@ def test_write_subset_yields_only_non_keepers(dupe_fixture):
     # contain only the SECOND copy (001 = "rec-c").
     assert reread[0].get("001").data == "rec-c"
     assert reread[0].get("245").get_subfields("a") == ["Second copy"]
+
+
+def test_write_subset_to_path_streams_non_keepers(
+    dupe_fixture, tmp_path
+):
+    """A large deletes export must be written to disk, not returned as bytes."""
+    source_path = tmp_path / "source.mrc"
+    source_path.write_bytes(dupe_fixture)
+    output_path = tmp_path / "deletes.mrc"
+    result = marc_diff.index_buffer("loaded", dupe_fixture, [OCOLC_SPEC])
+    non_keeper = result.duplicate_offsets["111"][1]
+
+    with source_path.open("rb") as source_fh:
+        with mmap.mmap(source_fh.fileno(), 0, access=mmap.ACCESS_READ) as source:
+            written = marc_diff.write_subset_to_path(
+                [("loaded", non_keeper)],
+                {"loaded": source},
+                output_path,
+            )
+
+    with output_path.open("rb") as output_fh:
+        records = list(
+            pymarc.MARCReader(output_fh, to_unicode=True, permissive=True)
+        )
+    assert written == output_path.stat().st_size
+    assert [record.get("001").data for record in records] == ["rec-c"]
 
 
 def test_keeper_choice_affects_export(dupe_fixture):

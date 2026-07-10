@@ -145,7 +145,7 @@ def _prepare_export(store, filename: str, snapshot_count: int) -> None:
     out_name = session.stamped_filename(f"{stem}_export", ".mrc")
     export_dir = Path(tempfile.mkdtemp(prefix="marcedit-web-history-"))
     path = export_dir / out_name
-    path.write_bytes(store.to_mrc_bytes())
+    store.write_mrc_to(path)
     st.session_state[K_EXPORT] = {
         "path": str(path),
         "filename": out_name,
@@ -211,10 +211,10 @@ def _render_snapshot_entry(row: dict) -> None:
             "before state."
         ),
     ):
-        raw = provenance.restore_bytes(int(row["id"]))
+        source_path = provenance.restore_path(int(row["id"]))
         filename = session.current_filename() or f"snapshot-{row['id']}.mrc"
-        session.replace_current_store_from_bytes(
-            raw,
+        session.replace_current_store_from_path(
+            source_path,
             filename=filename,
             job_id=int(row["job_id"]),
         )

@@ -129,8 +129,9 @@ def test_quick_batch_preview_stores_non_mutating_preview(monkeypatch, tmp_path):
     tasks_render._build_and_store_quick_batch_preview(request)
 
     preview = fake_st.session_state[tasks_render._K_QB_PREVIEW]
+    preview_store = RecordStore.from_path(preview.output_path)
     assert preview.changed_count == 1
-    assert str(preview.output_records[0].leader)[5] == "c"
+    assert str(preview_store.get(0).leader)[5] == "c"
     assert str(store.get(0).leader)[5] == "n"
     assert fake_st.progress_updates == [0.0, 1.0]
     assert fake_st.status_messages == ["Previewing record 1 of 1…"]

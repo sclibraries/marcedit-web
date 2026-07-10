@@ -5,6 +5,7 @@ from __future__ import annotations
 import pymarc
 import pytest
 
+from marcedit_web.lib import quick_batch as qb
 from marcedit_web.lib.quick_batch import (
     QuickBatchRequest,
     apply_preview,
@@ -40,6 +41,15 @@ def _field(tag, *pairs, ind1=" ", ind2=" "):
     )
 
 
+def _preview_records(preview):
+    with preview.output_path.open("rb") as fh:
+        return [
+            record
+            for record in pymarc.MARCReader(fh, to_unicode=True, permissive=True)
+            if record is not None
+        ]
+
+
 def test_leader_request_sets_safe_position_on_every_record(tmp_path):
     store = _store(tmp_path, _record(), _record())
     request = QuickBatchRequest(kind="leader", position="05", value="c")
@@ -48,7 +58,7 @@ def test_leader_request_sets_safe_position_on_every_record(tmp_path):
 
     assert preview.error is None
     assert preview.changed_count == 2
-    assert [str(record.leader)[5] for record in preview.output_records] == ["c", "c"]
+    assert [str(record.leader)[5] for record in _preview_records(preview)] == ["c", "c"]
     assert [str(record.leader)[5] for record in store.iter_records()] == ["n", "n"]
 
 
@@ -68,7 +78,7 @@ def test_008_form_request_updates_known_position_and_skips_missing_008(tmp_path)
 
     assert preview.changed_count == 1
     assert preview.skipped_count == 1
-    assert preview.output_records[0].get("008").data[23] == "q"
+    assert _preview_records(preview)[0].get("008").data[23] == "q"
 
 
 def test_040_cleanup_adds_rda_and_local_modifier_without_duplicates(tmp_path):
@@ -78,7 +88,7 @@ def test_040_cleanup_adds_rda_and_local_modifier_without_duplicates(tmp_path):
 
     preview = build_preview(store, request)
 
-    field = preview.output_records[0].get("040")
+    field = _preview_records(preview)[0].get("040")
     assert preview.changed_count == 0
     assert field.get_subfields("e") == ["rda"]
     assert field.get_subfields("d") == ["MiU"]
@@ -90,7 +100,7 @@ def test_040_cleanup_creates_missing_field(tmp_path):
 
     preview = build_preview(store, request)
 
-    field = preview.output_records[0].get("040")
+    field = _preview_records(preview)[0].get("040")
     assert preview.changed_count == 1
     assert field.get_subfields("e") == ["rda"]
     assert field.get_subfields("d") == ["MiU"]
@@ -114,7 +124,7 @@ def test_856_add_proxy_only_updates_unproxied_urls(tmp_path):
 
     urls = [
         value
-        for field in preview.output_records[0].get_fields("856")
+        for field in _preview_records(preview)[0].get_fields("856")
         for value in field.get_subfields("u")
     ]
     assert preview.changed_count == 1
@@ -133,7 +143,7 @@ def test_856_remove_proxy_strips_existing_prefix(tmp_path):
     preview = build_preview(store, request)
 
     assert preview.changed_count == 1
-    assert preview.output_records[0].get("856")["u"] == "https://vendor.example/book"
+    assert _preview_records(preview)[0].get("856")["u"] == "https://vendor.example/book"
 
 
 def test_856_delete_matching_url_removes_matching_fields(tmp_path):
@@ -151,7 +161,7 @@ def test_856_delete_matching_url_removes_matching_fields(tmp_path):
     preview = build_preview(store, request)
 
     assert preview.changed_count == 1
-    assert preview.output_records[0].get("856")["u"] == "https://keep.example/book"
+    assert _preview_records(preview)[0].get("856")["u"] == "https://keep.example/book"
     assert preview.detail_counts == {"856 removed: https://vendor.example/book": 1}
 
 
@@ -166,7 +176,7 @@ def test_035_oclc_cleanup_normalizes_duplicates_and_preserves_035_9(tmp_path):
 
     preview = build_preview(store, request)
 
-    fields = preview.output_records[0].get_fields("035")
+    fields = _preview_records(preview)[0].get_fields("035")
     assert preview.changed_count == 1
     assert [field.get_subfields("a") for field in fields] == [["(OCoLC)123"], []]
     assert fields[1].get_subfields("9") == ["(FCMUSEOA)"]
@@ -181,7 +191,7 @@ def test_035_oclc_cleanup_preserves_attached_035_9_on_duplicate(tmp_path):
 
     preview = build_preview(store, QuickBatchRequest(kind="035-oclc"))
 
-    fields = preview.output_records[0].get_fields("035")
+    fields = _preview_records(preview)[0].get_fields("035")
     assert fields[0].get_subfields("a") == ["(OCoLC)123"]
     assert fields[1].get_subfields("a") == []
     assert fields[1].get_subfields("9") == ["(FCMUSEOA)"]
@@ -193,7 +203,7 @@ def test_035_oclc_cleanup_keeps_distinct_oclc_values_in_one_field(tmp_path):
 
     preview = build_preview(store, QuickBatchRequest(kind="035-oclc"))
 
-    field = preview.output_records[0].get("035")
+    field = _preview_records(preview)[0].get("035")
     assert field.get_subfields("a") == ["(OCoLC)123"]
     assert field.get_subfields("z") == ["(OCoLC)456"]
 
@@ -214,9 +224,9 @@ def test_9xx_delete_exact_tag_and_range(tmp_path):
         QuickBatchRequest(kind="9xx-delete", tag="9XX"),
     )
 
-    assert [field.tag for field in exact_preview.output_records[0].fields] == ["001", "950"]
+    assert [field.tag for field in _preview_records(exact_preview)[0].fields] == ["001", "950"]
     assert exact_preview.detail_counts == {"949 removed": 1}
-    assert range_preview.output_records[0].get_fields("949", "950") == []
+    assert _preview_records(range_preview)[0].get_fields("949", "950") == []
     assert range_preview.detail_counts == {"949 removed": 1, "950 removed": 1}
 
 
@@ -232,7 +242,7 @@ def test_655_cleanup_adds_standard_field_and_deletes_unwanted_text(tmp_path):
 
     preview = build_preview(store, request)
 
-    fields = preview.output_records[0].get_fields("655")
+    fields = _preview_records(preview)[0].get_fields("655")
     assert preview.changed_count == 1
     assert len(fields) == 1
     assert fields[0].get_subfields("a") == ["Electronic books."]
@@ -248,6 +258,50 @@ def test_build_preview_reports_changed_and_skipped_counts(tmp_path):
 
     assert preview.changed_count == 0
     assert preview.skipped_count == 2
+
+
+def test_preview_keeps_transformed_batch_on_disk(tmp_path):
+    """A 100K preview must not retain every parsed record or fingerprint."""
+    store = _store(tmp_path, _record(), _record())
+
+    preview = build_preview(
+        store,
+        QuickBatchRequest(kind="leader", position="05", value="c"),
+    )
+
+    assert preview.output_path is not None
+    output = RecordStore.from_path(preview.output_path)
+    assert [str(record.leader)[5] for record in output.iter_records()] == ["c", "c"]
+    assert preview.store_revision == store.revision
+    assert not hasattr(preview, "output_records")
+    assert not hasattr(preview, "fingerprints")
+
+
+def test_build_preview_cleans_partial_artifact_on_transform_error(
+    monkeypatch, tmp_path
+):
+    """A failed 100K preview must not strand its partially written batch."""
+    store = _store(tmp_path, _record())
+    workdir = tmp_path / "failed-preview"
+
+    def _mkdtemp(*, prefix):
+        workdir.mkdir()
+        return str(workdir)
+
+    monkeypatch.setattr(qb.tempfile, "mkdtemp", _mkdtemp)
+    monkeypatch.setattr(
+        qb,
+        "_apply_to_record",
+        lambda record, request: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        build_preview(
+            store,
+            QuickBatchRequest(kind="leader", position="05", value="c"),
+        )
+
+    assert not workdir.exists()
 
 
 def test_build_preview_reports_progress(tmp_path):
@@ -296,7 +350,7 @@ def test_apply_preview_reports_progress(tmp_path):
     )
 
     assert result.applied
-    assert events == [(1, 2), (2, 2)]
+    assert events == [(2, 2)]
 
 
 @pytest.mark.parametrize(

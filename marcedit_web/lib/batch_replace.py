@@ -3,10 +3,9 @@
 The cataloger fills a small form (tag, subfield, find, replace, regex
 toggles); we walk the live :class:`RecordStore`, write the matching
 subset to a temp MARC file, ship it through the existing subprocess
-sandbox under a one-shot task body emitted by
-:mod:`task_builder`, and surface a :class:`task_diff.TaskDiffSummary`
-as the preview. Apply re-fingerprints each matched record against the
-live store and refuses if anything has drifted since the preview.
+sandbox under a one-shot task body emitted by :mod:`task_builder`, and
+surface a :class:`task_diff.TaskDiffSummary` as the preview. Preview state
+keeps only counts, paths, and the source store revision.
 
 No saved task file is created; the task body lives only in the
 sandbox driver's exec call. The wizard reuses the audit + diff
@@ -21,10 +20,10 @@ function from growing another ~200 lines.
 
 from __future__ import annotations
 
-import hashlib
 import re
+import shutil
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -62,23 +61,14 @@ class BatchReplacePreview:
     """Outcome of a non-mutating preview pass."""
 
     request: BatchReplaceRequest
-    matched_indices: list[int]                 # 0-based RecordStore indices
-    fingerprints: dict[int, str]               # index → sha256 of record bytes
+    matched_count: int = 0
+    previewed_count: int = 0
+    store_id: int | None = None
+    store_revision: int | None = None
     diff_summary: Optional[task_diff.TaskDiffSummary] = None
-    output_records: list[pymarc.Record] = field(default_factory=list)
-    sandbox_workdir: Optional[str] = None
+    output_path: Path | None = None
+    sandbox_workdir: Path | None = None
     error: Optional[str] = None
-    # TASK-046: snapshot of which loaded batch this preview was built
-    # against. Apply refuses if the cataloger swapped the active file
-    # between Preview and Apply (cataloger sees a clear "batch
-    # changed" message instead of a fingerprint-accidentally-matches
-    # mutation).
-    batch_identity: Optional[tuple[str, int]] = None  # (filename, count)
-    # TASK-046: True when the sandbox-side preview was capped at
-    # MAX_PREVIEW_MATCHES. Apply still operates on the full matched
-    # set; the UI surfaces "previewing first N of M" to keep the
-    # cataloger honest about what they reviewed.
-    preview_cap_triggered: bool = False
 
     @property
     def changed_count(self) -> int:
@@ -86,20 +76,23 @@ class BatchReplacePreview:
 
     @property
     def is_empty(self) -> bool:
-        return not self.matched_indices
+        return self.matched_count == 0
+
+    @property
+    def preview_cap_triggered(self) -> bool:
+        return self.matched_count > self.previewed_count
 
 
 @dataclass
 class BatchReplaceResult:
     """Outcome of an Apply call."""
 
-    applied_indices: list[int] = field(default_factory=list)
-    stale_indices: list[int] = field(default_factory=list)
+    applied_count: int = 0
     error: Optional[str] = None
 
     @property
     def applied(self) -> bool:
-        return bool(self.applied_indices) and not self.stale_indices
+        return self.applied_count > 0 and self.error is None
 
 
 # ---------------------------------------------------------------------------
@@ -153,53 +146,32 @@ def matched_indices_for(store, request: BatchReplaceRequest) -> list[int]:
     that contains the find text (regex or literal, case-sensitive or
     not).
     """
-    compiled = None
+    matcher = _matcher_for(request)
+    return [
+        idx
+        for idx, record in enumerate(store.iter_records())
+        if _record_matches(record, request, matcher)
+    ]
+
+
+def _matcher_for(request: BatchReplaceRequest):
     if request.regex:
         flags = re.IGNORECASE if request.ignore_case else 0
-        compiled = re.compile(request.find, flags)
-    needle = request.find
-    needle_cmp = needle.lower() if request.ignore_case else needle
-
-    matched: list[int] = []
-    for idx, record in enumerate(store.iter_records()):
-        if not record.get_fields(request.tag):
-            continue
-        for field_obj in record.get_fields(request.tag):
-            hit = False
-            for hay in _haystacks_for(field_obj, request.subfield):
-                if compiled is not None:
-                    if compiled.search(hay):
-                        hit = True
-                        break
-                else:
-                    hay_cmp = hay.lower() if request.ignore_case else hay
-                    if needle_cmp in hay_cmp:
-                        hit = True
-                        break
-            if hit:
-                matched.append(idx)
-                break
-    return matched
+        return re.compile(request.find, flags)
+    return request.find.lower() if request.ignore_case else request.find
 
 
-# ---------------------------------------------------------------------------
-# Fingerprint (stale-preview detection)
-# ---------------------------------------------------------------------------
-
-
-def fingerprint_record(record: pymarc.Record) -> str:
-    """SHA-256 of ``record.as_marc()`` bytes — the stale-detection key."""
-    return hashlib.sha256(record.as_marc()).hexdigest()
-
-
-def _fingerprints_for(store, indices: list[int]) -> dict[int, str]:
-    out: dict[int, str] = {}
-    for idx in indices:
-        rec = store.get(idx)
-        if rec is None:
-            continue
-        out[idx] = fingerprint_record(rec)
-    return out
+def _record_matches(record, request: BatchReplaceRequest, matcher) -> bool:
+    for field_obj in record.get_fields(request.tag):
+        for haystack in _haystacks_for(field_obj, request.subfield):
+            if request.regex:
+                if matcher.search(haystack):
+                    return True
+            else:
+                candidate = haystack.lower() if request.ignore_case else haystack
+                if matcher in candidate:
+                    return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -235,30 +207,35 @@ def _operation_for(request: BatchReplaceRequest) -> Operation:
     )
 
 
-def _write_subset(store, indices: list[int], path: Path) -> None:
-    """Stream the matched records to ``path`` as a binary MARC subset."""
+def _write_matching_subset(
+    store,
+    request: BatchReplaceRequest,
+    path: Path,
+    *,
+    limit: int | None = None,
+) -> int:
+    """Stream matching records to ``path`` and return the full match count."""
+    matcher = _matcher_for(request)
+    matched_count = 0
     with path.open("wb") as fh:
         writer = pymarc.MARCWriter(fh)
-        for idx in indices:
-            rec = store.get(idx)
-            if rec is not None:
-                writer.write(rec)
+        for record in store.iter_records():
+            if not _record_matches(record, request, matcher):
+                continue
+            matched_count += 1
+            if limit is None or matched_count <= limit:
+                writer.write(record)
+    return matched_count
 
 
-def _batch_identity(store) -> Optional[tuple[str, int]]:
-    """Return a stable ``(filename, count)`` snapshot of the active batch.
-
-    Used by build_preview to record which batch a preview was built
-    against; apply_preview rejects if the identity has changed.
-    """
-    if store is None:
-        return None
-    filename = getattr(store, "filename", None) or "(unnamed)"
-    try:
-        count = store.count()
-    except Exception:  # noqa: BLE001 — defensive in callsite context
-        count = -1
-    return (filename, count)
+def _count_records(path: Path) -> int:
+    with Path(path).open("rb") as fh:
+        return sum(
+            record is not None
+            for record in pymarc.MARCReader(
+                fh, to_unicode=True, permissive=True
+            )
+        )
 
 
 def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
@@ -279,46 +256,51 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
     if err is not None:
         raise ValueError(err)
 
-    batch_id = _batch_identity(store)
-
-    matched = matched_indices_for(store, request)
-    if not matched:
-        return BatchReplacePreview(
-            request=request,
-            matched_indices=[],
-            fingerprints={},
-            batch_identity=batch_id,
-        )
-
-    # Sandbox-run only the first N matches when the set is large.
-    # Apply re-runs against the full matched list — preview is just
-    # the cataloger's sample.
-    cap_triggered = len(matched) > MAX_PREVIEW_MATCHES
-    preview_indices = matched[:MAX_PREVIEW_MATCHES] if cap_triggered else matched
-
-    fingerprints = _fingerprints_for(store, matched)
+    source_revision = store.revision
     workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-batch-replace-"))
     subset_path = workdir / "subset.mrc"
-    _write_subset(store, preview_indices, subset_path)
+    try:
+        matched_count = _write_matching_subset(
+            store,
+            request,
+            subset_path,
+            limit=MAX_PREVIEW_MATCHES,
+        )
+    except Exception:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
+    previewed_count = min(matched_count, MAX_PREVIEW_MATCHES)
+    if matched_count == 0:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return BatchReplacePreview(
+            request=request,
+            store_id=id(store),
+            store_revision=source_revision,
+        )
 
-    rendered = task_builder.render_ops_to_python([_operation_for(request)])
-    spec = sandbox.TaskSpec(
-        name="batch-find-replace",
-        body=rendered["body"],
-        imports=list(rendered["imports"]),
-    )
-    sandbox_result = sandbox.run_tasks_subprocess(
-        [spec], input_path=subset_path, tmp_dir=workdir,
-    )
+    try:
+        rendered = task_builder.render_ops_to_python([_operation_for(request)])
+        spec = sandbox.TaskSpec(
+            name="batch-find-replace",
+            body=rendered["body"],
+            imports=list(rendered["imports"]),
+        )
+        sandbox_result = sandbox.run_tasks_subprocess(
+            [spec], input_path=subset_path, tmp_dir=workdir,
+        )
+    except Exception:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
 
     if sandbox_result.timed_out or sandbox_result.returncode != 0:
         return BatchReplacePreview(
             request=request,
-            matched_indices=matched,
-            fingerprints=fingerprints,
-            sandbox_workdir=str(workdir),
-            batch_identity=batch_id,
-            preview_cap_triggered=cap_triggered,
+            matched_count=matched_count,
+            previewed_count=previewed_count,
+            store_id=id(store),
+            store_revision=source_revision,
+            output_path=sandbox_result.output_path,
+            sandbox_workdir=workdir,
             error=(
                 "Sandbox timed out — try fewer matches."
                 if sandbox_result.timed_out
@@ -328,54 +310,51 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
         )
 
     try:
-        with sandbox_result.output_path.open("rb") as output_fh:
-            output_records = list(pymarc.MARCReader(
-                output_fh, to_unicode=True, permissive=True,
-            ))
+        output_count = _count_records(sandbox_result.output_path)
     except Exception as exc:  # noqa: BLE001
         return BatchReplacePreview(
             request=request,
-            matched_indices=matched,
-            fingerprints=fingerprints,
-            sandbox_workdir=str(workdir),
-            batch_identity=batch_id,
-            preview_cap_triggered=cap_triggered,
+            matched_count=matched_count,
+            previewed_count=previewed_count,
+            store_id=id(store),
+            store_revision=source_revision,
+            output_path=sandbox_result.output_path,
+            sandbox_workdir=workdir,
             error=f"Could not parse sandbox output: {exc}",
         )
 
-    # Drop None entries (malformed records in pymarc's eyes).
-    output_records = [r for r in output_records if r is not None]
-
-    # Pair count check — sandbox preserves order and writes one
-    # output per input even on per-record exception, so counts
-    # should match the SUBSET we sandbox-ran (preview_indices).
-    if len(output_records) != len(preview_indices):
+    if output_count != previewed_count:
         return BatchReplacePreview(
             request=request,
-            matched_indices=matched,
-            fingerprints=fingerprints,
-            sandbox_workdir=str(workdir),
-            batch_identity=batch_id,
-            preview_cap_triggered=cap_triggered,
+            matched_count=matched_count,
+            previewed_count=previewed_count,
+            store_id=id(store),
+            store_revision=source_revision,
+            output_path=sandbox_result.output_path,
+            sandbox_workdir=workdir,
             error=(
-                f"Sandbox returned {len(output_records)} records for "
-                f"{len(preview_indices)} sandboxed inputs — refusing to "
+                f"Sandbox returned {output_count} records for "
+                f"{previewed_count} sandboxed inputs — refusing to "
                 "apply a mismatched batch."
             ),
         )
 
-    summary = task_diff.compute_task_diff(
-        subset_path, sandbox_result.output_path
-    )
+    try:
+        summary = task_diff.compute_task_diff(
+            subset_path, sandbox_result.output_path
+        )
+    except Exception:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
     return BatchReplacePreview(
         request=request,
-        matched_indices=matched,
-        fingerprints=fingerprints,
+        matched_count=matched_count,
+        previewed_count=previewed_count,
+        store_id=id(store),
+        store_revision=source_revision,
         diff_summary=summary,
-        output_records=output_records,
-        sandbox_workdir=str(workdir),
-        batch_identity=batch_id,
-        preview_cap_triggered=cap_triggered,
+        output_path=sandbox_result.output_path,
+        sandbox_workdir=workdir,
     )
 
 
@@ -385,137 +364,101 @@ def build_preview(store, request: BatchReplaceRequest) -> BatchReplacePreview:
 
 
 def apply_preview(store, preview: BatchReplacePreview) -> BatchReplaceResult:
-    """Commit the transform back to ``store`` at the matched indices.
-
-    Defenses in order:
-
-    1. **Preview error state** — refuse outright.
-    2. **Empty matched set** — refuse with a clarifying message.
-    3. **Batch identity drift** (TASK-046) — if the loaded file
-       changed since Preview, the matched indices may now point at
-       different records. Refuse and force a fresh preview.
-    4. **Record fingerprint drift** — even with the same batch
-       loaded, if any matched record was edited (inline editor, a
-       different task run, etc.) between Preview and Apply, refuse
-       so the cataloger doesn't overwrite work they didn't see.
-    5. **Preview was capped** (TASK-046) — when the preview only
-       sandbox-ran the first N of M matches, run a fresh sandbox
-       over the full matched set before committing.
-
-    Returns a :class:`BatchReplaceResult` indicating success
-    (``applied_indices`` populated, ``stale_indices`` empty) or
-    refusal (``error`` populated; ``stale_indices`` may carry the
-    drifted index list).
-    """
+    """Stream a fresh full transform and atomically adopt it."""
     if preview.error:
         return BatchReplaceResult(error=f"Preview is in error state: {preview.error}")
     if preview.is_empty:
         return BatchReplaceResult(error="No matched records to apply.")
+    if preview.store_id != id(store) or preview.store_revision != store.revision:
+        return BatchReplaceResult(error="Batch changed since preview.")
 
-    # TASK-046 #2: batch-identity check.
-    current_id = _batch_identity(store)
-    if preview.batch_identity is not None and current_id != preview.batch_identity:
-        prev_name, prev_count = preview.batch_identity
-        curr_name, curr_count = current_id or ("(none)", 0)
-        return BatchReplaceResult(
-            error=(
-                f"Batch changed since the preview was built — preview was "
-                f"against `{prev_name}` ({prev_count} records); current is "
-                f"`{curr_name}` ({curr_count} records). Rebuild the preview "
-                "before applying."
-            ),
-        )
-
-    # Fingerprint drift detection — covers the in-place-edited case.
-    stale: list[int] = []
-    for idx, expected_fp in preview.fingerprints.items():
-        rec = store.get(idx)
-        if rec is None:
-            stale.append(idx)
-            continue
-        if fingerprint_record(rec) != expected_fp:
-            stale.append(idx)
-    if stale:
-        return BatchReplaceResult(
-            applied_indices=[],
-            stale_indices=stale,
-            error=(
-                f"Stale preview — {len(stale)} record(s) have changed since "
-                "the preview was built. Rebuild the preview and try again."
-            ),
-        )
-
-    # TASK-046 #1: when the preview was capped, sandbox-run the full
-    # matched set before committing.
-    if preview.preview_cap_triggered:
-        full_records = _run_sandbox_over_matched(store, preview)
-        if isinstance(full_records, str):
-            return BatchReplaceResult(error=full_records)
-        records_for_apply = full_records
-    else:
-        if len(preview.output_records) != len(preview.matched_indices):
-            return BatchReplaceResult(
-                error="Preview output is inconsistent with matched indices — "
-                      "rebuild the preview and try again.",
-            )
-        records_for_apply = preview.output_records
-
-    for idx, new_record in zip(preview.matched_indices, records_for_apply):
-        store.replace(idx, new_record)
-    return BatchReplaceResult(
-        applied_indices=list(preview.matched_indices),
-        stale_indices=[],
-    )
-
-
-def _run_sandbox_over_matched(
-    store, preview: BatchReplacePreview,
-) -> "list[pymarc.Record] | str":
-    """Sandbox-run the preview's request over the full matched index set.
-
-    Used at Apply time when the preview-pass capped at
-    :data:`MAX_PREVIEW_MATCHES`. Returns a list of output records
-    parallel to ``preview.matched_indices`` on success, or an error
-    string on failure (sandbox timeout / non-zero exit / output
-    parse failure / cardinality mismatch).
-    """
     workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-batch-replace-apply-"))
-    subset_path = workdir / "subset.mrc"
-    _write_subset(store, preview.matched_indices, subset_path)
-
-    rendered = task_builder.render_ops_to_python(
-        [_operation_for(preview.request)]
-    )
-    spec = sandbox.TaskSpec(
-        name="batch-find-replace-apply",
-        body=rendered["body"],
-        imports=list(rendered["imports"]),
-    )
-    sandbox_result = sandbox.run_tasks_subprocess(
-        [spec], input_path=subset_path, tmp_dir=workdir,
-    )
-
-    if sandbox_result.timed_out:
-        return "Sandbox timed out during apply — try a narrower query."
-    if sandbox_result.returncode != 0:
-        return (
-            f"Sandbox exited with code {sandbox_result.returncode}: "
-            f"{(sandbox_result.stderr or '').strip()[:300]}"
-        )
-
     try:
-        with sandbox_result.output_path.open("rb") as output_fh:
-            records = list(pymarc.MARCReader(
-                output_fh, to_unicode=True, permissive=True,
-            ))
-    except Exception as exc:  # noqa: BLE001
-        return f"Could not parse sandbox output during apply: {exc}"
-
-    records = [r for r in records if r is not None]
-    if len(records) != len(preview.matched_indices):
-        return (
-            f"Apply sandbox returned {len(records)} records for "
-            f"{len(preview.matched_indices)} matched inputs — refusing to "
-            "commit a mismatched batch."
+        subset_path = workdir / "subset.mrc"
+        matched_count = _write_matching_subset(
+            store, preview.request, subset_path
         )
-    return records
+        if matched_count != preview.matched_count:
+            return BatchReplaceResult(error="Batch changed since preview.")
+
+        rendered = task_builder.render_ops_to_python(
+            [_operation_for(preview.request)]
+        )
+        spec = sandbox.TaskSpec(
+            name="batch-find-replace-apply",
+            body=rendered["body"],
+            imports=list(rendered["imports"]),
+        )
+        sandbox_result = sandbox.run_tasks_subprocess(
+            [spec], input_path=subset_path, tmp_dir=workdir,
+        )
+        if sandbox_result.timed_out:
+            return BatchReplaceResult(
+                error="Sandbox timed out during apply — try a narrower query."
+            )
+        if sandbox_result.returncode != 0:
+            return BatchReplaceResult(
+                error=(
+                    f"Sandbox exited with code {sandbox_result.returncode}: "
+                    f"{(sandbox_result.stderr or '').strip()[:300]}"
+                )
+            )
+        output_count = _count_records(sandbox_result.output_path)
+        if output_count != matched_count:
+            return BatchReplaceResult(
+                error=(
+                    f"Apply sandbox returned {output_count} records for "
+                    f"{matched_count} matched inputs — refusing to commit "
+                    "a mismatched batch."
+                )
+            )
+
+        merged_path = workdir / "merged.mrc"
+        applied_count = _merge_transformed_matches(
+            store,
+            preview.request,
+            sandbox_result.output_path,
+            merged_path,
+        )
+        store.replace_from_path(merged_path)
+        return BatchReplaceResult(applied_count=applied_count)
+    except Exception as exc:  # noqa: BLE001
+        return BatchReplaceResult(error=f"Could not apply sandbox output: {exc}")
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _merge_transformed_matches(
+    store,
+    request: BatchReplaceRequest,
+    transformed_path: Path,
+    output_path: Path,
+) -> int:
+    matcher = _matcher_for(request)
+    applied_count = 0
+    with transformed_path.open("rb") as transformed_fh, output_path.open(
+        "wb"
+    ) as output_fh:
+        transformed = iter(pymarc.MARCReader(
+            transformed_fh, to_unicode=True, permissive=True
+        ))
+        writer = pymarc.MARCWriter(output_fh)
+        for record in store.iter_records():
+            if _record_matches(record, request, matcher):
+                replacement = next(transformed, None)
+                if replacement is None:
+                    raise ValueError("sandbox output ended before all matches")
+                writer.write(replacement)
+                applied_count += 1
+            else:
+                writer.write(record)
+        if next(transformed, None) is not None:
+            raise ValueError("sandbox output contains extra records")
+    return applied_count
+
+
+def cleanup_preview(preview: BatchReplacePreview | None) -> None:
+    workdir = getattr(preview, "sandbox_workdir", None)
+    if workdir is None:
+        return
+    shutil.rmtree(workdir, ignore_errors=True)

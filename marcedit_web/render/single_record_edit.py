@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import difflib
 import html
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -677,24 +678,25 @@ def _save_validated_record(
             status_container.error(f"Cannot save: {exc}")
             return False
 
-    before_bytes = store.to_mrc_bytes()
-    store.replace(index - 1, result.record)
-    after_bytes = store.to_mrc_bytes()
-    try:
-        store.persist_to_disk()
-    except OSError as exc:
-        status_container.error(f"Cannot save: edited record was not persisted. {exc}")
-        return False
+    with snapshot_actions.staged_store_path(store) as before_path:
+        store.replace(index - 1, result.record)
+        try:
+            store.persist_to_disk()
+        except OSError as exc:
+            status_container.error(
+                f"Cannot save: edited record was not persisted. {exc}"
+            )
+            return False
 
-    snapshot = snapshot_actions.record_edit_snapshot(
-        job_id=st.session_state.get("current_job_id"),
-        user_email=session.current_user_id(),
-        label=f"Single record edit #{index}",
-        before_bytes=before_bytes,
-        after_bytes=after_bytes,
-        record_index=index,
-        source=key_prefix,
-    )
+        snapshot = snapshot_actions.record_edit_snapshot(
+            job_id=st.session_state.get("current_job_id"),
+            user_email=session.current_user_id(),
+            label=f"Single record edit #{index}",
+            before_path=before_path,
+            after_path=store.path,
+            record_index=index,
+            source=key_prefix,
+        )
     if snapshot is not None:
         audit_event(
             "job-snapshot-created",
@@ -717,7 +719,17 @@ def _clear_export_payloads(session_state: dict, key_prefix: str) -> None:
     prefix = f"{key_prefix}_export_payload_"
     for key in list(session_state):
         if key.startswith(prefix):
-            session_state.pop(key, None)
+            payload = session_state.pop(key, None)
+            if isinstance(payload, dict):
+                path = payload.get("path")
+                if path:
+                    Path(path).unlink(missing_ok=True)
+                directory = payload.get("directory")
+                if directory:
+                    try:
+                        Path(directory).rmdir()
+                    except OSError:
+                        pass
 
 
 def _render_export_controls(
@@ -736,16 +748,23 @@ def _render_export_controls(
         orig = session.current_filename() or "edited.mrc"
         stem = Path(orig).stem or "edited"
         filename = session.stamped_filename(stem)
-        st.session_state[payload_key] = (store.to_mrc_bytes(), filename)
+        export_dir = Path(tempfile.mkdtemp(prefix="marcedit-web-record-export-"))
+        path = export_dir / filename
+        store.write_mrc_to(path)
+        st.session_state[payload_key] = {
+            "path": str(path),
+            "directory": str(export_dir),
+            "filename": filename,
+        }
 
     payload = st.session_state.get(payload_key)
     if payload is None:
         return
-    data, filename = payload
+    path = Path(payload["path"])
     download_col.download_button(
-        label=f"Download {filename}",
-        data=data,
-        file_name=filename,
+        label=f"Download {payload['filename']}",
+        data=path.read_bytes(),
+        file_name=payload["filename"],
         mime="application/marc",
         key=f"{key_prefix}_download_export_{index}_{suffix}",
     )

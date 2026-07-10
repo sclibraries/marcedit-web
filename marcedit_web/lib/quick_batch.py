@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import re
+import shutil
+import tempfile
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 import pymarc
@@ -130,21 +132,14 @@ class QuickBatchRequest:
 @dataclass
 class QuickBatchPreview:
     request: QuickBatchRequest
-    output_records: list[pymarc.Record] = field(default_factory=list)
-    changed_indices: list[int] = field(default_factory=list)
-    skipped_indices: list[int] = field(default_factory=list)
-    fingerprints: dict[int, str] = field(default_factory=dict)
-    batch_identity: tuple[str, int] | None = None
+    output_path: Path | None = None
+    workdir: Path | None = None
+    record_count: int = 0
+    changed_count: int = 0
+    skipped_count: int = 0
+    store_revision: int | None = None
     detail_counts: dict[str, int] = field(default_factory=dict)
     error: str | None = None
-
-    @property
-    def changed_count(self) -> int:
-        return len(self.changed_indices)
-
-    @property
-    def skipped_count(self) -> int:
-        return len(self.skipped_indices)
 
 
 @dataclass
@@ -203,40 +198,51 @@ def build_preview(
     if error:
         return QuickBatchPreview(request=request, error=error)
 
-    output_records: list[pymarc.Record] = []
-    changed_indices: list[int] = []
-    skipped_indices: list[int] = []
-    fingerprints: dict[int, str] = {}
+    workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-quick-batch-"))
+    output_path = workdir / "output.mrc"
+    changed_count = 0
+    skipped_count = 0
     detail_counts: Counter[str] = Counter()
     total = store.count()
-    for idx, record in enumerate(store.iter_records()):
-        fingerprints[idx] = fingerprint_record(record)
-        new_record = copy.deepcopy(record)
-        before = new_record.as_marc()
-        _apply_to_record(new_record, request)
-        after = new_record.as_marc()
-        output_records.append(new_record)
-        if after != before:
-            changed_indices.append(idx)
-            detail_counts.update(_detail_counts_for(record, new_record, request))
-        else:
-            skipped_indices.append(idx)
-        if progress is not None:
-            progress(idx + 1, total)
+    try:
+        with output_path.open("wb") as output_fh:
+            writer = pymarc.MARCWriter(output_fh)
+            for idx, record in enumerate(store.iter_records()):
+                new_record = copy.deepcopy(record)
+                before = new_record.as_marc()
+                _apply_to_record(new_record, request)
+                after = new_record.as_marc()
+                writer.write(new_record)
+                if after != before:
+                    changed_count += 1
+                    detail_counts.update(
+                        _detail_counts_for(record, new_record, request)
+                    )
+                else:
+                    skipped_count += 1
+                if progress is not None:
+                    progress(idx + 1, total)
+    except Exception:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
     return QuickBatchPreview(
         request=request,
-        output_records=output_records,
-        changed_indices=changed_indices,
-        skipped_indices=skipped_indices,
-        fingerprints=fingerprints,
-        batch_identity=_batch_identity(store),
+        output_path=output_path,
+        workdir=workdir,
+        record_count=total,
+        changed_count=changed_count,
+        skipped_count=skipped_count,
+        store_revision=store.revision,
         detail_counts=dict(detail_counts),
     )
 
 
 def apply_request(store, request: QuickBatchRequest) -> QuickBatchResult:
     preview = build_preview(store, request)
-    return apply_preview(store, preview)
+    try:
+        return apply_preview(store, preview)
+    finally:
+        cleanup_preview(preview)
 
 
 def apply_preview(
@@ -247,61 +253,25 @@ def apply_preview(
 ) -> QuickBatchResult:
     if preview.error:
         return QuickBatchResult(error=preview.error)
-    if preview.batch_identity != _batch_identity(store):
+    if preview.store_revision != store.revision:
         return QuickBatchResult(error="Loaded batch changed since preview.")
-    stale_indices = _stale_indices(store, preview, progress=progress)
-    if stale_indices:
-        return QuickBatchResult(
-            stale_indices=stale_indices,
-            error="Loaded records changed since preview.",
-        )
-    store.replace_all(preview.output_records)
+    if preview.output_path is None or not preview.output_path.is_file():
+        return QuickBatchResult(error="Preview output is no longer available.")
+    if progress is not None and preview.record_count:
+        progress(preview.record_count, preview.record_count)
+    store.replace_from_path(preview.output_path)
     return QuickBatchResult(
         changed_count=preview.changed_count,
         skipped_count=preview.skipped_count,
     )
 
 
-def fingerprint_record(record: pymarc.Record) -> str:
-    return hashlib.sha256(record.as_marc()).hexdigest()
-
-
-def _batch_identity(store) -> tuple[str, int]:
-    filename = getattr(store, "filename", None) or "(unnamed)"
-    return (filename, store.count())
-
-
-def _stale_indices(
-    store,
-    preview: QuickBatchPreview,
-    *,
-    progress: ProgressCallback | None = None,
-) -> list[int]:
-    stale: list[int] = []
-    fingerprints = preview.fingerprints
-    seen: set[int] = set()
-    total = len(preview.fingerprints)
-    processed = 0
-    for idx, record in enumerate(store.iter_records()):
-        expected = fingerprints.get(idx)
-        if expected is None:
-            continue
-        seen.add(idx)
-        if fingerprint_record(record) != expected:
-            stale.append(idx)
-        processed += 1
-        if progress is not None:
-            progress(processed, total)
-        if processed >= total:
-            break
-    for idx in fingerprints:
-        if idx in seen:
-            continue
-        stale.append(idx)
-        processed += 1
-        if progress is not None:
-            progress(processed, total)
-    return stale
+def cleanup_preview(preview: QuickBatchPreview | None) -> None:
+    """Remove a superseded preview's disk artifact."""
+    workdir = getattr(preview, "workdir", None)
+    if workdir is None:
+        return
+    shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _apply_to_record(record: pymarc.Record, request: QuickBatchRequest) -> None:

@@ -85,10 +85,10 @@
 - Preview values carry `store_revision`, counts, capped summaries, and paths only.
 - Snapshot creation consumes `before_path: Path` and `after_path: Path`.
 
-- [ ] Add failing tests that reject full record lists/bytes, prove revision-based stale detection, preserve rollback files, and clean failed/superseded artifacts.
-- [ ] Verify the failures before production edits.
-- [ ] Stream preview/apply output, atomically call `replace_from_path`, and migrate every whole-batch snapshot caller to disk-to-disk copies.
-- [ ] Run all affected flow tests and commit the bounded-memory mutation pipeline.
+- [x] Add failing tests that reject full record lists/bytes, prove revision-based stale detection, preserve rollback files, and clean failed/superseded artifacts.
+- [x] Verify the failures before production edits.
+- [x] Stream preview/apply output, atomically call `replace_from_path`, and migrate every whole-batch snapshot caller to disk-to-disk copies.
+- [x] Run all affected flow tests and commit the bounded-memory mutation pipeline.
 
 ### Task 5: Admission Control And Performance Telemetry
 

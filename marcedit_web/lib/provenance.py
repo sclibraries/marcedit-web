@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -12,6 +13,7 @@ from uuid import uuid4
 from . import db
 
 DEFAULT_SNAPSHOT_CAP = 20
+_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 def snapshots_root() -> Path:
@@ -25,8 +27,10 @@ def create_snapshot(
     user_email: str,
     kind: str,
     label: str,
-    before_bytes: bytes,
-    after_bytes: bytes,
+    before_path: Path | None = None,
+    after_path: Path | None = None,
+    before_bytes: bytes | None = None,
+    after_bytes: bytes | None = None,
     summary: dict[str, Any] | None = None,
     cap: int = DEFAULT_SNAPSHOT_CAP,
 ) -> dict[str, Any]:
@@ -38,34 +42,65 @@ def create_snapshot(
     snap_dir = snapshots_root() / str(job_id)
     snap_dir.mkdir(parents=True, exist_ok=True)
     token = uuid4().hex
-    before_path = snap_dir / f"{token}-before.mrc"
-    after_path = snap_dir / f"{token}-after.mrc"
-    before_path.write_bytes(before_bytes)
-    after_path.write_bytes(after_bytes)
-    summary_json = json.dumps(summary or {}, sort_keys=True)
-
-    with db.connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO job_snapshots(job_id, user_email, kind, label,"
-            " before_path, after_path, summary_json, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                job_id,
-                user_email,
-                kind,
-                label,
-                str(before_path),
-                str(after_path),
-                summary_json,
-                created_at,
-            ),
+    snapshot_before_path = snap_dir / f"{token}-before.mrc"
+    snapshot_after_path = snap_dir / f"{token}-after.mrc"
+    try:
+        _write_snapshot_file(
+            snapshot_before_path,
+            source_path=before_path,
+            source_bytes=before_bytes,
+            label="before",
         )
-        snapshot_id = int(cur.lastrowid)
-        row = _snapshot_row(conn, snapshot_id)
+        _write_snapshot_file(
+            snapshot_after_path,
+            source_path=after_path,
+            source_bytes=after_bytes,
+            label="after",
+        )
+        summary_json = json.dumps(summary or {}, sort_keys=True)
+
+        with db.connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO job_snapshots(job_id, user_email, kind, label,"
+                " before_path, after_path, summary_json, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    job_id,
+                    user_email,
+                    kind,
+                    label,
+                    str(snapshot_before_path),
+                    str(snapshot_after_path),
+                    summary_json,
+                    created_at,
+                ),
+            )
+            snapshot_id = int(cur.lastrowid)
+            row = _snapshot_row(conn, snapshot_id)
+    except Exception:
+        snapshot_before_path.unlink(missing_ok=True)
+        snapshot_after_path.unlink(missing_ok=True)
+        raise
     _prune_to_cap(job_id, cap)
     with db.connect() as conn:
         row = _snapshot_row(conn, snapshot_id)
     return _dict(row)
+
+
+def _write_snapshot_file(
+    destination: Path,
+    *,
+    source_path: Path | None,
+    source_bytes: bytes | None,
+    label: str,
+) -> None:
+    if (source_path is None) == (source_bytes is None):
+        raise ValueError(f"provide exactly one {label} snapshot source")
+    if source_path is not None:
+        with Path(source_path).open("rb") as source, destination.open("wb") as target:
+            shutil.copyfileobj(source, target, _COPY_CHUNK_BYTES)
+        return
+    destination.write_bytes(source_bytes or b"")
 
 
 def list_snapshots(job_id: int) -> list[dict[str, Any]]:
@@ -82,12 +117,17 @@ def list_snapshots(job_id: int) -> list[dict[str, Any]]:
 
 def restore_bytes(snapshot_id: int) -> bytes:
     """Return the pre-change bytes for ``snapshot_id``."""
+    return restore_path(snapshot_id).read_bytes()
+
+
+def restore_path(snapshot_id: int) -> Path:
+    """Return the durable pre-change MRC path for ``snapshot_id``."""
     db.init_schema()
     with db.connect() as conn:
         row = _snapshot_row(conn, snapshot_id)
     if row is None:
         raise KeyError(f"snapshot not found: {snapshot_id}")
-    return Path(row["before_path"]).read_bytes()
+    return Path(row["before_path"])
 
 
 def _prune_to_cap(job_id: int, cap: int) -> None:

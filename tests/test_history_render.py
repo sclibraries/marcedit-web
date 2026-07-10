@@ -247,13 +247,15 @@ def test_restore_invalidates_prepared_export(monkeypatch, tmp_path):
         "snapshot_count": 1,  # matches len(rows) — staleness guard won't fire
     }
 
+    restore_path = tmp_path / "restore.mrc"
+    restore_path.write_bytes(_record().as_marc())
     monkeypatch.setattr(
-        history.provenance, "restore_bytes", lambda snapshot_id: b"restored"
+        history.provenance, "restore_path", lambda snapshot_id: restore_path
     )
     monkeypatch.setattr(
         history.session,
-        "replace_current_store_from_bytes",
-        lambda raw, *, filename, job_id: None,
+        "replace_current_store_from_path",
+        lambda path, *, filename, job_id: None,
     )
 
     fake_st.clicked_keys.add(f"snapshot_restore_{row['id']}")

@@ -8,6 +8,7 @@ snapshot, so its changes were invisible in History.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pymarc
@@ -78,7 +79,7 @@ def _preview():
         request=SimpleNamespace(
             tag="245", subfield="a", regex=False, ignore_case=False
         ),
-        matched_indices=[0],
+        matched_count=1,
         changed_count=1,
     )
 
@@ -95,16 +96,21 @@ def _wire(monkeypatch, tasks_render, store, snapshots):
 
     def fake_apply(store_arg, preview_arg):
         store_arg.replace(0, _record("New title"))
-        return SimpleNamespace(
-            error=None, stale_indices=[], applied_indices=[0]
-        )
+        store_arg.persist_to_disk()
+        return SimpleNamespace(error=None, applied_count=1)
 
     monkeypatch.setattr(
         tasks_render.batch_replace, "apply_preview", fake_apply
     )
 
     def fake_snapshot(**kwargs):
-        snapshots.append(kwargs)
+        snapshots.append(
+            {
+                **kwargs,
+                "captured_before": Path(kwargs["before_path"]).read_bytes(),
+                "captured_after": Path(kwargs["after_path"]).read_bytes(),
+            }
+        )
         return {"id": 7, "job_id": 3, "kind": kwargs["kind"]}
 
     monkeypatch.setattr(
@@ -128,8 +134,10 @@ def test_apply_records_quick_replace_snapshot(monkeypatch, tmp_path):
     assert snap["job_id"] == 3
     assert snap["label"] == "Find/replace 245$a"
     # before captured pre-apply, after captured post-apply
-    assert b"Old title" in snap["before_bytes"]
-    assert b"New title" in snap["after_bytes"]
+    assert b"Old title" in snap["captured_before"]
+    assert b"New title" in snap["captured_after"]
+    assert "before_bytes" not in snap
+    assert "after_bytes" not in snap
     assert snap["summary"]["changed_count"] == 1
     assert fake_st.successes  # apply still reports success
 

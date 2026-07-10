@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import sys
 from pathlib import Path
 
@@ -14,7 +13,6 @@ from marcedit_web.lib.batch_replace import (
     BatchReplaceRequest,
     apply_preview,
     build_preview,
-    fingerprint_record,
     matched_indices_for,
     validate_request,
 )
@@ -51,6 +49,15 @@ def _make_request(**kwargs) -> BatchReplaceRequest:
     )
     base.update(kwargs)
     return BatchReplaceRequest(**base)
+
+
+def _preview_records(preview):
+    with preview.output_path.open("rb") as fh:
+        return [
+            record
+            for record in pymarc.MARCReader(fh, to_unicode=True, permissive=True)
+            if record is not None
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +145,7 @@ def test_build_preview_empty_match_returns_empty_preview(store):
     req = _make_request(find="never-appears-anywhere")
     preview = build_preview(store, req)
     assert preview.is_empty
-    assert preview.matched_indices == []
+    assert preview.matched_count == 0
     assert preview.changed_count == 0
 
 
@@ -154,10 +161,10 @@ def test_build_preview_literal_replace_changes_records(store):
     req = _make_request(find="Test title.", replace="Modified title.")
     preview = build_preview(store, req)
     assert preview.error is None, preview.error
-    assert preview.matched_indices == list(range(store.count()))
+    assert preview.matched_count == store.count()
     assert preview.changed_count == store.count()
     # The output records have the new value in 245$a.
-    for rec in preview.output_records:
+    for rec in _preview_records(preview):
         assert rec.get_fields("245")[0]["a"] == "Modified title."
 
 
@@ -192,7 +199,7 @@ def test_apply_preview_commits_changes(store):
     preview = build_preview(store, req)
     result = apply_preview(store, preview)
     assert result.applied
-    assert result.applied_indices == list(range(store.count()))
+    assert result.applied_count == store.count()
     # Live store now reflects the replacement.
     for rec in store.iter_records():
         assert rec.get("245")["a"] == "Applied title."
@@ -202,10 +209,10 @@ def test_apply_preview_refuses_stale(store):
     """If a matched record changes between preview and apply, refuse."""
     req = _make_request(find="Test title.", replace="Stale-test title.")
     preview = build_preview(store, req)
-    assert preview.matched_indices, "fixture should produce matches"
+    assert preview.matched_count, "fixture should produce matches"
 
     # Mutate the first matched record to simulate an external edit.
-    idx = preview.matched_indices[0]
+    idx = 0
     record = store.get(idx)
     record.remove_fields("245")
     record.add_field(pymarc.Field(
@@ -217,10 +224,9 @@ def test_apply_preview_refuses_stale(store):
 
     result = apply_preview(store, preview)
     assert not result.applied
-    assert idx in result.stale_indices
-    assert "Stale preview" in (result.error or "")
+    assert "changed since preview" in (result.error or "").lower()
     # No other records were mutated by apply.
-    other_idx = preview.matched_indices[1]
+    other_idx = 1
     assert "Stale-test" not in store.get(other_idx).get("245")["a"]
 
 
@@ -228,8 +234,7 @@ def test_apply_preview_refuses_empty_match():
     """Applying an empty preview is a guard-rail error, not a no-op."""
     preview = br.BatchReplacePreview(
         request=_make_request(),
-        matched_indices=[],
-        fingerprints={},
+        matched_count=0,
     )
     result = apply_preview(None, preview)
     assert "No matched records" in (result.error or "")
@@ -239,8 +244,7 @@ def test_apply_preview_refuses_preview_in_error_state():
     """A preview with a sandbox/parsing error blocks apply with a clear message."""
     preview = br.BatchReplacePreview(
         request=_make_request(),
-        matched_indices=[0],
-        fingerprints={0: "deadbeef"},
+        matched_count=1,
         error="Sandbox returned 17 records for 1 matched input",
     )
     result = apply_preview(None, preview)
@@ -248,41 +252,17 @@ def test_apply_preview_refuses_preview_in_error_state():
 
 
 # ---------------------------------------------------------------------------
-# fingerprint_record stability
-# ---------------------------------------------------------------------------
-
-
-def test_fingerprint_record_stable_for_same_bytes(make_record):
-    """Same record bytes → same fingerprint."""
-    rec_a = make_record()
-    rec_b = make_record()
-    assert fingerprint_record(rec_a) == fingerprint_record(rec_b)
-
-
-def test_fingerprint_record_changes_when_record_changes(make_record):
-    rec = make_record()
-    before = fingerprint_record(rec)
-    rec.remove_fields("245")
-    rec.add_field(pymarc.Field(
-        tag="245",
-        indicators=["1", "0"],
-        subfields=[pymarc.Subfield("a", "Changed.")],
-    ))
-    after = fingerprint_record(rec)
-    assert before != after
-
-
-# ---------------------------------------------------------------------------
 # TASK-046: preview cap + batch-identity drift
 # ---------------------------------------------------------------------------
 
 
-def test_preview_records_batch_identity(store):
-    """build_preview snapshots (filename, count) on the preview."""
+def test_preview_records_store_generation(store):
+    """build_preview snapshots the exact store object and revision."""
     preview = build_preview(
         store, _make_request(find="Test title.", replace="X"),
     )
-    assert preview.batch_identity == ("synthetic.mrc", store.count())
+    assert preview.store_id == id(store)
+    assert preview.store_revision == store.revision
 
 
 def test_apply_refuses_when_batch_identity_drifts(store, tmp_path, make_record):
@@ -290,7 +270,7 @@ def test_apply_refuses_when_batch_identity_drifts(store, tmp_path, make_record):
     preview = build_preview(
         store, _make_request(find="Test title.", replace="Drift-test"),
     )
-    assert preview.matched_indices
+    assert preview.matched_count
 
     # Build a different store (different filename) and try to Apply
     # the preview against it — the identity check must fire BEFORE
@@ -318,12 +298,68 @@ def test_preview_cap_triggered_for_large_match_set(monkeypatch, tmp_path, make_r
         store, _make_request(find="Test title.", replace="Edited"),
     )
     assert preview.error is None
-    assert len(preview.matched_indices) == 7
+    assert preview.matched_count == 7
     assert preview.preview_cap_triggered is True
-    # output_records is the SUBSET (cap-sized), not the full match list.
-    assert len(preview.output_records) == 3
+    assert preview.previewed_count == 3
     # diff_summary covers the subset.
     assert preview.changed_count <= 3
+
+
+def test_preview_retains_counts_revision_and_disk_artifacts_only(
+    monkeypatch, tmp_path, make_record
+):
+    """A match-all 100K preview must not retain per-record metadata."""
+    monkeypatch.setattr(br, "MAX_PREVIEW_MATCHES", 2)
+    store = RecordStore.from_records(
+        [make_record() for _ in range(4)],
+        tmp_dir=tmp_path / "bounded-preview",
+        filename="bounded.mrc",
+    )
+
+    preview = build_preview(
+        store,
+        _make_request(find="Test title.", replace="Edited"),
+    )
+
+    assert preview.matched_count == 4
+    assert preview.previewed_count == 2
+    assert preview.store_revision == store.revision
+    assert preview.output_path is not None
+    assert Path(preview.output_path).is_file()
+    assert not hasattr(preview, "matched_indices")
+    assert not hasattr(preview, "fingerprints")
+    assert not hasattr(preview, "output_records")
+
+
+def test_build_preview_cleans_partial_artifact_when_sandbox_raises(
+    monkeypatch, tmp_path, make_record
+):
+    """An unexpected sandbox failure must not leak the preview directory."""
+    store = RecordStore.from_records(
+        [make_record()],
+        tmp_dir=tmp_path / "records",
+        filename="cleanup.mrc",
+    )
+    workdir = tmp_path / "failed-preview"
+
+    def _mkdtemp(*, prefix):
+        workdir.mkdir()
+        return str(workdir)
+
+    monkeypatch.setattr(br.tempfile, "mkdtemp", _mkdtemp)
+    monkeypatch.setattr(
+        br.sandbox,
+        "run_tasks_subprocess",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        build_preview(
+            store,
+            _make_request(find="Test title.", replace="Edited"),
+        )
+
+    assert not workdir.exists()
 
 
 def test_apply_with_capped_preview_runs_sandbox_over_full_set(
@@ -343,7 +379,7 @@ def test_apply_with_capped_preview_runs_sandbox_over_full_set(
 
     result = apply_preview(store, preview)
     assert result.applied
-    assert len(result.applied_indices) == 7  # full matched set committed
+    assert result.applied_count == 7  # full matched set committed
     # Every live record in the store carries the new value.
     for rec in store.iter_records():
         assert rec.get("245")["a"] == "Applied"

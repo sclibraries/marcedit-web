@@ -48,8 +48,10 @@ _K_SPEC_LABEL = "dedupe_spec_label"
 _K_KEEPERS = "dedupe_keepers"             # dict[group_key, offset]
 _K_STRATEGY = "dedupe_strategy"           # KeeperStrategy.value (str)
 _K_STRATEGY_PARAMS = "dedupe_strategy_params"  # dict
-_K_EXPORT_BYTES = "dedupe_export_bytes"
+_K_EXPORT = "dedupe_export"
 _K_EXPORT_COUNT = "dedupe_export_count"
+_K_EXPORT_READY = "dedupe_export_ready"
+_K_STORE_GENERATION = "dedupe_store_generation"
 _K_TABLE = "dedupe_groups_table"          # st.dataframe widget key
 
 
@@ -73,6 +75,48 @@ def _open_mmap(path: Path):
             mm.close()
     finally:
         fh.close()
+
+
+def _apply_strategy_from_path(
+    buffer_path: Path,
+    dup_groups: dict[str, list[int]],
+    strategy: KeeperStrategy,
+    params: StrategyParams,
+):
+    """Apply a keeper strategy while the source remains mmap-backed."""
+    with _open_mmap(buffer_path) as source:
+        return apply_strategy_to_groups(
+            dup_groups, source, strategy, params,
+        )
+
+
+def _build_deletes_export(
+    buffer_path: Path,
+    delete_locations: list[tuple[str, int]],
+) -> dict[str, str | int]:
+    """Atomically build a disk-backed deletes export."""
+    output_path = buffer_path.parent / "dedupe_deletes.mrc"
+    temp_path = buffer_path.parent / "dedupe_deletes.tmp"
+    try:
+        with _open_mmap(buffer_path) as source:
+            file_bytes = marc_diff.write_subset_to_path(
+                delete_locations,
+                {"loaded": source},
+                temp_path,
+            )
+        temp_path.replace(output_path)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return {"path": str(output_path), "file_bytes": file_bytes}
+
+
+def _clear_export_state() -> None:
+    export = st.session_state.pop(_K_EXPORT, None)
+    if export and export.get("path"):
+        Path(export["path"]).unlink(missing_ok=True)
+    st.session_state.pop(_K_EXPORT_COUNT, None)
+    st.session_state.pop(_K_EXPORT_READY, None)
 
 
 def render() -> None:
@@ -108,6 +152,13 @@ def render() -> None:
     result = st.session_state.get(_K_RESULT)
     buffer_path_str = st.session_state.get(_K_BUFFER_PATH)
     if result is None or not buffer_path_str:
+        return
+    generation = (id(store), store.revision)
+    if st.session_state.get(_K_STORE_GENERATION) != generation:
+        _clear_export_state()
+        st.session_state.pop(_K_RESULT, None)
+        st.session_state.pop(_K_KEEPERS, None)
+        Path(buffer_path_str).unlink(missing_ok=True)
         return
     buffer_path = Path(buffer_path_str)
 
@@ -190,8 +241,9 @@ def _run_indexing(store) -> None:
 
     st.session_state[_K_RESULT] = idx_result
     st.session_state[_K_BUFFER_PATH] = str(buf_path)
+    st.session_state[_K_STORE_GENERATION] = (id(store), store.revision)
     st.session_state[_K_SPEC_LABEL] = spec.label()
-    st.session_state.pop(_K_EXPORT_BYTES, None)
+    _clear_export_state()
     # Default keepers: first occurrence per group.
     st.session_state[_K_KEEPERS] = {
         key: offsets[0] for key, offsets in idx_result.duplicate_offsets.items()
@@ -276,24 +328,13 @@ def _render_strategy_picker(
         disabled=validation_error is not None,
     ):
         with st.spinner("Applying strategy…"):
-            with _open_mmap(buffer_path) as mm:
-                # TODO(TASK-046 followup): ``bytes(mm)`` copies the
-                # entire mmap buffer into Python memory because
-                # ``pymarc.Record(data=...)`` doesn't accept an mmap
-                # slice as input. Fine for typical dedupe-buffer sizes
-                # (< a few hundred MB). For 1 GB+ buffers, refactor
-                # the strategy helpers in
-                # ``lib/dedupe_strategy.py`` to take ``(path, offset,
-                # length)`` triples and seek-read per record so this
-                # full-buffer copy goes away.
-                source_bytes = bytes(mm)
-                keepers, matched = apply_strategy_to_groups(
-                    dup_groups, source_bytes, strategy, params,
-                )
+            keepers, matched = _apply_strategy_from_path(
+                buffer_path, dup_groups, strategy, params,
+            )
         st.session_state[_K_KEEPERS] = keepers
         st.session_state[_K_STRATEGY] = strategy_key
         st.session_state[_K_STRATEGY_PARAMS] = params.__dict__
-        st.session_state.pop(_K_EXPORT_BYTES, None)
+        _clear_export_state()
 
         # Surface match counts so the cataloger can tell whether the
         # strategy actually hit. FIELD_MATCHES_REGEX in particular can
@@ -524,7 +565,7 @@ def _dialog_compare_group(
         keepers[key] = choice
         st.session_state[_K_KEEPERS] = keepers
         # Invalidate any built deletes; they may not reflect the new choice.
-        st.session_state.pop(_K_EXPORT_BYTES, None)
+        _clear_export_state()
         st.rerun()
 
 
@@ -563,15 +604,13 @@ def _render_export(buffer_path: Path, dup_groups: dict[str, list[int]]) -> None:
                     group_deletes += 1
             if group_deletes > 0:
                 groups_with_deletes += 1
+        _clear_export_state()
         try:
-            with _open_mmap(buffer_path) as mm:
-                deletes_bytes = marc_diff.write_subset_to_bytes(
-                    delete_locations, {"loaded": mm}
-                )
+            export = _build_deletes_export(buffer_path, delete_locations)
         except Exception as exc:  # noqa: BLE001
             st.error(f"Build failed: {exc}")
             return
-        st.session_state[_K_EXPORT_BYTES] = deletes_bytes
+        st.session_state[_K_EXPORT] = export
         st.session_state[_K_EXPORT_COUNT] = len(delete_locations)
 
         # TASK-046: dedupe deletes is an action workflow — a real
@@ -595,22 +634,35 @@ def _render_export(buffer_path: Path, dup_groups: dict[str, list[int]]) -> None:
             deletes_count=len(delete_locations),
         )
 
-    export_bytes = st.session_state.get(_K_EXPORT_BYTES)
-    if export_bytes is not None:
+    export = st.session_state.get(_K_EXPORT)
+    if export is not None:
         count = st.session_state.get(_K_EXPORT_COUNT, 0)
         stem = Path(session.current_filename() or "deletes").stem or "deletes"
         fname = session.stamped_filename(f"{stem}_deletes")
         st.success(
             f"Built `{fname}` with **{count}** record(s) "
-            f"({len(export_bytes) / 1e6:,.2f} MB)."
+            f"({export['file_bytes'] / 1e6:,.2f} MB)."
         )
-        st.download_button(
-            label=f"Download {fname}",
-            data=export_bytes,
-            file_name=fname,
-            mime="application/marc",
-            key="dedupe_download_btn",
-        )
+        if not st.session_state.get(_K_EXPORT_READY):
+            if st.button(
+                "Prepare deletes download",
+                key="dedupe_prepare_download_btn",
+            ):
+                st.session_state[_K_EXPORT_READY] = True
+                st.rerun()
+        else:
+            path = Path(export["path"])
+            if not path.is_file():
+                st.error("The prepared deletes file is no longer available.")
+                _clear_export_state()
+                return
+            st.download_button(
+                label=f"Download {fname}",
+                data=path.read_bytes(),
+                file_name=fname,
+                mime="application/marc",
+                key="dedupe_download_btn",
+            )
 
 
 # ---------------------------------------------------------------------------

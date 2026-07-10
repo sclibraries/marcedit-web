@@ -25,6 +25,7 @@ Public API:
     detect_changes(old, new, buffers,
                    common_ids, exclude_tags) -> set[str]
     write_subset_to_bytes(locations, buffers) -> bytes
+    write_subset_to_path(locations, buffers, output_path) -> int
 
     suggest_match_fields(buffers, sample_size=500) -> list[FieldSuggestion]
 
@@ -645,6 +646,28 @@ def write_subset_to_bytes(
             length = int(data[off:off + 5])
             out.write(data[off:off + length])
     return out.getvalue()
+
+
+def write_subset_to_path(
+    locations: Iterable[tuple[str, int]],
+    sources: dict[str, bytes],
+    output_path: Path,
+) -> int:
+    """Stream selected records to ``output_path`` and return bytes written."""
+    by_source: dict[str, list[int]] = defaultdict(list)
+    for name, off in locations:
+        by_source[name].append(off)
+
+    written = 0
+    with Path(output_path).open("wb") as output:
+        for name in sorted(by_source.keys()):
+            data = sources[name]
+            for off in sorted(by_source[name]):
+                length = int(data[off:off + 5])
+                chunk = data[off:off + length]
+                output.write(chunk)
+                written += len(chunk)
+    return written
 
 
 # ---------------------------------------------------------------------------

@@ -1,8 +1,29 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 from marcedit_web.lib import db, jobs, snapshot_actions
+
+
+def test_staged_store_path_is_disk_backed_and_cleaned():
+    """Mutation flows retain a temporary pre-state path, never batch bytes."""
+    writes = []
+
+    def _write(path):
+        writes.append(Path(path))
+        Path(path).write_bytes(b"logical-store")
+        return len(b"logical-store")
+
+    store = SimpleNamespace(write_mrc_to=_write)
+
+    with snapshot_actions.staged_store_path(store) as staged:
+        assert staged.read_bytes() == b"logical-store"
+        assert writes == [staged]
+
+    assert not staged.exists()
+    assert not staged.parent.exists()
 
 
 def test_record_job_snapshot_skips_anonymous_user(tmp_path, monkeypatch):

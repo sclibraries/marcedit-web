@@ -251,6 +251,14 @@ def _session_records_dir() -> Path:
     return Path(st.session_state[key])
 
 
+def _clear_mutation_previews(state) -> None:
+    """Release disk-backed previews tied to the store being replaced."""
+    from . import batch_replace, quick_batch
+
+    batch_replace.cleanup_preview(state.pop("batch_replace_preview", None))
+    quick_batch.cleanup_preview(state.pop("quick_batch_preview", None))
+
+
 def handle_upload(uploaded_file) -> dict:
     """Read `uploaded_file` from a Streamlit uploader and update state.
 
@@ -288,6 +296,7 @@ def handle_upload(uploaded_file) -> dict:
         }
 
     if uploaded_file is None:
+        _clear_mutation_previews(st.session_state)
         st.session_state["store"] = None
         st.session_state["issues_cache"] = {}
         st.session_state["editor_text"] = None
@@ -352,6 +361,7 @@ def handle_upload(uploaded_file) -> dict:
             job_id=selected_job_id,
         )
     st.session_state["store"] = store
+    _clear_mutation_previews(st.session_state)
     st.session_state["upload_bytes_total"] = new_total
     # Reset derived state — anything the previous file populated is now
     # stale and would mislead later pages.
@@ -410,6 +420,46 @@ def replace_current_store_from_bytes(
         )
 
     st.session_state["store"] = store
+    _clear_mutation_previews(st.session_state)
+    st.session_state["issues_cache"] = {}
+    st.session_state["editor_text"] = None
+    st.session_state["editor_dirty"] = False
+    return store
+
+
+def replace_current_store_from_path(
+    source_path: Path,
+    *,
+    filename: str,
+    job_id: int | None = None,
+) -> RecordStore:
+    """Replace the live store by streaming a trusted on-disk MRC source."""
+    import streamlit as st
+
+    user = current_user_id()
+    if is_anonymous(user):
+        store_dir = _session_records_dir()
+    else:
+        store_dir = upload_persistence.persisted_job_upload_dir(user, job_id)
+
+    with Path(source_path).open("rb") as source:
+        store = RecordStore.from_file(
+            source,
+            tmp_dir=store_dir,
+            filename=filename,
+        )
+    if not is_anonymous(user):
+        upload_persistence.record_upload(
+            user=user,
+            filename=filename,
+            file_path=store.path,
+            record_count=store.count(),
+            file_bytes=store.path.stat().st_size,
+            job_id=job_id,
+        )
+
+    st.session_state["store"] = store
+    _clear_mutation_previews(st.session_state)
     st.session_state["issues_cache"] = {}
     st.session_state["editor_text"] = None
     st.session_state["editor_dirty"] = False
@@ -435,6 +485,7 @@ def load_persisted_upload(upload_id: int) -> dict:
     store = RecordStore.from_path(path)
     store._filename = row["filename"]
     st.session_state["store"] = store
+    _clear_mutation_previews(st.session_state)
     # On Home the Job selectbox owns ``current_job_id`` (key=...), and
     # Streamlit rejects ANY assignment to a widget-owned key — even of the
     # identical value. Home only lists the selected job's files, so the
@@ -511,6 +562,7 @@ def detach_loaded_batch(file_path) -> None:
     if store_path is None or Path(store_path) != Path(file_path):
         return
     st.session_state["store"] = None
+    _clear_mutation_previews(st.session_state)
     st.session_state["issues_cache"] = {}
     st.session_state["editor_text"] = None
     st.session_state["editor_dirty"] = False

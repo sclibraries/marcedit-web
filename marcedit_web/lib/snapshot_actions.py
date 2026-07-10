@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from . import provenance
@@ -14,8 +18,10 @@ def record_job_snapshot(
     user_email: str,
     kind: str,
     label: str,
-    before_bytes: bytes,
-    after_bytes: bytes,
+    before_path: Path | None = None,
+    after_path: Path | None = None,
+    before_bytes: bytes | None = None,
+    after_bytes: bytes | None = None,
     summary: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Persist a job snapshot when the current context can own one."""
@@ -26,6 +32,8 @@ def record_job_snapshot(
         user_email=user_email,
         kind=kind,
         label=label,
+        before_path=before_path,
+        after_path=after_path,
         before_bytes=before_bytes,
         after_bytes=after_bytes,
         summary=summary,
@@ -37,8 +45,10 @@ def record_edit_snapshot(
     job_id: int | None,
     user_email: str,
     label: str,
-    before_bytes: bytes,
-    after_bytes: bytes,
+    before_path: Path | None = None,
+    after_path: Path | None = None,
+    before_bytes: bytes | None = None,
+    after_bytes: bytes | None = None,
     record_index: int | None,
     source: str,
     summary: dict[str, Any] | None = None,
@@ -52,7 +62,21 @@ def record_edit_snapshot(
         user_email=user_email,
         kind="edit",
         label=label,
+        before_path=before_path,
+        after_path=after_path,
         before_bytes=before_bytes,
         after_bytes=after_bytes,
         summary=payload,
     )
+
+
+@contextmanager
+def staged_store_path(store):
+    """Materialize a logical store to a temporary path and always clean it."""
+    workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-snapshot-stage-"))
+    path = workdir / "batch.mrc"
+    try:
+        store.write_mrc_to(path)
+        yield path
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)

@@ -366,27 +366,26 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
 
     if save_clicked and parse_state is not None and fatal == 0:
         record_objs = parse_state["records"]
-        before_bytes = store.to_mrc_bytes()
-        store.replace_all(list(record_objs))
-        out_bytes = store.to_mrc_bytes()
-        try:
-            store.persist_to_disk()
-        except OSError as exc:
-            st.error(f"Cannot save: edited records were not persisted. {exc}")
-            return
+        with snapshot_actions.staged_store_path(store) as before_path:
+            store.replace_all(list(record_objs))
+            try:
+                store.persist_to_disk()
+            except OSError as exc:
+                st.error(f"Cannot save: edited records were not persisted. {exc}")
+                return
 
-        snapshot = snapshot_actions.record_job_snapshot(
-            job_id=st.session_state.get("current_job_id"),
-            user_email=session.current_user_id(),
-            kind="edit",
-            label="Full MARC editor save",
-            before_bytes=before_bytes,
-            after_bytes=out_bytes,
-            summary={
-                "record_count": len(record_objs),
-                "source": "marc-editor",
-            },
-        )
+            snapshot = snapshot_actions.record_job_snapshot(
+                job_id=st.session_state.get("current_job_id"),
+                user_email=session.current_user_id(),
+                kind="edit",
+                label="Full MARC editor save",
+                before_path=before_path,
+                after_path=store.path,
+                summary={
+                    "record_count": len(record_objs),
+                    "source": "marc-editor",
+                },
+            )
         if snapshot is not None:
             audit_event(
                 "job-snapshot-created",
@@ -407,7 +406,7 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         )
         st.download_button(
             label=f"Download {fname}",
-            data=out_bytes,
+            data=store.path.read_bytes(),
             file_name=fname,
             mime="application/marc",
             key="marc_editor_download",

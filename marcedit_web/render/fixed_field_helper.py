@@ -100,23 +100,23 @@ def render_fixed_field_helper(
         if save_clicked:
             if not _assert_fixed_save_allowed(index, key_prefix):
                 return
-            try:
-                before_bytes = store.to_mrc_bytes()
-                ffc.apply_fixed_field_updates(record, dict(draft))
-            except ValueError as exc:
-                st.error(f"Fixed fields not saved: {exc}")
-                return
-            store.replace(index - 1, record)
-            after_bytes = store.to_mrc_bytes()
-            snapshot = snapshot_actions.record_edit_snapshot(
-                job_id=st.session_state.get("current_job_id"),
-                user_email=session.current_user_id(),
-                label=f"LDR/006/007 edit #{index}",
-                before_bytes=before_bytes,
-                after_bytes=after_bytes,
-                record_index=index,
-                source=f"{key_prefix}-fixed-field-helper",
-            )
+            with snapshot_actions.staged_store_path(store) as before_path:
+                try:
+                    ffc.apply_fixed_field_updates(record, dict(draft))
+                except ValueError as exc:
+                    st.error(f"Fixed fields not saved: {exc}")
+                    return
+                store.replace(index - 1, record)
+                with snapshot_actions.staged_store_path(store) as after_path:
+                    snapshot = snapshot_actions.record_edit_snapshot(
+                        job_id=st.session_state.get("current_job_id"),
+                        user_email=session.current_user_id(),
+                        label=f"LDR/006/007 edit #{index}",
+                        before_path=before_path,
+                        after_path=after_path,
+                        record_index=index,
+                        source=f"{key_prefix}-fixed-field-helper",
+                    )
             if snapshot is not None:
                 audit_event(
                     "job-snapshot-created",
@@ -231,23 +231,23 @@ def render_008_helper(
         if save_clicked:
             if not _assert_fixed_save_allowed(index, key_prefix):
                 return
-            try:
-                before_bytes = store.to_mrc_bytes()
-                ff.apply_008(record, dict(draft))
-            except ValueError as exc:
-                st.error(f"008 not saved: {exc}")
-                return
-            store.replace(index - 1, record)
-            after_bytes = store.to_mrc_bytes()
-            snapshot = snapshot_actions.record_edit_snapshot(
-                job_id=st.session_state.get("current_job_id"),
-                user_email=session.current_user_id(),
-                label=f"008 edit #{index}",
-                before_bytes=before_bytes,
-                after_bytes=after_bytes,
-                record_index=index,
-                source=f"{key_prefix}-008-helper",
-            )
+            with snapshot_actions.staged_store_path(store) as before_path:
+                try:
+                    ff.apply_008(record, dict(draft))
+                except ValueError as exc:
+                    st.error(f"008 not saved: {exc}")
+                    return
+                store.replace(index - 1, record)
+                with snapshot_actions.staged_store_path(store) as after_path:
+                    snapshot = snapshot_actions.record_edit_snapshot(
+                        job_id=st.session_state.get("current_job_id"),
+                        user_email=session.current_user_id(),
+                        label=f"008 edit #{index}",
+                        before_path=before_path,
+                        after_path=after_path,
+                        record_index=index,
+                        source=f"{key_prefix}-008-helper",
+                    )
             if snapshot is not None:
                 audit_event(
                     "job-snapshot-created",

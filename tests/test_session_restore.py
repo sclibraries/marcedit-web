@@ -12,6 +12,7 @@ import io
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pymarc
 import pytest
@@ -137,6 +138,32 @@ def test_handle_upload_re_upload_replaces_active_row(
     assert first["filename"] == "first.mrc"
     assert second["filename"] == "second.mrc"
     assert second["record_count"] == 2
+
+
+def test_handle_upload_replacement_cleans_stale_preview_artifacts(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """A new source revision must release previews from the prior batch."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "anonymous"
+    quick_dir = tmp_path / "quick-preview"
+    replace_dir = tmp_path / "replace-preview"
+    quick_dir.mkdir()
+    replace_dir.mkdir()
+    st.session_state["quick_batch_preview"] = SimpleNamespace(
+        workdir=quick_dir
+    )
+    st.session_state["batch_replace_preview"] = SimpleNamespace(
+        sandbox_workdir=replace_dir
+    )
+
+    session.handle_upload(_FakeUpload("new.mrc", _serialize([record])))
+
+    assert "quick_batch_preview" not in st.session_state
+    assert "batch_replace_preview" not in st.session_state
+    assert not quick_dir.exists()
+    assert not replace_dir.exists()
 
 
 def test_handle_upload_keeps_each_signed_in_upload_on_disk(
