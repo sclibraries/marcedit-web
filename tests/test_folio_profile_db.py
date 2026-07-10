@@ -57,3 +57,25 @@ def test_rules_for_profile_can_include_addon_rules(tmp_path, monkeypatch):
 
     assert "folio-new-load-forbidden-001" in keys
     assert "folio-ebook-required-655" in keys
+
+
+def test_rules_for_profile_ignores_disabled_addon_profiles(tmp_path, monkeypatch):
+    """Disabled add-ons cannot leak rules through stale selections."""
+    monkeypatch.setenv("MARCEDIT_WEB_DB_PATH", str(tmp_path / "folio.db"))
+    db.reset_for_tests()
+    db.init_schema()
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE folio_profiles SET enabled = 0"
+            " WHERE key = 'folio-ecollection-ebook'"
+        )
+
+    rules = folio_profiles.rules_for_profile(
+        "folio-new-instance",
+        include_addons=("folio-ecollection-ebook",),
+    )
+    keys = {rule.key for rule in rules}
+
+    assert "folio-new-load-forbidden-001" in keys
+    assert "folio-ebook-required-655" not in keys

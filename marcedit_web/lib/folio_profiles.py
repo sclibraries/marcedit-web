@@ -63,9 +63,13 @@ def rules_for_profile(
     with db.connect() as conn:
         rows = list(
             conn.execute(
-                f"SELECT * FROM folio_rules"
-                f" WHERE enabled = 1 AND profile_key IN ({placeholders})"
-                f" ORDER BY profile_key, key",
+                f"SELECT folio_rules.* FROM folio_rules"
+                f" JOIN folio_profiles"
+                f" ON folio_profiles.key = folio_rules.profile_key"
+                f" WHERE folio_rules.enabled = 1"
+                f" AND folio_profiles.enabled = 1"
+                f" AND folio_rules.profile_key IN ({placeholders})"
+                f" ORDER BY folio_rules.profile_key, folio_rules.key",
                 keys,
             )
         )
