@@ -97,6 +97,18 @@ K_AI_DRAFT_ERROR = "tasks_ai_draft_error"
 K_AI_DRAFT_BLOCKING_ACK = "tasks_ai_draft_blocking_ack"
 K_QB_DOWNLOAD_READY = "quick_batch_download_ready"
 
+# TASK-143: workspace mode switcher.
+MODE_RUN = "Run"
+MODE_QUICK = "Quick operations"
+MODE_BUILD = "Build & import"
+_MODES = (MODE_RUN, MODE_QUICK, MODE_BUILD)
+K_MODE_WIDGET = "tasks_workspace_mode"
+# Editor-open callbacks run after the radio has been instantiated, and
+# Streamlit forbids assigning a widget's own key mid-run. They write the
+# force key instead; the next run pops it into the widget key before the
+# radio renders.
+K_FORCE_MODE = "tasks_workspace_mode_force"
+
 
 def _materialized_dir(user: str) -> Path:
     """Per-session tmp dir holding the user's visible tasks as .py files.
@@ -155,6 +167,66 @@ def render() -> None:
 
     loaded_batch_status()
 
+    forced = st.session_state.pop(K_FORCE_MODE, None)
+    if forced in _MODES:
+        st.session_state[K_MODE_WIDGET] = forced
+    mode = st.radio(
+        "Tasks workspace mode",
+        _MODES,
+        horizontal=True,
+        key=K_MODE_WIDGET,
+        label_visibility="collapsed",
+    )
+    st.divider()
+
+    if mode == MODE_QUICK:
+        _render_quick_ops_mode()
+    elif mode == MODE_BUILD:
+        _render_build_mode(tasks_dir, is_admin, current_user_id, registered)
+    else:
+        _render_run_mode(registered, tasks_dir)
+
+
+def _render_run_mode(registered, tasks_dir: Path) -> None:
+    """Run saved tasks against the loaded batch and review the results."""
+    st.subheader("Run on loaded batch")
+    if not session.has_upload():
+        # Don't use session.require_upload() here — the standard banner
+        # says "this feature reads records already in this session,"
+        # but Tasks can be *authored* without a loaded batch (we want
+        # the user to keep building/importing tasks even pre-upload).
+        # A bespoke message is the right call.
+        st.info(
+            "Upload a `.mrc` file on the **Home** page to run tasks "
+            "against it. Tasks can be built and imported without a "
+            "loaded batch."
+        )
+    elif not registered:
+        st.info(
+            "Create or import at least one task in **Build & import** "
+            "to enable running."
+        )
+    else:
+        _render_run_panel(registered, tasks_dir)
+    _render_run_results()
+
+
+def _render_quick_ops_mode() -> None:
+    """One-shot find/replace and canned batch operations."""
+    if not session.has_upload():
+        st.info(
+            "Upload a `.mrc` file on the **Home** page to use quick "
+            "operations."
+        )
+        return
+    _render_quick_find_replace()
+    _render_quick_batch_operations()
+
+
+def _render_build_mode(
+    tasks_dir: Path, is_admin: bool, current_user_id: str, registered
+) -> None:
+    """Manage, author, and import task definitions."""
     # --- Counts banner + admin badge --------------------------------------
 
     counts = task_db.count_visible(current_user_id)
@@ -260,33 +332,6 @@ def render() -> None:
     if st.session_state[K_EDITOR_OPEN]:
         _render_editor(tasks_dir, is_admin)
 
-    # --- Run on loaded batch (sandbox path) -------------------------------
-
-    st.divider()
-    st.subheader("Run on loaded batch")
-
-    if not session.has_upload():
-        # Don't use session.require_upload() here — the standard banner
-        # says "this feature reads records already in this session,"
-        # but Tasks can be *authored* without a loaded batch (we want
-        # the user to keep building/importing tasks even pre-upload).
-        # A bespoke message is the right call.
-        st.info(
-            "Upload a `.mrc` file on the **Home** page to run tasks "
-            "against it. Tasks can be built and imported without a "
-            "loaded batch."
-        )
-    elif not registered:
-        st.info("Create or import at least one task above to enable running.")
-    else:
-        _render_run_panel(registered, tasks_dir)
-
-    _render_run_results()
-    _render_run_history()
-    _render_persisted_job_snapshots()
-    _render_quick_find_replace()
-    _render_quick_batch_operations()
-
 
 # ---------------------------------------------------------------------------
 # Editor state helpers
@@ -295,6 +340,7 @@ def render() -> None:
 
 def _open_editor_for_new() -> None:
     """Open the editor for a brand-new task in form mode."""
+    st.session_state[K_FORCE_MODE] = MODE_BUILD
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_MODE] = "form"
     st.session_state[K_EDITOR_NAME] = ""
@@ -324,6 +370,7 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     body via ``task_builder.parse_ops_from_source`` (same logic as
     the legacy file-based path).
     """
+    st.session_state[K_FORCE_MODE] = MODE_BUILD
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_NAME] = row["name"]
     st.session_state[K_EDITOR_DESCRIPTION] = row["description"]
@@ -659,6 +706,7 @@ def _ai_draft_operation_detail(op: ai_task_draft.DraftOperation) -> str:
 
 
 def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
+    st.session_state[K_FORCE_MODE] = MODE_BUILD
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_MODE] = "form"
     st.session_state[K_EDITOR_NAME] = review.task_name
@@ -1919,11 +1967,7 @@ def _render_quick_find_replace() -> None:
     if not session.has_upload():
         return  # nothing to find against
 
-    st.divider()
-    with st.expander(
-        "✨ Quick find/replace (no saved task)",
-        expanded=False,
-    ):
+    with st.expander("✨ Quick find/replace", expanded=True):
         st.caption(
             "Run a one-shot find/replace across the loaded batch. "
             "Preview first; apply after you've reviewed the diff. "
@@ -2173,10 +2217,7 @@ def _render_quick_batch_operations() -> None:
         return
 
     st.divider()
-    with st.expander(
-        "Quick batch operations (no saved task)",
-        expanded=False,
-    ):
+    with st.expander("Quick batch operations", expanded=True):
         st.caption(
             "Run a structured cleanup across the loaded batch. Preview first; "
             "nothing is saved to your task list."
