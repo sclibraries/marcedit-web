@@ -8,6 +8,10 @@ the Workspace Edit tab's over-cap branch).
 
 from __future__ import annotations
 
+from bisect import bisect_left
+from dataclasses import dataclass
+from typing import Any, Callable, MutableMapping, Sequence
+
 import streamlit as st
 
 from marcedit_web.lib import (
@@ -19,6 +23,95 @@ from marcedit_web.lib import (
     viewer,
 )
 from marcedit_web.render import fixed_field_helper, single_record_edit
+
+
+_K_SEARCH_RESULTS = "view_search_results"
+
+
+@dataclass(frozen=True)
+class _NavigationState:
+    total: int
+    current: int
+    position: int
+    size: int
+    minimum: int
+    maximum: int
+    match_indices: Sequence[int] | None
+
+    def step(self, delta: int) -> int:
+        if self.match_indices is None:
+            return min(self.total, max(1, self.current + delta))
+        if not self.match_indices:
+            return self.current
+        position = min(
+            len(self.match_indices) - 1,
+            max(0, self.position + delta),
+        )
+        return self.match_indices[position] + 1
+
+
+def _navigation_state(
+    *,
+    total: int,
+    requested: int,
+    match_indices: Sequence[int] | None,
+) -> _NavigationState:
+    """Resolve one-based navigation without expanding the full batch range."""
+    current = min(total, max(1, requested))
+    if match_indices is None:
+        return _NavigationState(
+            total=total,
+            current=current,
+            position=current - 1,
+            size=total,
+            minimum=1,
+            maximum=total,
+            match_indices=None,
+        )
+    if not match_indices:
+        return _NavigationState(
+            total=total,
+            current=current,
+            position=0,
+            size=1,
+            minimum=current,
+            maximum=current,
+            match_indices=match_indices,
+        )
+
+    position = bisect_left(match_indices, current - 1)
+    if position >= len(match_indices) or match_indices[position] != current - 1:
+        position = 0
+        current = match_indices[0] + 1
+    return _NavigationState(
+        total=total,
+        current=current,
+        position=position,
+        size=len(match_indices),
+        minimum=match_indices[0] + 1,
+        maximum=match_indices[-1] + 1,
+        match_indices=match_indices,
+    )
+
+
+def _cached_match_indices(
+    state: MutableMapping[str, Any],
+    store,
+    query_text: str,
+    compute: Callable[[], Sequence[int]],
+) -> list[int]:
+    """Return query results cached for this store object and revision."""
+    token = (id(store), store.revision, query_text)
+    cached = state.get(_K_SEARCH_RESULTS)
+    if cached is not None and cached.get("token") == token:
+        return cached["matches"]
+    matches = list(compute())
+    state[_K_SEARCH_RESULTS] = {"token": token, "matches": matches}
+    return matches
+
+
+def _clear_search_cache(state: MutableMapping[str, Any]) -> None:
+    state.pop(_K_SEARCH_RESULTS, None)
 
 
 def render(rule_set: rules_mod.RuleSet | None = None) -> None:
@@ -56,10 +149,18 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
     search_active = not query.is_empty()
     match_indices: list[int] = []
     if search_active:
-        # Search walks every record's bytes — wrap so the cataloger
-        # sees activity on big batches instead of a frozen navigator.
-        with st.spinner("Searching…"):
-            match_indices = list(search.matching_records(store, query))
+        def _run_search() -> list[int]:
+            # A new query walks every record. Cached results make subsequent
+            # Prev/Next reruns independent of batch size.
+            with st.spinner("Searching…"):
+                return list(search.matching_records(store, query))
+
+        match_indices = _cached_match_indices(
+            st.session_state,
+            store,
+            query_str,
+            _run_search,
+        )
         if not match_indices:
             st.warning(f"No records match `{query_str}`.")
         else:
@@ -67,42 +168,23 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
                 f"`{len(match_indices)}` match(es) for `{query_str}`. "
                 f"Prev / Next jump between matches."
             )
+    else:
+        _clear_search_cache(st.session_state)
 
-    # When search is active and there's at least one match, restrict the
-    # navigator to those record indices. Otherwise it ranges over the
-    # full batch.
-    navigable = (
-        [i + 1 for i in match_indices]  # convert to 1-based for the user
-        if search_active and match_indices
-        else list(range(1, total + 1))
+    navigation = _navigation_state(
+        total=total,
+        requested=int(st.session_state.get("view_index", 1)),
+        match_indices=match_indices if search_active else None,
     )
-
-    if not navigable:
-        # No matches and search is active — display the most recent record
-        # anyway, but disable navigation.
-        navigable = [int(st.session_state.get("view_index", 1))]
-
-    # Clamp current view_index to navigable.
-    current = int(st.session_state.get("view_index", navigable[0]))
-    if current not in navigable:
-        st.session_state["view_index"] = navigable[0]
-        current = navigable[0]
-
-    position = navigable.index(current)  # 0-based position in navigable
-    pos_total = len(navigable)
+    st.session_state["view_index"] = navigation.current
 
     def _step(delta: int) -> None:
-        cur = int(st.session_state.get("view_index", navigable[0]))
-        try:
-            i = navigable.index(cur)
-        except ValueError:
-            i = 0
-        nxt = i + delta
-        if nxt < 0:
-            nxt = 0
-        elif nxt >= len(navigable):
-            nxt = len(navigable) - 1
-        st.session_state["view_index"] = navigable[nxt]
+        current_state = _navigation_state(
+            total=total,
+            requested=int(st.session_state.get("view_index", 1)),
+            match_indices=match_indices if search_active else None,
+        )
+        st.session_state["view_index"] = current_state.step(delta)
 
     nav_a, nav_b, nav_c, nav_d = st.columns([1, 3, 1, 1])
     with nav_a:
@@ -110,15 +192,15 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
             "◀ Prev",
             on_click=_step,
             args=(-1,),
-            disabled=position <= 0,
+            disabled=navigation.position <= 0,
             use_container_width=True,
             key="view_prev",
         )
     with nav_b:
         st.number_input(
             "Record #",
-            min_value=navigable[0],
-            max_value=navigable[-1],
+            min_value=navigation.minimum,
+            max_value=navigation.maximum,
             step=1,
             key="view_index",
             label_visibility="collapsed",
@@ -128,13 +210,15 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
             "Next ▶",
             on_click=_step,
             args=(1,),
-            disabled=position >= pos_total - 1,
+            disabled=navigation.position >= navigation.size - 1,
             use_container_width=True,
             key="view_next",
         )
     with nav_d:
         if search_active and match_indices:
-            st.caption(f"match {position + 1} of **{pos_total}**")
+            st.caption(
+                f"match {navigation.position + 1} of **{navigation.size}**"
+            )
         else:
             st.caption(f"of **{total}**")
 
@@ -147,7 +231,7 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
     title = viewer.record_title(record) or "(no 245 $a)"
     if search_active and match_indices:
         st.markdown(
-            f"**Match {position + 1} of {pos_total}** "
+            f"**Match {navigation.position + 1} of {navigation.size}** "
             f"(record #{index} of {total}) — `{identifier}` — {title}"
         )
     else:

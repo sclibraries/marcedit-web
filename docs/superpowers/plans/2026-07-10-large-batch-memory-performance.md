@@ -47,10 +47,10 @@
 - Consumes: `RecordStore.revision`
 - Produces: compact search state keyed by `(query text, store revision)`
 
-- [ ] Add failing render/helper tests proving unfiltered navigation does not construct all record numbers and unchanged search navigation does not rescan the store.
-- [ ] Run the focused tests and verify the expected failure.
-- [ ] Extract minimal navigation/search helpers and update the renderer to use arithmetic or cached match positions.
-- [ ] Run View tests and commit the interactive performance change.
+- [x] Add failing render/helper tests proving unfiltered navigation does not construct all record numbers and unchanged search navigation does not rescan the store.
+- [x] Run the focused tests and verify the expected failure.
+- [x] Extract minimal navigation/search helpers and update the renderer to use arithmetic or cached match positions.
+- [x] Run View tests and commit the interactive performance change.
 
 ### Task 3: Path-Backed Sandbox And Diff Contracts
 
