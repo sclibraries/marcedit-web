@@ -89,9 +89,14 @@ def _render_export_banner(rows: list[dict]) -> None:
     )
 
     export = st.session_state.get(K_EXPORT)
-    if export and export.get("snapshot_count") != changes:
-        # The batch changed since the export was prepared — a stale
-        # download would silently miss the newest changes.
+    if export and (
+        export.get("snapshot_count") != changes
+        or export.get("source_filename") != filename
+        or export.get("job_id") != st.session_state.get("current_job_id")
+    ):
+        # The batch changed, or a different file/job is now loaded, since
+        # the export was prepared — a stale download would silently miss
+        # the newest changes or serve the wrong file's bytes.
         _cleanup_export(export)
         st.session_state.pop(K_EXPORT, None)
         export = None
@@ -120,6 +125,7 @@ def _render_export_banner(rows: list[dict]) -> None:
 
     path = Path(export["path"])
     if not path.exists():
+        _cleanup_export(export)
         st.session_state.pop(K_EXPORT, None)
         st.caption("The prepared export is gone — prepare it again.")
         return
@@ -144,6 +150,8 @@ def _prepare_export(store, filename: str, snapshot_count: int) -> None:
         "path": str(path),
         "filename": out_name,
         "snapshot_count": snapshot_count,
+        "source_filename": filename,
+        "job_id": st.session_state.get("current_job_id"),
     }
 
 

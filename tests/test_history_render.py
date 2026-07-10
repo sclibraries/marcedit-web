@@ -263,6 +263,51 @@ def test_restore_invalidates_prepared_export(monkeypatch, tmp_path):
     assert not export_path.exists()
 
 
+def test_export_invalidated_when_loaded_file_switches(monkeypatch, tmp_path):
+    """A prepared export must not survive loading a different file.
+
+    Staleness was previously detected only by comparing snapshot counts.
+    Loading a different file via Home upload, Jobs Load, or the History
+    recent-files Load does not add a snapshot, and two files can share a
+    snapshot count (commonly 0 == 0) — so the banner would keep showing
+    "Current file: B.mrc" while the download button served A's bytes
+    under A's name (found in TASK-143 final review).
+    """
+    fake_st = _FakeStreamlit()
+    history = _history(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    _wire_loaded(monkeypatch, history, store, [])
+    fake_st.session_state["current_job_id"] = 3
+    monkeypatch.setattr(
+        history.tempfile, "mkdtemp", lambda prefix: str(tmp_path / "exp")
+    )
+    (tmp_path / "exp").mkdir()
+
+    fake_st.clicked_keys.add("history_export_prepare")
+    history.render()
+    export = fake_st.session_state[history.K_EXPORT]
+    export_path = Path(export["path"])
+    assert export_path.exists()
+
+    # Simulate switching to a different file with the same snapshot
+    # count (0 changes for both — the old guard alone can't catch this).
+    fake_st.clicked_keys.clear()
+    fake_st.rerun_called = False
+    monkeypatch.setattr(
+        history.session, "current_filename", lambda: "other.mrc"
+    )
+
+    history.render()
+
+    assert fake_st.download_buttons == []
+    assert any(
+        b["label"] == "Prepare export of current file"
+        for b in fake_st.buttons
+    )
+    assert history.K_EXPORT not in fake_st.session_state
+    assert not export_path.exists()
+
+
 def test_no_upload_lists_recent_files(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     history = _history(monkeypatch, fake_st)
