@@ -87,6 +87,8 @@ def build_pages(public: bool) -> dict[str, list[PageSpec]]:
             home,
             PageSpec(url_path="Jobs", title="Jobs",
                      script="views/B_Jobs.py", icon=":material/folder_shared:"),
+            PageSpec(url_path="History", title="History",
+                     script="views/C_History.py", icon=":material/history:"),
             PageSpec(url_path="Workspace", title="Workspace",
                      script="views/0_Workspace.py", icon=":material/dashboard:"),
         ],

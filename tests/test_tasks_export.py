@@ -101,12 +101,12 @@ def test_export_filename_defaults_when_source_missing():
     assert re.fullmatch(r"transformed_quickbatch_\d{8}_\d{6}\.mrc", filename)
 
 
-def test_history_location_caption_points_to_job_snapshots_when_available():
+def test_history_location_caption_points_to_history_page_when_available():
     tasks_render = _tasks_render()
 
     assert tasks_render._history_location_caption(7) == (
-        "Rollback and before/after downloads are available under Job snapshots "
-        "on this Tasks page."
+        "Rollback and before/after downloads are available on the "
+        "History page."
     )
 
 

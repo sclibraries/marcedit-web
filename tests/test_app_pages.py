@@ -6,7 +6,7 @@ import importlib
 
 PUBLIC_ALLOWED = {"Home", "View", "Validate", "Report", "MarcTools"}
 PRIVATE_ONLY = {
-    "Workspace", "Jobs", "Find", "MarcEditor", "Tasks", "Diff", "Dedupe", "Admin",
+    "Workspace", "Jobs", "History", "Find", "MarcEditor", "Tasks", "Diff", "Dedupe", "Admin",
 }
 SANDBOX = "Tasks"
 ADMIN = "Admin"
