@@ -77,3 +77,30 @@ def test_folio_context_from_state_uses_selected_profile(monkeypatch):
         use_949=True,
         multi_institution=True,
     )
+
+
+def test_build_folio_context_includes_ebook_addon():
+    """Validate UI helper converts selected controls into evaluator context."""
+    context = validate._build_folio_context(
+        profile_key="folio-new-instance",
+        addon_enabled=True,
+        institution_suffix="SC",
+        container_code="FC123",
+        score_loading=False,
+    )
+
+    assert context.profile_key == "folio-new-instance"
+    assert context.addons == ("folio-ecollection-ebook",)
+    assert context.institution_suffix == "SC"
+    assert context.container_code == "FC123"
+
+
+def test_build_folio_context_disabled_when_profile_blank():
+    """Leaving the profile blank keeps Validate behavior unchanged."""
+    assert validate._build_folio_context(
+        profile_key="",
+        addon_enabled=True,
+        institution_suffix="SC",
+        container_code="FC123",
+        score_loading=False,
+    ) is None

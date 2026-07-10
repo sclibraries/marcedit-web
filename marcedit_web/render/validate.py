@@ -41,6 +41,30 @@ def _decorate_severity(value: str) -> str:
 _tag_for_issue = issue_tags.tag_for_issue
 
 
+def _build_folio_context(
+    *,
+    profile_key: str,
+    addon_enabled: bool,
+    institution_suffix: str,
+    container_code: str,
+    collection_name: str = "",
+    multi_institution: bool = False,
+    score_loading: bool = False,
+) -> folio_profiles.FolioContext | None:
+    if not profile_key:
+        return None
+    addons = ("folio-ecollection-ebook",) if addon_enabled else ()
+    return folio_profiles.FolioContext(
+        profile_key=profile_key,
+        addons=addons,
+        container_code=container_code.strip(),
+        institution_suffix=institution_suffix.strip().upper(),
+        collection_name=collection_name.strip(),
+        multi_institution=multi_institution,
+        score_loading=score_loading,
+    )
+
+
 def _folio_context_from_state() -> folio_profiles.FolioContext | None:
     profile_key = str(st.session_state.get("folio_profile_key", "")).strip()
     if not profile_key:
@@ -132,6 +156,58 @@ def render(
     malformed = store.malformed_count() if store else 0
     record_count = store.count() if store else 0
 
+    st.subheader("FOLIO profile")
+    profiles = [
+        profile for profile in folio_profiles.list_profiles() if not profile.is_addon
+    ]
+    profile_options = [""] + [profile.key for profile in profiles]
+    profile_labels = {"": "No FOLIO profile"}
+    profile_labels.update({profile.key: profile.label for profile in profiles})
+    selected_profile = st.selectbox(
+        "Profile",
+        options=profile_options,
+        format_func=lambda key: profile_labels.get(key, key),
+        key="folio_profile_key",
+    )
+    addon_enabled = st.checkbox(
+        "Apply e-collection ebook rules",
+        value=False,
+        key="folio_ebook_addon",
+    )
+    col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
+    container_code = col_cfg1.text_input(
+        "Container code",
+        key="folio_container_code",
+    )
+    institution_suffix = col_cfg2.text_input(
+        "Institution suffix",
+        placeholder="SC",
+        key="folio_institution_suffix",
+    )
+    score_loading = col_cfg3.checkbox(
+        "Score loading",
+        value=False,
+        key="folio_score_loading",
+    )
+    collection_name = st.text_input(
+        "Collection name",
+        key="folio_collection_name",
+    )
+    multi_institution = st.checkbox(
+        "Multi-institution load",
+        value=False,
+        key="folio_multi_institution",
+    )
+    folio_context = _build_folio_context(
+        profile_key=selected_profile,
+        addon_enabled=addon_enabled,
+        institution_suffix=institution_suffix,
+        container_code=container_code,
+        collection_name=collection_name,
+        multi_institution=multi_institution,
+        score_loading=score_loading,
+    )
+
     # Memoize the preflight + rules pass across reruns so the View
     # button (and any other widget interaction) doesn't re-trigger
     # the visible "Validating records…" status block. The
@@ -139,11 +215,15 @@ def render(
     # by every record-mutating call site (edit / tasks /
     # fixed-field), so the cache stays correct for free.
     cache = st.session_state.setdefault("issues_cache", {})
-    folio_context = _folio_context_from_state()
-    cache_key = ("validate", folio_context)
+    cache_key = (
+        "validate",
+        store.revision if store else 0,
+        folio_context,
+    )
     all_issues = cache.get(cache_key)
     if all_issues is None:
         all_issues = _compute_issues(rule_set, store, malformed, folio_context)
+        cache.clear()
         cache[cache_key] = all_issues
 
     col_a, col_b, col_c, col_d = st.columns(4)
@@ -157,6 +237,20 @@ def render(
         st.success("No issues found.")
         return
 
+    fixable_codes: set[str] = set()
+    if folio_context is not None and store is not None:
+        profile_rules = folio_profiles.rules_for_profile(
+            folio_context.profile_key,
+            include_addons=folio_context.addons,
+        )
+        for item in folio_profiles.evaluate_records(
+            store.iter_records(),
+            profile_rules,
+            folio_context,
+        ):
+            if item.fix_available:
+                fixable_codes.add(item.issue.code)
+
     issue_rows = [
         {
             "severity": i.severity,
@@ -166,6 +260,7 @@ def render(
             "identifier": i.identifier or "—",
             "message": i.message,
             "suggestion": i.suggestion or "",
+            "fix_available": "yes" if i.code in fixable_codes else "",
             # Stash the derived tag on the row so the View widget
             # can pass it to the modal without re-running the
             # regex sweep on every selectbox change.
@@ -229,6 +324,7 @@ def render(
             "identifier": st.column_config.TextColumn("Identifier", width="medium"),
             "message": st.column_config.TextColumn("Message", width="large"),
             "suggestion": st.column_config.TextColumn("Suggestion", width="large"),
+            "fix_available": st.column_config.TextColumn("Fix", width="small"),
         },
     )
 
