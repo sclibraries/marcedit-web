@@ -387,14 +387,24 @@ class RecordStore:
         source_path = Path(source_path)
         if not source_path.is_file():
             raise FileNotFoundError(source_path)
-        temp_path = self._path.with_name(f".{self._path.name}.replace.tmp")
+        temp_path: Path | None = None
         try:
-            with source_path.open("rb") as source, temp_path.open("wb") as target:
-                shutil.copyfileobj(source, target, _COPY_CHUNK_BYTES)
+            with source_path.open("rb") as source:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=self._path.parent,
+                    prefix=f".{self._path.name}.replace.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as target:
+                    temp_path = Path(target.name)
+                    shutil.copyfileobj(source, target, _COPY_CHUNK_BYTES)
+            assert temp_path is not None
             written = temp_path.stat().st_size
             os.replace(temp_path, self._path)
         finally:
-            temp_path.unlink(missing_ok=True)
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
         self._reindex_backing_file()
         self._revision += 1
         return written

@@ -20,6 +20,18 @@ _GATE: threading.BoundedSemaphore | None = None
 _GATE_CAPACITY: int | None = None
 
 
+class OperationMeasurement:
+    """Mutable outcome for operations that return errors instead of raising."""
+
+    def __init__(self) -> None:
+        self.outcome = "ok"
+        self.error_type: str | None = None
+
+    def mark_error(self, error_type: str) -> None:
+        self.outcome = "error"
+        self.error_type = error_type
+
+
 def _configured_capacity() -> int:
     raw = os.environ.get("MARCEDIT_WEB_MAX_CONCURRENT_BATCHES", "").strip()
     if not raw:
@@ -59,43 +71,43 @@ def batch_slot(operation: str) -> Iterator[None]:
     started = time.perf_counter()
     gate.acquire()
     wait_ms = (time.perf_counter() - started) * 1000
-    _log_performance(
-        {
-            "operation": operation,
-            "phase": "admission",
-            "outcome": "acquired",
-            "capacity": capacity,
-            "wait_ms": round(wait_ms, 3),
-        }
-    )
     try:
+        _log_performance(
+            {
+                "operation": operation,
+                "phase": "admission",
+                "outcome": "acquired",
+                "capacity": capacity,
+                "wait_ms": round(wait_ms, 3),
+            }
+        )
         yield
     finally:
         gate.release()
 
 
 @contextmanager
-def measure_operation(operation: str, **dimensions: Any) -> Iterator[None]:
+def measure_operation(
+    operation: str, **dimensions: Any
+) -> Iterator[OperationMeasurement]:
     """Log elapsed time, outcome, dimensions, and normalized peak RSS."""
     started = time.perf_counter()
-    outcome = "ok"
-    error_type: str | None = None
+    measurement = OperationMeasurement()
     try:
-        yield
+        yield measurement
     except BaseException as exc:
-        outcome = "error"
-        error_type = type(exc).__name__
+        measurement.mark_error(type(exc).__name__)
         raise
     finally:
         event = {
             "operation": operation,
             **dimensions,
             "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
-            "outcome": outcome,
+            "outcome": measurement.outcome,
             "peak_rss_bytes": peak_rss_bytes(),
         }
-        if error_type is not None:
-            event["error_type"] = error_type
+        if measurement.error_type is not None:
+            event["error_type"] = measurement.error_type
         _log_performance(event)
 
 

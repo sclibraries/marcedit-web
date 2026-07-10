@@ -146,12 +146,11 @@ class QuickBatchPreview:
 class QuickBatchResult:
     changed_count: int = 0
     skipped_count: int = 0
-    stale_indices: list[int] = field(default_factory=list)
     error: str | None = None
 
     @property
     def applied(self) -> bool:
-        return self.error is None and self.changed_count > 0 and not self.stale_indices
+        return self.error is None and self.changed_count > 0
 
 
 def validate_request(request: QuickBatchRequest) -> str | None:

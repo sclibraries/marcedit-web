@@ -1,11 +1,11 @@
 """MARC bibliographic file diff core logic.
 
-Match records on a list of caller-supplied `FieldSpec` entries; optionally
-detect content changes for records that match on the key; emit selected
-records into an in-memory MARC buffer suitable for download.
+Match records on caller-supplied `FieldSpec` entries, optionally detect
+content changes for matching records, and emit selected records to bytes or
+to a bounded-memory file path.
 
-The module is designed to run entirely in memory: callers pass `(name, bytes)`
-buffers in and receive `bytes` out. No filesystem operations happen here.
+Most callers pass `(name, bytes-like buffer)` inputs. Large exports use the
+path writer so only one MARC record slice is resident at a time.
 
 Public API:
     FieldSpec(tag, subfield=None, byte_range=None, prefix_filter=None,

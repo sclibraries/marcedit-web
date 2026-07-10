@@ -24,6 +24,32 @@ def test_private_systemd_unit_runs_readiness_before_streamlit():
     ) in unit
 
 
+def test_private_systemd_unit_has_large_batch_memory_guardrails():
+    """Reclaim must start below the hard 2 GB service ceiling."""
+    unit = _repo_file("deploy/marcedit-web-private.service")
+    active = {
+        line.strip()
+        for line in unit.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "MemoryHigh=1536M" in active
+    assert "MemoryMax=2G" in active
+    assert "MemorySwapMax=0" not in active
+
+
+def test_deployment_docs_gate_swap_limit_on_cgroup_v2():
+    """RHEL 8 defaults to v1, so the swap directive needs a v2 preflight."""
+    docs = _repo_file("docs/deployment.md")
+
+    assert "stat -fc %T /sys/fs/cgroup" in docs
+    assert "cgroup2fs" in docs
+    assert "MemorySwapMax=0" in docs
+    assert "memory.current" in docs
+    assert "memory.events" in docs
+    assert "MARCEDIT_WEB_MAX_CONCURRENT_BATCHES" in docs
+
+
 def test_public_systemd_unit_stays_db_free():
     """The public light tier must not touch the private catalog DB."""
     unit = _repo_file("deploy/marcedit-web-public.service")

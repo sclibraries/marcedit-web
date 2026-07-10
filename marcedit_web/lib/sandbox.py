@@ -61,6 +61,7 @@ _CPU_SECONDS = 30
 _AS_BYTES = 512 * 1024 * 1024     # 512 MB virtual memory
 _FSIZE_BYTES = 1024 * 1024 * 1024  # 1 GB single-file write cap
 _NPROC = 32                        # subprocess can't fork-bomb
+MAX_RETAINED_ERRORS = 200
 
 
 @dataclass
@@ -79,14 +80,15 @@ class SandboxResult:
     ``output_path`` is the MARC file the child produced (possibly empty
     when the run failed before any record was written). Keeping it on disk
     prevents the Streamlit process from duplicating a large batch in RAM.
-    ``errors`` is the structured per-record diagnostic list. ``stderr``
-    is the raw child stderr — surfaced for debugging when the run
-    failed outside the per-record loop (import error, segfault, etc).
-    ``timed_out`` is True when the wall clock cap fired.
+    ``error_count`` is exact while ``errors`` retains only the first capped
+    diagnostics. ``stderr`` is the raw child stderr — surfaced for debugging
+    when the run failed outside the per-record loop (import error, segfault,
+    etc). ``timed_out`` is True when the wall clock cap fired.
     """
 
     output_path: Path
     errors: list[dict]
+    error_count: int = 0
     stderr: str = ""
     returncode: int = 0
     timed_out: bool = False
@@ -131,24 +133,28 @@ def main():
     ap.add_argument("--tasks", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--errors", required=True)
+    ap.add_argument("--max-errors", required=True, type=int)
     args = ap.parse_args()
 
     with open(args.tasks) as f:
         tasks = json.load(f)
 
     errors = []
+    error_count = 0
     with open(args.input, "rb") as fin:
         reader = pymarc.MARCReader(fin, to_unicode=True, permissive=True)
         with open(args.output, "wb") as fout:
             writer = pymarc.MARCWriter(fout)
             for idx, record in enumerate(reader, start=1):
                 if record is None:
-                    errors.append({
-                        "index": idx,
-                        "code": "malformed-record",
-                        "task": None,
-                        "message": "pymarc skipped a malformed record",
-                    })
+                    error_count += 1
+                    if len(errors) < args.max_errors:
+                        errors.append({
+                            "index": idx,
+                            "code": "malformed-record",
+                            "task": None,
+                            "message": "pymarc skipped a malformed record",
+                        })
                     continue
                 failed_task = None
                 try:
@@ -182,18 +188,20 @@ def main():
                     writer.write(record)
                 except Exception as exc:
                     failed_task = task.get("name", "?") if 'task' in locals() else "?"
-                    errors.append({
-                        "index": idx,
-                        "code": "transform-failed",
-                        "task": failed_task,
-                        "message": "%s: %s" % (type(exc).__name__, exc),
-                    })
+                    error_count += 1
+                    if len(errors) < args.max_errors:
+                        errors.append({
+                            "index": idx,
+                            "code": "transform-failed",
+                            "task": failed_task,
+                            "message": "%s: %s" % (type(exc).__name__, exc),
+                        })
                     # Keep original record so the output batch stays the
                     # same cardinality as the input.
                     writer.write(record)
 
     with open(args.errors, "w") as f:
-        json.dump(errors, f)
+        json.dump({"error_count": error_count, "errors": errors}, f)
 
 
 if __name__ == "__main__":
@@ -278,6 +286,7 @@ def run_tasks_subprocess(
         "--tasks", str(tasks_path),
         "--output", str(output_path),
         "--errors", str(errors_path),
+        "--max-errors", str(MAX_RETAINED_ERRORS),
     ]
     # Cleansed environment: PYTHONPATH (for marcedit_web imports),
     # PATH (for the python invocation), HOME (some libraries demand
@@ -313,19 +322,30 @@ def run_tasks_subprocess(
         raise RuntimeError(f"sandbox could not spawn python: {exc}") from exc
 
     try:
-        errors = json.loads(errors_path.read_text()) if errors_path.exists() else []
+        error_payload = (
+            json.loads(errors_path.read_text()) if errors_path.exists() else []
+        )
     except json.JSONDecodeError:
-        errors = []
+        error_payload = []
+
+    if isinstance(error_payload, dict):
+        errors = list(error_payload.get("errors") or [])
+        error_count = int(error_payload.get("error_count", len(errors)))
+    else:
+        errors = list(error_payload)
+        error_count = len(errors)
 
     if timed_out:
-        errors.append({
+        error_count += 1
+        _retain_terminal_error(errors, {
             "index": 0,
             "code": "sandbox-timeout",
             "task": None,
             "message": f"sandbox exceeded {timeout:.0f}s wall clock",
         })
     elif returncode != 0:
-        errors.append({
+        error_count += 1
+        _retain_terminal_error(errors, {
             "index": 0,
             "code": "sandbox-nonzero-exit",
             "task": None,
@@ -338,7 +358,16 @@ def run_tasks_subprocess(
     return SandboxResult(
         output_path=output_path,
         errors=errors,
+        error_count=error_count,
         stderr=stderr,
         returncode=returncode,
         timed_out=timed_out,
     )
+
+
+def _retain_terminal_error(errors: list[dict], error: dict) -> None:
+    """Keep a launcher error visible without exceeding the diagnostics cap."""
+    if len(errors) < MAX_RETAINED_ERRORS:
+        errors.append(error)
+    elif errors:
+        errors[-1] = error

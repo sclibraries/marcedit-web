@@ -130,3 +130,17 @@ def test_measure_operation_logs_failure_and_reraises(caplog):
     event = caplog.records[-1].batch_performance
     assert event["outcome"] == "error"
     assert event["error_type"] == "ValueError"
+
+
+def test_measure_operation_can_mark_returned_failure(caplog):
+    """Result-object errors must not be logged as successful operations."""
+    caplog.set_level(logging.INFO, logger="marcedit_web.performance")
+
+    with batch_runtime.measure_operation(
+        "quick-replace", phase="apply"
+    ) as measurement:
+        measurement.mark_error("PreviewRejected")
+
+    event = caplog.records[-1].batch_performance
+    assert event["outcome"] == "error"
+    assert event["error_type"] == "PreviewRejected"

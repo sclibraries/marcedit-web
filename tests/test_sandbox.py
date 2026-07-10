@@ -202,6 +202,21 @@ def test_task_exception_is_captured_not_raised(one_record_bytes):
     assert len(reread) == 1
 
 
+def test_repeated_task_errors_are_counted_but_diagnostics_are_capped(
+    one_record_bytes,
+):
+    """A task failing on 100K records must not retain 100K error dicts."""
+    record_count = sandbox.MAX_RETAINED_ERRORS + 5
+    result = run_tasks_subprocess(
+        [TaskSpec(name="boom", body='raise RuntimeError("explicit")')],
+        one_record_bytes * record_count,
+    )
+
+    assert result.error_count == record_count
+    assert len(result.errors) == sandbox.MAX_RETAINED_ERRORS
+    assert len(_read_output(result)) == record_count
+
+
 def test_filesystem_side_effect_lands_in_sandbox_workdir(
     one_record_bytes, tmp_path,
 ):

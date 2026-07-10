@@ -8,7 +8,7 @@
 
 **Architecture:** Retain `RecordStore` and MRC files, but make random access truly indexed. Replace whole-batch Python values at batch boundaries with paths, compact revision-bound summaries, and streamed disk-to-disk operations.
 
-**Tech Stack:** Python 3.11, Streamlit, pymarc, pytest, systemd/cgroup v2.
+**Tech Stack:** Python 3.9, Streamlit, pymarc, pytest, systemd/cgroup v1/v2.
 
 ## Global Constraints
 
@@ -115,8 +115,8 @@
 - Test: `tests/test_deploy_units.py`
 - Test: `tests/test_large_batch_benchmark.py`
 
-- [ ] Add failing configuration tests for `MemoryHigh=1536M` and the documented cgroup-v2 condition for `MemorySwapMax=0`.
-- [ ] Add an opt-in synthetic 100K benchmark covering last-record lookup, standard quick operation, counts, duration, and RSS.
-- [ ] Implement unit/docs/benchmark changes and run focused verification.
-- [ ] Run the complete suite, the benchmark at practical local scale, and static checks; record exact evidence in TASK-147.
+- [x] Add failing configuration tests for `MemoryHigh=1536M` and the documented cgroup-v2 condition for `MemorySwapMax=0`.
+- [x] Add an opt-in synthetic 100K benchmark covering last-record lookup, standard quick operation, counts, duration, and RSS.
+- [x] Implement unit/docs/benchmark changes and run focused verification.
+- [x] Run the complete suite, the benchmark at practical local scale, and static checks; record exact evidence in TASK-147.
 - [ ] Perform code review, resolve all Critical/Important findings, mark TASK-147 Completed, and commit the completion evidence.

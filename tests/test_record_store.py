@@ -426,6 +426,29 @@ def test_replace_from_path_adopts_batch_without_consuming_source(
     assert source_path.read_bytes() == source_bytes
 
 
+def test_replace_from_path_uses_unique_atomic_temp_names(
+    store, fixture_bytes, tmp_path, monkeypatch
+):
+    """Two admitted sessions must not write the same adoption scratch file."""
+    source_path = tmp_path / "batch-result.mrc"
+    source_path.write_bytes(fixture_bytes)
+    temp_paths = []
+    real_replace = record_store.os.replace
+
+    def _capture_replace(source, destination):
+        temp_paths.append(Path(source))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(record_store.os, "replace", _capture_replace)
+
+    store.replace_from_path(source_path)
+    store.replace_from_path(source_path)
+
+    assert len(temp_paths) == 2
+    assert temp_paths[0] != temp_paths[1]
+    assert all(path.parent == store.path.parent for path in temp_paths)
+
+
 # ---------------------------------------------------------------------------
 # RecordLocation
 # ---------------------------------------------------------------------------

@@ -76,7 +76,6 @@ def create_snapshot(
                 ),
             )
             snapshot_id = int(cur.lastrowid)
-            row = _snapshot_row(conn, snapshot_id)
     except Exception:
         snapshot_before_path.unlink(missing_ok=True)
         snapshot_after_path.unlink(missing_ok=True)
@@ -97,7 +96,9 @@ def _write_snapshot_file(
     if (source_path is None) == (source_bytes is None):
         raise ValueError(f"provide exactly one {label} snapshot source")
     if source_path is not None:
-        with Path(source_path).open("rb") as source, destination.open("wb") as target:
+        with Path(source_path).open("rb") as source, destination.open(
+            "wb"
+        ) as target:
             shutil.copyfileobj(source, target, _COPY_CHUNK_BYTES)
         return
     destination.write_bytes(source_bytes or b"")

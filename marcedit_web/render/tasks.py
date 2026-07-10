@@ -79,8 +79,8 @@ def _batch_operation(operation: str, *, phase: str, store):
             phase=phase,
             records=store.count(),
             bytes=file_bytes,
-        ):
-            yield
+        ) as measurement:
+            yield measurement
 
 
 # ---------------------------------------------------------------------------
@@ -1308,12 +1308,18 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             f"⚙️ Running {len(specs)} task(s) in the sandbox: "
             + ", ".join(f"`{s.name}`" for s in specs)
         )
-        with _batch_operation("saved-task", phase="sandbox", store=store):
+        with _batch_operation(
+            "saved-task", phase="sandbox", store=store
+        ) as measurement:
             result = sandbox.run_tasks_subprocess(
                 specs,
                 input_path=sandbox_input,
                 tmp_dir=sandbox_workdir,
             )
+            if result.timed_out:
+                measurement.mark_error("SandboxTimeout")
+            elif result.returncode != 0:
+                measurement.mark_error("SandboxNonzeroExit")
         if result.timed_out:
             status.update(
                 label="⚠️ Run hit the wall-clock limit",
@@ -1402,7 +1408,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
             "changed_count": (
                 diff_summary.changed_count if diff_summary is not None else 0
             ),
-            "error_count": len(issues),
+            "error_count": result.error_count,
             "timed_out": bool(result.timed_out),
             "sandbox_returncode": int(result.returncode or 0),
         },
@@ -1422,6 +1428,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         "out_path": str(sandbox_output_path),
         "input_count": store.count(),
         "output_count": output_count,
+        "error_count": result.error_count,
         "ran_tasks": list(selection),
         "timed_out": result.timed_out,
         "sandbox_returncode": result.returncode,
@@ -1443,7 +1450,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         selection=list(selection),
         result=result,
         out_records_count=output_count,
-        errors_count=len(issues),
+        errors_count=result.error_count,
         changed_count=(diff_summary.changed_count
                        if diff_summary is not None else 0),
         sandbox_workdir=sandbox_workdir,
@@ -1508,7 +1515,8 @@ def _render_run_results() -> None:
     c1, c2, c3 = st.columns(3)
     c1.metric("Records in", results["input_count"])
     c2.metric("Records out", results["output_count"])
-    c3.metric("Errors", len(results["issues"]))
+    error_count = results.get("error_count", len(results["issues"]))
+    c3.metric("Errors", error_count)
     st.caption(
         "Tasks applied: " + ", ".join(f"`{n}`" for n in results["ran_tasks"])
     )
@@ -1525,6 +1533,11 @@ def _render_run_results() -> None:
         )
 
     if results["issues"]:
+        if error_count > len(results["issues"]):
+            st.caption(
+                f"Showing the first {len(results['issues']):,} of "
+                f"{error_count:,} task errors."
+            )
         st.dataframe(
             pd.DataFrame(
                 [
@@ -1931,8 +1944,10 @@ def _build_and_store_preview(request: BatchReplaceRequest) -> None:
         try:
             with _batch_operation(
                 "quick-replace", phase="preview", store=store
-            ):
+            ) as measurement:
                 preview = batch_replace.build_preview(store, request)
+                if preview.error:
+                    measurement.mark_error("PreviewError")
         except ValueError as exc:
             st.error(str(exc))
             return
@@ -2001,8 +2016,10 @@ def _apply_quick_preview(preview) -> None:
     with snapshot_actions.staged_store_path(store) as before_path:
         with _batch_operation(
             "quick-replace", phase="apply", store=store
-        ):
+        ) as measurement:
             result = batch_replace.apply_preview(store, preview)
+            if result.error:
+                measurement.mark_error("ApplyError")
         if result.error:
             st.error(result.error)
             return
@@ -2236,10 +2253,12 @@ def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
     with st.spinner("Building preview…"):
         with _batch_operation(
             "quick-batch", phase="preview", store=store
-        ):
+        ) as measurement:
             preview = quick_batch.build_preview(
                 store, request, progress=on_progress
             )
+            if preview.error:
+                measurement.mark_error("PreviewError")
     progress.empty()
     status.empty()
     batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
@@ -2292,10 +2311,12 @@ def _apply_quick_batch_preview(preview) -> None:
         ):
             with _batch_operation(
                 "quick-batch", phase="apply", store=store
-            ):
+            ) as measurement:
                 result = quick_batch.apply_preview(
                     store, preview, progress=on_progress
                 )
+                if result.error:
+                    measurement.mark_error("ApplyError")
         progress.empty()
         status.empty()
         if result.error:

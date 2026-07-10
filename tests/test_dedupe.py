@@ -1,10 +1,9 @@
 """Tests for the in-file dedupe flow (Stage 15).
 
-The render function itself is exercised by Playwright; here we cover
-the underlying ``marc_diff`` plumbing the render layer depends on:
-``index_buffer`` surfaces within-buffer duplicates, and
-``write_subset_to_bytes`` materializes the non-keepers into a
-readable ``.mrc``.
+The render function itself is exercised by Playwright; here we cover the
+underlying ``marc_diff`` plumbing the render layer depends on:
+``index_buffer`` surfaces within-buffer duplicates, while the byte and path
+writers both emit readable non-keeper ``.mrc`` records.
 """
 
 from __future__ import annotations

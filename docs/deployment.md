@@ -158,6 +158,80 @@ layer:
   is writable; a sandboxed task that escapes its workdir can't
   overwrite the venv or app code.
 
+### Large-batch memory guardrails (TASK-147)
+
+The private unit starts cgroup reclaim at `MemoryHigh=1536M` and retains the
+hard `MemoryMax=2G` ceiling. The application admits two saved-task or quick
+batch operations at a time by default. Set
+`MARCEDIT_WEB_MAX_CONCURRENT_BATCHES` in `.env` only after repeating the
+concurrent smoke test below; lowering it to `1` trades throughput for more
+headroom.
+
+RHEL 8 defaults to cgroup v1 unless the unified hierarchy was explicitly
+enabled. Check the host before configuring a per-service swap limit:
+
+```bash
+stat -fc %T /sys/fs/cgroup
+systemd --version | head -1
+```
+
+If and only if the first command prints `cgroup2fs`, add the v2-only swap
+drop-in:
+
+```bash
+sudo systemctl edit marcedit-web-private.service
+```
+
+```ini
+[Service]
+MemorySwapMax=0
+```
+
+On cgroup v1, leave that drop-in absent. In either case, reload, restart, and
+verify the effective settings rather than assuming the checked-in unit was
+installed correctly:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart marcedit-web-private.service
+systemctl show marcedit-web-private.service \
+  -p MemoryCurrent -p MemoryHigh -p MemoryMax -p MemorySwapMax
+```
+
+For cgroup v2, inspect the kernel counters directly:
+
+```bash
+CGROUP=$(systemctl show marcedit-web-private.service -p ControlGroup --value)
+cat "/sys/fs/cgroup${CGROUP}/memory.current"
+cat "/sys/fs/cgroup${CGROUP}/memory.events"
+cat "/sys/fs/cgroup${CGROUP}/memory.swap.current"
+```
+
+Before increasing the admission limit, open three independent authenticated
+browser sessions, load the same 100K synthetic batch in each, and start a
+quick-batch preview at the same time. The first two should run while the third
+waits. During the run:
+
+```bash
+watch -n 1 'systemctl show marcedit-web-private.service -p MemoryCurrent'
+journalctl -u marcedit-web-private.service -f | grep batch-performance
+```
+
+Accept the configuration only when `MemoryCurrent` stays below 1.5 GB,
+`memory.events` reports no `oom` or `oom_kill`, all three runs preserve the
+input record count, and each completion log contains operation, phase,
+elapsed time, outcome, and `peak_rss_bytes`.
+
+Run the single-process production benchmark separately as the service user:
+
+```bash
+sudo -u marcedit /var/www/html/marcedit-web/.venv/bin/python \
+  scripts/benchmark-large-batch.py --records 100000
+```
+
+It exits nonzero if last-record lookup exceeds 250 ms, the standard quick
+operation exceeds 30 seconds, or record counts drift.
+
 ### Health watchdog (TASK-133)
 
 The TASK-117 outage showed Streamlit's Runtime can die inside a live
@@ -190,9 +264,9 @@ sudo systemctl status marcedit-web             # fresh PID, running again
 On a two-tier host the 8501 tier is `marcedit-web-private.service` —
 edit both unit names inside the watchdog service before installing.
 
-Memory guardrails (`MemoryHigh`/`MemoryMax`/`MemorySwapMax`) ship
-commented in `marcedit-web.service` — size them to the box RAM before
-enabling (see comments in the unit).
+The legacy single-unit `marcedit-web.service` still ships conservative
+guardrails as comments. The active 1.5/2 GB settings above belong to the
+two-tier private unit used for large authenticated batches.
 
 ## Audit log
 
@@ -298,16 +372,19 @@ are staged in the remaining TASK-086 child tickets.
 ## Runtime temp files
 
 The app writes large per-session working files under `/tmp` with
-`marcedit-web-*` prefixes. Abrupt browser closes can leave old
-directories behind. Add a conservative cleanup job:
+`marcedit-web-*` prefixes. With `PrivateTmp=true`, the host sees them below a
+`systemd-private-*` directory. Abrupt browser closes can leave old directories
+behind. Add a conservative cleanup job that covers both layouts:
 
 ```bash
-find /tmp -maxdepth 1 -type d -name 'marcedit-web-*' -mtime +2 \
-    -print -exec rm -rf {} +
+find /tmp -xdev -type d \
+  \( -path '/tmp/marcedit-web-*' \
+     -o -path '/tmp/systemd-private-*/tmp/marcedit-web-*' \) \
+  -mtime +2 -print -exec rm -rf {} +
 ```
 
-(Run as root from a daily cron; the marcedit user can't see other
-users' /tmp dirs in PrivateTmp=true mode, but root can clean them.)
+Run this as root from a daily cron during a low-traffic window. The
+`marcedit` user cannot see the host-side private namespace paths.
 
 ## Accessibility
 
