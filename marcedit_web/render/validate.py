@@ -195,6 +195,19 @@ def _build_issue_rows(
     ]
 
 
+def _find_single_folio_fix_rule(
+    record,
+    issue_code: str,
+    rules: list[folio_profiles.FolioRule],
+    context: folio_profiles.FolioContext,
+) -> folio_profiles.FolioRule | None:
+    matches = []
+    for item in folio_profiles.evaluate_record(record, rules, context):
+        if item.issue.code == issue_code and item.fix_available:
+            matches.append(next(rule for rule in rules if rule.key == item.rule_key))
+    return matches[0] if len(matches) == 1 else None
+
+
 def render(
     rule_set: rules_mod.RuleSet | None = None,
     rules_warnings: list | None = None,
@@ -408,6 +421,36 @@ def render(
             row = viewable.loc[chosen]
             record_index = int(row["record"])
             tag = row["_tag"] or None
+            fix_label = None
+            on_fix = None
+            if folio_context is not None and row["code"].startswith("folio-"):
+                profile_rules = folio_profiles.rules_for_profile(
+                    folio_context.profile_key,
+                    include_addons=folio_context.addons,
+                )
+                current_record = store.get(record_index - 1)
+                fix_rule = (
+                    _find_single_folio_fix_rule(
+                        current_record,
+                        row["code"],
+                        profile_rules,
+                        folio_context,
+                    )
+                    if current_record is not None
+                    else None
+                )
+                if fix_rule is not None:
+                    fix_label = "Apply FOLIO safe fix"
+
+                    def on_fix(record_no: int, record, *, _rule=fix_rule):
+                        updated = folio_profiles.apply_record_fix(
+                            record,
+                            _rule,
+                            folio_context,
+                        )
+                        store.replace(record_no - 1, updated)
+                        st.session_state.pop("issues_cache", None)
+
             open_record_modal(
                 record_index=record_index,
                 store=store,
@@ -417,6 +460,8 @@ def render(
                 ],
                 highlight_tag=tag,
                 highlight_severity=row["severity"],
+                fix_label=fix_label,
+                on_fix=on_fix,
             )
 
     if rules_warnings:

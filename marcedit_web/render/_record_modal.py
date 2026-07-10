@@ -94,6 +94,8 @@ def open_record_modal(
     extra_lines: list[tuple[str, str]] | None = None,
     highlight_tag: str | None = None,
     highlight_severity: str | None = None,
+    fix_label: str | None = None,
+    on_fix=None,
 ) -> None:
     """Open a modal showing record ``record_index`` (1-based).
 
@@ -151,6 +153,17 @@ def open_record_modal(
         _render_mrk_highlighted(mrk, highlight_tag, highlight_severity)
     else:
         st.code(mrk, language=None)
+
+    if fix_label and on_fix is not None:
+        if st.button(
+            fix_label,
+            key=f"_modal_fix_{record_index}_{highlight_tag or 'record'}",
+            icon=":material/build:",
+            use_container_width=True,
+            type="primary",
+        ):
+            on_fix(record_index, record)
+            st.rerun()
 
     # Handoff to the View page's inline ``.mrk`` editor (TASK-056).
     # Pre-arms the same session-state keys ``render_inline_edit``

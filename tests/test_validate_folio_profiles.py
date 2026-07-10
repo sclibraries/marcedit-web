@@ -183,3 +183,19 @@ def test_folio_fix_availability_uses_cached_validation_result(monkeypatch):
 
     assert calls == 1
     assert result.fixable_issue_keys == {("folio-one", 1)}
+
+
+def test_find_single_folio_fix_rule_returns_matching_rule(make_record):
+    """Validate can map a selected FOLIO issue back to one safe fix rule."""
+    rules = [
+        rule for rule in folio_profiles.default_rules_for_tests()
+        if rule.key == "folio-new-load-forbidden-001"
+    ]
+    rule = validate._find_single_folio_fix_rule(
+        make_record(),
+        "folio-new-load-forbidden-001",
+        rules,
+        folio_profiles.FolioContext(profile_key="folio-new-instance"),
+    )
+
+    assert rule.key == "folio-new-load-forbidden-001"
