@@ -170,3 +170,76 @@ def test_barcode_suffix_rule_uses_configured_suffix(make_record):
 
     assert [item.issue.code for item in issues] == ["folio-949-barcode-suffix"]
     assert issues[0].fix_available is True
+
+
+def test_configured_container_code_flags_missing_035_with_fix(make_record):
+    """Configured Five Colleges container code should produce a safe 035 fix."""
+    record = make_record()
+
+    issues = folio_profiles.evaluate_record(
+        record,
+        _rules("folio-required-035-container"),
+        folio_profiles.FolioContext(
+            profile_key="folio-new-instance",
+            container_code="FC-ABC",
+        ),
+    )
+
+    assert [item.issue.code for item in issues] == ["folio-required-035-container"]
+    assert issues[0].fix_available is True
+
+
+def test_506_multi_institution_rule_is_check_only(make_record):
+    """506 is required for multi-institution loads but needs cataloger review."""
+    record = make_record()
+
+    issues = folio_profiles.evaluate_record(
+        record,
+        _rules("folio-multi-institution-506"),
+        folio_profiles.FolioContext(
+            profile_key="folio-new-instance",
+            multi_institution=True,
+        ),
+    )
+
+    assert [item.issue.code for item in issues] == ["folio-multi-institution-506"]
+    assert issues[0].fix_available is False
+
+
+def test_configured_710_and_830_recommendations_have_safe_fixes(make_record):
+    """Configured local collection access points can be added deterministically."""
+    record = make_record()
+
+    issues = folio_profiles.evaluate_record(
+        record,
+        _rules("folio-recommended-710-local", "folio-recommended-830-local"),
+        folio_profiles.FolioContext(
+            profile_key="folio-new-instance",
+            collection_name="Five Colleges test collection",
+        ),
+    )
+
+    assert {item.issue.code for item in issues} == {
+        "folio-recommended-710-local",
+        "folio-recommended-830-local",
+    }
+    assert all(item.fix_available for item in issues)
+
+
+def test_incomplete_949_lists_missing_required_subfields(make_record):
+    """The 949 path must call out missing configured required subfields."""
+    record = make_record()
+    record.add_field(Field(
+        tag="949",
+        indicators=["\\", "\\"],
+        subfields=[Subfield("u", "https://example.test/book")],
+    ))
+
+    issues = folio_profiles.evaluate_record(
+        record,
+        _rules("folio-949-required-subfields"),
+        folio_profiles.FolioContext(profile_key="folio-new-instance"),
+    )
+
+    assert [item.issue.code for item in issues] == ["folio-949-required-subfields"]
+    assert "$y" in issues[0].issue.message

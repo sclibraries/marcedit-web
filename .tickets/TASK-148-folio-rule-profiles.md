@@ -12,4 +12,4 @@ Success Criteria:
 - The design covers rule storage, validation behavior, UI entry points, per-record safe fixes, batch safe-fix preview/application, and tests.
 - Any later implementation is test-driven and can be traced back to this ticket.
 
-Status: In-Progress
+Status: Completed

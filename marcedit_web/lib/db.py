@@ -423,6 +423,96 @@ def _seed_folio_profiles(conn: sqlite3.Connection) -> None:
                 "subfields": [["a", "Electronic books."], ["2", "local"]],
             },
         ),
+        (
+            "folio-required-035-container",
+            "folio-new-instance",
+            "035 9\\ container code should be present",
+            "warning",
+            {
+                "kind": "field",
+                "tag": "035",
+                "indicators": ["9", "\\"],
+                "subfields": {"a": "{container_code}"},
+            },
+            {
+                "kind": "field_with_context_subfields",
+                "context_key": "container_code",
+            },
+            {
+                "operation": "add_context_field",
+                "tag": "035",
+                "indicators": ["9", "\\"],
+                "subfields": [["a", "{container_code}"]],
+            },
+        ),
+        (
+            "folio-multi-institution-506",
+            "folio-new-instance",
+            "506 1\\ should be present for multi-institution loads",
+            "warning",
+            {"kind": "field", "tag": "506", "indicators": ["1", "\\"]},
+            {
+                "kind": "required_when_context_true",
+                "context_key": "multi_institution",
+            },
+            {"operation": "none"},
+        ),
+        (
+            "folio-recommended-710-local",
+            "folio-new-instance",
+            "710 2\\ local collection access point is recommended",
+            "info",
+            {
+                "kind": "field",
+                "tag": "710",
+                "indicators": ["2", "\\"],
+                "subfields": {"a": "{collection_name}", "2": "local"},
+            },
+            {
+                "kind": "field_with_context_subfields",
+                "context_key": "collection_name",
+            },
+            {
+                "operation": "add_context_field",
+                "tag": "710",
+                "indicators": ["2", "\\"],
+                "subfields": [["a", "{collection_name}"], ["2", "local"]],
+            },
+        ),
+        (
+            "folio-recommended-830-local",
+            "folio-new-instance",
+            "830 \\0 local series access point is recommended",
+            "info",
+            {
+                "kind": "field",
+                "tag": "830",
+                "indicators": ["\\", "0"],
+                "subfields": {"a": "{collection_name}", "2": "local"},
+            },
+            {
+                "kind": "field_with_context_subfields",
+                "context_key": "collection_name",
+            },
+            {
+                "operation": "add_context_field",
+                "tag": "830",
+                "indicators": ["\\", "0"],
+                "subfields": [["a", "{collection_name}"], ["2", "local"]],
+            },
+        ),
+        (
+            "folio-949-required-subfields",
+            "folio-new-instance",
+            "949 field is missing required FOLIO load subfields",
+            "warning",
+            {
+                "kind": "949_required_subfields",
+                "required": ["u", "y", "t", "p", "l", "b", "m"],
+            },
+            {"kind": "949_required_subfields"},
+            {"operation": "none"},
+        ),
     ]
     for key, profile_key, label, severity, target, requirement, fix in rules:
         conn.execute(

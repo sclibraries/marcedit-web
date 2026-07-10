@@ -42,8 +42,10 @@ class FolioContext:
     addons: tuple[str, ...] = ()
     container_code: str = ""
     institution_suffix: str = ""
+    collection_name: str = ""
     score_loading: bool = False
     use_949: bool = False
+    multi_institution: bool = False
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,101 @@ _DEFAULT_RULES: tuple[FolioRule, ...] = (
         fix={"operation": "normalize_barcode_suffix", "tag": "949", "subfield": "b"},
         enabled=True,
     ),
+    FolioRule(
+        key="folio-required-035-container",
+        profile_key="folio-new-instance",
+        label="035 9\\ container code should be present",
+        severity="warning",
+        target={
+            "kind": "field",
+            "tag": "035",
+            "indicators": ["9", "\\"],
+            "subfields": {"a": "{container_code}"},
+        },
+        requirement={
+            "kind": "field_with_context_subfields",
+            "context_key": "container_code",
+        },
+        fix={
+            "operation": "add_context_field",
+            "tag": "035",
+            "indicators": ["9", "\\"],
+            "subfields": [["a", "{container_code}"]],
+        },
+        enabled=True,
+    ),
+    FolioRule(
+        key="folio-multi-institution-506",
+        profile_key="folio-new-instance",
+        label="506 1\\ should be present for multi-institution loads",
+        severity="warning",
+        target={"kind": "field", "tag": "506", "indicators": ["1", "\\"]},
+        requirement={
+            "kind": "required_when_context_true",
+            "context_key": "multi_institution",
+        },
+        fix={"operation": "none"},
+        enabled=True,
+    ),
+    FolioRule(
+        key="folio-recommended-710-local",
+        profile_key="folio-new-instance",
+        label="710 2\\ local collection access point is recommended",
+        severity="info",
+        target={
+            "kind": "field",
+            "tag": "710",
+            "indicators": ["2", "\\"],
+            "subfields": {"a": "{collection_name}", "2": "local"},
+        },
+        requirement={
+            "kind": "field_with_context_subfields",
+            "context_key": "collection_name",
+        },
+        fix={
+            "operation": "add_context_field",
+            "tag": "710",
+            "indicators": ["2", "\\"],
+            "subfields": [["a", "{collection_name}"], ["2", "local"]],
+        },
+        enabled=True,
+    ),
+    FolioRule(
+        key="folio-recommended-830-local",
+        profile_key="folio-new-instance",
+        label="830 \\0 local series access point is recommended",
+        severity="info",
+        target={
+            "kind": "field",
+            "tag": "830",
+            "indicators": ["\\", "0"],
+            "subfields": {"a": "{collection_name}", "2": "local"},
+        },
+        requirement={
+            "kind": "field_with_context_subfields",
+            "context_key": "collection_name",
+        },
+        fix={
+            "operation": "add_context_field",
+            "tag": "830",
+            "indicators": ["\\", "0"],
+            "subfields": [["a", "{collection_name}"], ["2", "local"]],
+        },
+        enabled=True,
+    ),
+    FolioRule(
+        key="folio-949-required-subfields",
+        profile_key="folio-new-instance",
+        label="949 field is missing required FOLIO load subfields",
+        severity="warning",
+        target={
+            "kind": "949_required_subfields",
+            "required": ["u", "y", "t", "p", "l", "b", "m"],
+        },
+        requirement={"kind": "949_required_subfields"},
+        fix={"operation": "none"},
+        enabled=True,
+    ),
 )
 
 
@@ -220,7 +317,7 @@ def evaluate_record(
                     issue=make_record_issue(
                         rule.severity,
                         rule.key,
-                        rule.label,
+                        _message_for(record, rule),
                         _suggestion_for(rule, fix_available),
                         record_index,
                         identifier,
@@ -278,6 +375,13 @@ def apply_record_fix(
         if not _has_field_with_subfields(updated, rule.target):
             updated.add_field(_field_from_fix(rule.fix))
         return updated
+    if operation == "add_context_field":
+        target = _resolve_context_tokens(rule.target, context)
+        if not _has_field_with_subfields(updated, target):
+            updated.add_field(
+                _field_from_fix(_resolve_context_tokens(rule.fix, context))
+            )
+        return updated
     if operation == "normalize_barcode_suffix":
         _normalize_subfield_suffix(
             updated,
@@ -309,11 +413,27 @@ def _rule_is_violated(
         return record.get(tag) is None
     if kind == "field_with_subfields":
         return not _has_field_with_subfields(record, target)
+    if kind == "field_with_context_subfields":
+        context_value = _context_value(context, str(requirement["context_key"]))
+        if not context_value:
+            return False
+        return not _has_field_with_subfields(
+            record,
+            _resolve_context_tokens(target, context),
+        )
+    if kind == "required_when_context_true":
+        if not bool(_context_value(context, str(requirement["context_key"]))):
+            return False
+        if target.get("kind") == "field":
+            return not _has_field_with_subfields(record, target)
+        return record.get(tag) is None
     if kind == "not_in":
         value = _fixed_byte(record, tag, int(target["position"]))
         return value in set(requirement.get("values", []))
     if kind == "either_group_present":
         return not (_has_holdings_item_path(record) or _has_valid_949(record))
+    if kind == "949_required_subfields":
+        return _missing_949_subfields(record) != []
     if kind == "suffix_from_context":
         suffix = _normalized_suffix(context.institution_suffix)
         if not suffix:
@@ -337,6 +457,8 @@ def _fix_available(
         return record.get(str(rule.fix.get("tag", ""))) is not None
     if operation == "add_field":
         return True
+    if operation == "add_context_field":
+        return True
     if operation == "normalize_barcode_suffix":
         suffix = _normalized_suffix(context.institution_suffix)
         values = _subfield_values(
@@ -355,6 +477,23 @@ def _is_safe_remove_field_fix(rule: FolioRule, context: FolioContext) -> bool:
         and context.profile_key == "folio-new-instance"
         and str(rule.fix.get("tag", "")) == "001"
     )
+
+
+def _context_value(context: FolioContext, key: str) -> object:
+    return getattr(context, key, "")
+
+
+def _resolve_context_tokens(value, context: FolioContext):
+    if isinstance(value, dict):
+        return {
+            key: _resolve_context_tokens(inner, context)
+            for key, inner in value.items()
+        }
+    if isinstance(value, list):
+        return [_resolve_context_tokens(inner, context) for inner in value]
+    if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
+        return str(_context_value(context, value[1:-1]))
+    return value
 
 
 def _identifier(record: pymarc.Record) -> str | None:
@@ -425,6 +564,24 @@ def _has_valid_949(record: pymarc.Record) -> bool:
     return False
 
 
+def _missing_949_subfields(record: pymarc.Record) -> list[str]:
+    required = ["u", "y", "t", "p", "l", "b", "m"]
+    fields = record.get_fields("949")
+    if not fields:
+        return []
+    present = set()
+    for field in fields:
+        present.update(
+            subfield.code
+            for subfield in field.subfields
+            if (subfield.value or "").strip()
+        )
+    missing = [f"${code}" for code in required if code not in present]
+    if "h" not in present and not {"h", "i"}.issubset(present):
+        missing.append("$h or $h+$i")
+    return missing
+
+
 def _subfield_values(record: pymarc.Record, tag: str, code: str) -> list[str]:
     values: list[str] = []
     for field in record.get_fields(tag):
@@ -463,11 +620,21 @@ def _normalized_suffix(raw: str) -> str:
     return value if value.startswith("-") else f"-{value}"
 
 
+def _message_for(record: pymarc.Record, rule: FolioRule) -> str:
+    if rule.key == "folio-949-required-subfields":
+        missing = ", ".join(_missing_949_subfields(record))
+        if missing:
+            return f"{rule.label}: missing {missing}"
+    return rule.label
+
+
 def _suggestion_for(rule: FolioRule, fix_available: bool) -> str:
     if fix_available:
         return "Use the FOLIO safe-fix action to apply the configured correction."
     if rule.key == "folio-roundtrip-required-001":
         return "Restore the FOLIO SRS 001 before loading; the app cannot infer it safely."
+    if rule.key == "folio-949-required-subfields":
+        return "Complete the 949 load field before loading to FOLIO."
     return "Review this record against the selected FOLIO profile."
 
 

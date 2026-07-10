@@ -112,3 +112,22 @@ def test_configured_remove_field_fix_is_limited_to_safe_001_delete(make_record):
     assert issues[0].fix_available is False
     assert plans == []
     assert updated.get("245") is not None
+
+
+def test_apply_035_container_fix_adds_configured_field(make_record):
+    """The 035 container-code fix writes the configured local code."""
+    record = make_record()
+    rule = _rule("folio-required-035-container")
+
+    updated = folio_profiles.apply_record_fix(
+        record,
+        rule,
+        folio_profiles.FolioContext(
+            profile_key="folio-new-instance",
+            container_code="FC-ABC",
+        ),
+    )
+
+    field = updated.get_fields("035")[0]
+    assert list(field.indicators) == ["9", "\\"]
+    assert field.get_subfields("a") == ["FC-ABC"]
