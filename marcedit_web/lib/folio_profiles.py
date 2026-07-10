@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import json
 from typing import Any, Iterable
 
 import pymarc
+from pymarc import Field, Subfield
 
 from . import db
+from . import mrk_writer
 from .errors import Issue, make_record_issue
 
 
@@ -48,6 +51,16 @@ class FolioIssue:
     issue: Issue
     rule_key: str
     fix_available: bool
+
+
+@dataclass(frozen=True)
+class FolioFixPlan:
+    rule_key: str
+    record_index: int
+    label: str
+    before: str
+    after: str
+    operation: str
 
 
 _DEFAULT_RULES: tuple[FolioRule, ...] = (
@@ -219,6 +232,61 @@ def evaluate_record(
     return out
 
 
+def plan_record_fixes(
+    record: pymarc.Record,
+    rules: list[FolioRule],
+    context: FolioContext,
+    *,
+    record_index: int = 1,
+) -> list[FolioFixPlan]:
+    plans: list[FolioFixPlan] = []
+    for item in evaluate_record(record, rules, context, record_index=record_index):
+        if not item.fix_available:
+            continue
+        rule = next(rule for rule in rules if rule.key == item.rule_key)
+        before = mrk_writer.render_records_mrk([record])
+        updated = apply_record_fix(record, rule, context)
+        after = mrk_writer.render_records_mrk([updated])
+        if before != after:
+            plans.append(
+                FolioFixPlan(
+                    rule_key=rule.key,
+                    record_index=record_index,
+                    label=rule.label,
+                    before=before,
+                    after=after,
+                    operation=str(rule.fix.get("operation", "none")),
+                )
+            )
+    return plans
+
+
+def apply_record_fix(
+    record: pymarc.Record,
+    rule: FolioRule,
+    context: FolioContext,
+) -> pymarc.Record:
+    updated = copy.deepcopy(record)
+    operation = rule.fix.get("operation", "none")
+    if operation == "remove_field":
+        for field in list(updated.get_fields(str(rule.fix["tag"]))):
+            updated.remove_field(field)
+        return updated
+    if operation == "add_field":
+        if not _has_field_with_subfields(updated, rule.target):
+            updated.add_field(_field_from_fix(rule.fix))
+        return updated
+    if operation == "normalize_barcode_suffix":
+        _normalize_subfield_suffix(
+            updated,
+            tag=str(rule.fix["tag"]),
+            code=str(rule.fix["subfield"]),
+            suffix=_normalized_suffix(context.institution_suffix),
+        )
+        return updated
+    return updated
+
+
 def _rule_applies_to_context(rule: FolioRule, context: FolioContext) -> bool:
     return rule.profile_key == context.profile_key or rule.profile_key in context.addons
 
@@ -305,6 +373,18 @@ def _has_field_with_subfields(
     return False
 
 
+def _field_from_fix(fix: dict[str, object]) -> Field:
+    subfields = [
+        Subfield(code=str(code), value=str(value))
+        for code, value in fix.get("subfields", [])
+    ]
+    return Field(
+        tag=str(fix["tag"]),
+        indicators=[str(value) for value in fix.get("indicators", [" ", " "])],
+        subfields=subfields,
+    )
+
+
 def _fixed_byte(record: pymarc.Record, tag: str, position: int) -> str | None:
     field = record.get(tag)
     data = getattr(field, "data", "") if field is not None else ""
@@ -337,6 +417,30 @@ def _subfield_values(record: pymarc.Record, tag: str, code: str) -> list[str]:
     for field in record.get_fields(tag):
         values.extend(field.get_subfields(code))
     return values
+
+
+def _normalize_subfield_suffix(
+    record: pymarc.Record,
+    *,
+    tag: str,
+    code: str,
+    suffix: str,
+) -> None:
+    if not suffix:
+        return
+    for field in record.get_fields(tag):
+        subfields = []
+        for subfield in field.subfields:
+            if subfield.code != code:
+                subfields.append(subfield)
+                continue
+            value = (subfield.value or "").strip()
+            if not value:
+                subfields.append(subfield)
+                continue
+            stem = value.rsplit("-", 1)[0] if "-" in value else value
+            subfields.append(Subfield(code=subfield.code, value=f"{stem}{suffix}"))
+        field.subfields = subfields
 
 
 def _normalized_suffix(raw: str) -> str:
