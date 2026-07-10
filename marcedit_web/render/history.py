@@ -210,6 +210,12 @@ def _render_snapshot_entry(row: dict) -> None:
             filename=filename,
             job_id=int(row["job_id"]),
         )
+        # The restore didn't add a snapshot, so the staleness guard above
+        # (which only compares snapshot counts) wouldn't catch a
+        # previously-prepared export — it would keep serving pre-restore
+        # bytes. Drop it explicitly (TASK-143).
+        _cleanup_export(st.session_state.get(K_EXPORT))
+        st.session_state.pop(K_EXPORT, None)
         audit_event(
             "job-snapshot-restored",
             user=session.current_user_id(),

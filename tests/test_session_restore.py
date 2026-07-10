@@ -395,6 +395,31 @@ def test_restore_active_upload_reattaches_existing_store(
     assert store.filename == "test.mrc"
 
 
+def test_restore_active_upload_sets_current_job_id(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """A refresh-resume must relink ``current_job_id``, not just the store.
+
+    snapshot_actions.record_job_snapshot keys off current_job_id — if a
+    refresh leaves it None, every mutating flow silently skips recording
+    a snapshot and the History page can't show the file's timeline
+    (TASK-143).
+    """
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    session.handle_upload(_FakeUpload("test.mrc", _serialize([record])))
+    row = upload_persistence.get_active_upload("alice@example.edu")
+    assert row["job_id"] is not None
+
+    # Simulate browser refresh — fresh session_state, same user.
+    st.session_state.clear()
+    st.session_state["user"] = "alice@example.edu"
+    session.restore_active_upload()
+
+    assert st.session_state.get("current_job_id") == row["job_id"]
+
+
 def test_restore_active_upload_no_op_for_anonymous(fake_st):
     st = fake_st()
     st.session_state["user"] = "anonymous"

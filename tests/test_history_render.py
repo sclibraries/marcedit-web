@@ -221,6 +221,48 @@ def test_export_banner_two_step_prepare_then_download(
     assert fake_st.download_buttons[0]["file_name"] == export["filename"]
 
 
+def test_restore_invalidates_prepared_export(monkeypatch, tmp_path):
+    """A restore must drop any already-prepared export.
+
+    "Restore pre-change version" swaps the loaded batch without adding a
+    snapshot, so the staleness guard (which only compares snapshot
+    counts) never fires. An export prepared before the restore would
+    otherwise keep being offered and would serve pre-restore bytes
+    (found in TASK-143 runtime verification).
+    """
+    fake_st = _FakeStreamlit()
+    history = _history(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    row = _snapshot_row(tmp_path)
+    _wire_loaded(monkeypatch, history, store, [row])
+    fake_st.session_state["current_job_id"] = 3
+
+    export_dir = tmp_path / "exp"
+    export_dir.mkdir()
+    export_path = export_dir / "hist_export.mrc"
+    export_path.write_bytes(b"stale-bytes")
+    fake_st.session_state[history.K_EXPORT] = {
+        "path": str(export_path),
+        "filename": "hist_export.mrc",
+        "snapshot_count": 1,  # matches len(rows) — staleness guard won't fire
+    }
+
+    monkeypatch.setattr(
+        history.provenance, "restore_bytes", lambda snapshot_id: b"restored"
+    )
+    monkeypatch.setattr(
+        history.session,
+        "replace_current_store_from_bytes",
+        lambda raw, *, filename, job_id: None,
+    )
+
+    fake_st.clicked_keys.add(f"snapshot_restore_{row['id']}")
+    history.render()
+
+    assert history.K_EXPORT not in fake_st.session_state
+    assert not export_path.exists()
+
+
 def test_no_upload_lists_recent_files(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     history = _history(monkeypatch, fake_st)

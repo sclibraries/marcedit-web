@@ -147,6 +147,8 @@ def restore_active_upload() -> None:
     # would otherwise set it to "upload.mrc", the on-disk name).
     store._filename = row["filename"]
     st.session_state["store"] = store
+    if row.get("job_id") is not None:
+        st.session_state["current_job_id"] = row["job_id"]
     audit_event(
         "upload-restored",
         user=user,
