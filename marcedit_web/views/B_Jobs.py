@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from marcedit_web.lib import jobs, session
+from marcedit_web.lib import job_files as work_files, jobs, session
 from marcedit_web.lib.identity import is_anonymous
 from marcedit_web.render import job_files
 
@@ -102,17 +102,23 @@ def _render_detail(user: str, job_id: int) -> None:
     else:
         st.write(_status_label(job["status"]))
 
-    uploads = jobs.list_job_uploads(job_id)
     st.subheader("Files")
-    if uploads:
+    job_files.render_attach_file(
+        job_id,
+        user,
+        role,
+        key_prefix=f"job_file_attach_{job_id}",
+    )
+    files = work_files.list_files(job_id, user)
+    if files:
         job_files.render_job_files_table(
-            uploads,
+            files,
             user=user,
             role=role,
             key_prefix="job_upload",
         )
     else:
-        st.caption("No files uploaded to this job yet.")
+        st.caption("No files attached to this job yet.")
 
     st.subheader("Sharing")
     access_rows = jobs.list_access(job_id)

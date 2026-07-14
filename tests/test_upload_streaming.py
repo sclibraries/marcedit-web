@@ -32,7 +32,8 @@ class _FakeSt:
 
 
 @pytest.fixture(autouse=True)
-def _schema():
+def _schema(monkeypatch, tmp_path):
+    monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files"))
     db.init_schema()
 
 

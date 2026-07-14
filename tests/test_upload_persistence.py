@@ -27,8 +27,15 @@ def _record(user="alice@example.edu", filename="test.mrc", path="/tmp/x.mrc",
 
 
 def test_record_and_get_round_trip():
-    _record()
+    inserted = upload_persistence.record_upload(
+        user="alice@example.edu",
+        filename="test.mrc",
+        file_path="/tmp/x.mrc",
+        record_count=10,
+        file_bytes=1024,
+    )
     row = upload_persistence.get_active_upload("alice@example.edu")
+    assert inserted == row
     assert row is not None
     assert row["filename"] == "test.mrc"
     assert row["file_path"] == "/tmp/x.mrc"
@@ -42,7 +49,7 @@ def test_get_returns_none_when_no_active_row():
 
 
 def test_anonymous_user_is_noop():
-    upload_persistence.record_upload(
+    inserted = upload_persistence.record_upload(
         user="anonymous",
         filename="anon.mrc",
         file_path="/tmp/x.mrc",
@@ -53,6 +60,7 @@ def test_anonymous_user_is_noop():
     with db.connect() as conn:
         n = conn.execute("SELECT COUNT(*) FROM uploads").fetchone()[0]
     assert n == 0
+    assert inserted is None
     assert upload_persistence.get_active_upload("anonymous") is None
 
 

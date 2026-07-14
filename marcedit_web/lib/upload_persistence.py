@@ -78,7 +78,7 @@ def record_upload(
     record_count: int,
     file_bytes: int,
     job_id: int | None = None,
-) -> None:
+) -> dict[str, Any] | None:
     """Mark ``file_path`` as ``user``'s active upload.
 
     No-op for anonymous users. Flips any prior active row for this
@@ -86,7 +86,7 @@ def record_upload(
     active rows for the same identity.
     """
     if is_anonymous(user):
-        return
+        return None
     now = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
     target_job_id = job_id or jobs.ensure_default_job(user)["id"]
     with db.connect() as conn:
@@ -95,7 +95,7 @@ def record_upload(
             "UPDATE uploads SET active = 0 WHERE user_email = ? AND active = 1",
             (user,),
         )
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO uploads"
             "(user_email, job_id, filename, file_path, record_count, file_bytes,"
             " uploaded_at, active)"
@@ -110,6 +110,10 @@ def record_upload(
                 now,
             ),
         )
+        row = conn.execute(
+            "SELECT * FROM uploads WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+    return {key: row[key] for key in row.keys()}
 
 
 def get_active_upload(user: str) -> dict[str, Any] | None:

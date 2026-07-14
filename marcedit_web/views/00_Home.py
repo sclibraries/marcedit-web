@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from marcedit_web.lib import jobs, session
+from marcedit_web.lib import job_files as work_files, jobs, session
 from marcedit_web.lib.identity import is_anonymous
 from marcedit_web.render import job_files
 
@@ -22,9 +22,7 @@ session.init_page()
 
 _PENDING_CURRENT_JOB_ID = "pending_current_job_id"
 _QUICK_UPLOAD_SUMMARY_KEY = "home_quick_upload_summary"
-_JOB_UPLOAD_SUMMARY_KEY = "home_job_upload_summary"
 _QUICK_UPLOAD_NONCE_KEY = "home_quick_upload_nonce"
-_JOB_UPLOAD_NONCE_KEY = "home_job_upload_nonce"
 _START_PATH_KEY = "home_start_path"
 _START_PATH_QUERY_KEY = "start"
 _START_PATH_QUICK = "Quick Load"
@@ -109,25 +107,8 @@ def _render_next_actions() -> None:
 
 
 def _render_upload_feedback(upload_summary: dict) -> None:
-    if upload_summary.get("error"):
-        st.error(
-            f"Upload rejected: {upload_summary['error']}. Contact ops if "
-            "you need a higher limit for this batch."
-        )
-    elif upload_summary["total"] == 0 and upload_summary["malformed"] == 0:
-        st.error("No records found in the uploaded file.")
-    else:
-        st.success(
-            f"Loaded **{upload_summary['total']}** record"
-            f"{'s' if upload_summary['total'] != 1 else ''} from "
-            f"`{upload_summary['filename']}`."
-        )
-        if upload_summary["malformed"]:
-            st.warning(
-                f"{upload_summary['malformed']} record"
-                f"{'s' if upload_summary['malformed'] != 1 else ''} could not be "
-                "parsed and will be skipped."
-            )
+    job_files.render_upload_feedback(upload_summary)
+    if not upload_summary.get("error") and upload_summary.get("total"):
         _render_next_actions()
 
 
@@ -151,25 +132,21 @@ def _finish_upload(upload_summary: dict, nonce_key: str, summary_key: str) -> No
     st.rerun()
 
 
-def _render_persisted_upload_feedback(summary_key: str, job_id: int | None = None) -> None:
+def _render_persisted_upload_feedback(summary_key: str) -> None:
     summary = st.session_state.get(summary_key)
     if not summary or not session.has_upload():
-        return
-    # A job-workspace banner follows its job: rendering it under a
-    # different selected job would claim the file was attached there.
-    if job_id is not None and summary.get("job_id") != job_id:
         return
     _render_upload_feedback(summary)
 
 
 def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
-    uploads = jobs.list_job_uploads(job_id)
+    files = work_files.list_files(job_id, user)
     st.subheader("Files in this job")
-    if not uploads:
+    if not files:
         st.caption("No MARC files have been added to this job yet.")
         return
     job_files.render_job_files_table(
-        uploads,
+        files,
         user=user,
         role=role,
         key_prefix="home_job_upload",
@@ -274,35 +251,16 @@ if start_path == _START_PATH_JOB:
                     st.session_state[_PENDING_CURRENT_JOB_ID] = created["id"]
                     st.rerun()
 
-        job_upload = st.file_uploader(
-            "Add a .mrc file to this job",
-            type=["mrc", "marc"],
-            accept_multiple_files=False,
-            help=(
-                "Uploads here attach to the selected job and appear in that "
-                "job's Files list."
-            ),
-            key=(
-                "home_job_workspace_upload_"
-                f"{st.session_state.get(_JOB_UPLOAD_NONCE_KEY, 0)}"
-            ),
-        )
-        if job_upload is not None:
-            upload_summary = _handle_uploaded_file(job_upload)
-            _finish_upload(
-                {**upload_summary, "job_id": current_job_id},
-                _JOB_UPLOAD_NONCE_KEY,
-                _JOB_UPLOAD_SUMMARY_KEY,
-            )
-        else:
-            _render_persisted_upload_feedback(
-                _JOB_UPLOAD_SUMMARY_KEY, job_id=current_job_id
-            )
-
         current_job = next(job for job in job_rows if job["id"] == current_job_id)
         current_role = current_job.get("access_role")
         if current_role is None and current_job.get("owner_email") == user:
             current_role = "owner"
+        job_files.render_attach_file(
+            current_job_id,
+            user,
+            current_role,
+            key_prefix="home_job_workspace",
+        )
         _render_job_uploads(
             current_job_id,
             user,

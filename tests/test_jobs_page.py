@@ -77,6 +77,7 @@ class _FakeStreamlit:
         self.dialogs: list[str] = []
         self.toasts: list[tuple[str, Any]] = []
         self.warnings: list[str] = []
+        self.file_uploader_labels: list[str] = []
         self.rerun_called = False
 
     def title(self, text: str) -> None:
@@ -157,6 +158,10 @@ class _FakeStreamlit:
         self.text_area_calls.append((label, kwargs))
         return ""
 
+    def file_uploader(self, label: str, **kwargs: Any) -> None:
+        self.file_uploader_labels.append(label)
+        return None
+
     def switch_page(self, path: str) -> None:
         self.session_state["switched_to"] = path
 
@@ -166,6 +171,18 @@ def _load_jobs_page(monkeypatch):
 
     monkeypatch.setattr(page.session, "init_page", lambda: None)
     return importlib.reload(page)
+
+
+def _job_file_row(file_id: int = 99) -> dict[str, Any]:
+    return {
+        "id": file_id,
+        "display_name": "batch.mrc",
+        "status": "new",
+        "current_version_number": 1,
+        "current_record_count": 42,
+        "updated_by": "alice@example.edu",
+        "updated_at": "2026-07-08T12:00:00Z",
+    }
 
 
 def test_status_label_is_cataloger_readable(monkeypatch):
@@ -235,17 +252,9 @@ def test_render_detail_calls_uploads_and_activity_for_selected_job(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.jobs,
-        "list_job_uploads",
-        lambda job_id: upload_calls.append(job_id) or [{
-            "id": 99,
-            "user_email": "alice@example.edu",
-            "filename": "batch.mrc",
-            "record_count": 42,
-            "file_bytes": 2048,
-            "uploaded_at": "2026-07-08T12:00:00Z",
-            "active": 1,
-        }],
+        page.work_files,
+        "list_files",
+        lambda job_id, user: upload_calls.append(job_id) or [_job_file_row()],
     )
     monkeypatch.setattr(
         page.jobs,
@@ -280,9 +289,63 @@ def test_render_detail_calls_uploads_and_activity_for_selected_job(monkeypatch):
     # Files render as the shared actionable table now (TASK-129); the only
     # remaining dataframe is the Activity feed.
     assert len(fake_st.dataframes) == 1
-    assert "**Filename**" in fake_st.writes
-    assert "**Size**" in fake_st.writes
-    assert "2.0 KB" in fake_st.writes
+    assert "**Name**" in fake_st.writes
+    assert "**Version**" in fake_st.writes
+    assert "v1" in fake_st.writes
+
+
+def test_jobs_detail_renders_attach_control_for_editor(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "editor")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Routledge",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(page.jobs, "list_job_uploads", lambda _job_id: [])
+    monkeypatch.setattr(page.jobs, "list_access", lambda _job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda *_args, **_kwargs: [])
+
+    page._render_detail("editor@example.edu", 17)
+
+    assert "Attach MARC file" in fake_st.file_uploader_labels
+
+
+def test_viewer_does_not_get_attach_control(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "viewer")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Routledge",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(page.jobs, "list_job_uploads", lambda _job_id: [])
+    monkeypatch.setattr(page.jobs, "list_access", lambda _job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda *_args, **_kwargs: [])
+
+    page._render_detail("viewer@example.edu", 17)
+
+    assert "Attach MARC file" not in fake_st.file_uploader_labels
 
 
 def test_render_detail_shows_file_actions_for_editors(monkeypatch):
@@ -305,17 +368,7 @@ def test_render_detail_shows_file_actions_for_editors(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.jobs,
-        "list_job_uploads",
-        lambda job_id: [{
-            "id": 99,
-            "user_email": "alice@example.edu",
-            "filename": "batch.mrc",
-            "record_count": 42,
-            "file_bytes": 2048,
-            "uploaded_at": "2026-07-08T12:00:00Z",
-            "active": 1,
-        }],
+        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
     )
     monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
     monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
@@ -324,9 +377,9 @@ def test_render_detail_shows_file_actions_for_editors(monkeypatch):
     page._render_detail("alice@example.edu", 17)
 
     labels = [label for label, _kwargs in fake_st.button_calls]
-    assert "Load" in labels
+    assert "Open" in labels
     assert "Remove from job" in labels
-    assert "Delete file permanently" in labels
+    assert "Delete file permanently" not in labels
     assert fake_st.popovers == ["⋮"]
 
 
@@ -340,12 +393,10 @@ def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(
         page.session,
-        "load_persisted_upload",
-        lambda upload_id: loaded.append(upload_id) or {
+        "open_job_file",
+        lambda file_id: loaded.append(file_id) or {
             "filename": "batch.mrc",
             "total": 42,
-            "malformed": 0,
-            "error": None,
         },
     )
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
@@ -361,17 +412,7 @@ def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.jobs,
-        "list_job_uploads",
-        lambda job_id: [{
-            "id": 99,
-            "user_email": "alice@example.edu",
-            "filename": "batch.mrc",
-            "record_count": 42,
-            "file_bytes": 2048,
-            "uploaded_at": "2026-07-08T12:00:00Z",
-            "active": 0,
-        }],
+        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
     )
     monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
     monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
@@ -382,23 +423,23 @@ def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
     assert loaded == [99]
     assert fake_st.session_state["switched_to"] == "views/1_View.py"
     assert fake_st.session_state["pending_toasts"] == [
-        ("Loaded batch.mrc — 42 records", "📂")
+        ("Opened batch.mrc — 42 records", "📂")
     ]
 
 
 def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit(clicked_keys={"job_upload_remove_99"})
-    removed: list[tuple[int, str, bool]] = []
+    removed: list[tuple[int, str]] = []
 
     monkeypatch.setattr(page, "st", fake_st)
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
     monkeypatch.setattr(
-        page.jobs,
-        "remove_upload",
-        lambda upload_id, *, by, delete_file=False: removed.append((upload_id, by, delete_file)),
+        page.work_files,
+        "archive_file",
+        lambda file_id, *, by: removed.append((file_id, by)),
     )
     monkeypatch.setattr(
         page.jobs,
@@ -412,17 +453,7 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.jobs,
-        "list_job_uploads",
-        lambda job_id: [{
-            "id": 99,
-            "user_email": "alice@example.edu",
-            "filename": "batch.mrc",
-            "record_count": 42,
-            "file_bytes": 2048,
-            "uploaded_at": "2026-07-08T12:00:00Z",
-            "active": 1,
-        }],
+        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
     )
     monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
     monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
@@ -430,17 +461,20 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
 
     page._render_detail("alice@example.edu", 17)
 
-    assert removed == [(99, "alice@example.edu", False)]
+    assert removed == [(99, "alice@example.edu")]
     assert fake_st.rerun_called is True
     assert fake_st.session_state["pending_toasts"] == [
-        ("Removed batch.mrc from this job.", "🗂️")
+        ("Archived batch.mrc.", "🗂️")
     ]
 
 
 def test_render_detail_delete_click_only_opens_confirmation(monkeypatch):
     """A single click must never destroy a file (TASK-136)."""
     page = _load_jobs_page(monkeypatch)
-    fake_st = _FakeStreamlit(clicked_keys={"job_upload_delete_99"})
+    fake_st = _FakeStreamlit(
+        session_state={"role": "admin"},
+        clicked_keys={"job_upload_delete_99"},
+    )
     removed: list = []
 
     monkeypatch.setattr(page, "st", fake_st)
@@ -448,9 +482,9 @@ def test_render_detail_delete_click_only_opens_confirmation(monkeypatch):
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
     monkeypatch.setattr(
-        page.jobs,
-        "remove_upload",
-        lambda upload_id, *, by, delete_file=False: removed.append(upload_id),
+        page.work_files,
+        "delete_file_permanently",
+        lambda file_id, *, by: removed.append(file_id),
     )
     monkeypatch.setattr(
         page.jobs,
@@ -464,18 +498,7 @@ def test_render_detail_delete_click_only_opens_confirmation(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.jobs,
-        "list_job_uploads",
-        lambda job_id: [{
-            "id": 99,
-            "user_email": "alice@example.edu",
-            "filename": "batch.mrc",
-            "file_path": "/tmp/batch.mrc",
-            "record_count": 42,
-            "file_bytes": 2048,
-            "uploaded_at": "2026-07-08T12:00:00Z",
-            "active": 1,
-        }],
+        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
     )
     monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
     monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
@@ -496,11 +519,11 @@ def test_render_detail_confirmed_delete_detaches_loaded_batch(monkeypatch):
     """
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit(
-        session_state={"job_upload_pending_delete": 99},
+        session_state={"job_upload_pending_delete": 99, "role": "admin"},
         clicked_keys={"job_upload_confirm_delete_99"},
     )
-    removed: list[tuple[int, str, bool]] = []
-    detached: list[str] = []
+    removed: list[tuple[int, str]] = []
+    detached: list[None] = []
 
     monkeypatch.setattr(page, "st", fake_st)
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
@@ -513,11 +536,9 @@ def test_render_detail_confirmed_delete_detaches_loaded_batch(monkeypatch):
     )
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
     monkeypatch.setattr(
-        page.jobs,
-        "remove_upload",
-        lambda upload_id, *, by, delete_file=False: removed.append(
-            (upload_id, by, delete_file)
-        ),
+        page.work_files,
+        "delete_file_permanently",
+        lambda file_id, *, by: removed.append((file_id, by)),
     )
     monkeypatch.setattr(
         page.jobs,
@@ -531,18 +552,7 @@ def test_render_detail_confirmed_delete_detaches_loaded_batch(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.jobs,
-        "list_job_uploads",
-        lambda job_id: [{
-            "id": 99,
-            "user_email": "alice@example.edu",
-            "filename": "batch.mrc",
-            "file_path": "/tmp/batch.mrc",
-            "record_count": 42,
-            "file_bytes": 2048,
-            "uploaded_at": "2026-07-08T12:00:00Z",
-            "active": 1,
-        }],
+        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
     )
     monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
     monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
@@ -550,8 +560,8 @@ def test_render_detail_confirmed_delete_detaches_loaded_batch(monkeypatch):
 
     page._render_detail("alice@example.edu", 17)
 
-    assert removed == [(99, "alice@example.edu", True)]
-    assert detached == ["/tmp/batch.mrc"]
+    assert removed == [(99, "alice@example.edu")]
+    assert detached == [None]
     assert fake_st.session_state["pending_toasts"] == [
         ("Deleted batch.mrc permanently.", "🗑️")
     ]
@@ -580,17 +590,7 @@ def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.jobs,
-        "list_job_uploads",
-        lambda job_id: [{
-            "id": 99,
-            "user_email": "alice@example.edu",
-            "filename": "batch.mrc",
-            "record_count": 42,
-            "file_bytes": 2048,
-            "uploaded_at": "2026-07-08T12:00:00Z",
-            "active": 1,
-        }],
+        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
     )
     monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
     monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
@@ -599,7 +599,7 @@ def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):
     page._render_detail("viewer@example.edu", 17)
 
     labels = [label for label, _kwargs in fake_st.button_calls]
-    assert "Load" in labels
+    assert "Open" in labels
     assert "Remove from job" not in labels
     assert "Delete file permanently" not in labels
     # Viewers get no ⋮ action menu at all.

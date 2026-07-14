@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import db, jobs
+from . import authz, db, jobs
 
 
 class JobFileError(ValueError):
@@ -145,6 +145,80 @@ def get_version(version_id: int, user_email: str) -> dict[str, Any]:
     if row is None:
         raise JobFileError("job file version not found")
     return _dict(row)
+
+
+def archive_file(file_id: int, by: str) -> dict[str, Any]:
+    """Archive a work file without deleting any retained artifact."""
+    row = get_file(file_id, by)
+    jobs.require_role(int(row["job_id"]), by, {"owner", "editor"})
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE job_files SET archived_by=?, archived_at=?, updated_by=?,"
+            " updated_at=? WHERE id=?",
+            (by, now, by, now, file_id),
+        )
+        conn.execute(
+            "DELETE FROM advisory_locks"
+            " WHERE resource_type='job-file' AND resource_id=?",
+            (str(file_id),),
+        )
+        conn.execute(
+            "INSERT INTO job_activity(job_id,job_file_id,kind,message,"
+            "actor_email,created_at) VALUES(?,?,?,?,?,?)",
+            (
+                row["job_id"],
+                file_id,
+                "job-file-archived",
+                f"Archived {row['display_name']}",
+                by,
+                now,
+            ),
+        )
+    return get_file(file_id, by)
+
+
+def delete_file_permanently(file_id: int, by: str) -> None:
+    """Delete an unmodified, unexported file as an approved administrator."""
+    row = get_file(file_id, by)
+    decision = authz.authorize(by)
+    if decision.outcome != "approved" or decision.role != "admin":
+        raise JobFileError("administrator access required")
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        versions = conn.execute(
+            "SELECT id,file_path FROM job_file_versions"
+            " WHERE job_file_id=? ORDER BY version_number",
+            (file_id,),
+        ).fetchall()
+        export_count = conn.execute(
+            "SELECT COUNT(*) FROM job_file_exports WHERE job_file_id=?",
+            (file_id,),
+        ).fetchone()[0]
+        if len(versions) != 1 or export_count:
+            raise JobFileError(
+                "files with later versions or exports cannot be permanently deleted"
+            )
+        conn.execute(
+            "DELETE FROM advisory_locks"
+            " WHERE resource_type='job-file' AND resource_id=?",
+            (str(file_id),),
+        )
+        conn.execute("DELETE FROM job_file_versions WHERE job_file_id=?", (file_id,))
+        conn.execute("DELETE FROM job_files WHERE id=?", (file_id,))
+        conn.execute(
+            "INSERT INTO job_activity(job_id,kind,message,actor_email,created_at)"
+            " VALUES(?,?,?,?,?)",
+            (
+                row["job_id"],
+                "job-file-deleted",
+                f"Permanently deleted {row['display_name']}",
+                by,
+                _utc_now_iso(),
+            ),
+        )
+    Path(versions[0]["file_path"]).unlink(missing_ok=True)
 
 
 _FILE_SELECT = (

@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from marcedit_web.lib import db, jobs, session, upload_persistence
+from marcedit_web.lib import db, job_files, jobs, session
 
 
 HOME_PAGE = (
@@ -248,8 +248,30 @@ class _FakeStreamlit:
 
 
 @pytest.fixture(autouse=True)
-def _schema() -> None:
+def _schema(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files"))
     db.init_schema()
+
+
+def _attach_work_file(
+    tmp_path: Path,
+    job_id: int,
+    *,
+    user: str = "cataloger@example.edu",
+    filename: str = "vendor.mrc",
+    record_count: int = 12,
+    file_bytes: int = 345,
+) -> dict:
+    source = tmp_path / f"{user.replace('@', '-')}-{filename}"
+    source.write_bytes(b"x" * file_bytes)
+    return job_files.attach_file(
+        job_id=job_id,
+        user_email=user,
+        source_path=source,
+        filename=filename,
+        record_count=record_count,
+        file_bytes=file_bytes,
+    )
 
 
 def _run_home(
@@ -276,9 +298,11 @@ def _run_home(
         return b"fake-mrc-bytes"
 
     monkeypatch.setattr(session, "current_raw_bytes", _current_raw_bytes)
-    def _handle_upload(uploaded):
+    def _handle_upload(uploaded, *, job_id=None, description=""):
         if upload_job_ids is not None:
-            upload_job_ids.append(fake_st.session_state.get("current_job_id"))
+            upload_job_ids.append(
+                job_id or fake_st.session_state.get("current_job_id")
+            )
         return {
             "filename": getattr(uploaded, "name", "upload.mrc"),
             "total": 0 if upload_error else upload_total,
@@ -298,6 +322,7 @@ def _run_home(
         }
 
     monkeypatch.setattr(session, "load_persisted_upload", _load_persisted_upload)
+    monkeypatch.setattr(session, "open_job_file", _load_persisted_upload)
 
     spec = importlib.util.spec_from_file_location("task118_home_page", HOME_PAGE)
     assert spec is not None and spec.loader is not None
@@ -375,16 +400,14 @@ def test_job_workspace_url_overrides_quick_load_state(monkeypatch):
     assert fake_st.query_params["start"] == "jobs"
 
 
-def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch):
+def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch, tmp_path):
     """The selected job should list its files as aligned single-line table rows."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="cataloger@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
+    _attach_work_file(
+        tmp_path,
+        shared["id"],
         record_count=1204,
         file_bytes=345,
-        job_id=shared["id"],
     )
     state = _SessionState(
         {
@@ -400,17 +423,18 @@ def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch):
     from marcedit_web.render import job_files
 
     assert fake_st.dataframes == []
-    assert "**Filename**" in fake_st.writes
+    assert "**Name**" in fake_st.writes
     assert "**Records**" in fake_st.writes
-    assert "**Size**" in fake_st.writes
-    assert "**Uploaded**" in fake_st.writes
+    assert "**Version**" in fake_st.writes
+    assert "**Last editor**" in fake_st.writes
+    assert "**Updated**" in fake_st.writes
     assert "**Status**" in fake_st.writes
     # Actions live in per-row widgets now; a header over them is noise.
     assert "Actions" not in fake_st.writes
     assert any("vendor.mrc" in str(value) for value in fake_st.writes)
     assert "1,204" in fake_st.writes
-    assert "345 B" in fake_st.writes
-    assert ":green[● Current]" in fake_st.writes
+    assert "v1" in fake_st.writes
+    assert "New" in fake_st.writes
     # Single-height rows: every grid row must be vertically centered.
     grid_calls = [
         kwargs
@@ -429,18 +453,10 @@ def test_uploaded_at_renders_human_readable(monkeypatch):
     assert job_files.format_uploaded_at("not-a-date") == "not-a-date"
 
 
-def test_job_workspace_loads_selected_file_from_home(monkeypatch):
-    """Home's file list should let catalogers load a specific job file."""
+def test_job_workspace_loads_selected_file_from_home(monkeypatch, tmp_path):
+    """Home opens a file through the same authoritative service as Jobs."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="cataloger@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
-    )
-    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    work_file = _attach_work_file(tmp_path, shared["id"])
     state = _SessionState(
         {
             "quick_load_mode": False,
@@ -450,30 +466,22 @@ def test_job_workspace_loads_selected_file_from_home(monkeypatch):
     )
     fake_st = _FakeStreamlit(
         session_state=state,
-        clicked_keys={f"home_job_upload_load_{upload_id}"},
+        clicked_keys={f"home_job_upload_load_{work_file['id']}"},
     )
     loaded: list[int] = []
     _run_home(monkeypatch, fake_st, load_upload_ids=loaded)
 
-    assert loaded == [upload_id]
+    assert loaded == [work_file["id"]]
     assert fake_st.switch_pages == ["views/1_View.py"]
     assert fake_st.session_state["pending_toasts"] == [
-        ("Loaded vendor.mrc — 1 record", "📂")
+        ("Opened vendor.mrc — 1 record", "📂")
     ]
 
 
-def test_job_workspace_soft_removes_selected_file_from_home(monkeypatch):
-    """Home's file list should allow editors to remove a file from a job."""
+def test_job_workspace_archives_selected_file_from_home(monkeypatch, tmp_path):
+    """Normal removal archives the work item instead of deleting bytes."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="cataloger@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
-    )
-    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    work_file = _attach_work_file(tmp_path, shared["id"])
     state = _SessionState(
         {
             "quick_load_mode": False,
@@ -483,37 +491,27 @@ def test_job_workspace_soft_removes_selected_file_from_home(monkeypatch):
     )
     fake_st = _FakeStreamlit(
         session_state=state,
-        clicked_keys={f"home_job_upload_remove_{upload_id}"},
+        clicked_keys={f"home_job_upload_remove_{work_file['id']}"},
     )
-    removed: list[tuple[int, str, bool]] = []
+    archived: list[tuple[int, str]] = []
     monkeypatch.setattr(
-        jobs,
-        "remove_upload",
-        lambda upload_id, *, by, delete_file=False: removed.append(
-            (upload_id, by, delete_file)
-        ),
+        job_files,
+        "archive_file",
+        lambda file_id, *, by: archived.append((file_id, by)),
     )
 
     _run_home(monkeypatch, fake_st)
 
-    assert removed == [(upload_id, "cataloger@example.edu", False)]
+    assert archived == [(work_file["id"], "cataloger@example.edu")]
     assert fake_st.rerun_called is True
     assert fake_st.session_state["pending_toasts"] == [
-        ("Removed vendor.mrc from this job.", "🗂️")
+        ("Archived vendor.mrc.", "🗂️")
     ]
 
 
-def test_job_workspace_delete_file_only_for_original_uploader(monkeypatch):
-    """Hard delete should only be visible to the cataloger who uploaded the file."""
+def test_job_workspace_permanent_delete_is_admin_only(monkeypatch, tmp_path):
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="other@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
-    )
+    _attach_work_file(tmp_path, shared["id"])
     state = _SessionState(
         {
             "quick_load_mode": False,
@@ -532,220 +530,47 @@ def test_job_workspace_delete_file_only_for_original_uploader(monkeypatch):
     assert "Remove from job" in labels
 
 
-def test_home_delete_click_only_opens_confirmation(monkeypatch):
-    """A single click must never destroy a file (TASK-136)."""
+def test_home_admin_delete_click_only_opens_confirmation(monkeypatch, tmp_path):
+    """Even administrators must explicitly confirm permanent deletion."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="cataloger@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
-    )
-    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
+    work_file = _attach_work_file(tmp_path, shared["id"])
     state = _SessionState(
         {
             "quick_load_mode": False,
             "current_job_id": shared["id"],
             "home_start_path": "Job Workspace",
+            "role": "admin",
         }
     )
     fake_st = _FakeStreamlit(
         session_state=state,
-        clicked_keys={f"home_job_upload_delete_{upload_id}"},
+        clicked_keys={f"home_job_upload_delete_{work_file['id']}"},
     )
-    removed: list = []
+    deleted: list = []
     monkeypatch.setattr(
-        jobs,
-        "remove_upload",
-        lambda upload_id, *, by, delete_file=False: removed.append(upload_id),
+        job_files,
+        "delete_file_permanently",
+        lambda file_id, *, by: deleted.append((file_id, by)),
     )
 
     _run_home(monkeypatch, fake_st)
 
-    assert removed == []
-    assert state["home_job_upload_pending_delete"] == upload_id
+    assert deleted == []
+    assert state["home_job_upload_pending_delete"] == work_file["id"]
     assert fake_st.rerun_called is True
 
 
-def test_home_confirmed_delete_detaches_and_toasts(monkeypatch):
-    """Deleting the loaded file must drop the session batch (TASK-128/130).
-
-    Otherwise the rerun's "Loaded batch" footer reads the just-unlinked
-    file and crashes with FileNotFoundError.
-    """
-    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="cataloger@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
-    )
-    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
-    loaded_store = types.SimpleNamespace(path=Path("/tmp/vendor.mrc"))
-    state = _SessionState(
-        {
-            "quick_load_mode": False,
-            "current_job_id": shared["id"],
-            "home_start_path": "Job Workspace",
-            "store": loaded_store,
-            "home_job_upload_pending_delete": upload_id,
-        }
-    )
-    fake_st = _FakeStreamlit(
-        session_state=state,
-        clicked_keys={f"home_job_upload_confirm_delete_{upload_id}"},
-    )
-    removed: list[tuple[int, str, bool]] = []
-    monkeypatch.setattr(
-        jobs,
-        "remove_upload",
-        lambda upload_id, *, by, delete_file=False: removed.append(
-            (upload_id, by, delete_file)
-        ),
-    )
-
-    _run_home(monkeypatch, fake_st)
-
-    assert removed == [(upload_id, "cataloger@example.edu", True)]
-    assert state["store"] is None
-    assert state["pending_toasts"] == [("Deleted vendor.mrc permanently.", "🗑️")]
-    assert "home_job_upload_pending_delete" not in state
-    assert fake_st.dialogs == ["Delete file permanently?"]
-    assert fake_st.rerun_called is True
-
-
-def test_home_confirmed_delete_error_keeps_confirmation_open(monkeypatch):
-    """A failed delete must surface the error and keep the confirm flow.
-
-    Clearing the flag (or rerunning) on JobError would close the dialog
-    and swallow the failure; the cataloger must be able to retry or
-    cancel deliberately.
-    """
-    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="cataloger@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
-    )
-    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
-    state = _SessionState(
-        {
-            "quick_load_mode": False,
-            "current_job_id": shared["id"],
-            "home_start_path": "Job Workspace",
-            "home_job_upload_pending_delete": upload_id,
-        }
-    )
-    fake_st = _FakeStreamlit(
-        session_state=state,
-        clicked_keys={f"home_job_upload_confirm_delete_{upload_id}"},
-    )
-
-    def _locked(upload_id, *, by, delete_file=False):
-        raise jobs.JobError("upload is locked")
-
-    monkeypatch.setattr(jobs, "remove_upload", _locked)
-
-    _run_home(monkeypatch, fake_st)
-
-    assert fake_st.errors == ["upload is locked"]
-    assert state["home_job_upload_pending_delete"] == upload_id
-    assert "pending_toasts" not in state
-    assert fake_st.rerun_called is False
-
-
-def test_home_stale_pending_delete_flag_is_dropped(monkeypatch):
-    """A pending id that matches no listed file must be dropped silently.
-
-    Otherwise a file removed elsewhere leaves the dialog reopening
-    forever (or crashes the render) for a row that no longer exists.
-    """
-    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="cataloger@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
-    )
-    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
-    state = _SessionState(
-        {
-            "quick_load_mode": False,
-            "current_job_id": shared["id"],
-            "home_start_path": "Job Workspace",
-            "home_job_upload_pending_delete": upload_id + 999,
-        }
-    )
-    fake_st = _FakeStreamlit(session_state=state)
-
-    _run_home(monkeypatch, fake_st)
-
-    assert "home_job_upload_pending_delete" not in state
-    assert fake_st.dialogs == []
-
-
-def test_home_cancelled_delete_keeps_file(monkeypatch):
-    """Cancel must delete nothing and clear the pending flag (TASK-136)."""
-    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    upload_persistence.record_upload(
-        user="cataloger@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
-    )
-    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
-    state = _SessionState(
-        {
-            "quick_load_mode": False,
-            "current_job_id": shared["id"],
-            "home_start_path": "Job Workspace",
-            "home_job_upload_pending_delete": upload_id,
-        }
-    )
-    fake_st = _FakeStreamlit(
-        session_state=state,
-        clicked_keys={f"home_job_upload_cancel_delete_{upload_id}"},
-    )
-    removed: list = []
-    monkeypatch.setattr(
-        jobs,
-        "remove_upload",
-        lambda upload_id, *, by, delete_file=False: removed.append(upload_id),
-    )
-
-    _run_home(monkeypatch, fake_st)
-
-    assert removed == []
-    assert "home_job_upload_pending_delete" not in state
-    assert fake_st.rerun_called is True
-
-
-def test_job_workspace_viewer_sees_load_but_no_action_menu(monkeypatch):
-    """Viewers may load files but must not see remove/delete affordances."""
+def test_job_workspace_viewer_sees_open_but_no_action_menu(monkeypatch, tmp_path):
+    """Viewers may open files but must not see archive/delete affordances."""
     shared = jobs.create_job("owner@example.edu", "Vendor load June")
     jobs.grant_access(
         shared["id"], "cataloger@example.edu", "viewer", by="owner@example.edu"
     )
-    upload_persistence.record_upload(
+    work_file = _attach_work_file(
+        tmp_path,
+        shared["id"],
         user="owner@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=shared["id"],
     )
-    upload_id = jobs.list_job_uploads(shared["id"])[0]["id"]
     state = _SessionState(
         {
             "quick_load_mode": False,
@@ -761,9 +586,9 @@ def test_job_workspace_viewer_sees_load_but_no_action_menu(monkeypatch):
     load_keys = [
         kwargs.get("key")
         for label, kwargs in fake_st.button_calls
-        if label == "Load"
+        if label == "Open"
     ]
-    assert f"home_job_upload_load_{upload_id}" in load_keys
+    assert f"home_job_upload_load_{work_file['id']}" in load_keys
 
 
 def test_create_job_uses_rerun_handoff_instead_of_mutating_widget_state(monkeypatch):
@@ -875,12 +700,12 @@ def test_job_workspace_upload_releases_widget_after_ingest(monkeypatch):
 
     _run_home(monkeypatch, fake_st)
 
-    assert state["home_job_upload_nonce"] == 1
+    assert state["home_job_workspace_nonce"] == 1
     assert fake_st.rerun_called
-    assert state["home_job_upload_summary"]["filename"] == "vendor.mrc"
+    assert state["home_job_workspace_summary"]["filename"] == "vendor.mrc"
     # The banner must be attributable to the job it was uploaded to,
     # or a later job selection inherits it (review finding).
-    assert state["home_job_upload_summary"]["job_id"] == shared["id"]
+    assert state["home_job_workspace_summary"]["job_id"] == shared["id"]
 
 
 def test_quick_load_zero_record_upload_shows_error_without_rotation(monkeypatch):
@@ -945,7 +770,7 @@ def test_job_summary_only_renders_for_its_own_job(monkeypatch):
             "quick_load_mode": False,
             "current_job_id": shared["id"],
             "home_start_path": "Job Workspace",
-            "home_job_upload_summary": summary,
+            "home_job_workspace_summary": summary,
         }
     )
     fake_st = _FakeStreamlit(session_state=state)
@@ -959,7 +784,7 @@ def test_job_summary_only_renders_for_its_own_job(monkeypatch):
             "quick_load_mode": False,
             "current_job_id": other["id"],
             "home_start_path": "Job Workspace",
-            "home_job_upload_summary": summary,
+            "home_job_workspace_summary": summary,
         }
     )
     fake_st2 = _FakeStreamlit(session_state=state2)
