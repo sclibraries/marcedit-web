@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from marcedit_web.lib import db, job_files, jobs
+from marcedit_web.lib import collaboration, db, job_files, jobs
 
 
 @pytest.fixture(autouse=True)
@@ -138,18 +138,8 @@ def test_archive_file_preserves_versions_releases_checkout_and_records_activity(
     version_path = Path(version["file_path"])
     export_path = tmp_path / "export.mrc"
     export_path.write_bytes(b"export")
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
     with db.connect() as conn:
-        conn.execute(
-            "INSERT INTO advisory_locks(resource_type,resource_id,holder_email,"
-            "expires_at,created_at,updated_at) VALUES('job-file',?,?,?,?,?)",
-            (
-                str(attached["id"]),
-                "owner@example.edu",
-                "2099-01-01T00:00:00Z",
-                "2026-07-14T12:00:00Z",
-                "2026-07-14T12:00:00Z",
-            ),
-        )
         export_id = conn.execute(
             "INSERT INTO job_file_exports(job_file_id,version_id,purpose,description,"
             "filename,file_path,record_count,validation_json,state,created_by,created_at)"
@@ -169,7 +159,11 @@ def test_archive_file_preserves_versions_releases_checkout_and_records_activity(
             ),
         ).fetchone()["id"]
 
-    archived = job_files.archive_file(attached["id"], by="owner@example.edu")
+    archived = job_files.archive_file(
+        attached["id"],
+        by="owner@example.edu",
+        opened_version_id=version["id"],
+    )
 
     assert archived["archived_by"] == "owner@example.edu"
     assert archived["archived_at"] is not None
@@ -197,6 +191,101 @@ def test_archive_file_preserves_versions_releases_checkout_and_records_activity(
         "kind": "job-file-archived",
         "job_file_id": attached["id"],
     }
+
+
+def test_archive_rejects_non_holder_without_changing_file_or_lock(tmp_path):
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    jobs.grant_access(
+        job["id"], "editor@example.edu", "editor", by="owner@example.edu"
+    )
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+
+    with pytest.raises(job_files.JobFileError, match="checkout"):
+        job_files.archive_file(
+            attached["id"],
+            by="editor@example.edu",
+            opened_version_id=attached["current_version_id"],
+        )
+
+    row = job_files.get_file(attached["id"], "owner@example.edu")
+    assert row["archived_at"] is None
+    with db.connect() as conn:
+        lock = conn.execute(
+            "SELECT holder_email FROM advisory_locks"
+            " WHERE resource_type='job-file' AND resource_id=?",
+            (str(attached["id"]),),
+        ).fetchone()
+        activity_count = conn.execute(
+            "SELECT COUNT(*) FROM job_activity WHERE kind='job-file-archived'"
+        ).fetchone()[0]
+    assert lock["holder_email"] == "owner@example.edu"
+    assert activity_count == 0
+
+
+def test_archive_rejects_stale_version_without_changing_file_or_lock(tmp_path):
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+
+    with pytest.raises(job_files.JobFileError, match="changed"):
+        job_files.archive_file(
+            attached["id"],
+            by="owner@example.edu",
+            opened_version_id=int(attached["current_version_id"]) + 1,
+        )
+
+    row = job_files.get_file(attached["id"], "owner@example.edu")
+    assert row["archived_at"] is None
+    with db.connect() as conn:
+        lock = conn.execute(
+            "SELECT holder_email FROM advisory_locks"
+            " WHERE resource_type='job-file' AND resource_id=?",
+            (str(attached["id"]),),
+        ).fetchone()
+        activity_count = conn.execute(
+            "SELECT COUNT(*) FROM job_activity WHERE kind='job-file-archived'"
+        ).fetchone()[0]
+    assert lock["holder_email"] == "owner@example.edu"
+    assert activity_count == 0
+
+
+def test_archive_rejects_expired_checkout_without_changing_file_or_lock(tmp_path):
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    collaboration.acquire_file_checkout(
+        attached["id"], "owner@example.edu", ttl_seconds=-1
+    )
+    before = job_files.get_file(attached["id"], "owner@example.edu")
+    with db.connect() as conn:
+        lock_before = dict(conn.execute(
+            "SELECT * FROM advisory_locks WHERE resource_type='job-file'"
+            " AND resource_id=?",
+            (str(attached["id"]),),
+        ).fetchone())
+
+    with pytest.raises(job_files.JobFileError, match="checkout"):
+        job_files.archive_file(
+            attached["id"],
+            by="owner@example.edu",
+            opened_version_id=attached["current_version_id"],
+        )
+
+    after = job_files.get_file(attached["id"], "owner@example.edu")
+    assert after["archived_at"] == before["archived_at"]
+    assert after["archived_by"] == before["archived_by"]
+    assert after["current_version_id"] == before["current_version_id"]
+    with db.connect() as conn:
+        lock_after = dict(conn.execute(
+            "SELECT * FROM advisory_locks WHERE resource_type='job-file'"
+            " AND resource_id=?",
+            (str(attached["id"]),),
+        ).fetchone())
+        activity_count = conn.execute(
+            "SELECT COUNT(*) FROM job_activity WHERE kind='job-file-archived'"
+        ).fetchone()[0]
+    assert lock_after == lock_before
+    assert activity_count == 0
 
 
 def test_archive_is_the_only_file_removal_service():

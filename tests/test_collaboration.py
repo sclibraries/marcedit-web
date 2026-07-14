@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import threading
+from contextlib import contextmanager
+
 import pytest
 
 from marcedit_web.lib import collaboration, db, job_files, jobs
@@ -78,6 +82,132 @@ def test_force_release_requires_owner(shared_file):
 def test_viewer_cannot_check_out_file(shared_file):
     with pytest.raises(collaboration.CollaborationError, match="editor"):
         collaboration.acquire_file_checkout(shared_file["id"], VIEWER)
+
+
+def test_archived_file_cannot_be_checked_out_or_locked(shared_file):
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE job_files SET archived_by=?, archived_at=? WHERE id=?",
+            (OWNER, "2026-07-14T12:00:00Z", shared_file["id"]),
+        )
+
+    with pytest.raises(collaboration.CollaborationError, match="archived"):
+        collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM advisory_locks WHERE resource_type='job-file'"
+            " AND resource_id=?",
+            (str(shared_file["id"]),),
+        ).fetchone() is None
+
+
+def test_checkout_rechecks_archived_state_after_waiting_for_writer(
+    shared_file, monkeypatch
+):
+    original_connect = db.connect
+    begin_attempted = threading.Event()
+    result: list[object] = []
+
+    with original_connect() as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            "UPDATE job_files SET archived_by=?, archived_at=? WHERE id=?",
+            (OWNER, "2026-07-14T12:00:00Z", shared_file["id"]),
+        )
+
+        @contextmanager
+        def traced_connect():
+            with original_connect() as conn:
+                conn.set_trace_callback(
+                    lambda statement: begin_attempted.set()
+                    if statement == "BEGIN IMMEDIATE"
+                    else None
+                )
+                yield conn
+
+        monkeypatch.setattr(collaboration.db, "connect", traced_connect)
+
+        def acquire():
+            try:
+                collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+            except Exception as exc:  # captured for assertion in this thread
+                result.append(exc)
+
+        thread = threading.Thread(target=acquire)
+        thread.start()
+        assert begin_attempted.wait(timeout=2)
+
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert len(result) == 1
+    assert isinstance(result[0], collaboration.CollaborationError)
+    assert "archived" in str(result[0])
+    with original_connect() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM advisory_locks WHERE resource_type='job-file'"
+            " AND resource_id=?",
+            (str(shared_file["id"]),),
+        ).fetchone() is None
+
+
+def test_checkout_uses_time_captured_after_waiting_for_writer(
+    shared_file, monkeypatch
+):
+    original_connect = db.connect
+    begin_attempted = threading.Event()
+    writer_released = threading.Event()
+    result: list[object] = []
+    with original_connect() as conn:
+        conn.execute(
+            "INSERT INTO advisory_locks(resource_type,resource_id,holder_email,"
+            " expires_at,created_at,updated_at) VALUES('job-file',?,?,?,?,?)",
+            (
+                str(shared_file["id"]),
+                OWNER,
+                "2050-01-01T00:00:00Z",
+                "2000-01-01T00:00:00Z",
+                "2000-01-01T00:00:00Z",
+            ),
+        )
+
+    with original_connect() as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            "UPDATE job_files SET description='writer held transaction' WHERE id=?",
+            (shared_file["id"],),
+        )
+
+        @contextmanager
+        def traced_connect():
+            with original_connect() as conn:
+                conn.set_trace_callback(
+                    lambda statement: begin_attempted.set()
+                    if statement == "BEGIN IMMEDIATE"
+                    else None
+                )
+                yield conn
+
+        monkeypatch.setattr(collaboration.db, "connect", traced_connect)
+        monkeypatch.setattr(
+            collaboration,
+            "_now",
+            lambda: dt.datetime(2100 if writer_released.is_set() else 2000, 1, 1),
+        )
+
+        thread = threading.Thread(
+            target=lambda: result.append(
+                collaboration.acquire_file_checkout(shared_file["id"], EDITOR)
+            )
+        )
+        thread.start()
+        assert begin_attempted.wait(timeout=2)
+
+    writer_released.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert result[0].acquired is True
+    assert result[0].holder_email == EDITOR
 
 
 def test_file_checkout_assertion_requires_holder_and_opened_version(shared_file):

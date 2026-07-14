@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from marcedit_web.lib import db, job_files, jobs, session
+from marcedit_web.lib import collaboration, db, job_files, jobs, session
 
 
 HOME_PAGE = (
@@ -482,6 +482,9 @@ def test_job_workspace_archives_selected_file_from_home(monkeypatch, tmp_path):
     """Normal removal archives the work item instead of deleting bytes."""
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
     work_file = _attach_work_file(tmp_path, shared["id"])
+    collaboration.acquire_file_checkout(
+        work_file["id"], "cataloger@example.edu"
+    )
     state = _SessionState(
         {
             "quick_load_mode": False,
@@ -493,23 +496,29 @@ def test_job_workspace_archives_selected_file_from_home(monkeypatch, tmp_path):
         session_state=state,
         clicked_keys={f"home_job_upload_remove_{work_file['id']}"},
     )
-    archived: list[tuple[int, str]] = []
+    archived: list[tuple[int, str, int]] = []
     monkeypatch.setattr(
         job_files,
         "archive_file",
-        lambda file_id, *, by: archived.append((file_id, by)),
+        lambda file_id, *, by, opened_version_id: archived.append(
+            (file_id, by, opened_version_id)
+        ),
     )
 
     _run_home(monkeypatch, fake_st)
 
-    assert archived == [(work_file["id"], "cataloger@example.edu")]
+    assert archived == [(
+        work_file["id"],
+        "cataloger@example.edu",
+        work_file["current_version_id"],
+    )]
     assert fake_st.rerun_called is True
     assert fake_st.session_state["pending_toasts"] == [
         ("Archived vendor.mrc.", "🗂️")
     ]
 
 
-def test_job_workspace_admin_has_archive_as_only_removal_action(
+def test_job_workspace_admin_cannot_archive_without_checkout(
     monkeypatch, tmp_path
 ):
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
@@ -529,7 +538,7 @@ def test_job_workspace_admin_has_archive_as_only_removal_action(
     labels = [label for label, _kwargs in fake_st.button_calls]
     assert "Delete file permanently" not in labels
     assert fake_st.popovers == ["⋮"]
-    assert "Remove from job" in labels
+    assert "Remove from job" not in labels
 
 
 def test_job_workspace_viewer_sees_open_but_no_action_menu(monkeypatch, tmp_path):

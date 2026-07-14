@@ -178,6 +178,7 @@ def _job_file_row(file_id: int = 99) -> dict[str, Any]:
         "id": file_id,
         "display_name": "batch.mrc",
         "status": "new",
+        "current_version_id": 123,
         "current_version_number": 1,
         "current_record_count": 42,
         "updated_by": "alice@example.edu",
@@ -348,7 +349,7 @@ def test_viewer_does_not_get_attach_control(monkeypatch):
     assert "Attach MARC file" not in fake_st.file_uploader_labels
 
 
-def test_render_detail_shows_file_actions_for_editors(monkeypatch):
+def test_render_detail_hides_archive_until_editor_holds_checkout(monkeypatch):
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit()
 
@@ -378,7 +379,7 @@ def test_render_detail_shows_file_actions_for_editors(monkeypatch):
 
     labels = [label for label, _kwargs in fake_st.button_calls]
     assert "Open" in labels
-    assert "Remove from job" in labels
+    assert "Remove from job" not in labels
     assert "Delete file permanently" not in labels
     assert fake_st.popovers == ["⋮"]
 
@@ -430,16 +431,26 @@ def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
 def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit(clicked_keys={"job_upload_remove_99"})
-    removed: list[tuple[int, str]] = []
+    removed: list[tuple[int, str, int]] = []
 
     monkeypatch.setattr(page, "st", fake_st)
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
     monkeypatch.setattr(
+        page.job_files,
+        "_active_checkout",
+        lambda file_id: {
+            "holder_email": "alice@example.edu",
+            "expires_at": "2099-01-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
         page.work_files,
         "archive_file",
-        lambda file_id, *, by: removed.append((file_id, by)),
+        lambda file_id, *, by, opened_version_id: removed.append(
+            (file_id, by, opened_version_id)
+        ),
     )
     monkeypatch.setattr(
         page.jobs,
@@ -461,7 +472,7 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
 
     page._render_detail("alice@example.edu", 17)
 
-    assert removed == [(99, "alice@example.edu")]
+    assert removed == [(99, "alice@example.edu", 123)]
     assert fake_st.rerun_called is True
     assert fake_st.session_state["pending_toasts"] == [
         ("Archived batch.mrc.", "🗂️")
@@ -478,7 +489,7 @@ def test_render_detail_admin_archives_without_clearing_unrelated_session_work(
         session_state={"role": "admin", "store": quick_load_store},
         clicked_keys={"job_upload_remove_99"},
     )
-    archived: list[tuple[int, str]] = []
+    archived: list[tuple[int, str, int]] = []
     detached: list[None] = []
 
     monkeypatch.setattr(page, "st", fake_st)
@@ -491,9 +502,19 @@ def test_render_detail_admin_archives_without_clearing_unrelated_session_work(
     )
     monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "editor")
     monkeypatch.setattr(
+        page.job_files,
+        "_active_checkout",
+        lambda file_id: {
+            "holder_email": "alice@example.edu",
+            "expires_at": "2099-01-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
         page.work_files,
         "archive_file",
-        lambda file_id, *, by: archived.append((file_id, by)),
+        lambda file_id, *, by, opened_version_id: archived.append(
+            (file_id, by, opened_version_id)
+        ),
     )
     monkeypatch.setattr(
         page.jobs,
@@ -522,7 +543,7 @@ def test_render_detail_admin_archives_without_clearing_unrelated_session_work(
     page._render_detail("alice@example.edu", 17)
 
     labels = [label for label, _kwargs in fake_st.button_calls]
-    assert archived == [(99, "alice@example.edu")]
+    assert archived == [(99, "alice@example.edu", 123)]
     assert detached == []
     assert fake_st.session_state["store"] is quick_load_store
     assert "Delete file permanently" not in labels

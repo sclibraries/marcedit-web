@@ -147,13 +147,39 @@ def get_version(version_id: int, user_email: str) -> dict[str, Any]:
     return _dict(row)
 
 
-def archive_file(file_id: int, by: str) -> dict[str, Any]:
+def archive_file(
+    file_id: int,
+    by: str,
+    *,
+    opened_version_id: int,
+) -> dict[str, Any]:
     """Archive a work file without deleting any retained artifact."""
-    row = get_file(file_id, by)
-    jobs.require_role(int(row["job_id"]), by, {"owner", "editor"})
+    from . import collaboration
+
+    db.init_schema()
     now = _utc_now_iso()
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            _FILE_SELECT
+            + " WHERE job_files.id=? AND job_access.user_email=?",
+            (file_id, by.strip().lower()),
+        ).fetchone()
+        if row is None:
+            raise JobFileError("job file not found")
+        if row["access_role"] not in {"owner", "editor"}:
+            raise JobFileError("owner or editor access required")
+        if row["archived_at"] is not None:
+            raise JobFileError("job file is already archived")
+        try:
+            collaboration._assert_file_checkout_in_tx(
+                conn,
+                file_id,
+                by,
+                opened_version_id,
+            )
+        except collaboration.CollaborationError as exc:
+            raise JobFileError(str(exc)) from exc
         conn.execute(
             "UPDATE job_files SET archived_by=?, archived_at=?, updated_by=?,"
             " updated_at=? WHERE id=?",
@@ -161,14 +187,15 @@ def archive_file(file_id: int, by: str) -> dict[str, Any]:
         )
         conn.execute(
             "DELETE FROM advisory_locks"
-            " WHERE resource_type='job-file' AND resource_id=?",
-            (str(file_id),),
+            " WHERE resource_type='job-file' AND resource_id=?"
+            " AND holder_email=?",
+            (str(file_id), by),
         )
         conn.execute(
             "INSERT INTO job_activity(job_id,job_file_id,kind,message,"
             "actor_email,created_at) VALUES(?,?,?,?,?,?)",
             (
-                row["job_id"],
+                int(row["job_id"]),
                 file_id,
                 "job-file-archived",
                 f"Archived {row['display_name']}",

@@ -19,12 +19,16 @@ def acquire_file_checkout(
     ttl_seconds: int = 1800,
 ) -> locks.LockDecision:
     """Acquire or renew the exclusive checkout for one job file."""
-    file_row = _file_for_user(file_id, user_email)
-    _require_editor(int(file_row["job_id"]), user_email)
-    now = _now()
-    now_iso = _iso(now)
+    db.init_schema()
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        now = _now()
+        now_iso = _iso(now)
+        file_row = _file_for_user_in_tx(conn, file_id, user_email)
+        if file_row["access_role"] not in {"owner", "editor"}:
+            raise CollaborationError("owner or editor access required")
+        if file_row["archived_at"] is not None:
+            raise CollaborationError("archived files cannot be checked out")
         decision = _acquire_lock_in_tx(
             conn,
             "job-file",
@@ -288,6 +292,19 @@ def _file_for_user(file_id: int, user_email: str) -> dict[str, Any]:
         return job_files.get_file(file_id, user_email)
     except job_files.JobFileError as exc:
         raise CollaborationError("job file access required") from exc
+
+
+def _file_for_user_in_tx(conn, file_id: int, user_email: str) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT job_files.*, job_access.role AS access_role"
+        " FROM job_files"
+        " JOIN job_access ON job_access.job_id=job_files.job_id"
+        " WHERE job_files.id=? AND job_access.user_email=?",
+        (file_id, user_email.strip().lower()),
+    ).fetchone()
+    if row is None:
+        raise CollaborationError("job file access required")
+    return {key: row[key] for key in row.keys()}
 
 
 def _set_file_status_in_tx(

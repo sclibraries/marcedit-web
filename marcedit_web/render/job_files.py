@@ -162,22 +162,29 @@ def render_job_files_table(
                         st.rerun()
                 if "Force release" in actions:
                     _render_force_release(st, row, user, key_prefix)
-                if st.button(
-                    "Remove from job",
-                    key=f"{key_prefix}_remove_{row['id']}",
-                    use_container_width=True,
-                ):
-                    try:
-                        job_files.archive_file(int(row["id"]), by=user)
-                    except job_files.JobFileError as exc:
-                        st.error(str(exc))
-                    else:
-                        session.queue_toast(
-                            f"Archived {row['display_name']}.",
-                            icon="🗂️",
-                        )
-                        st.rerun()
-                st.caption("Keeps every version and export; hides this file.")
+                if holder_email == user:
+                    if st.button(
+                        "Remove from job",
+                        key=f"{key_prefix}_remove_{row['id']}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            job_files.archive_file(
+                                int(row["id"]),
+                                by=user,
+                                opened_version_id=int(row["current_version_id"]),
+                            )
+                        except job_files.JobFileError as exc:
+                            st.error(str(exc))
+                        else:
+                            session.queue_toast(
+                                f"Archived {row['display_name']}.",
+                                icon="🗂️",
+                            )
+                            st.rerun()
+                    st.caption(
+                        "Keeps every version and export; hides this file."
+                    )
 
 
 def _acquire_checkout(st, row: dict, user: str) -> None:
