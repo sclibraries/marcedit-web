@@ -957,7 +957,7 @@ Expected: no match in any accepted mutation path; any remaining match must be re
 
 - [ ] **Step 6: Run the complete suite in the project runtime**
 
-Run: `docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" app pytest -q`
+Run: `docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q`
 
 Expected: all tests PASS, zero skipped tests, and the test count is not lower than the pre-change baseline of 1,099.
 
