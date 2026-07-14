@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from marcedit_web.lib import job_files, jobs
+from marcedit_web.lib import db, job_files, jobs
 
 
 @pytest.fixture(autouse=True)
@@ -76,6 +76,32 @@ def test_attachment_rejects_incorrect_file_size(tmp_path):
         )
 
 
+def test_attachment_removes_partial_candidate_when_copy_fails(tmp_path, monkeypatch):
+    source = tmp_path / "incoming.mrc"
+    source.write_bytes(b"first")
+    job = jobs.create_job("owner@example.edu", "Routledge")
+
+    def fail_after_destination_creation(source_path, candidate):
+        candidate.write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(job_files.shutil, "copyfile", fail_after_destination_creation)
+
+    with pytest.raises(OSError, match="disk full"):
+        job_files.attach_file(
+            job_id=job["id"],
+            user_email="owner@example.edu",
+            source_path=source,
+            filename="deletes.mrc",
+            record_count=1,
+            file_bytes=5,
+        )
+
+    assert list((job_files.versions_root() / "pending").iterdir()) == []
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM job_files").fetchone()[0] == 0
+
+
 def test_read_apis_require_job_access(tmp_path):
     job = jobs.create_job("owner@example.edu", "Routledge")
     attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
@@ -90,8 +116,6 @@ def test_read_apis_require_job_access(tmp_path):
 def test_list_files_hides_archived_files_by_default(tmp_path):
     job = jobs.create_job("owner@example.edu", "Routledge")
     attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
-    from marcedit_web.lib import db
-
     with db.connect() as conn:
         conn.execute(
             "UPDATE job_files SET archived_by=?, archived_at=? WHERE id=?",

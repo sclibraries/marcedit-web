@@ -40,9 +40,9 @@ def attach_file(
 
     now = _utc_now_iso()
     candidate = versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
-    candidate.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_path, candidate)
     try:
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, candidate)
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
