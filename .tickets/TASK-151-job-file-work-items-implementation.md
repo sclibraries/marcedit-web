@@ -23,4 +23,4 @@ Design: [Job File Work Items](../docs/superpowers/specs/2026-07-14-job-file-work
 
 Plan: [Implementation Plan](../docs/superpowers/plans/2026-07-14-job-file-work-items.md)
 
-Status: Todo
+Status: In-Progress
