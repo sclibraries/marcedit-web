@@ -516,11 +516,13 @@ def _record_activity(
     message: str,
     actor_email: str,
     now: str,
+    *,
+    job_file_id: int | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO job_activity(job_id, kind, message, actor_email, created_at)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (job_id, kind, message, actor_email, now),
+        "INSERT INTO job_activity(job_id, job_file_id, kind, message,"
+        " actor_email, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (job_id, job_file_id, kind, message, actor_email, now),
     )
 
 

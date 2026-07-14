@@ -6,6 +6,7 @@ import pytest
 
 from marcedit_web.lib import db, jobs, locks
 from marcedit_web.render import fixed_field_helper
+from marcedit_web.render import job_files
 from marcedit_web.render import single_record_edit
 
 
@@ -40,6 +41,32 @@ def test_record_lock_state_ignores_expired_locks(monkeypatch):
 
     assert row is None
     assert holds_lock is False
+
+
+@pytest.mark.parametrize(
+    ("role", "holder", "user", "expected"),
+    [
+        ("owner", None, "owner@example.edu", ("Check out",)),
+        (
+            "editor",
+            "editor@example.edu",
+            "editor@example.edu",
+            ("Renew", "Done", "Return for review"),
+        ),
+        ("owner", "editor@example.edu", "owner@example.edu", ("Force release",)),
+        ("editor", "owner@example.edu", "editor@example.edu", ()),
+        ("viewer", None, "viewer@example.edu", ()),
+    ],
+)
+def test_file_checkout_actions_follow_role_and_holder(role, holder, user, expected):
+    assert job_files._checkout_actions(role, holder, user) == expected
+
+
+def test_file_checkout_label_shows_holder_and_expiry():
+    assert job_files._checkout_label({
+        "holder_email": "editor@example.edu",
+        "expires_at": "2026-07-14T12:30:00Z",
+    }) == "Checked out by editor@example.edu until 2026-07-14T12:30:00Z"
 
 
 def test_checkout_version_key_is_shared_per_job_record():

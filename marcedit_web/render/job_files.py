@@ -7,7 +7,7 @@ same attachment, open, and archive paths.
 from __future__ import annotations
 
 import datetime as dt
-from marcedit_web.lib import job_files, session
+from marcedit_web.lib import collaboration, db, job_files, locks, session
 
 # One line per file; weights keep Open and the ⋮ trigger from wrapping.
 UPLOADS_GRID = [3, 1.5, 1, 1, 2, 2, 1, 0.6]
@@ -16,6 +16,43 @@ UPLOADS_HEADERS = (
 )
 
 _EDIT_ROLES = {"owner", "editor"}
+
+
+def _checkout_actions(
+    role: str | None,
+    holder_email: str | None,
+    user: str,
+) -> tuple[str, ...]:
+    if role not in _EDIT_ROLES:
+        return ()
+    if holder_email is None:
+        return ("Check out",)
+    if holder_email == user:
+        return ("Renew", "Done", "Return for review")
+    if role == "owner":
+        return ("Force release",)
+    return ()
+
+
+def _checkout_label(checkout: dict | None) -> str:
+    if checkout is None:
+        return "Available for checkout"
+    return (
+        f"Checked out by {checkout['holder_email']} until "
+        f"{checkout['expires_at']}"
+    )
+
+
+def _active_checkout(file_id: int) -> dict | None:
+    db.init_schema()
+    checkout = locks.get_lock("job-file", str(file_id))
+    if checkout is None:
+        return None
+    expires_at = dt.datetime.fromisoformat(
+        checkout["expires_at"].removesuffix("Z")
+    )
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    return checkout if expires_at > now else None
 
 
 def format_size(num_bytes: int) -> str:
@@ -60,10 +97,13 @@ def render_job_files_table(
                 col.markdown(f"**{title}**")
         st.divider()
         for row in files:
+            checkout = _active_checkout(int(row["id"]))
+            holder_email = checkout["holder_email"] if checkout else None
             cols = st.columns(
                 UPLOADS_GRID, vertical_alignment="center", gap="small"
             )
             cols[0].write(row["display_name"])
+            cols[0].write(_checkout_label(checkout))
             cols[1].write(row["status"].replace("_", " ").capitalize())
             cols[2].write(f"v{row['current_version_number']}")
             cols[3].write(f"{row['current_record_count']:,}")
@@ -86,10 +126,42 @@ def render_job_files_table(
                         icon="📂",
                     )
                     st.switch_page("views/1_View.py")
-            can_remove = role in _EDIT_ROLES
-            if not can_remove:
+            actions = _checkout_actions(role, holder_email, user)
+            if role not in _EDIT_ROLES:
                 continue
             with cols[7].popover("⋮"):
+                if "Check out" in actions and st.button(
+                    "Check out",
+                    key=f"{key_prefix}_checkout_{row['id']}",
+                    use_container_width=True,
+                ):
+                    _acquire_checkout(st, row, user)
+                if "Renew" in actions and st.button(
+                    "Renew",
+                    key=f"{key_prefix}_renew_{row['id']}",
+                    use_container_width=True,
+                ):
+                    _acquire_checkout(st, row, user)
+                if "Done" in actions and st.button(
+                    "Done",
+                    key=f"{key_prefix}_done_{row['id']}",
+                    use_container_width=True,
+                ):
+                    collaboration.release_file_checkout(int(row["id"]), user)
+                    st.rerun()
+                if "Return for review" in actions and st.button(
+                    "Return for review",
+                    key=f"{key_prefix}_review_{row['id']}",
+                    use_container_width=True,
+                ):
+                    try:
+                        collaboration.return_file_for_review(int(row["id"]), user)
+                    except collaboration.CollaborationError as exc:
+                        st.error(str(exc))
+                    else:
+                        st.rerun()
+                if "Force release" in actions:
+                    _render_force_release(st, row, user, key_prefix)
                 if st.button(
                     "Remove from job",
                     key=f"{key_prefix}_remove_{row['id']}",
@@ -106,6 +178,53 @@ def render_job_files_table(
                         )
                         st.rerun()
                 st.caption("Keeps every version and export; hides this file.")
+
+
+def _acquire_checkout(st, row: dict, user: str) -> None:
+    try:
+        decision = collaboration.acquire_file_checkout(int(row["id"]), user)
+    except collaboration.CollaborationError as exc:
+        st.error(str(exc))
+        return
+    if not decision.acquired:
+        st.error(
+            f"Checked out by {decision.holder_email} until {decision.expires_at}."
+        )
+        return
+    st.rerun()
+
+
+def _render_force_release(st, row: dict, user: str, key_prefix: str) -> None:
+    confirm_key = f"{key_prefix}_force_release_confirm_{row['id']}"
+    if not st.session_state.get(confirm_key):
+        if st.button(
+            "Force release",
+            key=f"{key_prefix}_force_release_{row['id']}",
+            use_container_width=True,
+        ):
+            st.session_state[confirm_key] = True
+            st.rerun()
+        return
+    st.warning("Force release this cataloger's checkout?")
+    if st.button(
+        "Confirm force release",
+        key=f"{key_prefix}_force_release_confirm_button_{row['id']}",
+        use_container_width=True,
+    ):
+        try:
+            collaboration.force_release_file_checkout(int(row["id"]), by=user)
+        except collaboration.CollaborationError as exc:
+            st.error(str(exc))
+        else:
+            st.session_state.pop(confirm_key, None)
+            st.rerun()
+    if st.button(
+        "Cancel",
+        key=f"{key_prefix}_force_release_cancel_{row['id']}",
+        use_container_width=True,
+    ):
+        st.session_state.pop(confirm_key, None)
+        st.rerun()
 
 
 def render_upload_feedback(upload_summary: dict) -> None:

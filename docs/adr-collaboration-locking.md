@@ -1,6 +1,6 @@
 # ADR: Shared Job Collaboration and Locking Model
 
-**Status:** Accepted for TASK-085 design; implementation deferred to TASK-086.
+**Status:** Superseded for job-file work by TASK-151; retained for legacy paths.
 **Date:** 2026-06-25
 **Related tickets:** TASK-081, TASK-082, TASK-083, TASK-085, TASK-086
 
@@ -21,6 +21,19 @@ operation, other catalogers see the lock, and no one silently overwrites another
 person's work.
 
 ## Decision
+
+### TASK-151 superseding decision
+
+For file-backed work, TASK-151 supersedes both record locks and whole-job
+mutation locks with one exclusive advisory lock per job file:
+`resource_type = "job-file"`, `resource_id = "<job_file_id>"`. A job file is
+the independent unit of mutation, so two catalogers may check out different
+files in the same job concurrently while conflicting mutations to one file
+remain exclusive. Every file-backed mutation must also compare the exact
+opened file-version id before committing.
+
+The record/job APIs below remain temporarily for unconverted legacy paths.
+Converted job-file mutation paths must not use them.
 
 Use a hybrid check-out model:
 

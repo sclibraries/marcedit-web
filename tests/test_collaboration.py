@@ -4,12 +4,115 @@ from __future__ import annotations
 
 import pytest
 
-from marcedit_web.lib import collaboration, db, jobs
+from marcedit_web.lib import collaboration, db, job_files, jobs
+
+
+OWNER = "owner@example.edu"
+EDITOR = "editor@example.edu"
+VIEWER = "viewer@example.edu"
 
 
 @pytest.fixture(autouse=True)
-def _schema():
+def _schema(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files"))
     db.init_schema()
+
+
+def _attach_file(job_id, tmp_path, filename):
+    source = tmp_path / filename
+    source.write_bytes(filename.encode())
+    return job_files.attach_file(
+        job_id=job_id,
+        user_email=OWNER,
+        source_path=source,
+        filename=filename,
+        record_count=1,
+        file_bytes=source.stat().st_size,
+    )
+
+
+@pytest.fixture
+def shared_file(tmp_path):
+    job = jobs.create_job(OWNER, "Shared files")
+    jobs.grant_access(job["id"], EDITOR, "editor", by=OWNER)
+    jobs.grant_access(job["id"], VIEWER, "viewer", by=OWNER)
+    return _attach_file(job["id"], tmp_path, "shared.mrc")
+
+
+@pytest.fixture
+def job_with_two_files(tmp_path):
+    job = jobs.create_job(OWNER, "Two files")
+    jobs.grant_access(job["id"], EDITOR, "editor", by=OWNER)
+    return (
+        _attach_file(job["id"], tmp_path, "first.mrc"),
+        _attach_file(job["id"], tmp_path, "second.mrc"),
+    )
+
+
+def test_different_catalogers_can_check_out_different_files(job_with_two_files):
+    first, second = job_with_two_files
+
+    assert collaboration.acquire_file_checkout(first["id"], OWNER).acquired
+    assert collaboration.acquire_file_checkout(second["id"], EDITOR).acquired
+
+
+def test_second_cataloger_can_view_but_not_check_out_same_file(shared_file):
+    assert collaboration.acquire_file_checkout(shared_file["id"], OWNER).acquired
+
+    decision = collaboration.acquire_file_checkout(shared_file["id"], EDITOR)
+
+    assert decision.acquired is False
+    assert decision.holder_email == OWNER
+    assert job_files.get_file(shared_file["id"], EDITOR)["id"] == shared_file["id"]
+
+
+def test_force_release_requires_owner(shared_file):
+    collaboration.acquire_file_checkout(shared_file["id"], EDITOR)
+
+    with pytest.raises(collaboration.CollaborationError, match="owner"):
+        collaboration.force_release_file_checkout(shared_file["id"], by=EDITOR)
+
+    assert collaboration.force_release_file_checkout(shared_file["id"], by=OWNER)
+
+
+def test_viewer_cannot_check_out_file(shared_file):
+    with pytest.raises(collaboration.CollaborationError, match="editor"):
+        collaboration.acquire_file_checkout(shared_file["id"], VIEWER)
+
+
+def test_file_checkout_assertion_requires_holder_and_opened_version(shared_file):
+    collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+    opened_version_id = int(shared_file["current_version_id"])
+
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        collaboration._assert_file_checkout_in_tx(
+            conn, shared_file["id"], OWNER, opened_version_id
+        )
+
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        with pytest.raises(collaboration.CollaborationError, match="checkout"):
+            collaboration._assert_file_checkout_in_tx(
+                conn, shared_file["id"], EDITOR, opened_version_id
+            )
+
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        with pytest.raises(collaboration.CollaborationError, match="changed"):
+            collaboration._assert_file_checkout_in_tx(
+                conn, shared_file["id"], OWNER, opened_version_id + 1
+            )
+
+
+def test_checkout_updates_editing_status_and_return_for_review_releases(shared_file):
+    decision = collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+
+    assert decision.acquired
+    assert job_files.get_file(shared_file["id"], OWNER)["status"] == "in_progress"
+    assert collaboration.return_file_for_review(shared_file["id"], OWNER)
+    assert job_files.get_file(shared_file["id"], OWNER)["status"] == "needs_review"
+    assert collaboration.release_file_checkout(shared_file["id"], OWNER) is False
 
 
 def test_current_job_version_starts_at_zero_and_bumps():
