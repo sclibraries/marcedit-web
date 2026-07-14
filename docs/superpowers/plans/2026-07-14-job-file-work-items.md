@@ -300,7 +300,7 @@ On `session.init`, restore `job_file_id` first; re-query access/current version 
 
 - [ ] **Step 5: Replace upload rows with work-file rows in the shared table**
 
-Use `job_files.list_files`, display `display_name`, file status, `v{current_version_number}`, record count, last editor, and updated timestamp. The primary action calls `session.open_job_file(row["id"])`. Implement `archive_file` as an owner/editor action that sets `archived_by`/`archived_at`, releases its checkout, leaves every version/export on disk, and records file/job activity. Make the normal removal action call it; archived rows are omitted unless `include_archived=True`. Preserve permanent deletion only as an explicitly confirmed administrator operation that refuses deletion once versions or exports beyond the original exist.
+Use `job_files.list_files`, display `display_name`, file status, `v{current_version_number}`, record count, last editor, and updated timestamp. The primary action calls `session.open_job_file(row["id"])`. Implement `archive_file` as an owner/editor action that sets `archived_by`/`archived_at`, releases its checkout, leaves every version/export on disk, and records file/job activity. Archive is the only file-removal action; archived rows are omitted unless `include_archived=True`. Permanent deletion is out of scope by user decision, so original, version, and export bytes and metadata remain retained.
 
 - [ ] **Step 6: Run focused tests**
 

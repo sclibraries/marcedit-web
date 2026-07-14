@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import authz, db, jobs
+from . import db, jobs
 
 
 class JobFileError(ValueError):
@@ -177,73 +177,6 @@ def archive_file(file_id: int, by: str) -> dict[str, Any]:
             ),
         )
     return get_file(file_id, by)
-
-
-def delete_file_permanently(file_id: int, by: str) -> None:
-    """Delete an unmodified, unexported file as an approved administrator."""
-    row = get_file(file_id, by)
-    decision = authz.authorize(by)
-    if decision.outcome != "approved" or decision.role != "admin":
-        raise JobFileError("administrator access required")
-    with db.connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        versions = conn.execute(
-            "SELECT id,file_path FROM job_file_versions"
-            " WHERE job_file_id=? ORDER BY version_number",
-            (file_id,),
-        ).fetchall()
-        export_count = conn.execute(
-            "SELECT COUNT(*) FROM job_file_exports WHERE job_file_id=?",
-            (file_id,),
-        ).fetchone()[0]
-        if len(versions) != 1 or export_count:
-            raise JobFileError(
-                "files with later versions or exports cannot be permanently deleted"
-            )
-        conn.execute(
-            "DELETE FROM advisory_locks"
-            " WHERE resource_type='job-file' AND resource_id=?",
-            (str(file_id),),
-        )
-        conn.execute("DELETE FROM job_file_versions WHERE job_file_id=?", (file_id,))
-        conn.execute("DELETE FROM job_files WHERE id=?", (file_id,))
-        conn.execute(
-            "INSERT INTO job_activity(job_id,kind,message,actor_email,created_at)"
-            " VALUES(?,?,?,?,?)",
-            (
-                row["job_id"],
-                "job-file-deleted",
-                f"Permanently deleted {row['display_name']}",
-                by,
-                _utc_now_iso(),
-            ),
-        )
-        _unlink_and_commit(conn, Path(versions[0]["file_path"]))
-
-
-def _unlink_and_commit(conn, file_path: Path) -> None:
-    """Unlink immutable bytes while their metadata transaction can roll back."""
-    try:
-        retained = file_path.open("rb")
-    except FileNotFoundError:
-        conn.commit()
-        return
-    with retained:
-        file_path.unlink()
-        try:
-            conn.commit()
-        except Exception:
-            restore_path = file_path.with_name(
-                f".{file_path.name}.{uuid.uuid4().hex}.restore"
-            )
-            try:
-                retained.seek(0)
-                with restore_path.open("xb") as restored:
-                    shutil.copyfileobj(retained, restored)
-                os.replace(restore_path, file_path)
-            finally:
-                restore_path.unlink(missing_ok=True)
-            raise
 
 
 _FILE_SELECT = (

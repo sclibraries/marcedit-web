@@ -468,139 +468,32 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
     ]
 
 
-def test_render_detail_delete_click_only_opens_confirmation(monkeypatch):
-    """A single click must never destroy a file (TASK-136)."""
-    page = _load_jobs_page(monkeypatch)
-    fake_st = _FakeStreamlit(
-        session_state={"role": "admin"},
-        clicked_keys={"job_upload_delete_99"},
-    )
-    removed: list = []
-
-    monkeypatch.setattr(page, "st", fake_st)
-    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
-    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
-    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
-    monkeypatch.setattr(
-        page.work_files,
-        "delete_file_permanently",
-        lambda file_id, *, by: removed.append(file_id),
-    )
-    monkeypatch.setattr(
-        page.jobs,
-        "get_job",
-        lambda job_id: {
-            "id": job_id,
-            "name": "Vendor load",
-            "status": "active",
-            "owner_email": "owner@example.edu",
-            "active": 1,
-        },
-    )
-    monkeypatch.setattr(
-        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
-    )
-    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
-    monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
-    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
-
-    page._render_detail("alice@example.edu", 17)
-
-    assert removed == []
-    assert fake_st.session_state["job_upload_pending_delete"] == 99
-    assert fake_st.rerun_called is True
-
-
-def test_render_detail_confirmed_delete_detaches_loaded_batch(monkeypatch):
-    """Confirmed delete must drop the session's loaded batch (TASK-128/130).
-
-    The deleted file may be the one loaded in this session; leaving the
-    store attached crashes the next disk read with FileNotFoundError.
-    """
-    page = _load_jobs_page(monkeypatch)
-    fake_st = _FakeStreamlit(
-        session_state={"job_upload_pending_delete": 99, "role": "admin"},
-        clicked_keys={"job_upload_confirm_delete_99"},
-    )
-    removed: list[tuple[int, str]] = []
-    detached: list[None] = []
-
-    monkeypatch.setattr(page, "st", fake_st)
-    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
-    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
-    monkeypatch.setattr(page.session, "current_job_file", lambda: _job_file_row())
-    monkeypatch.setattr(
-        page.session,
-        "detach_loaded_batch",
-        lambda file_path: detached.append(file_path),
-        raising=False,
-    )
-    monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
-    monkeypatch.setattr(
-        page.work_files,
-        "delete_file_permanently",
-        lambda file_id, *, by: removed.append((file_id, by)),
-    )
-    monkeypatch.setattr(
-        page.jobs,
-        "get_job",
-        lambda job_id: {
-            "id": job_id,
-            "name": "Vendor load",
-            "status": "active",
-            "owner_email": "owner@example.edu",
-            "active": 1,
-        },
-    )
-    monkeypatch.setattr(
-        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
-    )
-    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
-    monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
-    monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
-
-    page._render_detail("alice@example.edu", 17)
-
-    assert removed == [(99, "alice@example.edu")]
-    assert detached == [None]
-    assert fake_st.session_state["pending_toasts"] == [
-        ("Deleted batch.mrc permanently.", "🗑️")
-    ]
-    assert "job_upload_pending_delete" not in fake_st.session_state
-    assert fake_st.dialogs == ["Delete file permanently?"]
-    assert fake_st.rerun_called is True
-
-
-def test_confirmed_delete_preserves_unrelated_quick_load_batch(monkeypatch):
-    """Deleting a job file must not clear a legacy batch with no file context."""
+def test_render_detail_admin_archives_without_clearing_unrelated_session_work(
+    monkeypatch,
+):
+    """Site admins use the same non-destructive removal path as editors."""
     page = _load_jobs_page(monkeypatch)
     quick_load_store = object()
     fake_st = _FakeStreamlit(
-        session_state={
-            "job_upload_pending_delete": 99,
-            "role": "admin",
-            "store": quick_load_store,
-        },
-        clicked_keys={"job_upload_confirm_delete_99"},
+        session_state={"role": "admin", "store": quick_load_store},
+        clicked_keys={"job_upload_remove_99"},
     )
+    archived: list[tuple[int, str]] = []
     detached: list[None] = []
 
     monkeypatch.setattr(page, "st", fake_st)
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
-    monkeypatch.setattr(page.session, "current_job_file", lambda: None)
     monkeypatch.setattr(
         page.session,
         "detach_loaded_batch",
         lambda file_path: detached.append(file_path),
     )
-    monkeypatch.setattr(
-        page.jobs, "get_access_role", lambda job_id, user_email: "editor"
-    )
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "editor")
     monkeypatch.setattr(
         page.work_files,
-        "delete_file_permanently",
-        lambda file_id, *, by: None,
+        "archive_file",
+        lambda file_id, *, by: archived.append((file_id, by)),
     )
     monkeypatch.setattr(
         page.jobs,
@@ -628,8 +521,12 @@ def test_confirmed_delete_preserves_unrelated_quick_load_batch(monkeypatch):
 
     page._render_detail("alice@example.edu", 17)
 
+    labels = [label for label, _kwargs in fake_st.button_calls]
+    assert archived == [(99, "alice@example.edu")]
     assert detached == []
     assert fake_st.session_state["store"] is quick_load_store
+    assert "Delete file permanently" not in labels
+    assert fake_st.dialogs == []
 
 
 def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):

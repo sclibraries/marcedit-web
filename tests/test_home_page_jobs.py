@@ -509,31 +509,11 @@ def test_job_workspace_archives_selected_file_from_home(monkeypatch, tmp_path):
     ]
 
 
-def test_job_workspace_permanent_delete_is_admin_only(monkeypatch, tmp_path):
+def test_job_workspace_admin_has_archive_as_only_removal_action(
+    monkeypatch, tmp_path
+):
     shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
     _attach_work_file(tmp_path, shared["id"])
-    state = _SessionState(
-        {
-            "quick_load_mode": False,
-            "current_job_id": shared["id"],
-            "home_start_path": "Job Workspace",
-        }
-    )
-    fake_st = _FakeStreamlit(session_state=state)
-
-    _run_home(monkeypatch, fake_st)
-
-    labels = [label for label, _kwargs in fake_st.button_calls]
-    assert "Delete file permanently" not in labels
-    # Owner can still soft-remove, so the ⋮ menu renders with Remove only.
-    assert fake_st.popovers == ["⋮"]
-    assert "Remove from job" in labels
-
-
-def test_home_admin_delete_click_only_opens_confirmation(monkeypatch, tmp_path):
-    """Even administrators must explicitly confirm permanent deletion."""
-    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
-    work_file = _attach_work_file(tmp_path, shared["id"])
     state = _SessionState(
         {
             "quick_load_mode": False,
@@ -542,22 +522,14 @@ def test_home_admin_delete_click_only_opens_confirmation(monkeypatch, tmp_path):
             "role": "admin",
         }
     )
-    fake_st = _FakeStreamlit(
-        session_state=state,
-        clicked_keys={f"home_job_upload_delete_{work_file['id']}"},
-    )
-    deleted: list = []
-    monkeypatch.setattr(
-        job_files,
-        "delete_file_permanently",
-        lambda file_id, *, by: deleted.append((file_id, by)),
-    )
+    fake_st = _FakeStreamlit(session_state=state)
 
     _run_home(monkeypatch, fake_st)
 
-    assert deleted == []
-    assert state["home_job_upload_pending_delete"] == work_file["id"]
-    assert fake_st.rerun_called is True
+    labels = [label for label, _kwargs in fake_st.button_calls]
+    assert "Delete file permanently" not in labels
+    assert fake_st.popovers == ["⋮"]
+    assert "Remove from job" in labels
 
 
 def test_job_workspace_viewer_sees_open_but_no_action_menu(monkeypatch, tmp_path):

@@ -1,7 +1,7 @@
 """Shared job-file attachment and table UI (TASK-151).
 
 One renderer keeps Home's Job Workspace and the Jobs detail page on the
-same attachment, open, archive, and administrator-delete paths.
+same attachment, open, and archive paths.
 """
 
 from __future__ import annotations
@@ -87,102 +87,25 @@ def render_job_files_table(
                     )
                     st.switch_page("views/1_View.py")
             can_remove = role in _EDIT_ROLES
-            can_delete = st.session_state.get("role") == "admin"
-            if not (can_remove or can_delete):
+            if not can_remove:
                 continue
             with cols[7].popover("⋮"):
-                if can_remove:
-                    if st.button(
-                        "Remove from job",
-                        key=f"{key_prefix}_remove_{row['id']}",
-                        use_container_width=True,
-                    ):
-                        try:
-                            job_files.archive_file(int(row["id"]), by=user)
-                        except job_files.JobFileError as exc:
-                            st.error(str(exc))
-                        else:
-                            session.queue_toast(
-                                f"Archived {row['display_name']}.",
-                                icon="🗂️",
-                            )
-                            st.rerun()
-                    st.caption("Keeps every version and export; hides this file.")
-                if can_delete:
-                    if st.button(
-                        "Delete file permanently",
-                        key=f"{key_prefix}_delete_{row['id']}",
-                        use_container_width=True,
-                    ):
-                        # Confirmation gate (TASK-136): a single click must
-                        # never destroy a file — open the dialog instead.
-                        st.session_state[f"{key_prefix}_pending_delete"] = int(
-                            row["id"]
+                if st.button(
+                    "Remove from job",
+                    key=f"{key_prefix}_remove_{row['id']}",
+                    use_container_width=True,
+                ):
+                    try:
+                        job_files.archive_file(int(row["id"]), by=user)
+                    except job_files.JobFileError as exc:
+                        st.error(str(exc))
+                    else:
+                        session.queue_toast(
+                            f"Archived {row['display_name']}.",
+                            icon="🗂️",
                         )
                         st.rerun()
-                    st.caption("Deletes the stored file for everyone in the job.")
-    pending_key = f"{key_prefix}_pending_delete"
-    pending_id = st.session_state.get(pending_key)
-    if pending_id is not None:
-        pending_row = next(
-            (r for r in files if int(r["id"]) == int(pending_id)), None
-        )
-        if pending_row is None:
-            # Stale flag (file removed elsewhere) — drop it silently.
-            st.session_state.pop(pending_key, None)
-        else:
-            _open_delete_confirmation(
-                pending_row, user=user, key_prefix=key_prefix
-            )
-
-
-def _open_delete_confirmation(row: dict, *, user: str, key_prefix: str) -> None:
-    # Decorated lazily, NOT at module level: the page test harnesses swap
-    # sys.modules["streamlit"] for a fake, and a module-level @st.dialog
-    # would bind whichever streamlit was imported first (the same
-    # fragility TASK-129's review flagged in render/__init__.py).
-    import streamlit as st
-
-    @st.dialog("Delete file permanently?")
-    def _confirm() -> None:
-        st.markdown(
-            f"**{row['display_name']}** — {row['current_record_count']:,} record"
-            f"{'s' if row['current_record_count'] != 1 else ''}"
-        )
-        st.warning(
-            "This deletes the stored file for everyone in the job. "
-            "It cannot be undone."
-        )
-        confirm_col, cancel_col = st.columns([1, 1])
-        if confirm_col.button(
-            "Delete permanently",
-            type="primary",
-            key=f"{key_prefix}_confirm_delete_{row['id']}",
-        ):
-            loaded_file = session.current_job_file()
-            try:
-                job_files.delete_file_permanently(int(row["id"]), by=user)
-            except job_files.JobFileError as exc:
-                st.error(str(exc))
-            else:
-                deleted_loaded_file = loaded_file is not None and int(
-                    loaded_file["id"]
-                ) == int(row["id"])
-                if deleted_loaded_file:
-                    session.detach_loaded_batch(None)
-                session.queue_toast(
-                    f"Deleted {row['display_name']} permanently.", icon="🗑️"
-                )
-                st.session_state.pop(f"{key_prefix}_pending_delete", None)
-                st.rerun()
-        if cancel_col.button(
-            "Cancel",
-            key=f"{key_prefix}_cancel_delete_{row['id']}",
-        ):
-            st.session_state.pop(f"{key_prefix}_pending_delete", None)
-            st.rerun()
-
-    _confirm()
+                st.caption("Keeps every version and export; hides this file.")
 
 
 def render_upload_feedback(upload_summary: dict) -> None:
