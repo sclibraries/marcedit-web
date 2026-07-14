@@ -159,12 +159,16 @@ def _open_delete_confirmation(row: dict, *, user: str, key_prefix: str) -> None:
             type="primary",
             key=f"{key_prefix}_confirm_delete_{row['id']}",
         ):
+            loaded_file = session.current_job_file()
             try:
                 job_files.delete_file_permanently(int(row["id"]), by=user)
             except job_files.JobFileError as exc:
                 st.error(str(exc))
             else:
-                if session.current_job_file() is None:
+                deleted_loaded_file = loaded_file is not None and int(
+                    loaded_file["id"]
+                ) == int(row["id"])
+                if deleted_loaded_file:
                     session.detach_loaded_batch(None)
                 session.queue_toast(
                     f"Deleted {row['display_name']} permanently.", icon="🗑️"

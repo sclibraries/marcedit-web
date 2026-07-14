@@ -218,7 +218,32 @@ def delete_file_permanently(file_id: int, by: str) -> None:
                 _utc_now_iso(),
             ),
         )
-    Path(versions[0]["file_path"]).unlink(missing_ok=True)
+        _unlink_and_commit(conn, Path(versions[0]["file_path"]))
+
+
+def _unlink_and_commit(conn, file_path: Path) -> None:
+    """Unlink immutable bytes while their metadata transaction can roll back."""
+    try:
+        retained = file_path.open("rb")
+    except FileNotFoundError:
+        conn.commit()
+        return
+    with retained:
+        file_path.unlink()
+        try:
+            conn.commit()
+        except Exception:
+            restore_path = file_path.with_name(
+                f".{file_path.name}.{uuid.uuid4().hex}.restore"
+            )
+            try:
+                retained.seek(0)
+                with restore_path.open("xb") as restored:
+                    shutil.copyfileobj(retained, restored)
+                os.replace(restore_path, file_path)
+            finally:
+                restore_path.unlink(missing_ok=True)
+            raise
 
 
 _FILE_SELECT = (

@@ -212,3 +212,78 @@ def test_permanent_delete_refuses_file_with_retained_export(tmp_path):
         )
 
     assert Path(version["file_path"]).exists()
+
+
+def test_permanent_delete_removes_metadata_and_original_bytes(tmp_path):
+    """A confirmed admin deletion removes both halves of the work item."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    version = job_files.get_current_version(attached["id"], "owner@example.edu")
+    version_path = Path(version["file_path"])
+    authz.approve_user(
+        "owner@example.edu", by="bootstrap@example.edu", role="admin"
+    )
+
+    job_files.delete_file_permanently(attached["id"], by="owner@example.edu")
+
+    assert not version_path.exists()
+    with pytest.raises(job_files.JobFileError, match="job file not found"):
+        job_files.get_file(attached["id"], "owner@example.edu")
+    with db.connect() as conn:
+        activity = conn.execute(
+            "SELECT kind FROM job_activity ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    assert activity["kind"] == "job-file-deleted"
+
+
+def test_permanent_delete_unlink_failure_preserves_metadata_and_bytes(
+    tmp_path, monkeypatch,
+):
+    """Filesystem failure must leave a complete work item that can be retried."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    version = job_files.get_current_version(attached["id"], "owner@example.edu")
+    version_path = Path(version["file_path"])
+    authz.approve_user(
+        "owner@example.edu", by="bootstrap@example.edu", role="admin"
+    )
+    original_unlink = Path.unlink
+
+    def fail_version_unlink(path, *args, **kwargs):
+        if path == version_path:
+            raise OSError("immutable storage unavailable")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_version_unlink)
+
+    with pytest.raises(OSError, match="immutable storage unavailable"):
+        job_files.delete_file_permanently(
+            attached["id"], by="owner@example.edu"
+        )
+
+    assert version_path.read_bytes() == b"one"
+    assert job_files.get_file(
+        attached["id"], "owner@example.edu"
+    )["current_version_id"] == version["id"]
+    assert job_files.get_version(
+        version["id"], "owner@example.edu"
+    )["file_path"] == str(version_path)
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM job_activity WHERE kind='job-file-deleted'"
+        ).fetchone()[0] == 0
+
+
+def test_unlink_restores_original_bytes_when_database_commit_fails(tmp_path):
+    """A commit failure must not leave retained metadata pointing at no file."""
+    version_path = tmp_path / "v000001.mrc"
+    version_path.write_bytes(b"one")
+
+    class FailingCommit:
+        def commit(self):
+            raise RuntimeError("database storage unavailable")
+
+    with pytest.raises(RuntimeError, match="database storage unavailable"):
+        job_files._unlink_and_commit(FailingCommit(), version_path)
+
+    assert version_path.read_bytes() == b"one"

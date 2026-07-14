@@ -528,6 +528,7 @@ def test_render_detail_confirmed_delete_detaches_loaded_batch(monkeypatch):
     monkeypatch.setattr(page, "st", fake_st)
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
+    monkeypatch.setattr(page.session, "current_job_file", lambda: _job_file_row())
     monkeypatch.setattr(
         page.session,
         "detach_loaded_batch",
@@ -568,6 +569,67 @@ def test_render_detail_confirmed_delete_detaches_loaded_batch(monkeypatch):
     assert "job_upload_pending_delete" not in fake_st.session_state
     assert fake_st.dialogs == ["Delete file permanently?"]
     assert fake_st.rerun_called is True
+
+
+def test_confirmed_delete_preserves_unrelated_quick_load_batch(monkeypatch):
+    """Deleting a job file must not clear a legacy batch with no file context."""
+    page = _load_jobs_page(monkeypatch)
+    quick_load_store = object()
+    fake_st = _FakeStreamlit(
+        session_state={
+            "job_upload_pending_delete": 99,
+            "role": "admin",
+            "store": quick_load_store,
+        },
+        clicked_keys={"job_upload_confirm_delete_99"},
+    )
+    detached: list[None] = []
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
+    monkeypatch.setattr(page.session, "current_job_file", lambda: None)
+    monkeypatch.setattr(
+        page.session,
+        "detach_loaded_batch",
+        lambda file_path: detached.append(file_path),
+    )
+    monkeypatch.setattr(
+        page.jobs, "get_access_role", lambda job_id, user_email: "editor"
+    )
+    monkeypatch.setattr(
+        page.work_files,
+        "delete_file_permanently",
+        lambda file_id, *, by: None,
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(
+        page.jobs,
+        "list_review_notes",
+        lambda job_id, *, user_email, include_resolved=True: [],
+    )
+    monkeypatch.setattr(
+        page.jobs, "list_activity", lambda job_id, *, user_email: []
+    )
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert detached == []
+    assert fake_st.session_state["store"] is quick_load_store
 
 
 def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):
