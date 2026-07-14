@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -149,6 +149,8 @@ def init_schema() -> None:
                 _migrate_to_v10(conn)
             if current_version < 11:
                 _migrate_to_v11(conn)
+            if current_version < 12:
+                _migrate_to_v12(conn)
             _seed_folio_profiles(conn)
             # After all pending steps land, set the version row to the
             # newest. INSERT OR REPLACE keeps the table single-row.
@@ -350,6 +352,87 @@ def _migrate_to_v11(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_folio_rules_profile"
         " ON folio_rules(profile_key)"
     )
+
+
+def _migrate_to_v12(conn: sqlite3.Connection) -> None:
+    """Add durable per-file versions and retained exports (TASK-151)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS job_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL REFERENCES jobs(id),
+            original_upload_id INTEGER UNIQUE REFERENCES uploads(id),
+            display_name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'new'
+              CHECK(status IN ('new','in_progress','needs_review','changes_requested',
+                               'approved','exported','complete')),
+            current_version_id INTEGER,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            archived_by TEXT,
+            archived_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS job_file_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_file_id INTEGER NOT NULL REFERENCES job_files(id),
+            version_number INTEGER NOT NULL,
+            parent_version_id INTEGER REFERENCES job_file_versions(id),
+            file_path TEXT NOT NULL UNIQUE,
+            record_count INTEGER NOT NULL CHECK(record_count >= 0),
+            file_bytes INTEGER NOT NULL CHECK(file_bytes >= 0),
+            source_kind TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            validation_json TEXT NOT NULL DEFAULT '{}',
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            approval_kind TEXT CHECK(approval_kind IN ('self-approved','peer-approved')),
+            approved_by TEXT,
+            approved_at TEXT,
+            UNIQUE(job_file_id, version_number)
+        );
+        CREATE TABLE IF NOT EXISTS job_file_exports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_file_id INTEGER NOT NULL REFERENCES job_files(id),
+            version_id INTEGER NOT NULL REFERENCES job_file_versions(id),
+            purpose TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            filename TEXT NOT NULL,
+            file_path TEXT NOT NULL UNIQUE,
+            record_count INTEGER NOT NULL,
+            validation_json TEXT NOT NULL DEFAULT '{}',
+            state TEXT NOT NULL CHECK(state IN ('draft','ready','superseded','loaded')),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            superseded_at TEXT,
+            superseded_by_version_id INTEGER REFERENCES job_file_versions(id),
+            loaded_destination TEXT,
+            loaded_external_id TEXT,
+            loaded_note TEXT,
+            loaded_by TEXT,
+            loaded_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_job_files_job ON job_files(job_id, id);
+        CREATE INDEX IF NOT EXISTS idx_job_file_versions_file
+          ON job_file_versions(job_file_id, version_number DESC);
+        CREATE INDEX IF NOT EXISTS idx_job_file_exports_file
+          ON job_file_exports(job_file_id, created_at DESC);
+    """)
+
+    note_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(job_review_notes)")
+    }
+    for column in ("job_file_id", "job_file_version_id", "job_file_export_id"):
+        if column not in note_cols:
+            conn.execute(f"ALTER TABLE job_review_notes ADD COLUMN {column} INTEGER")
+
+    activity_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(job_activity)")
+    }
+    if "job_file_id" not in activity_cols:
+        conn.execute("ALTER TABLE job_activity ADD COLUMN job_file_id INTEGER")
 
 
 def _seed_folio_profiles(conn: sqlite3.Connection) -> None:

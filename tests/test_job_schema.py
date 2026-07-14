@@ -119,3 +119,54 @@ def test_v9_adds_job_workflow_columns_notes_and_activity():
         "actor_email",
         "created_at",
     }.issubset(activity_cols)
+
+
+def test_v12_adds_durable_job_file_tables_and_audit_links():
+    """File versions and retained exports need durable, file-scoped relations."""
+    db.init_schema()
+
+    with db.connect() as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        file_cols = {row["name"] for row in conn.execute("PRAGMA table_info(job_files)")}
+        version_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(job_file_versions)")
+        }
+        export_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(job_file_exports)")
+        }
+        note_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(job_review_notes)")
+        }
+        activity_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(job_activity)")
+        }
+        file_foreign_keys = {
+            row["from"] for row in conn.execute("PRAGMA foreign_key_list(job_files)")
+        }
+
+    assert {"job_files", "job_file_versions", "job_file_exports"}.issubset(tables)
+    assert {
+        "id", "job_id", "original_upload_id", "display_name", "description",
+        "status", "current_version_id", "created_by", "created_at", "updated_by",
+        "updated_at", "archived_by", "archived_at",
+    }.issubset(file_cols)
+    assert {
+        "id", "job_file_id", "version_number", "parent_version_id", "file_path",
+        "record_count", "file_bytes", "source_kind", "label", "summary_json",
+        "validation_json", "created_by", "created_at", "approval_kind",
+        "approved_by", "approved_at",
+    }.issubset(version_cols)
+    assert {
+        "id", "job_file_id", "version_id", "purpose", "description", "filename",
+        "file_path", "record_count", "validation_json", "state", "created_by",
+        "created_at", "superseded_at", "superseded_by_version_id",
+        "loaded_destination", "loaded_external_id", "loaded_note", "loaded_by",
+        "loaded_at",
+    }.issubset(export_cols)
+    assert {"job_file_id", "job_file_version_id", "job_file_export_id"}.issubset(note_cols)
+    assert "job_file_id" in activity_cols
+    assert "current_version_id" not in file_foreign_keys
+    assert db.SCHEMA_VERSION == 12
