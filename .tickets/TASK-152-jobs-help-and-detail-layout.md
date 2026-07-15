@@ -28,7 +28,7 @@ Add practical Jobs help and reduce scrolling on the job detail screen.
 
 ## Status
 
-In-Progress
+Completed
 
 ## Design
 
@@ -37,3 +37,16 @@ In-Progress
 ## Plan
 
 [Implementation Plan](../docs/superpowers/plans/2026-07-15-jobs-help-and-detail-layout.md)
+
+## Final verification
+
+- The focused Jobs/deployment suite passed all 37 tests with zero skipped.
+- The complete workspace-mounted Docker pytest suite passed all 1,256 tests
+  with zero skipped.
+- The built `marcedit-web:task-152` image contains `/app/docs/jobs.md`, which
+  is readable by the unprivileged `marcedit` user.
+- Signed-in owner, editor, and viewer browser verification passed all eight
+  planned checks, including two-file visibility through every tab and Personal
+  uploads archive protection.
+- All per-task reviews and the final whole-branch review completed with no
+  unresolved Critical, Important, or Minor findings.
