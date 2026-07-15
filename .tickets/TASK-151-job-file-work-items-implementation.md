@@ -23,17 +23,18 @@ Design: [Job File Work Items](../docs/superpowers/specs/2026-07-14-job-file-work
 
 Plan: [Implementation Plan](../docs/superpowers/plans/2026-07-14-job-file-work-items.md)
 
-Status: In-Progress
+Status: Completed
 
-Task 9 automated verification:
-- Conservative v11-to-v12 upload migration and Routledge two-file acceptance:
-  passing.
-- Final migration/workflow/docs suite: 35 passed, zero skipped.
-- Complete Docker pytest suite: 1,218 passed, zero skipped.
-- Render mutation source gate: no matches.
-
-Remaining completion gates:
-- Controller whole-branch code review with no unresolved Critical or Important
-  findings.
-- Signed-in interactive Routledge two-file workflow verification, including
-  refresh handoffs and visibly blocked stale/non-holder mutations.
+Final verification:
+- Complete workspace-mounted Docker pytest suite: 1,249 passed, zero skipped.
+- Signed-in Routledge acceptance passed with owner and editor identities:
+  two independently checked-out files, leader batch mutation, imported
+  MarcEdit task mutation, immutable v2 history, retained exports, review
+  handoff, visible non-holder blocking, and exact hard-refresh restoration.
+- Migration reconciliation preserves later current versions; assigned-upload
+  restoration fails closed after access revocation; Quick Load remains
+  unassigned.
+- Whole-branch review and final re-review found no unresolved Critical,
+  Important, or Minor issues and marked the branch ready to merge.
+- Source-structure and diff checks passed; `uv.lock` remained untracked and
+  excluded.
