@@ -169,6 +169,9 @@ def restore_active_upload() -> None:
                 size=row["file_bytes"],
             )
             return
+        upload_persistence.clear_active_upload(user)
+        detach_loaded_batch(None)
+        return
     try:
         store = RecordStore.from_path(path)
     except Exception as exc:  # noqa: BLE001 — corrupt file shouldn't crash boot
@@ -500,11 +503,17 @@ def _job_file_id_from_query() -> int | None:
         return None
     if isinstance(raw, list):
         raw = raw[0] if raw else None
+    if raw is None:
+        return None
     try:
         file_id = int(raw)
     except (TypeError, ValueError):
+        _set_job_file_query(None)
         return None
-    return file_id if file_id > 0 else None
+    if file_id <= 0:
+        _set_job_file_query(None)
+        return None
+    return file_id
 
 
 def _set_job_file_query(file_id: int | None) -> None:

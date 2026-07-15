@@ -154,6 +154,21 @@ def test_init_syncs_query_after_page_navigation(monkeypatch, attached_file):
     assert fake_st.query_params["job_file"] == str(attached_file["id"])
 
 
+@pytest.mark.parametrize("invalid_id", ["not-a-number", "0", "-4"])
+def test_init_clears_invalid_job_file_query(monkeypatch, invalid_id):
+    """Malformed refresh context must not remain as a misleading URL state."""
+    db.init_schema()
+    fake_st = _FakeStreamlit(
+        {"user": "owner@example.edu"},
+        query_params={"job_file": invalid_id},
+    )
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+
+    session.init()
+
+    assert "job_file" not in fake_st.query_params
+
+
 def test_current_job_file_clears_inaccessible_cached_context(
     monkeypatch, attached_file,
 ):

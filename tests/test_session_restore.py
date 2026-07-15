@@ -520,6 +520,33 @@ def test_refresh_restores_the_linked_job_file_current_version(
     assert st.session_state["store"].path == v2_path
 
 
+def test_assigned_upload_restore_fails_closed_after_access_is_revoked(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Revoked job bytes must never fall back into the Quick Load path."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    owner = "owner@example.edu"
+    editor = "editor@example.edu"
+    job = jobs.create_job(owner, "Revoked refresh")
+    jobs.grant_access(job["id"], editor, "editor", by=owner)
+    st = fake_st()
+    st.session_state["user"] = editor
+    session.handle_upload(
+        _FakeUpload("assigned.mrc", _serialize([record])),
+        job_id=job["id"],
+    )
+    assert upload_persistence.get_active_upload(editor) is not None
+    jobs.revoke_access(job["id"], editor, by=owner)
+
+    st.session_state.clear()
+    st.session_state["user"] = editor
+    session.restore_active_upload()
+
+    assert st.session_state.get("store") is None
+    assert st.session_state.get("job_file_id") is None
+    assert upload_persistence.get_active_upload(editor) is None
+
+
 def test_signed_in_quick_load_is_refreshable_but_unassigned(
     fake_st, record, tmp_path, monkeypatch,
 ):
