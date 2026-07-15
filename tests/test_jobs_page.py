@@ -56,6 +56,9 @@ class _FakeColumn:
         self._st.button_calls.append((label, kwargs))
         return kwargs.get("key") in self._st.clicked_keys
 
+    def container(self, **kwargs: Any) -> "_FakeColumn":
+        return _FakeColumn(self._st)
+
     def popover(self, label: str, **kwargs: Any) -> _FakeContainer:
         self._st.popovers.append(label)
         return _FakeContainer(self._st)

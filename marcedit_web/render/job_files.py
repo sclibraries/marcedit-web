@@ -11,10 +11,14 @@ from pathlib import Path
 
 from marcedit_web.lib import collaboration, db, job_files, locks, session
 
-# One line per file; weights keep Open and the ⋮ trigger from wrapping.
-UPLOADS_GRID = [3, 1.5, 1, 1, 2, 2, 1, 1.5, 0.6]
+# One line per file. Proportional columns cannot declare a minimum width
+# (TASK-146), so dedicated action columns collapse below the button text at
+# realistic viewports and stack the labels letter-by-letter; the row actions
+# instead share one trailing column rendered as a horizontal content-width
+# container (TASK-154).
+UPLOADS_GRID = [3, 1.5, 1.4, 1.4, 2, 2, 4.5]
 UPLOADS_HEADERS = (
-    "Name", "Status", "Version", "Records", "Last editor", "Updated", "", "", ""
+    "Name", "Status", "Version", "Records", "Last editor", "Updated", ""
 )
 
 _EDIT_ROLES = {"owner", "editor"}
@@ -257,10 +261,12 @@ def render_job_files_table(
             cols[3].write(f"{row['current_record_count']:,}")
             cols[4].write(row["updated_by"])
             cols[5].write(format_uploaded_at(row["updated_at"]))
-            if cols[6].button(
+            row_actions = cols[6].container(
+                horizontal=True, vertical_alignment="center"
+            )
+            if row_actions.button(
                 "Open",
                 key=f"{key_prefix}_load_{row['id']}",
-                use_container_width=True,
             ):
                 try:
                     summary = session.open_job_file(int(row["id"]))
@@ -275,10 +281,12 @@ def render_job_files_table(
                         icon="📂",
                     )
                     st.switch_page("views/1_View.py")
-            if cols[7].button(
-                "History & review",
+            # "History" (not "History & review"): the longer label is what
+            # forces the action row onto two lines at common widths; the
+            # destination page keeps the full "History & review" heading.
+            if row_actions.button(
+                "History",
                 key=f"{key_prefix}_history_{row['id']}",
-                use_container_width=True,
             ):
                 try:
                     summary = session.open_job_file(int(row["id"]))
@@ -295,7 +303,7 @@ def render_job_files_table(
                 )
             if role not in _EDIT_ROLES:
                 continue
-            with cols[8].popover("⋮"):
+            with row_actions.popover("⋮"):
                 if "Check out" in actions and st.button(
                     "Check out",
                     key=f"{key_prefix}_checkout_{row['id']}",

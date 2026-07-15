@@ -318,13 +318,12 @@ def _render_detail(user: str, job_id: int) -> None:
         help_key=f"jobs_help_detail_{job_id}",
     )
 
-    files_col, handoff_col = st.columns(
-        [4, 1],
-        vertical_alignment="top",
-        gap="large",
-    )
-    with files_col:
-        _render_files(user, job_id, role)
+    # Files get the full content width: a side-by-side split starves the
+    # files table below its columns' word widths and the labels wrap
+    # letter-by-letter (TASK-154). Handoff stays above the tabs in a
+    # compact column so its controls keep a form-like width.
+    _render_files(user, job_id, role)
+    handoff_col, _ = st.columns([1, 2], vertical_alignment="top")
     with handoff_col:
         _render_handoff(user, job_id, job, role)
 

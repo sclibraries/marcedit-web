@@ -74,6 +74,10 @@ class _FakeColumn:
     def columns(self, spec: int | list[Any], **kwargs: Any) -> list["_FakeColumn"]:
         return self._st.columns(spec, **kwargs)
 
+    def container(self, **kwargs: Any) -> "_FakeColumn":
+        self._st.container_calls.append(kwargs)
+        return _FakeColumn(self._st)
+
     def popover(self, label: str, **kwargs: Any) -> _FakeContext:
         self._st.popovers.append(label)
         return _FakeContext()
@@ -111,6 +115,7 @@ class _FakeStreamlit:
         self.download_buttons: list[dict[str, Any]] = []
         self.popovers: list[str] = []
         self.column_calls: list[tuple[Any, dict[str, Any]]] = []
+        self.container_calls: list[dict[str, Any]] = []
         self.dialogs: list[str] = []
         self.toasts: list[tuple[str, Any]] = []
 
@@ -445,6 +450,49 @@ def test_job_workspace_shows_files_attached_to_selected_job(monkeypatch, tmp_pat
     ]
     assert grid_calls, "expected header + file rows to use UPLOADS_GRID"
     assert all(k.get("vertical_alignment") == "center" for k in grid_calls)
+
+
+def test_job_workspace_file_actions_share_one_content_width_flex_column(
+    monkeypatch, tmp_path
+):
+    """Row actions must not get their own narrow proportional grid columns.
+
+    ``st.columns`` weights cannot declare a minimum width (TASK-146), so
+    dedicated action columns collapse below the button text at realistic
+    viewports and Streamlit stacks the labels letter-by-letter ("O/p/e/n").
+    All row actions share one trailing column rendered as a horizontal
+    content-width container so buttons wrap as whole units instead.
+    """
+    shared = jobs.create_job("cataloger@example.edu", "Vendor load June")
+    _attach_work_file(tmp_path, shared["id"])
+    state = _SessionState(
+        {
+            "quick_load_mode": False,
+            "current_job_id": shared["id"],
+            "home_start_path": "Job Workspace",
+        }
+    )
+    fake_st = _FakeStreamlit(session_state=state)
+
+    _run_home(monkeypatch, fake_st)
+
+    from marcedit_web.render import job_files
+
+    assert len(job_files.UPLOADS_GRID) == len(job_files.UPLOADS_HEADERS) == 7
+    assert any(
+        kwargs.get("horizontal") is True for kwargs in fake_st.container_calls
+    ), "expected row actions inside a horizontal flex container"
+    table_buttons = {
+        label: kwargs
+        for label, kwargs in fake_st.button_calls
+        if label in {"Open", "History"}
+    }
+    assert set(table_buttons) == {"Open", "History"}
+    for label, kwargs in table_buttons.items():
+        assert not kwargs.get("use_container_width"), (
+            f"{label} must keep its content width so it cannot be squeezed "
+            "into letter-stacking"
+        )
 
 
 def test_uploaded_at_renders_human_readable(monkeypatch):
