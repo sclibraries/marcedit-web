@@ -31,6 +31,12 @@ class _FakeColumn:
     def __init__(self, st: "_FakeStreamlit") -> None:
         self._st = st
 
+    def title(self, text: str) -> None:
+        self._st.titles.append(text)
+
+    def caption(self, text: str) -> None:
+        self._st.captions.append(text)
+
     def subheader(self, text: str) -> None:
         self._st.subheaders.append(text)
 
@@ -214,6 +220,69 @@ def test_jobs_help_path_does_not_depend_on_working_directory(
     monkeypatch.chdir(tmp_path)
 
     assert "# Jobs and Shared Cataloging" in page._read_jobs_help()
+
+
+def test_jobs_list_help_opens_canonical_guide_without_navigation(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(clicked_keys={"jobs_help_list"})
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page, "_read_jobs_help", lambda: "# Canonical jobs guide")
+    monkeypatch.setattr(page.jobs, "list_job_summaries", lambda *_args, **_kwargs: [])
+
+    page._render_list("alice@example.edu")
+
+    assert fake_st.dialogs == ["How jobs work"]
+    assert "# Canonical jobs guide" in fake_st.writes
+    assert "jobs_help_list" in [
+        kwargs.get("key") for _label, kwargs in fake_st.button_calls
+    ]
+
+
+def test_jobs_help_failure_is_visible_without_breaking_list(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(clicked_keys={"jobs_help_list"})
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(
+        page,
+        "_read_jobs_help",
+        lambda: (_ for _ in ()).throw(OSError("missing")),
+    )
+    monkeypatch.setattr(page.jobs, "list_job_summaries", lambda *_args, **_kwargs: [])
+
+    page._render_list("alice@example.edu")
+
+    assert fake_st.errors == [
+        "Jobs help is unavailable. Ask an administrator to check docs/jobs.md."
+    ]
+    assert fake_st.infos == ["No jobs found."]
+
+
+def test_opened_job_has_its_own_help_control(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "viewer")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(page.work_files, "list_files", lambda *_args: [])
+    monkeypatch.setattr(page.jobs, "list_access", lambda *_args: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda *_args, **_kwargs: [])
+
+    page._render_detail("viewer@example.edu", 17)
+
+    assert "jobs_help_detail_17" in [
+        kwargs.get("key") for _label, kwargs in fake_st.button_calls
+    ]
 
 
 def test_status_label_is_cataloger_readable(monkeypatch):
@@ -988,6 +1057,7 @@ def test_render_detail_loads_sharing_and_review_notes_for_job_members(monkeypatc
     ]
     assert [label for label, _ in fake_st.button_calls] == [
         "Back to jobs",
+        "How jobs work",
         "Update status",
         "Grant access",
         "Add note",

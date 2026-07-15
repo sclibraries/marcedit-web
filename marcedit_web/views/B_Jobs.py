@@ -20,6 +20,39 @@ def _read_jobs_help(path: Path | None = None) -> str:
     return (path or JOBS_HELP_PATH).read_text(encoding="utf-8")
 
 
+def _show_jobs_help() -> None:
+    @st.dialog("How jobs work", width="large")
+    def _dialog() -> None:
+        try:
+            guide = _read_jobs_help()
+        except OSError:
+            st.error(
+                "Jobs help is unavailable. Ask an administrator to check "
+                "docs/jobs.md."
+            )
+            return
+        st.markdown(guide)
+
+    _dialog()
+
+
+def _render_jobs_heading(
+    title: str,
+    caption: str,
+    *,
+    help_key: str,
+) -> None:
+    title_col, help_col = st.columns([5, 1], vertical_alignment="center")
+    title_col.title(title)
+    if help_col.button(
+        "How jobs work",
+        key=help_key,
+        icon=":material/help:",
+    ):
+        _show_jobs_help()
+    st.caption(caption)
+
+
 def _status_label(status: str) -> str:
     return status.replace("_", " ").capitalize()
 
@@ -49,8 +82,11 @@ def _activity_message(row: dict[str, object]) -> str:
 
 
 def _render_list(user: str) -> None:
-    st.title("Jobs")
-    st.caption("Shared cataloging workspaces for vendor loads, review, and handoff.")
+    _render_jobs_heading(
+        "Jobs",
+        "Shared cataloging workspaces for vendor loads, review, and handoff.",
+        help_key="jobs_help_list",
+    )
 
     include_archived = st.toggle("Show archived", value=False, key="jobs_show_archived")
     rows = jobs.list_job_summaries(user, include_archived=include_archived)
@@ -84,8 +120,11 @@ def _render_detail(user: str, job_id: int) -> None:
     if st.button("Back to jobs", key="jobs_back"):
         st.session_state.pop("selected_job_detail_id", None)
         st.rerun()
-    st.title(job["name"])
-    st.caption(f"{_status_label(job['status'])} · {role} · owned by {job['owner_email']}")
+    _render_jobs_heading(
+        str(job["name"]),
+        f"{_status_label(job['status'])} · {role} · owned by {job['owner_email']}",
+        help_key=f"jobs_help_detail_{job_id}",
+    )
 
     st.subheader("Status")
     if _can_edit(role) and job["active"]:
