@@ -29,8 +29,17 @@ mutation locks with one exclusive advisory lock per job file:
 `resource_type = "job-file"`, `resource_id = "<job_file_id>"`. A job file is
 the independent unit of mutation, so two catalogers may check out different
 files in the same job concurrently while conflicting mutations to one file
-remain exclusive. Every file-backed mutation must also compare the exact
-opened file-version id before committing.
+remain exclusive. Every substantive file-backed mutation or workflow
+transition must also compare the exact opened file-version id before
+committing. This includes returning a file for review, approval decisions,
+archive, and any operation that changes file content or its current version.
+
+The sole exception is checkout lease bookkeeping: after acquisition or renewal
+succeeds, the same immediate transaction may move an authoritative `new` or
+`changes_requested` file to `in_progress` without an opened-version token.
+That transition records that work has started; it does not accept edited
+content or a cataloger's substantive workflow decision. No other mutation or
+status transition inherits this exception.
 
 The record/job APIs below remain temporarily for unconverted legacy paths.
 Converted job-file mutation paths must not use them.

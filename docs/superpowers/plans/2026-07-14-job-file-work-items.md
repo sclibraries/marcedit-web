@@ -4,7 +4,7 @@
 
 **Goal:** Make each MARC file inside a shared job an independently checkable-out, versioned, reviewable, and exportable work item, including the complete two-file Routledge workflow.
 
-**Architecture:** SQLite remains the authority for jobs and gains `job_files`, immutable `job_file_versions`, and immutable `job_file_exports`. Candidate MARC bytes are validated on disk before a short `BEGIN IMMEDIATE` transaction rechecks checkout ownership and the opened version, inserts the new version, and swaps the file's current-version pointer. Streamlit session state caches only the selected identifiers and a `RecordStore` opened from the authoritative current version.
+**Architecture:** SQLite remains the authority for jobs and gains `job_files`, immutable `job_file_versions`, and immutable `job_file_exports`. Candidate MARC bytes are validated on disk before a short `BEGIN IMMEDIATE` transaction rechecks checkout ownership and the opened version, inserts the new version, and swaps the file's current-version pointer. Streamlit session state caches only the selected identifiers and a `RecordStore` opened from the authoritative current version. Every substantive file mutation or workflow transition requires the actor's active checkout and exact opened version in that transaction. The only exception is lease bookkeeping during successful checkout acquisition/renewal, which may move authoritative `new` or `changes_requested` state to `in_progress` without an opened-version token.
 
 **Tech Stack:** Python 3.11, Streamlit, SQLite via `sqlite3`, pymarc, pytest, Docker Compose.
 
@@ -327,7 +327,7 @@ git commit -m "feat: attach and open files within jobs"
 
 **Interfaces:**
 - Consumes: `job_files.get_file` and existing `locks.LockDecision`.
-- Produces: `acquire_file_checkout(file_id: int, user_email: str, ttl_seconds: int = 1800) -> locks.LockDecision`, `release_file_checkout(file_id: int, user_email: str) -> bool`, `force_release_file_checkout(file_id: int, by: str) -> bool`, and `_assert_file_checkout_in_tx(conn, file_id: int, user_email: str, opened_version_id: int) -> None`.
+- Produces: `acquire_file_checkout(file_id: int, user_email: str, ttl_seconds: int = 1800) -> locks.LockDecision`, `release_file_checkout(file_id: int, user_email: str) -> bool`, `return_file_for_review(file_id: int, user_email: str, opened_version_id: int) -> bool`, `force_release_file_checkout(file_id: int, by: str) -> bool`, and `_assert_file_checkout_in_tx(conn, file_id: int, user_email: str, opened_version_id: int) -> None`.
 
 - [ ] **Step 1: Write failing checkout tests**
 
@@ -391,6 +391,13 @@ def _assert_file_checkout_in_tx(conn, file_id: int, user_email: str,
 ```
 
 Release uses `locks.release_lock("job-file", str(file_id), user_email)`. Force release checks the parent-job owner role, deletes the exact lock in `BEGIN IMMEDIATE`, and records file/job activity. Keep legacy record/job APIs temporarily for untouched legacy code, but mark them deprecated and prohibit their use in converted mutation paths.
+
+The `new`/`changes_requested` to `in_progress` update above is the narrow
+user-approved lease-bookkeeping exception to opened-version validation. It
+must use authoritative state read after `BEGIN IMMEDIATE`. Returning for
+review and every other substantive mutation or workflow transition must call
+`_assert_file_checkout_in_tx` with the exact opened version before changing
+state or releasing the checkout.
 
 - [ ] **Step 4: Add checkout controls and document the superseding decision**
 

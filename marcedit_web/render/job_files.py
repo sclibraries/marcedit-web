@@ -155,7 +155,11 @@ def render_job_files_table(
                     use_container_width=True,
                 ):
                     try:
-                        collaboration.return_file_for_review(int(row["id"]), user)
+                        collaboration.return_file_for_review(
+                            int(row["id"]),
+                            user,
+                            int(row["current_version_id"]),
+                        )
                     except collaboration.CollaborationError as exc:
                         st.error(str(exc))
                     else:

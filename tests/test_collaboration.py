@@ -237,12 +237,105 @@ def test_file_checkout_assertion_requires_holder_and_opened_version(shared_file)
 
 def test_checkout_updates_editing_status_and_return_for_review_releases(shared_file):
     decision = collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+    opened_version_id = int(shared_file["current_version_id"])
 
     assert decision.acquired
     assert job_files.get_file(shared_file["id"], OWNER)["status"] == "in_progress"
-    assert collaboration.return_file_for_review(shared_file["id"], OWNER)
+    assert collaboration.return_file_for_review(
+        shared_file["id"], OWNER, opened_version_id
+    )
     assert job_files.get_file(shared_file["id"], OWNER)["status"] == "needs_review"
     assert collaboration.release_file_checkout(shared_file["id"], OWNER) is False
+
+
+def test_return_for_review_rejects_stale_version_and_preserves_state(shared_file):
+    collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+    opened_version_id = int(shared_file["current_version_id"])
+
+    with pytest.raises(collaboration.CollaborationError, match="changed"):
+        collaboration.return_file_for_review(
+            shared_file["id"], OWNER, opened_version_id + 1
+        )
+
+    assert job_files.get_file(shared_file["id"], OWNER)["status"] == "in_progress"
+    with db.connect() as conn:
+        lock = conn.execute(
+            "SELECT holder_email FROM advisory_locks"
+            " WHERE resource_type='job-file' AND resource_id=?",
+            (str(shared_file["id"]),),
+        ).fetchone()
+    assert lock["holder_email"] == OWNER
+
+
+def test_return_for_review_rechecks_expiry_after_waiting_for_writer(
+    shared_file, monkeypatch
+):
+    collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+    opened_version_id = int(shared_file["current_version_id"])
+    original_connect = db.connect
+    begin_attempted = threading.Event()
+    writer_released = threading.Event()
+    result: list[object] = []
+    with original_connect() as conn:
+        conn.execute(
+            "UPDATE advisory_locks SET expires_at=?"
+            " WHERE resource_type='job-file' AND resource_id=?",
+            ("2050-01-01T00:00:00Z", str(shared_file["id"])),
+        )
+
+    with original_connect() as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            "UPDATE job_files SET description='writer held transaction' WHERE id=?",
+            (shared_file["id"],),
+        )
+
+        @contextmanager
+        def traced_connect():
+            with original_connect() as conn:
+                conn.set_trace_callback(
+                    lambda statement: begin_attempted.set()
+                    if statement == "BEGIN IMMEDIATE"
+                    else None
+                )
+                yield conn
+
+        monkeypatch.setattr(collaboration.db, "connect", traced_connect)
+        monkeypatch.setattr(
+            collaboration,
+            "_now",
+            lambda: dt.datetime(2100 if writer_released.is_set() else 2000, 1, 1),
+        )
+
+        def return_for_review():
+            try:
+                collaboration.return_file_for_review(
+                    shared_file["id"], OWNER, opened_version_id
+                )
+            except Exception as exc:  # captured for assertion in this thread
+                result.append(exc)
+
+        thread = threading.Thread(target=return_for_review)
+        thread.start()
+        assert begin_attempted.wait(timeout=2)
+
+    writer_released.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert len(result) == 1
+    assert isinstance(result[0], collaboration.CollaborationError)
+    assert "checkout" in str(result[0])
+    assert job_files.get_file(shared_file["id"], OWNER)["status"] == "in_progress"
+    with original_connect() as conn:
+        lock = conn.execute(
+            "SELECT holder_email,expires_at FROM advisory_locks"
+            " WHERE resource_type='job-file' AND resource_id=?",
+            (str(shared_file["id"]),),
+        ).fetchone()
+    assert dict(lock) == {
+        "holder_email": OWNER,
+        "expires_at": "2050-01-01T00:00:00Z",
+    }
 
 
 def test_current_job_version_starts_at_zero_and_bumps():

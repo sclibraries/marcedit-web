@@ -479,6 +479,60 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
     ]
 
 
+def test_render_detail_return_for_review_passes_opened_version(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(clicked_keys={"job_upload_review_99"})
+    returned: list[tuple[int, str, int]] = []
+
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(page.session, "current_user_id", lambda: "alice@example.edu")
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "editor")
+    monkeypatch.setattr(
+        page.job_files,
+        "_active_checkout",
+        lambda file_id: {
+            "holder_email": "alice@example.edu",
+            "expires_at": "2099-01-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        page.job_files.collaboration,
+        "return_file_for_review",
+        lambda file_id, user, opened_version_id: returned.append(
+            (file_id, user, opened_version_id)
+        ),
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
+    monkeypatch.setattr(
+        page.jobs,
+        "list_review_notes",
+        lambda job_id, *, user_email, include_resolved=True: [],
+    )
+    monkeypatch.setattr(
+        page.jobs, "list_activity", lambda job_id, *, user_email: []
+    )
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert returned == [(99, "alice@example.edu", 123)]
+    assert fake_st.rerun_called is True
+
+
 def test_render_detail_admin_archives_without_clearing_unrelated_session_work(
     monkeypatch,
 ):

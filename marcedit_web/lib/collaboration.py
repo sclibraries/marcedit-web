@@ -57,17 +57,27 @@ def release_file_checkout(file_id: int, user_email: str) -> bool:
     return locks.release_lock("job-file", str(file_id), user_email)
 
 
-def return_file_for_review(file_id: int, user_email: str) -> bool:
+def return_file_for_review(
+    file_id: int,
+    user_email: str,
+    opened_version_id: int,
+) -> bool:
     """Move a held file to review and release its checkout atomically."""
-    file_row = _file_for_user(file_id, user_email)
-    _require_editor(int(file_row["job_id"]), user_email)
-    now = _now()
-    now_iso = _iso(now)
+    db.init_schema()
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = _active_lock_row(conn, "job-file", str(file_id), now)
-        if row is None or row["holder_email"] != user_email:
-            raise CollaborationError("file checkout is not held by this user")
+        now_iso = _iso(_now())
+        file_row = _file_for_user_in_tx(conn, file_id, user_email)
+        if file_row["access_role"] not in {"owner", "editor"}:
+            raise CollaborationError("owner or editor access required")
+        if file_row["archived_at"] is not None:
+            raise CollaborationError("archived files cannot be returned for review")
+        _assert_file_checkout_in_tx(
+            conn,
+            file_id,
+            user_email,
+            opened_version_id,
+        )
         _set_file_status_in_tx(
             conn,
             file_row,
