@@ -56,8 +56,13 @@ class _FakeContext:
 
 
 class _FakeColumn:
-    def __init__(self, st: "_FakeStreamlit") -> None:
+    def __init__(
+        self,
+        st: "_FakeStreamlit",
+        container_kwargs: dict[str, Any] | None = None,
+    ) -> None:
         self._st = st
+        self._container_kwargs = container_kwargs
 
     def write(self, value: Any) -> None:
         self._st.writes.append(value)
@@ -69,6 +74,10 @@ class _FakeColumn:
         self._st.metrics.append((label, value))
 
     def button(self, label: str, **kwargs: Any) -> bool:
+        if self._container_kwargs is not None:
+            self._st.container_button_calls.append(
+                (label, self._container_kwargs)
+            )
         return self._st.button(label, **kwargs)
 
     def columns(self, spec: int | list[Any], **kwargs: Any) -> list["_FakeColumn"]:
@@ -76,7 +85,7 @@ class _FakeColumn:
 
     def container(self, **kwargs: Any) -> "_FakeColumn":
         self._st.container_calls.append(kwargs)
-        return _FakeColumn(self._st)
+        return _FakeColumn(self._st, container_kwargs=kwargs)
 
     def popover(self, label: str, **kwargs: Any) -> _FakeContext:
         self._st.popovers.append(label)
@@ -116,6 +125,7 @@ class _FakeStreamlit:
         self.popovers: list[str] = []
         self.column_calls: list[tuple[Any, dict[str, Any]]] = []
         self.container_calls: list[dict[str, Any]] = []
+        self.container_button_calls: list[tuple[str, dict[str, Any]]] = []
         self.dialogs: list[str] = []
         self.toasts: list[tuple[str, Any]] = []
 
@@ -479,9 +489,18 @@ def test_job_workspace_file_actions_share_one_content_width_flex_column(
     from marcedit_web.render import job_files
 
     assert len(job_files.UPLOADS_GRID) == len(job_files.UPLOADS_HEADERS) == 7
-    assert any(
-        kwargs.get("horizontal") is True for kwargs in fake_st.container_calls
-    ), "expected row actions inside a horizontal flex container"
+    action_buttons = {
+        label: container_kwargs
+        for label, container_kwargs in fake_st.container_button_calls
+        if label in {"Open", "History"}
+    }
+    assert set(action_buttons) == {"Open", "History"}, (
+        "expected row actions inside a column-level flex container"
+    )
+    assert all(
+        container_kwargs.get("horizontal") is True
+        for container_kwargs in action_buttons.values()
+    ), "expected the row-action container to lay buttons out horizontally"
     table_buttons = {
         label: kwargs
         for label, kwargs in fake_st.button_calls
@@ -490,6 +509,10 @@ def test_job_workspace_file_actions_share_one_content_width_flex_column(
     assert set(table_buttons) == {"Open", "History"}
     for label, kwargs in table_buttons.items():
         assert not kwargs.get("use_container_width"), (
+            f"{label} must keep its content width so it cannot be squeezed "
+            "into letter-stacking"
+        )
+        assert kwargs.get("width") in (None, "content"), (
             f"{label} must keep its content width so it cannot be squeezed "
             "into letter-stacking"
         )
