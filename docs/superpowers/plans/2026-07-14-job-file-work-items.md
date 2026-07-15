@@ -17,7 +17,8 @@
 - A job is the shared project; a job file is the unit of work.
 - One operation acts on one file at a time.
 - The original upload and every accepted version and export are immutable.
-- Every mutation and export creation requires the actor's unexpired exclusive `job-file` checkout and the exact opened current-version id.
+- Checkout acquisition or renewal may atomically move authoritative `new` or `changes_requested` state to `in_progress` as lease bookkeeping without an opened-version token; this is the sole exception.
+- Every substantive mutation or workflow transition, and every export creation, requires the actor's unexpired exclusive `job-file` checkout and the exact opened current-version id.
 - A failure or stale version leaves the current-version pointer and prior files unchanged and removes unreferenced candidate bytes.
 - Job status remains human-controlled and is never derived from file statuses.
 - Existing snapshots remain readable legacy history; no new mutation may write `job_snapshots` after its path is converted.

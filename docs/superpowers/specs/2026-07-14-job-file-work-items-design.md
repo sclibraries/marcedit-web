@@ -35,7 +35,12 @@ become the file's current working state.
 - One operation acts on one file at a time.
 - The original upload and every accepted version are immutable.
 - The current version changes only through an atomic, validated pointer swap.
-- Every mutation requires an exclusive file checkout and a matching version.
+- Checkout acquisition or renewal may move authoritative `new` or
+  `changes_requested` state to `in_progress` as lease bookkeeping without an
+  opened-version token; this is the sole exception.
+- Every substantive mutation or workflow transition, and every export
+  creation, requires an exclusive file checkout and the exact opened current
+  version.
 - Review, history, and exports always identify one file and one exact version.
 - Failed work never changes the current version.
 - Existing data is migrated conservatively; ambiguous history is never guessed
@@ -158,9 +163,12 @@ with explicit confirmation and an audit event.
 This newer decision supersedes the named-job lock scope in
 `docs/adr-collaboration-locking.md`, which proposed record locks for normal
 edits and a whole-job lock for batch mutations. File work items require one
-exclusive file checkout for every mutation so separate files in the same job
-can progress concurrently without allowing conflicting changes within one
-file. The implementation must update or supersede that ADR explicitly.
+exclusive file checkout for every substantive mutation so separate files in
+the same job can progress concurrently without allowing conflicting changes
+within one file. The sole exception is the authoritative checkout bookkeeping
+transition from `new` or `changes_requested` to `in_progress`, which does not
+require an opened-version token. The implementation must update or supersede
+that ADR explicitly.
 
 ## Permissions and Approval
 
@@ -299,7 +307,8 @@ Intent-focused tests must cover:
 - completely separate current versions, histories, notes, and exports per file;
 - file checkout acquisition, renewal, release, expiry, and audited force-release;
 - owner/editor/viewer enforcement;
-- stale-version and lost-checkout rejection for every mutation path;
+- stale-version and lost-checkout rejection for every substantive mutation
+  path;
 - successful record edit, task apply, quick batch, quick replace, FOLIO fix,
   and restore creating a new current version;
 - failed/partial operations preserving the prior current version;
