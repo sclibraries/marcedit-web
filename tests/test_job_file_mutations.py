@@ -550,6 +550,7 @@ def test_editor_save_adopts_one_new_version(
     source_kind,
     checked_out_file,
     editor_state,
+    tmp_path,
 ):
     """A file checkout alone authorizes one immutable editor version."""
     before = job_files.get_current_version(checked_out_file["id"], OWNER)
@@ -578,9 +579,15 @@ def test_editor_save_adopts_one_new_version(
             changed_fields=["LDR_17"],
         )
     else:
-        edit._save_parsed_records(
+        candidate_store = RecordStore.from_records(
+            [edited],
+            tmp_dir=tmp_path / "marceditor-candidate",
+            filename="candidate.mrc",
+        )
+        edit._save_parsed_candidate(
             store=store,
-            records=[edited],
+            candidate_path=candidate_store.path,
+            record_count=1,
             validation={"errors": 0, "warnings": 0, "info": 0},
         )
 
@@ -588,6 +595,11 @@ def test_editor_save_adopts_one_new_version(
     assert current["version_number"] == before["version_number"] + 1
     assert current["source_kind"] == source_kind
     assert Path(before["file_path"]).read_bytes() == original_bytes
+
+
+def test_marceditor_exposes_only_the_bounded_candidate_save_path():
+    """Full-batch saves must not retain an in-memory record-list fallback."""
+    assert not hasattr(edit, "_save_parsed_records")
 
 
 def test_editor_without_file_checkout_retains_version_and_buffer(

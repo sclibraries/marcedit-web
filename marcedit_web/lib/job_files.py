@@ -27,7 +27,7 @@ def versions_root() -> Path:
     return Path(os.environ.get("MARCEDIT_WEB_JOB_FILES_ROOT", "data/job-files"))
 
 
-def _migration_path_is_referenced(
+def _durable_path_is_referenced(
     conn,
     path: Path,
     *,
@@ -109,7 +109,7 @@ def _migrate_uploads_to_job_files(conn) -> None:
                     if version is not None
                     else _version_path(file_id, 1)
                 )
-                if _migration_path_is_referenced(
+                if _durable_path_is_referenced(
                     conn,
                     target,
                     allowed_version_id=(
@@ -168,7 +168,7 @@ def _migrate_uploads_to_job_files(conn) -> None:
             ):
                 if artifact is None:
                     continue
-                if artifact == target and _migration_path_is_referenced(
+                if artifact == target and _durable_path_is_referenced(
                     conn,
                     artifact,
                 ):
@@ -273,7 +273,17 @@ def attach_file(
                 raise JobFileError(
                     "file was attached, but transaction confirmation failed"
                 ) from exc
-        if target is not None:
+        if target is not None and target.exists():
+            try:
+                with db.connect() as conn:
+                    referenced = _durable_path_is_referenced(conn, target)
+            except Exception as verification_exc:
+                raise JobFileError(
+                    "attachment cleanup could not be confirmed; "
+                    "retained original bytes"
+                ) from verification_exc
+            if referenced:
+                raise
             target.unlink(missing_ok=True)
         raise
     return get_file(file_id, user_email)
@@ -371,6 +381,12 @@ def create_export(
             prepared_row = _transition_row(conn, file_id, user_email)
             if int(prepared_row["current_version_id"]) != opened_version_id:
                 raise JobFileError("file changed since this version was opened")
+            _assert_transition_checkout(
+                conn,
+                file_id,
+                user_email,
+                opened_version_id,
+            )
             prepared_version = conn.execute(
                 "SELECT id,file_path,record_count,file_bytes,validation_json,"
                 "approval_kind FROM job_file_versions"

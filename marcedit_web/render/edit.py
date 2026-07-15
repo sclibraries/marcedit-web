@@ -21,7 +21,6 @@ from marcedit_web.lib import (
     rules as rules_mod,
     rules_validate,
     session,
-    snapshot_actions,
     viewer,
 )
 from marcedit_web.lib.record_store import RecordStore
@@ -53,30 +52,6 @@ def _editor_mode_options(total: int) -> list[str]:
 def _default_editor_mode(total: int) -> str:
     """Default MarcEditor to the cataloger-friendly one-record editor."""
     return _editor_mode_options(total)[0]
-
-
-def _save_parsed_records(
-    *,
-    store,
-    records: list[pymarc.Record],
-    validation: dict,
-) -> dict | None:
-    if st.session_state.get("job_file_id") is None:
-        store.replace_all(list(records))
-        store.persist_to_disk()
-        return None
-
-    with snapshot_actions.staged_store_path(store) as candidate_path:
-        candidate_store = RecordStore.from_path(candidate_path)
-        candidate_store.replace_all(list(records))
-        candidate_store.persist_to_disk()
-        return session.adopt_current_candidate(
-            candidate_path=candidate_path,
-            source_kind="marceditor",
-            label="Full MARC editor save",
-            summary={"record_count": len(records)},
-            validation=validation,
-        )
 
 
 def _build_marc_editor_parse(text: str, rule_set) -> dict:

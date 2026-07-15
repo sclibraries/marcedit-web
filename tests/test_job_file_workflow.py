@@ -188,6 +188,27 @@ def test_export_rechecks_exact_version_and_checkout_before_copying(checked_out_f
     assert job_files.list_exports(checked_out_file["id"], OWNER) == []
 
 
+def test_export_non_holder_is_rejected_before_copy_or_validation(
+    checked_out_file, monkeypatch,
+):
+    """Checkout rejection must precede all expensive artifact preparation."""
+    collaboration.release_file_checkout(checked_out_file["id"], OWNER)
+
+    def unexpected_work(*_args, **_kwargs):
+        raise AssertionError("expensive export preparation was invoked")
+
+    monkeypatch.setattr(job_files, "_copy_export_exclusive", unexpected_work)
+    monkeypatch.setattr(job_files.RecordStore, "from_path", unexpected_work)
+
+    with pytest.raises(job_files.JobFileError, match="checkout"):
+        job_files.create_export(
+            file_id=checked_out_file["id"],
+            opened_version_id=checked_out_file["current_version_id"],
+            user_email=OWNER,
+            purpose="EDS load",
+        )
+
+
 def test_failed_export_copy_removes_partial_artifact_and_database_row(
     checked_out_file, monkeypatch,
 ):
@@ -221,11 +242,10 @@ def test_export_rechecks_checkout_after_slow_validation(
             "SELECT COUNT(*) FROM job_activity WHERE job_file_id=?",
             (checked_out_file["id"],),
         ).fetchone()[0]
-    expired_check = (
-        dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-        + dt.timedelta(hours=1)
-    )
-    monkeypatch.setattr(collaboration, "_now", lambda: expired_check)
+    active_check = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    expired_check = active_check + dt.timedelta(hours=1)
+    checkout_checks = iter((active_check, expired_check))
+    monkeypatch.setattr(collaboration, "_now", lambda: next(checkout_checks))
 
     with pytest.raises(job_files.JobFileError, match="checkout"):
         job_files.create_export(

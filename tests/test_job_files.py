@@ -79,7 +79,12 @@ def test_attachment_rejects_incorrect_file_size(tmp_path):
         )
 
 
-def _fail_attachment_commit(monkeypatch, *, persist_before_raise: bool) -> None:
+def _fail_attachment_commit(
+    monkeypatch,
+    *,
+    persist_before_raise: bool,
+    after_persist=None,
+) -> None:
     original_connect = db.connect
     call_count = 0
 
@@ -98,6 +103,8 @@ def _fail_attachment_commit(monkeypatch, *, persist_before_raise: bool) -> None:
             yield conn
             if persist_before_raise:
                 conn.commit()
+                if after_persist is not None:
+                    after_persist()
                 raise RuntimeError("commit persisted but confirmation failed")
             raise RuntimeError("commit failed before persistence")
         except Exception:
@@ -155,6 +162,62 @@ def test_attachment_persisted_then_raised_retains_referenced_original(
     assert len(rows) == 1
     current = job_files.get_current_version(rows[0]["id"], "owner@example.edu")
     assert Path(current["file_path"]).read_bytes() == b"first"
+
+
+def test_attachment_reconciliation_retains_version_advanced_to_history(
+    tmp_path, monkeypatch,
+):
+    """A committed v1 stays owned after another operation makes it history."""
+    source = Path("tests/fixtures/sample.mrc")
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    later_candidate = tmp_path / "later.mrc"
+    shutil.copyfile(source, later_candidate)
+    advanced = {}
+
+    def advance_current():
+        with db.connect() as conn:
+            file_id = int(conn.execute(
+                "SELECT id FROM job_files WHERE job_id=?",
+                (job["id"],),
+            ).fetchone()["id"])
+        collaboration.acquire_file_checkout(file_id, "owner@example.edu")
+        original = job_files.get_current_version(file_id, "owner@example.edu")
+        advanced["original"] = original
+        advanced["current"] = job_files.adopt_candidate(
+            file_id=file_id,
+            opened_version_id=original["id"],
+            user_email="owner@example.edu",
+            candidate_path=later_candidate,
+            source_kind="task",
+            label="Later valid operation",
+        )
+
+    _fail_attachment_commit(
+        monkeypatch,
+        persist_before_raise=True,
+        after_persist=advance_current,
+    )
+
+    with pytest.raises(RuntimeError, match="confirmation failed"):
+        job_files.attach_file(
+            job_id=job["id"],
+            user_email="owner@example.edu",
+            source_path=source,
+            filename="deletes.mrc",
+            record_count=7,
+            file_bytes=source.stat().st_size,
+        )
+
+    original = job_files.get_version(
+        advanced["original"]["id"], "owner@example.edu"
+    )
+    current = job_files.get_current_version(
+        original["job_file_id"], "owner@example.edu"
+    )
+    assert Path(original["file_path"]).read_bytes() == source.read_bytes()
+    assert current["id"] == advanced["current"]["id"]
+    assert current["parent_version_id"] == original["id"]
+    assert Path(current["file_path"]).exists()
 
 
 def test_attachment_removes_partial_candidate_when_copy_fails(tmp_path, monkeypatch):

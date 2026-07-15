@@ -70,9 +70,7 @@ def render() -> None:
         return
 
     file_id = st.session_state.get("job_file_id")
-    if file_id is not None and not st.session_state.get(
-        "quick_load_mode", False
-    ):
+    if file_id is not None:
         versions = job_files.list_versions(int(file_id), user)
         _render_export_banner(rows, change_count=max(len(versions) - 1, 0))
         _render_job_file_history(
@@ -464,10 +462,7 @@ def _render_snapshot_entry(row: dict) -> None:
         st.divider()
         return
 
-    is_job_file = (
-        st.session_state.get("job_file_id") is not None
-        and not st.session_state.get("quick_load_mode", False)
-    )
+    is_job_file = st.session_state.get("job_file_id") is not None
     cols = st.columns(3 if is_job_file else 4)
     download_offset = 0
     if not is_job_file and cols[0].button(
@@ -480,7 +475,7 @@ def _render_snapshot_entry(row: dict) -> None:
         session.replace_current_store_from_path(
             source_path,
             filename=filename,
-            job_id=int(row["job_id"]),
+            job_id=None,
         )
         # The restore didn't add a snapshot, so the staleness guard above
         # (which only compares snapshot counts) wouldn't catch a

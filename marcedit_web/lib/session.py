@@ -469,6 +469,7 @@ def open_job_file(file_id: int) -> dict[str, Any]:
     _clear_mutation_previews(st.session_state)
     st.session_state["store"] = store
     _set_job_file_context(row, version_id=int(version["id"]))
+    st.session_state["quick_load_mode"] = False
     st.session_state["issues_cache"] = {}
     st.session_state["editor_text"] = None
     st.session_state["editor_dirty"] = False

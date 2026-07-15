@@ -52,7 +52,10 @@ def attached_file(tmp_path, record):
 
 
 def test_open_job_file_records_exact_context(monkeypatch, attached_file):
-    fake_st = _FakeStreamlit({"user": "owner@example.edu"})
+    fake_st = _FakeStreamlit({
+        "user": "owner@example.edu",
+        "quick_load_mode": True,
+    })
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(session, "current_user_id", lambda: "owner@example.edu")
 
@@ -67,6 +70,7 @@ def test_open_job_file_records_exact_context(monkeypatch, attached_file):
     )
     assert fake_st.session_state["current_job_id"] == attached_file["job_id"]
     assert fake_st.session_state["store"].filename == "deletes.mrc"
+    assert fake_st.session_state["quick_load_mode"] is False
 
 
 def test_open_job_file_caches_exact_version_that_was_loaded(

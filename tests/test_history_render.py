@@ -9,10 +9,12 @@ must not hold batch bytes in session_state.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pymarc
 
+from marcedit_web.lib import db, jobs, session, upload_persistence
 from marcedit_web.lib.record_store import RecordStore
 
 
@@ -271,6 +273,48 @@ def test_restore_invalidates_prepared_export(monkeypatch, tmp_path):
     assert not export_path.exists()
 
 
+def test_quick_load_snapshot_restore_remains_unassigned_after_restart(
+    monkeypatch, tmp_path,
+):
+    """Legacy snapshot bytes never become a job file during reconciliation."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "uploads"))
+    fake_st = _FakeStreamlit()
+    history = _history(monkeypatch, fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    user = "cat@smith.edu"
+    job = jobs.create_job(user, "Legacy Quick Load history")
+    row = _snapshot_row(tmp_path)
+    row["job_id"] = job["id"]
+    _wire_loaded(monkeypatch, history, _store(tmp_path), [row])
+    fake_st.session_state.update({
+        "user": user,
+        "current_job_id": job["id"],
+        "quick_load_mode": True,
+    })
+    monkeypatch.setattr(history.session, "current_user_id", lambda: user)
+    restore_path = tmp_path / "restore.mrc"
+    restore_path.write_bytes(_record().as_marc())
+    monkeypatch.setattr(
+        history.provenance, "restore_path", lambda snapshot_id: restore_path
+    )
+
+    fake_st.clicked_keys.add(f"snapshot_restore_{row['id']}")
+    history.render()
+
+    restored_upload = upload_persistence.get_active_upload(user)
+    assert restored_upload["job_id"] is None
+    fake_st.session_state.clear()
+    fake_st.session_state["user"] = user
+    db.reset_for_tests()
+    db.init_schema()
+    session.restore_active_upload()
+
+    assert fake_st.session_state["store"].path.is_file()
+    assert upload_persistence.get_active_upload(user)["job_id"] is None
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM job_files").fetchone()[0] == 0
+
+
 def test_export_invalidated_when_loaded_file_switches(monkeypatch, tmp_path):
     """A prepared export must not survive loading a different file.
 
@@ -371,6 +415,7 @@ def test_job_file_history_is_scoped_and_legacy_history_is_separate(
         "current_job_id": 3,
         "job_file_id": 9,
         "job_file_version_id": 12,
+        "quick_load_mode": True,
     })
     original = tmp_path / "v1.mrc"
     current = tmp_path / "v2.mrc"
