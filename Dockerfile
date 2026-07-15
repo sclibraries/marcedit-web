@@ -13,6 +13,7 @@ RUN pip install -r requirements.txt
 
 COPY marcedit_web ./marcedit_web
 COPY data ./data
+COPY docs/jobs.md ./docs/jobs.md
 # Copy ONLY the non-secret Streamlit config. secrets.toml is never baked into
 # the image — it is provided at runtime via a bind mount (see docker-compose)
 # or env. Baking it would leak OAuth/cookie secrets to anyone who pulls the

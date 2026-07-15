@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from marcedit_web.lib import job_files as work_files, jobs, session
 from marcedit_web.lib.identity import is_anonymous
 from marcedit_web.render import job_files
 
+JOBS_HELP_PATH = Path(__file__).resolve().parents[2] / "docs" / "jobs.md"
+
 _DETAIL_UNAVAILABLE = "Job not found or unavailable."
+
+
+def _read_jobs_help(path: Path | None = None) -> str:
+    """Return the canonical cataloger guide from the deployed source tree."""
+    return (path or JOBS_HELP_PATH).read_text(encoding="utf-8")
 
 
 def _status_label(status: str) -> str:

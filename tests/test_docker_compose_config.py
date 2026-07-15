@@ -48,3 +48,18 @@ def test_docker_healthcheck_requires_db_readiness():
     content = _build_context_file("Dockerfile")
     assert "python -m marcedit_web.ops.health" in content
     assert "_stcore/health" in content
+
+
+def test_docker_image_includes_canonical_jobs_help():
+    """Private Docker deployments must have the same guide as source."""
+    content = _build_context_file("Dockerfile")
+
+    assert "COPY docs/jobs.md ./docs/jobs.md" in content
+
+
+def test_docker_build_context_includes_only_canonical_jobs_help():
+    """The guide must enter the image without including unrelated docs."""
+    patterns = _build_context_file(".dockerignore").splitlines()
+
+    assert "docs/*" in patterns
+    assert "!docs/jobs.md" in patterns

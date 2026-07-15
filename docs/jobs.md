@@ -1,117 +1,105 @@
 # Jobs and Shared Cataloging
 
-Jobs are shared cataloging workspaces. Use them when a MARC batch needs handoff,
-review, or a record of what has already been done before loading records into
-FOLIO or another catalog.
+Jobs are shared workspaces for MARC files that need handoff, review, or a record
+of what happened before loading records into FOLIO, EDS, or another system. A
+job can contain multiple related files, and each file is an independent work
+item.
 
-Use Quick Load instead when you only need a one-off upload for viewing,
-validation, reporting, editing, or conversion.
+## Quick start
 
-## Quick Load vs Job Workspace
+1. Create or open a job and attach one or more related `.mrc` files.
+2. Check out one file before changing it. Only one cataloger edits that file at
+   a time.
+3. Run edits or tasks, review the result, and create a retained export for the
+   external load.
+4. Return the file for review, add notes when needed, and update the job's
+   handoff status.
 
-Home has two starting paths:
+## Job, file, and export
 
-- **Quick Load** uploads a `.mrc` file to your default `Personal uploads` job.
-  This is the fastest path for one-off work and does not require choosing or
-  managing a shared job.
-- **Job Workspace** lets you choose or create a named job, then upload a `.mrc`
-  file into that selected job.
+- A **job** is the shared project. It holds the people, overall status, review
+  notes, activity, and all related files.
+- A **file** is one work item inside the job. Each file has its own checkout,
+  current version, history, workflow state, approval context, and exports.
+- A **retained export** is a saved copy of one exact file version prepared for
+  an external load. Marking it loaded records the destination; it does not
+  automatically complete the file or job.
 
-If you want a file to appear under a named job, upload it from **Home → Job
-Workspace → Add a .mrc file to this job**. Uploading from Quick Load will not
-attach the file to that named job.
+## Quick Load or a shared Job?
 
-## Creating a Job
+Use **Quick Load** for one-off viewing, validation, reporting, editing, or
+conversion. Quick Load places the upload in your Personal uploads workspace.
 
-1. Open **Home**.
-2. Choose **Job Workspace**.
-3. Use **Create job** and enter a descriptive name, such as `Vendor load July`
-   or `GOBI ebooks 2026-07-08`.
-4. The new job becomes the selected job.
-5. Use **Add a .mrc file to this job** to attach MARC records to it.
+Use a named **Job** when files need to be shared, checked out, reviewed,
+processed in stages, or kept together as one recurring project.
 
-The job then appears on the **Jobs** page.
+## Create or open a job
 
-## Adding Files to an Existing Job
+Use Home's Job Workspace to create a named job, or open an existing job from
+Jobs. Give recurring work a stable descriptive name such as `Monthly vendor
+load`; dates and stages belong on the individual files and exports.
 
-1. Open **Home**.
-2. Choose **Job Workspace**.
-3. Select the job from the **Job** dropdown.
-4. Use **Add a .mrc file to this job**.
-5. Open **Jobs**, then open the job to confirm the file appears in **Files**.
+## Attach related files
 
-The Jobs page shows filename, record count, size, upload time, and whether the
-upload is active.
+Open the job and use **Attach MARC file**. Attaching a later delivery creates a
+second file in the same job; it does not replace the earlier file. Owners and
+editors can attach files. Viewers can inspect files but cannot attach or change
+them.
 
-## Sharing a Job
+## Check out, edit, and return a file
 
-1. Open **Jobs**.
-2. Open the job.
-3. In **Sharing**, add another cataloger as `editor` or `viewer`.
+Owners and editors check out a file before editing, applying a task, running a
+batch operation, restoring a version, or creating an export. Other catalogers
+may inspect the file while it is checked out, but only the checkout holder can
+change it. When finished, choose **Done** or **Return for review** so another
+cataloger can check it out.
 
-Roles:
+Each accepted change creates a new immutable version. History identifies who
+made the version and what operation created it. Restoring an older result
+creates a new current version; it does not erase later history.
 
-- `owner` can manage sharing, status, notes, and archive/restore.
-- `editor` can work the job, change status, and add or resolve review notes.
-- `viewer` can inspect files, notes, and activity but cannot change them.
+## Create and record exports
 
-## Review Workflow
+Create a retained export from the exact version you intend to load. Give it a
+clear purpose such as `Deletion load` or `Replacement load`. Download that
+artifact for the external system, then use **Mark loaded** to record its
+destination and optional external identifier. The retained artifact remains
+with the file for later review.
 
-Job status is optional and advisory. It helps catalogers coordinate work, but it
-does not block editing or export.
+## Invite catalogers
 
-Statuses:
+Open the **People** tab. Owners can grant or revoke access:
 
-- `Active`
-- `Needs review`
-- `Changes requested`
-- `Approved`
-- `Ready to load`
-- `Complete`
-- `Archived`
+- **Owner** manages people, job status, notes, and archive or restore actions,
+  and can perform editor work.
+- **Editor** can attach, check out, edit, review, and export files and can add
+  or resolve review notes.
+- **Viewer** can inspect files, notes, people, and activity without making
+  changes.
 
-Typical peer-review flow:
+## Review and handoff
 
-1. A cataloger uploads records and does the batch work.
-2. They set the job to **Needs review** and add a status note.
-3. Another cataloger opens the job, checks files, activity, validation results,
-   and review notes.
-4. The reviewer either marks the job **Approved** or **Changes requested**.
-5. After the records are loaded, the job can be marked **Complete** or archived.
+Use **Next handoff** for the job's overall advisory status and an optional
+handoff note. Each file keeps its own workflow state, so one file may be
+complete while another still needs review. Use Review notes for questions that
+another cataloger must address, and resolve a note when the concern is handled.
 
-## Review Notes
+## Recurring vendor load example
 
-Review notes identify specific questions or problems. Notes can be attached to:
+Use one long-lived vendor job for the related round trip:
 
-- the whole job;
-- a record number;
-- a control number such as `001` or OCLC number;
-- a validation issue;
-- a field.
+1. Attach the current catalog extract or deletion file as the first file.
+2. Check it out, run the deletion edit, review it, and create a labeled retained
+   export for the external system. Mark that export loaded after the load.
+3. Attach the fresh vendor delivery as a second file in the same job.
+4. Check out the fresh file, run the saved vendor task, review the new version,
+   and create the replacement export.
+5. Return either file for review or complete it independently. The job keeps the
+   shared people, notes, and activity together across both stages.
 
-Use notes for things another cataloger needs to see, such as:
+## Complete, archive, or restore
 
-- "Please check 856 proxy prefixing."
-- "Left duplicate ISBN warning as-is; print/electronic pair is expected."
-- "Fixed provider-neutral fields, please confirm."
-
-Open notes appear in the job summary. Resolve a note when the concern has been
-handled.
-
-## Activity
-
-The **Activity** section records recent job events such as status changes, note
-changes, archive/restore actions, and other job-specific events. Use it to see
-what has already happened before continuing another cataloger's work.
-
-## Archive and Restore
-
-Archiving is a soft delete:
-
-- archived jobs disappear from normal active lists;
-- uploads, notes, activity, sharing rows, and history remain in the database;
-- owners can restore archived jobs;
-- the default `Personal uploads` job cannot be archived.
-
-Use archive for completed or stale shared workspaces. Use **Complete** for work
-that is done but should still remain visible in active review filters.
+Use **Complete** when the work is finished but should remain visible with active
+jobs. Owners may archive a completed or stale job from Settings; archiving is a
+soft delete that retains files, history, notes, people, and activity. Owners can
+show archived jobs and restore one later. Personal uploads cannot be archived.

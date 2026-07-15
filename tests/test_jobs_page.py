@@ -191,6 +191,31 @@ def _job_file_row(
     }
 
 
+def test_jobs_help_explains_one_job_with_independent_vendor_files(monkeypatch):
+    """Help must make the recurring two-file workflow understandable."""
+    page = _load_jobs_page(monkeypatch)
+
+    guide = page._read_jobs_help()
+
+    assert "# Jobs and Shared Cataloging" in guide
+    assert "## Quick start" in guide
+    assert "## Recurring vendor load example" in guide
+    assert "second file" in guide
+    assert "its own checkout" in guide
+    assert "retained export" in guide
+    assert "Routledge" not in guide
+
+
+def test_jobs_help_path_does_not_depend_on_working_directory(
+    monkeypatch, tmp_path
+):
+    """The deployed service may start outside the repository root."""
+    page = _load_jobs_page(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    assert "# Jobs and Shared Cataloging" in page._read_jobs_help()
+
+
 def test_status_label_is_cataloger_readable(monkeypatch):
     page = _load_jobs_page(monkeypatch)
 
