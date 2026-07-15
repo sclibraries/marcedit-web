@@ -138,6 +138,27 @@ def restore_active_upload() -> None:
         )
         upload_persistence.clear_active_upload(user)
         return
+    if row.get("job_id") is not None:
+        linked_file = next(
+            (
+                file_row
+                for file_row in job_files.list_files(
+                    int(row["job_id"]), user, include_archived=True
+                )
+                if file_row.get("original_upload_id") == row["id"]
+            ),
+            None,
+        )
+        if linked_file is not None:
+            open_job_file(int(linked_file["id"]))
+            audit_event(
+                "upload-restored",
+                user=user,
+                filename=row["filename"],
+                records=row["record_count"],
+                size=row["file_bytes"],
+            )
+            return
     try:
         store = RecordStore.from_path(path)
     except Exception as exc:  # noqa: BLE001 — corrupt file shouldn't crash boot

@@ -470,6 +470,55 @@ def test_restore_active_upload_sets_current_job_id(
     assert st.session_state.get("current_job_id") == row["job_id"]
 
 
+def test_refresh_restores_the_linked_job_file_current_version(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """A fresh browser session must resume durable job work, not legacy v1."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    job = jobs.create_job("alice@example.edu", "Refresh exact work file")
+    raw = _serialize([record])
+    session.handle_upload(
+        _FakeUpload("test.mrc", raw),
+        job_id=job["id"],
+    )
+    file_id = st.session_state["job_file_id"]
+    v1_id = st.session_state["job_file_version_id"]
+    v2_path = tmp_path / "job-files" / str(file_id) / "versions" / "v000002.mrc"
+    v2_path.write_bytes(raw)
+    with db.connect() as conn:
+        v2_id = int(conn.execute(
+            "INSERT INTO job_file_versions(job_file_id,version_number,"
+            "parent_version_id,file_path,record_count,file_bytes,source_kind,"
+            "label,created_by,created_at) VALUES(?,2,?,?,?,?,?,?,?,?)"
+            " RETURNING id",
+            (
+                file_id,
+                v1_id,
+                str(v2_path),
+                1,
+                len(raw),
+                "task",
+                "Refresh acceptance",
+                "alice@example.edu",
+                "2026-07-15T12:00:00Z",
+            ),
+        ).fetchone()["id"])
+        conn.execute(
+            "UPDATE job_files SET current_version_id=? WHERE id=?",
+            (v2_id, file_id),
+        )
+
+    st.session_state.clear()
+    st.session_state["user"] = "alice@example.edu"
+    session.restore_active_upload()
+
+    assert st.session_state["job_file_id"] == file_id
+    assert st.session_state["job_file_version_id"] == v2_id
+    assert st.session_state["store"].path == v2_path
+
+
 def test_signed_in_quick_load_is_refreshable_but_unassigned(
     fake_st, record, tmp_path, monkeypatch,
 ):
