@@ -6,6 +6,7 @@ import errno
 import io
 import sqlite3
 import sys
+from copy import deepcopy
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,16 @@ from types import SimpleNamespace
 import pymarc
 import pytest
 
-from marcedit_web.lib import collaboration, db, job_files, jobs, session
+from marcedit_web.lib import (
+    collaboration,
+    db,
+    job_files,
+    jobs,
+    session,
+    view_edit,
+)
+from marcedit_web.lib.record_store import RecordStore
+from marcedit_web.render import edit, fixed_field_helper, single_record_edit
 
 
 OWNER = "owner@example.edu"
@@ -434,3 +444,110 @@ def test_session_rejects_candidate_without_job_file_context(candidate, monkeypat
         )
 
     assert candidate.exists()
+
+
+class _Status:
+    def __init__(self):
+        self.errors = []
+
+    def error(self, message):
+        self.errors.append(message)
+
+
+@pytest.fixture
+def editor_state(checked_out_file, monkeypatch):
+    current = job_files.get_current_version(checked_out_file["id"], OWNER)
+    store = RecordStore.from_path(Path(current["file_path"]))
+    state = {
+        "user": OWNER,
+        "current_job_id": checked_out_file["job_id"],
+        "job_file_id": checked_out_file["id"],
+        "job_file_version_id": current["id"],
+        "store": store,
+    }
+    monkeypatch.setattr(single_record_edit.st, "session_state", state)
+    monkeypatch.setattr(session, "current_user_id", lambda: OWNER)
+    return state
+
+
+@pytest.mark.parametrize(
+    ("surface", "source_kind"),
+    [
+        ("single_record", "record-edit"),
+        ("fixed_field", "fixed-field"),
+        ("marceditor", "marceditor"),
+    ],
+)
+def test_editor_save_adopts_one_new_version(
+    surface,
+    source_kind,
+    checked_out_file,
+    editor_state,
+):
+    """A file checkout alone authorizes one immutable editor version."""
+    before = job_files.get_current_version(checked_out_file["id"], OWNER)
+    original_bytes = Path(before["file_path"]).read_bytes()
+    store = editor_state["store"]
+    edited = deepcopy(store.get(0))
+    edited["001"].data = f"edited-by-{surface}"
+
+    if surface == "single_record":
+        saved = single_record_edit._save_validated_record(
+            store=store,
+            index=1,
+            result=view_edit.SingleRecordParseResult(record=edited),
+            key_prefix="test_editor",
+            status_container=_Status(),
+            feedback_key="feedback",
+            clear_keys=("draft",),
+        )
+        assert saved is True
+    elif surface == "fixed_field":
+        fixed_field_helper._save_fixed_field_record(
+            store=store,
+            index=1,
+            record=edited,
+            label="LDR/006/007 edit #1",
+            changed_fields=["LDR_17"],
+        )
+    else:
+        edit._save_parsed_records(
+            store=store,
+            records=[edited],
+            validation={"errors": 0, "warnings": 0, "info": 0},
+        )
+
+    current = job_files.get_current_version(checked_out_file["id"], OWNER)
+    assert current["version_number"] == before["version_number"] + 1
+    assert current["source_kind"] == source_kind
+    assert Path(before["file_path"]).read_bytes() == original_bytes
+
+
+def test_editor_without_file_checkout_retains_version_and_buffer(
+    checked_out_file,
+    editor_state,
+):
+    before = job_files.get_current_version(checked_out_file["id"], OWNER)
+    before_bytes = Path(before["file_path"]).read_bytes()
+    editor_state["draft"] = "copyable unsaved text"
+    edited = deepcopy(editor_state["store"].get(0))
+    edited["001"].data = "must-not-save"
+    status = _Status()
+    collaboration.release_file_checkout(checked_out_file["id"], OWNER)
+
+    saved = single_record_edit._save_validated_record(
+        store=editor_state["store"],
+        index=1,
+        result=view_edit.SingleRecordParseResult(record=edited),
+        key_prefix="test_editor",
+        status_container=status,
+        feedback_key="feedback",
+        clear_keys=("draft",),
+    )
+
+    current = job_files.get_current_version(checked_out_file["id"], OWNER)
+    assert saved is False
+    assert current["id"] == before["id"]
+    assert Path(before["file_path"]).read_bytes() == before_bytes
+    assert editor_state["draft"] == "copyable unsaved text"
+    assert "checkout" in status.errors[-1].lower()

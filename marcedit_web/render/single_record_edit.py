@@ -29,6 +29,7 @@ from streamlit_ace import st_ace
 
 from marcedit_web.lib import (
     collaboration,
+    job_files,
     jobs,
     locks,
     mrk_annotations,
@@ -38,7 +39,7 @@ from marcedit_web.lib import (
     structured_record_editor,
     view_edit,
 )
-from marcedit_web.lib.audit import audit_event
+from marcedit_web.lib.record_store import RecordStore
 
 
 def _can_edit_record(role: str | None, holds_lock: bool) -> bool:
@@ -58,6 +59,14 @@ def _checkout_keys(
 
 def _record_lock_state(job_id: int, index: int) -> tuple[dict | None, bool]:
     row = locks.get_lock("record", collaboration.record_resource_id(job_id, index))
+    if row and _is_expired(row["expires_at"]):
+        row = None
+    holds_lock = bool(row and row["holder_email"] == session.current_user_id())
+    return row, holds_lock
+
+
+def _job_file_lock_state(file_id: int) -> tuple[dict | None, bool]:
+    row = locks.get_lock("job-file", str(file_id))
     if row and _is_expired(row["expires_at"]):
         row = None
     holds_lock = bool(row and row["holder_email"] == session.current_user_id())
@@ -105,11 +114,19 @@ def render_inline_edit(
     k_pending_preview = f"{key_prefix}_pending_preview"
     k_feedback = f"{key_prefix}_feedback"
     job_id = st.session_state.get("current_job_id")
+    job_file_id = st.session_state.get("job_file_id")
     user = session.current_user_id()
     role = jobs.get_access_role(int(job_id), user) if job_id is not None else None
     lock_row = None
     holds_lock = job_id is None
-    if job_id is not None:
+    if job_file_id is not None:
+        lock_row, holds_lock = _job_file_lock_state(int(job_file_id))
+        _render_job_file_checkout_status(
+            role=role,
+            lock_row=lock_row,
+            holds_lock=holds_lock,
+        )
+    elif job_id is not None:
         lock_row, holds_lock = _record_lock_state(int(job_id), index)
         _render_checkout_controls(
             job_id=int(job_id),
@@ -659,26 +676,29 @@ def _save_validated_record(
         _render_validation_feedback(result)
         return False
 
-    job_id = st.session_state.get("current_job_id")
-    user = session.current_user_id()
-    if job_id is not None:
-        _, version_key = _checkout_keys(key_prefix, index, int(job_id))
-        opened_version = st.session_state.get(version_key)
-        if opened_version is None:
-            status_container.error("Cannot save: record checkout is missing.")
-            return False
+    created = None
+    if st.session_state.get("current_job_id") is not None:
         try:
-            collaboration.assert_can_save_record(
-                int(job_id),
-                index,
-                user,
-                int(opened_version),
+            created = _adopt_record_candidate(
+                store=store,
+                index=index,
+                record=result.record,
+                key_prefix=key_prefix,
+                validation={
+                    "errors": len(result.fatal_errors),
+                    "warnings": len(result.warnings),
+                    "info": len(result.info),
+                },
             )
-        except collaboration.CollaborationError as exc:
+        except (job_files.JobFileError, collaboration.CollaborationError) as exc:
             status_container.error(f"Cannot save: {exc}")
             return False
-
-    with snapshot_actions.staged_store_path(store) as before_path:
+        except OSError as exc:
+            status_container.error(
+                f"Cannot save: edited record was not persisted. {exc}"
+            )
+            return False
+    else:
         store.replace(index - 1, result.record)
         try:
             store.persist_to_disk()
@@ -688,31 +708,53 @@ def _save_validated_record(
             )
             return False
 
-        snapshot = snapshot_actions.record_edit_snapshot(
-            job_id=st.session_state.get("current_job_id"),
-            user_email=session.current_user_id(),
-            label=f"Single record edit #{index}",
-            before_path=before_path,
-            after_path=store.path,
-            record_index=index,
-            source=key_prefix,
-        )
-    if snapshot is not None:
-        audit_event(
-            "job-snapshot-created",
-            user=session.current_user_id(),
-            snapshot_id=snapshot["id"],
-            job_id=snapshot["job_id"],
-            kind=snapshot["kind"],
-        )
     st.session_state["issues_cache"] = {}
     _clear_export_payloads(st.session_state, key_prefix)
     _clear_state(*clear_keys)
     st.session_state[feedback_key] = (
         "success",
-        f"Record {index} saved. Other records in the batch are unchanged.",
+        f"Record {index} saved"
+        + (
+            f" as version {created['version_number']}"
+            if created is not None
+            else ""
+        )
+        + ". Other records in the batch are unchanged.",
     )
     return True
+
+
+def _adopt_record_candidate(
+    *,
+    store: Any,
+    index: int,
+    record: Any,
+    key_prefix: str,
+    validation: dict,
+) -> dict:
+    with snapshot_actions.staged_store_path(store) as candidate_path:
+        candidate_store = RecordStore.from_path(candidate_path)
+        candidate_store.replace(index - 1, record)
+        candidate_store.persist_to_disk()
+        return session.adopt_current_candidate(
+            candidate_path=candidate_path,
+            source_kind="record-edit",
+            label=f"Single record edit #{index}",
+            summary={
+                "record_index": index,
+                "changed_fields": _changed_field_tags(
+                    store.get(index - 1), record
+                ),
+                "source": key_prefix,
+            },
+            validation=validation,
+        )
+
+
+def _changed_field_tags(before: Any, after: Any) -> list[str]:
+    before_lines = set(mrk_writer.render_records_mrk([before]).splitlines())
+    after_lines = set(mrk_writer.render_records_mrk([after]).splitlines())
+    return sorted({line[1:4] for line in before_lines ^ after_lines if line})
 
 
 def _clear_export_payloads(session_state: dict, key_prefix: str) -> None:
@@ -919,6 +961,28 @@ def _render_structured_field_editor(
         )
         st.rerun()
     return save_clicked
+
+
+def _render_job_file_checkout_status(
+    *,
+    role: str | None,
+    lock_row: dict | None,
+    holds_lock: bool,
+) -> None:
+    if role not in {"owner", "editor"}:
+        st.info("This shared job is read-only for your account.")
+    elif holds_lock:
+        st.caption(
+            "File checked out by you until "
+            f"{lock_row['expires_at'] if lock_row else 'expiry'}."
+        )
+    elif lock_row:
+        st.warning(
+            "File is checked out by "
+            f"{lock_row['holder_email']} until {lock_row['expires_at']}."
+        )
+    else:
+        st.info("Check out this file from the job file list before saving.")
 
 
 def _render_checkout_controls(

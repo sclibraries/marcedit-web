@@ -204,10 +204,12 @@ def test_fixed_save_gate_blocks_viewer(monkeypatch):
     assert "read-only" in message
 
 
-def test_fixed_save_assertion_requires_opened_version(monkeypatch):
-    errors = []
-    monkeypatch.setattr(fixed_field_helper.st, "session_state", {"current_job_id": 1})
-    monkeypatch.setattr(fixed_field_helper.st, "error", errors.append)
+def test_fixed_save_gate_accepts_held_file_checkout(monkeypatch):
+    monkeypatch.setattr(
+        fixed_field_helper.st,
+        "session_state",
+        {"current_job_id": 1, "job_file_id": 7},
+    )
     monkeypatch.setattr(
         fixed_field_helper.session,
         "current_user_id",
@@ -220,9 +222,39 @@ def test_fixed_save_assertion_requires_opened_version(monkeypatch):
     )
     monkeypatch.setattr(
         fixed_field_helper.single_record_edit,
-        "_record_lock_state",
-        lambda job_id, index: ({"holder_email": "owner@example.edu"}, True),
+        "_job_file_lock_state",
+        lambda file_id: ({"holder_email": "owner@example.edu"}, True),
     )
 
-    assert fixed_field_helper._assert_fixed_save_allowed(1, "view_control") is False
-    assert "checkout is missing" in errors[0]
+    disabled, message = fixed_field_helper._fixed_save_gate(1)
+
+    assert disabled is False
+    assert message == ""
+
+
+def test_fixed_save_gate_requires_file_checkout(monkeypatch):
+    monkeypatch.setattr(
+        fixed_field_helper.st,
+        "session_state",
+        {"current_job_id": 1, "job_file_id": 7},
+    )
+    monkeypatch.setattr(
+        fixed_field_helper.session,
+        "current_user_id",
+        lambda: "owner@example.edu",
+    )
+    monkeypatch.setattr(
+        fixed_field_helper.jobs,
+        "get_access_role",
+        lambda job_id, user: "owner",
+    )
+    monkeypatch.setattr(
+        fixed_field_helper.single_record_edit,
+        "_job_file_lock_state",
+        lambda file_id: (None, False),
+    )
+
+    disabled, message = fixed_field_helper._fixed_save_gate(1)
+
+    assert disabled is True
+    assert "check out this file" in message.lower()

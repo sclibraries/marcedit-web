@@ -9,8 +9,9 @@ import pymarc
 import streamlit as st
 from streamlit_ace import st_ace
 
-from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib import (
+    collaboration,
+    job_files,
     mrk_parser,
     mrk_writer,
     preflight,
@@ -20,6 +21,7 @@ from marcedit_web.lib import (
     snapshot_actions,
     viewer,
 )
+from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.render import fixed_field_helper, single_record_edit
 
 logger = logging.getLogger("marcedit_web.render.edit")
@@ -48,6 +50,30 @@ def _editor_mode_options(total: int) -> list[str]:
 def _default_editor_mode(total: int) -> str:
     """Default MarcEditor to the cataloger-friendly one-record editor."""
     return _editor_mode_options(total)[0]
+
+
+def _save_parsed_records(
+    *,
+    store,
+    records: list[pymarc.Record],
+    validation: dict,
+) -> dict | None:
+    if st.session_state.get("current_job_id") is None:
+        store.replace_all(list(records))
+        store.persist_to_disk()
+        return None
+
+    with snapshot_actions.staged_store_path(store) as candidate_path:
+        candidate_store = RecordStore.from_path(candidate_path)
+        candidate_store.replace_all(list(records))
+        candidate_store.persist_to_disk()
+        return session.adopt_current_candidate(
+            candidate_path=candidate_path,
+            source_kind="marceditor",
+            label="Full MARC editor save",
+            summary={"record_count": len(records)},
+            validation=validation,
+        )
 
 
 def _render_single_record_picker(store, total: int, rule_set) -> None:
@@ -366,47 +392,47 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
 
     if save_clicked and parse_state is not None and fatal == 0:
         record_objs = parse_state["records"]
-        with snapshot_actions.staged_store_path(store) as before_path:
-            store.replace_all(list(record_objs))
-            try:
-                store.persist_to_disk()
-            except OSError as exc:
-                st.error(f"Cannot save: edited records were not persisted. {exc}")
-                return
-
-            snapshot = snapshot_actions.record_job_snapshot(
-                job_id=st.session_state.get("current_job_id"),
-                user_email=session.current_user_id(),
-                kind="edit",
-                label="Full MARC editor save",
-                before_path=before_path,
-                after_path=store.path,
-                summary={
-                    "record_count": len(record_objs),
-                    "source": "marc-editor",
-                },
+        validation = {
+            "errors": fatal,
+            "warnings": warnings,
+            "info": info,
+        }
+        try:
+            created = _save_parsed_records(
+                store=store,
+                records=record_objs,
+                validation=validation,
             )
-        if snapshot is not None:
-            audit_event(
-                "job-snapshot-created",
-                user=session.current_user_id(),
-                snapshot_id=snapshot["id"],
-                job_id=snapshot["job_id"],
-                kind=snapshot["kind"],
-            )
+        except (job_files.JobFileError, collaboration.CollaborationError) as exc:
+            st.error(f"Cannot save: {exc}")
+            return
+        except OSError as exc:
+            st.error(f"Cannot save: edited records were not persisted. {exc}")
+            return
         st.session_state["issues_cache"] = {}
+
+        saved_store = session.current_store() or store
+        st.session_state.pop(_MRK_KEY, None)
+        st.session_state.pop(_MRK_SOURCE_KEY, None)
+        st.session_state.pop("marc_editor_parse", None)
 
         orig = session.current_filename() or "edited.mrc"
         stem = Path(orig).stem or "edited"
         fname = session.stamped_filename(stem)
 
         st.success(
-            f"Saved **{len(record_objs)}** record(s) back into the session. "
+            f"Saved **{len(record_objs)}** record(s)"
+            + (
+                f" as version **{created['version_number']}**"
+                if created is not None
+                else " back into the session"
+            )
+            + ". "
             f"Download below or open another page to see the edits."
         )
         st.download_button(
             label=f"Download {fname}",
-            data=store.path.read_bytes(),
+            data=saved_store.path.read_bytes(),
             file_name=fname,
             mime="application/marc",
             key="marc_editor_download",

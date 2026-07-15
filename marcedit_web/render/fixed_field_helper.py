@@ -12,20 +12,27 @@ This module is the thin Streamlit binding — same shape as
 * widgets selected per position descriptor — ``st.selectbox`` for
   enums, ``st.text_input`` for free-form ranges.
 
-Save commits via ``store.replace(index - 1, record)``. Cancel drops
-draft state.
+Job-file saves adopt an immutable candidate version; quick-load saves retain
+the existing in-place behavior. Cancel drops draft state.
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import streamlit as st
 
 from marcedit_web.lib import fixed_field_control as ffc
 from marcedit_web.lib import fixed_field_008 as ff
-from marcedit_web.lib import collaboration, jobs, session, snapshot_actions
-from marcedit_web.lib.audit import audit_event
+from marcedit_web.lib import (
+    collaboration,
+    job_files,
+    jobs,
+    session,
+    snapshot_actions,
+)
+from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.render import single_record_edit
 
 
@@ -98,38 +105,39 @@ def render_fixed_field_helper(
             return
 
         if save_clicked:
-            if not _assert_fixed_save_allowed(index, key_prefix):
-                return
-            with snapshot_actions.staged_store_path(store) as before_path:
-                try:
-                    ffc.apply_fixed_field_updates(record, dict(draft))
-                except ValueError as exc:
-                    st.error(f"Fixed fields not saved: {exc}")
-                    return
-                store.replace(index - 1, record)
-                with snapshot_actions.staged_store_path(store) as after_path:
-                    snapshot = snapshot_actions.record_edit_snapshot(
-                        job_id=st.session_state.get("current_job_id"),
-                        user_email=session.current_user_id(),
-                        label=f"LDR/006/007 edit #{index}",
-                        before_path=before_path,
-                        after_path=after_path,
-                        record_index=index,
-                        source=f"{key_prefix}-fixed-field-helper",
-                    )
-            if snapshot is not None:
-                audit_event(
-                    "job-snapshot-created",
-                    user=session.current_user_id(),
-                    snapshot_id=snapshot["id"],
-                    job_id=snapshot["job_id"],
-                    kind=snapshot["kind"],
+            edited_record = deepcopy(record)
+            try:
+                ffc.apply_fixed_field_updates(edited_record, dict(draft))
+                created = _save_fixed_field_record(
+                    store=store,
+                    index=index,
+                    record=edited_record,
+                    label=f"LDR/006/007 edit #{index}",
+                    changed_fields=sorted(
+                        key for key, value in draft.items()
+                        if initial.get(key) != value
+                    ),
                 )
+            except ValueError as exc:
+                st.error(f"Fixed fields not saved: {exc}")
+                return
+            except (job_files.JobFileError, collaboration.CollaborationError) as exc:
+                st.error(f"Fixed fields not saved: {exc}")
+                return
+            except OSError as exc:
+                st.error(f"Fixed fields not saved: {exc}")
+                return
             st.session_state["issues_cache"] = {}
             st.session_state.pop(draft_key, None)
             st.session_state[feedback_key] = (
                 "success",
-                f"Record {index}'s fixed fields saved. Other records unchanged.",
+                f"Record {index}'s fixed fields saved"
+                + (
+                    f" as version {created['version_number']}"
+                    if created is not None
+                    else ""
+                )
+                + ". Other records unchanged.",
             )
             st.rerun()
 
@@ -191,6 +199,7 @@ def render_008_helper(
         draft = st.session_state.setdefault(
             draft_key, {p.position.id: p.value for p in parsed}
         )
+        initial = {p.position.id: p.value for p in parsed}
 
         # Render widgets in two columns to keep the expander compact.
         col_left, col_right = st.columns(2)
@@ -229,40 +238,70 @@ def render_008_helper(
             return
 
         if save_clicked:
-            if not _assert_fixed_save_allowed(index, key_prefix):
-                return
-            with snapshot_actions.staged_store_path(store) as before_path:
-                try:
-                    ff.apply_008(record, dict(draft))
-                except ValueError as exc:
-                    st.error(f"008 not saved: {exc}")
-                    return
-                store.replace(index - 1, record)
-                with snapshot_actions.staged_store_path(store) as after_path:
-                    snapshot = snapshot_actions.record_edit_snapshot(
-                        job_id=st.session_state.get("current_job_id"),
-                        user_email=session.current_user_id(),
-                        label=f"008 edit #{index}",
-                        before_path=before_path,
-                        after_path=after_path,
-                        record_index=index,
-                        source=f"{key_prefix}-008-helper",
-                    )
-            if snapshot is not None:
-                audit_event(
-                    "job-snapshot-created",
-                    user=session.current_user_id(),
-                    snapshot_id=snapshot["id"],
-                    job_id=snapshot["job_id"],
-                    kind=snapshot["kind"],
+            edited_record = deepcopy(record)
+            try:
+                ff.apply_008(edited_record, dict(draft))
+                created = _save_fixed_field_record(
+                    store=store,
+                    index=index,
+                    record=edited_record,
+                    label=f"008 edit #{index}",
+                    changed_fields=sorted(
+                        key for key, value in draft.items()
+                        if initial.get(key) != value
+                    ),
                 )
+            except ValueError as exc:
+                st.error(f"008 not saved: {exc}")
+                return
+            except (job_files.JobFileError, collaboration.CollaborationError) as exc:
+                st.error(f"008 not saved: {exc}")
+                return
+            except OSError as exc:
+                st.error(f"008 not saved: {exc}")
+                return
             st.session_state["issues_cache"] = {}
             st.session_state.pop(draft_key, None)
             st.session_state[feedback_key] = (
                 "success",
-                f"Record {index}'s 008 saved. Other records unchanged.",
+                f"Record {index}'s 008 saved"
+                + (
+                    f" as version {created['version_number']}"
+                    if created is not None
+                    else ""
+                )
+                + ". Other records unchanged.",
             )
             st.rerun()
+
+
+def _save_fixed_field_record(
+    *,
+    store: Any,
+    index: int,
+    record: Any,
+    label: str,
+    changed_fields: list[str],
+) -> dict | None:
+    if st.session_state.get("current_job_id") is None:
+        store.replace(index - 1, record)
+        store.persist_to_disk()
+        return None
+
+    with snapshot_actions.staged_store_path(store) as candidate_path:
+        candidate_store = RecordStore.from_path(candidate_path)
+        candidate_store.replace(index - 1, record)
+        candidate_store.persist_to_disk()
+        return session.adopt_current_candidate(
+            candidate_path=candidate_path,
+            source_kind="fixed-field",
+            label=label,
+            summary={
+                "record_index": index,
+                "changed_fields": changed_fields,
+            },
+            validation={"errors": 0},
+        )
 
 
 def _fixed_save_gate(index: int) -> tuple[bool, str]:
@@ -271,6 +310,23 @@ def _fixed_save_gate(index: int) -> tuple[bool, str]:
         return False, ""
     user = session.current_user_id()
     role = jobs.get_access_role(int(job_id), user)
+    job_file_id = st.session_state.get("job_file_id")
+    if job_file_id is not None:
+        lock_row, holds_lock = single_record_edit._job_file_lock_state(
+            int(job_file_id)
+        )
+        if role not in {"owner", "editor"}:
+            return True, "This shared job is read-only for your account."
+        if lock_row and not holds_lock:
+            return (
+                True,
+                "File is checked out by "
+                f"{lock_row['holder_email']} until {lock_row['expires_at']}.",
+            )
+        if not holds_lock:
+            return True, "Check out this file before saving fixed-field edits."
+        return False, ""
+
     lock_row, holds_lock = single_record_edit._record_lock_state(int(job_id), index)
     if role not in {"owner", "editor"}:
         return True, "This shared job is read-only for your account."
@@ -283,37 +339,6 @@ def _fixed_save_gate(index: int) -> tuple[bool, str]:
     if not single_record_edit._can_edit_record(role, holds_lock):
         return True, "Check out this record before saving fixed-field edits."
     return False, ""
-
-
-def _assert_fixed_save_allowed(index: int, key_prefix: str) -> bool:
-    job_id = st.session_state.get("current_job_id")
-    if job_id is None:
-        return True
-    role = jobs.get_access_role(int(job_id), session.current_user_id())
-    _, holds_lock = single_record_edit._record_lock_state(int(job_id), index)
-    if not single_record_edit._can_edit_record(role, holds_lock):
-        st.error("Fixed fields not saved: check out this record first.")
-        return False
-    _, version_key = single_record_edit._checkout_keys(
-        key_prefix,
-        index,
-        int(job_id),
-    )
-    opened_version = st.session_state.get(version_key)
-    if opened_version is None:
-        st.error("Fixed fields not saved: record checkout is missing.")
-        return False
-    try:
-        collaboration.assert_can_save_record(
-            int(job_id),
-            index,
-            session.current_user_id(),
-            int(opened_version),
-        )
-    except collaboration.CollaborationError as exc:
-        st.error(f"Fixed fields not saved: {exc}")
-        return False
-    return True
 
 
 def _render_widget(pos: ff.Position, current: str, *, key: str) -> str:
