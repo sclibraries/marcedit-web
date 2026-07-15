@@ -1634,6 +1634,7 @@ def _render_run_results() -> None:
             else:
                 st.success(f"Applied as version {version['version_number']}.")
                 st.session_state.pop(K_RUN_RESULTS, None)
+                return
 
     st.markdown("**Updated task output is ready as a separate export.**")
     st.caption(_history_location_caption(results.get("snapshot_id")))

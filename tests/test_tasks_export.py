@@ -556,6 +556,11 @@ def test_saved_task_output_requires_explicit_version_adoption(
     assert any(button["label"] == "Apply as new version" for button in fake_st.buttons)
     assert fake_st.session_state[tasks_render.K_RUN_RESULTS] is results
 
+    stale_history_caption = (
+        "Rollback history is only available for signed-in job files. "
+        "Download the updated MARC file below."
+    )
+    stale_caption_count = fake_st.captions.count(stale_history_caption)
     fake_st.clicked_keys.add("task_apply_version")
     tasks_render._render_run_results()
 
@@ -566,6 +571,7 @@ def test_saved_task_output_requires_explicit_version_adoption(
     assert adopted[0]["summary"] == {"changed_count": 1}
     assert adopted[0]["validation"] == {"error_count": 0}
     assert tasks_render.K_RUN_RESULTS not in fake_st.session_state
+    assert fake_st.captions.count(stale_history_caption) == stale_caption_count
 
 
 def test_saved_task_output_rejects_a_newer_opened_version(monkeypatch, tmp_path):
