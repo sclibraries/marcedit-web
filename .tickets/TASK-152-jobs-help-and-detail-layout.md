@@ -33,3 +33,7 @@ In-Progress
 ## Design
 
 [Jobs Help and Detail Layout](../docs/superpowers/specs/2026-07-15-jobs-help-and-detail-layout-design.md)
+
+## Plan
+
+[Implementation Plan](../docs/superpowers/plans/2026-07-15-jobs-help-and-detail-layout.md)
