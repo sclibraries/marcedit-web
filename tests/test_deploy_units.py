@@ -50,6 +50,17 @@ def test_deployment_docs_gate_swap_limit_on_cgroup_v2():
     assert "MARCEDIT_WEB_MAX_CONCURRENT_BATCHES" in docs
 
 
+def test_job_file_backup_docs_use_configured_storage_root():
+    """Database rows and immutable artifacts need one configurable snapshot."""
+    docs = _repo_file("docs/deployment.md")
+
+    assert 'JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"' in docs
+    assert 'cp -a "$JOB_FILES_ROOT" "$BACKUP_DIR/job-files"' in docs
+    assert 'rm -rf "$JOB_FILES_ROOT"' in docs
+    assert '"$BACKUP_DIR/job-files" "$JOB_FILES_ROOT"' in docs
+    assert "cp -a data/job-files" not in docs
+
+
 def test_public_systemd_unit_stays_db_free():
     """The public light tier must not touch the private catalog DB."""
     unit = _repo_file("deploy/marcedit-web-public.service")

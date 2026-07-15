@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from marcedit_web.lib import collaboration, db, job_files, jobs
+from marcedit_web.lib import collaboration, db, job_files, jobs, locks
 
 
 OWNER = "owner@example.edu"
@@ -522,6 +522,12 @@ def test_routledge_job_handles_deletion_and_fresh_files_independently(tmp_path):
         file_bytes=source.stat().st_size,
     )
     assert collaboration.acquire_file_checkout(fresh["id"], OWNER).acquired
+    deletion_lock = locks.get_lock("job-file", str(deletion["id"]))
+    fresh_lock = locks.get_lock("job-file", str(fresh["id"]))
+    assert deletion_lock["resource_id"] == str(deletion["id"])
+    assert deletion_lock["holder_email"] == EDITOR
+    assert fresh_lock["resource_id"] == str(fresh["id"])
+    assert fresh_lock["holder_email"] == OWNER
     fresh_candidate = tmp_path / "fresh-candidate.mrc"
     shutil.copyfile(source, fresh_candidate)
     fresh_version = job_files.adopt_candidate(
@@ -564,12 +570,20 @@ def test_routledge_job_handles_deletion_and_fresh_files_independently(tmp_path):
     assert loaded_deletion["state"] == "loaded"
     assert replacement_export["state"] == "ready"
     assert deletion_export["version_id"] != replacement_export["version_id"]
-    assert [row["version_number"] for row in job_files.list_versions(
-        deletion["id"], OWNER
-    )] == [1, 2]
-    assert [row["version_number"] for row in job_files.list_versions(
-        fresh["id"], OWNER
-    )] == [1, 2]
+    deletion_timeline = job_files.list_versions(deletion["id"], OWNER)
+    fresh_timeline = job_files.list_versions(fresh["id"], OWNER)
+    assert [row["version_number"] for row in deletion_timeline] == [1, 2]
+    assert [row["source_kind"] for row in deletion_timeline] == [
+        "original",
+        "quick-batch",
+    ]
+    assert {row["job_file_id"] for row in deletion_timeline} == {deletion["id"]}
+    assert [row["version_number"] for row in fresh_timeline] == [1, 2]
+    assert [row["source_kind"] for row in fresh_timeline] == ["original", "task"]
+    assert {row["job_file_id"] for row in fresh_timeline} == {fresh["id"]}
+    assert {row["id"] for row in deletion_timeline}.isdisjoint(
+        row["id"] for row in fresh_timeline
+    )
     assert job_files.get_version(deletion_version["id"], OWNER)[
         "approval_kind"
     ] == "peer-approved"

@@ -325,7 +325,9 @@ The SQLite database and `MARCEDIT_WEB_JOB_FILES_ROOT` form one recovery unit:
 version and export rows are not usable without their immutable MARC files.
 Back them up and restore them together from the same maintenance window. The
 current scriptable command captures SQLite and audit data; production backup
-automation must also copy the job-files root into the same dated backup.
+automation must also copy the configured job-files root into the same dated
+backup while the service remains stopped. This creates one coordinated
+database-and-artifact snapshot rather than two independently timed backups.
 
 Scriptable backup during a maintenance window:
 
@@ -333,9 +335,10 @@ Scriptable backup during a maintenance window:
 sudo systemctl stop marcedit-web
 cd /var/www/html/marcedit-web
 BACKUP_DIR=/var/backups/marcedit-web/$(date -u +%F)
+JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"
 /var/www/html/marcedit-web/.venv/bin/python \
     -m marcedit_web.ops.backup create "$BACKUP_DIR"
-cp -a data/job-files "$BACKUP_DIR/job-files"
+cp -a "$JOB_FILES_ROOT" "$BACKUP_DIR/job-files"
 sudo systemctl start marcedit-web
 ```
 
@@ -346,10 +349,13 @@ logs and writes a small manifest. To restore during a maintenance window:
 ```bash
 sudo systemctl stop marcedit-web
 cd /var/www/html/marcedit-web
+BACKUP_DIR=/var/backups/marcedit-web/YYYY-MM-DD
+JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"
 /var/www/html/marcedit-web/.venv/bin/python \
-    -m marcedit_web.ops.backup restore /var/backups/marcedit-web/YYYY-MM-DD
-rm -rf data/job-files
-cp -a /var/backups/marcedit-web/YYYY-MM-DD/job-files data/job-files
+    -m marcedit_web.ops.backup restore "$BACKUP_DIR"
+rm -rf "$JOB_FILES_ROOT"
+mkdir -p "$(dirname "$JOB_FILES_ROOT")"
+cp -a "$BACKUP_DIR/job-files" "$JOB_FILES_ROOT"
 sudo systemctl start marcedit-web
 ```
 

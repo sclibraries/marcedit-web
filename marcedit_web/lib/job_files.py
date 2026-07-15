@@ -33,57 +33,100 @@ def _migrate_uploads_to_job_files(conn) -> None:
         "SELECT uploads.id,uploads.job_id,uploads.filename,uploads.file_path,"
         "uploads.record_count,uploads.file_bytes,uploads.user_email,"
         "uploads.uploaded_at FROM uploads"
-        " LEFT JOIN job_files ON job_files.original_upload_id=uploads.id"
         " WHERE uploads.removed_at IS NULL AND uploads.job_id IS NOT NULL"
-        " AND job_files.id IS NULL ORDER BY uploads.id"
+        " ORDER BY uploads.id"
     ).fetchall()
     for upload in uploads:
         source = Path(upload["file_path"])
-        candidate = versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
+        candidate: Path | None = None
         target: Path | None = None
+        target_owned = False
         conn.execute("SAVEPOINT migrate_legacy_upload")
         try:
-            candidate.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, candidate)
-            created = conn.execute(
-                "INSERT OR IGNORE INTO job_files(job_id,original_upload_id,"
-                "display_name,created_by,created_at,updated_by,updated_at)"
-                " VALUES(?,?,?,?,?,?,?) RETURNING id",
-                (
-                    upload["job_id"],
-                    upload["id"],
-                    upload["filename"],
-                    upload["user_email"],
-                    upload["uploaded_at"],
-                    upload["user_email"],
-                    upload["uploaded_at"],
-                ),
+            file_row = conn.execute(
+                "SELECT id,current_version_id FROM job_files"
+                " WHERE original_upload_id=?",
+                (upload["id"],),
             ).fetchone()
-            if created is None:
-                candidate.unlink(missing_ok=True)
+            version = None
+            if file_row is not None:
+                version = conn.execute(
+                    "SELECT id,file_path FROM job_file_versions"
+                    " WHERE job_file_id=? AND version_number=1",
+                    (file_row["id"],),
+                ).fetchone()
+            if (
+                version is not None
+                and file_row["current_version_id"] == version["id"]
+                and Path(version["file_path"]).is_file()
+            ):
                 conn.execute("RELEASE SAVEPOINT migrate_legacy_upload")
                 continue
-            file_id = int(created["id"])
-            target = _version_path(file_id, 1)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(candidate, target)
-            version_id = int(
+
+            if file_row is None:
                 conn.execute(
-                    "INSERT INTO job_file_versions(job_file_id,version_number,"
-                    "file_path,record_count,file_bytes,source_kind,label,created_by,"
-                    "created_at) VALUES(?,1,?,?,?,?,?,?,?) RETURNING id",
+                    "INSERT OR IGNORE INTO job_files(job_id,original_upload_id,"
+                    "display_name,created_by,created_at,updated_by,updated_at)"
+                    " VALUES(?,?,?,?,?,?,?)",
                     (
-                        file_id,
-                        str(target),
-                        upload["record_count"],
-                        upload["file_bytes"],
-                        "legacy-upload",
+                        upload["job_id"],
+                        upload["id"],
                         upload["filename"],
                         upload["user_email"],
                         upload["uploaded_at"],
+                        upload["user_email"],
+                        upload["uploaded_at"],
                     ),
-                ).fetchone()["id"]
-            )
+                )
+                file_row = conn.execute(
+                    "SELECT id,current_version_id FROM job_files"
+                    " WHERE original_upload_id=?",
+                    (upload["id"],),
+                ).fetchone()
+            file_id = int(file_row["id"])
+
+            if version is None or not Path(version["file_path"]).is_file():
+                target = (
+                    Path(version["file_path"])
+                    if version is not None
+                    else _version_path(file_id, 1)
+                )
+                if version is None and conn.execute(
+                    "SELECT 1 FROM job_file_versions WHERE file_path=?",
+                    (str(target),),
+                ).fetchone() is not None:
+                    raise JobFileError(
+                        "legacy v1 path is already referenced by another version"
+                    )
+                candidate = (
+                    versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
+                )
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, candidate)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(candidate, target)
+                target_owned = True
+
+            if version is None:
+                version_id = int(
+                    conn.execute(
+                        "INSERT INTO job_file_versions(job_file_id,version_number,"
+                        "file_path,record_count,file_bytes,source_kind,label,created_by,"
+                        "created_at) VALUES(?,1,?,?,?,?,?,?,?) RETURNING id",
+                        (
+                            file_id,
+                            str(target),
+                            upload["record_count"],
+                            upload["file_bytes"],
+                            "legacy-upload",
+                            upload["filename"],
+                            upload["user_email"],
+                            upload["uploaded_at"],
+                        ),
+                    ).fetchone()["id"]
+                )
+            else:
+                version_id = int(version["id"])
             conn.execute(
                 "UPDATE job_files SET current_version_id=? WHERE id=?",
                 (version_id, file_id),
@@ -92,15 +135,32 @@ def _migrate_uploads_to_job_files(conn) -> None:
         except Exception as exc:  # noqa: BLE001 - isolate each legacy artifact
             conn.execute("ROLLBACK TO SAVEPOINT migrate_legacy_upload")
             conn.execute("RELEASE SAVEPOINT migrate_legacy_upload")
-            candidate.unlink(missing_ok=True)
-            if target is not None:
-                target.unlink(missing_ok=True)
             logger.warning(
                 "migration: skipping upload %s at %s: %s",
                 upload["id"],
                 source,
                 exc,
             )
+            for artifact in (
+                candidate,
+                target if target_owned else None,
+            ):
+                if artifact is None:
+                    continue
+                if artifact == target and conn.execute(
+                    "SELECT 1 FROM job_file_versions WHERE file_path=?",
+                    (str(artifact),),
+                ).fetchone() is not None:
+                    continue
+                try:
+                    artifact.unlink(missing_ok=True)
+                except OSError as cleanup_exc:
+                    logger.warning(
+                        "migration: could not clean upload %s artifact %s: %s",
+                        upload["id"],
+                        artifact,
+                        cleanup_exc,
+                    )
 
 
 def attach_file(

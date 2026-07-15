@@ -28,8 +28,8 @@ Status: In-Progress
 Task 9 automated verification:
 - Conservative v11-to-v12 upload migration and Routledge two-file acceptance:
   passing.
-- Focused job-file migration/workflow/render suite: 100 passed, zero skipped.
-- Complete Docker pytest suite: 1,211 passed, zero skipped.
+- Review-fix migration/workflow/docs suite: 34 passed, zero skipped.
+- Complete Docker pytest suite: 1,217 passed, zero skipped.
 - Render mutation source gate: no matches.
 
 Remaining completion gates:
