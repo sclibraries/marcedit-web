@@ -226,10 +226,21 @@ def test_file_export_form_passes_required_labels_and_manual_load_audit(
         "mark_export_loaded",
         lambda export_id, **kwargs: loaded.append((export_id, kwargs)) or ready,
     )
+    monkeypatch.setattr(
+        job_files_render,
+        "_active_checkout",
+        lambda file_id: {"holder_email": "editor@example.edu"},
+    )
     fake_st.clicked_keys.update({"file_export_create_9", "file_export_loaded_4"})
 
     job_files_render.render_file_exports(
-        {"id": 9, "display_name": "deletes.mrc", "access_role": "editor"},
+        {
+            "id": 9,
+            "display_name": "deletes.mrc",
+            "access_role": "editor",
+            "archived_at": None,
+            "current_version_id": 22,
+        },
         user="editor@example.edu",
         opened_version_id=22,
     )
@@ -248,6 +259,72 @@ def test_file_export_form_passes_required_labels_and_manual_load_audit(
         "external_id": "load-2026-07-15",
         "note": "Accepted",
     })]
+
+
+def test_create_export_controls_require_current_active_holder(
+    monkeypatch, tmp_path,
+):
+    """Read access never exposes the checkout-bound export mutation."""
+    from marcedit_web.render import job_files as job_files_render
+
+    export_path = tmp_path / "retained.mrc"
+    export_path.write_bytes(b"retained")
+    retained = {
+        "id": 4,
+        "job_file_id": 9,
+        "version_id": 22,
+        "version_number": 3,
+        "purpose": "Prior export",
+        "description": "",
+        "filename": "retained.mrc",
+        "file_path": str(export_path),
+        "record_count": 7,
+        "state": "draft",
+        "created_by": "owner@example.edu",
+        "created_at": "2026-07-15T12:00:00Z",
+        "loaded_destination": None,
+        "loaded_external_id": None,
+        "loaded_note": None,
+        "loaded_by": None,
+        "loaded_at": None,
+    }
+    monkeypatch.setattr(
+        job_files_render.job_files, "list_exports", lambda *_args: [retained]
+    )
+    cases = (
+        ("viewer", None, 22, None),
+        ("editor", None, 22, {"holder_email": "owner@example.edu"}),
+        (
+            "editor",
+            "2026-07-15T13:00:00Z",
+            22,
+            {"holder_email": "editor@example.edu"},
+        ),
+        ("editor", None, 21, {"holder_email": "editor@example.edu"}),
+    )
+
+    for role, archived_at, opened_version_id, checkout in cases:
+        fake_st = _FakeStreamlit()
+        fake_st.rerun_called = False
+        monkeypatch.setattr(job_files_render, "st", fake_st, raising=False)
+        monkeypatch.setattr(
+            job_files_render, "_active_checkout", lambda _file_id, row=checkout: row
+        )
+
+        job_files_render.render_file_exports(
+            {
+                "id": 9,
+                "display_name": "deletes.mrc",
+                "access_role": role,
+                "archived_at": archived_at,
+                "current_version_id": 22,
+            },
+            user="editor@example.edu",
+            opened_version_id=opened_version_id,
+        )
+
+        assert "Create export" not in [button["label"] for button in fake_st.buttons]
+        assert "Prior export" in " ".join(fake_st.markdowns)
 
 
 def test_export_filename_keeps_source_name_but_adds_operation_suffix():

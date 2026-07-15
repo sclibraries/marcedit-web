@@ -34,6 +34,15 @@ are outside this Task 8 slice.
 - Service GREEN: `11 passed`.
 - UI RED: two renderer tests failed because `render_file_exports` did not exist.
 - UI GREEN: both renderer tests and the History integration test passed.
+- Review-fix RED: the first focused run produced three intended failures for
+  missing post-validation checkout recheck, destructive UUID collision, and
+  over-broad Create export controls (`3 failed, 3 passed`). A separate cleanup
+  ownership regression then failed because a missing source could delete a
+  colliding retained path (`1 failed`).
+- Review-fix GREEN: post-validation authority, collision retry, partial-copy
+  cleanup, pre-persist rollback, persisted-then-raised reconciliation,
+  holder-only UI, and collision cleanup-ownership regressions all passed
+  (`7 passed` plus the final ownership regression `1 passed`).
 
 ## Verification
 
@@ -46,6 +55,24 @@ are outside this Task 8 slice.
   — `1199 passed in 17.57s`.
 - `git diff --check` passed.
 
+## Review Fix Verification
+
+- Focused Task 8/export/history/adoption suite in the Python 3.9 container:
+  `pytest -q tests/test_job_files.py tests/test_tasks_export.py tests/test_job_file_workflow.py tests/test_history_render.py tests/test_job_file_mutations.py`
+  — `81 passed in 2.37s`.
+- Fresh full zero-skip suite after all review fixes:
+  `docker compose run --rm -v /Users/roconnell/Projects/work/marcedit-web/.worktrees/task-151-job-file-work-items:/app:ro marcedit-web pytest -q`
+  — `1205 passed in 16.81s`.
+- Export creation now rechecks role, archive state, exact current version, and
+  the unexpired holder checkout after copy/MARC validation and immediately
+  before insertion/status/activity changes.
+- Export copy uses exclusive `xb` target creation with collision retry. Cleanup
+  removes only a path exclusively created by the attempt and reconciles any
+  surviving path against SQLite before deletion.
+- Create export controls now require a non-archived owner/editor who actively
+  holds the file checkout with the exact current opened-version token. Other
+  users retain list/download visibility.
+
 ## Concerns
 
 - Host Python lacked `streamlit_ace`, so a direct host full-suite collection was
@@ -53,7 +80,8 @@ are outside this Task 8 slice.
   deploy, and documentation files, producing two failures and nine skips. The
   final complete-worktree container run resolved both environment limitations
   and had zero skips.
-- The controller requested immediate handoff before the nested independent
-  reviewer returned. That reviewer was stopped; the controller is performing
-  the formal Task 8 review.
+- Task 8 review findings were reproduced with regression tests and resolved.
 - Pre-existing Task 7 Minor findings remain intentionally out of scope.
+- My Task 8 commands did **not** create the untracked `uv.lock`; no command in
+  either implementation pass invoked `uv`. The file remains untouched and is
+  not staged.

@@ -31,13 +31,23 @@ def render_file_exports(
     st = _streamlit()
     file_id = int(file_row["id"])
     can_edit = file_row.get("access_role") in _EDIT_ROLES
+    checkout = _active_checkout(file_id) if can_edit else None
+    can_create = (
+        can_edit
+        and file_row.get("archived_at") is None
+        and checkout is not None
+        and checkout["holder_email"] == user
+        and opened_version_id is not None
+        and file_row.get("current_version_id") is not None
+        and int(opened_version_id) == int(file_row["current_version_id"])
+    )
     st.markdown("**Exports**")
     st.caption(
         "Exports are retained copies of one exact file version. Marking one "
         "loaded records the external load; it does not complete this file."
     )
 
-    if can_edit:
+    if can_create:
         purpose = st.text_input("Purpose", key=f"file_export_purpose_{file_id}")
         description = st.text_area(
             "Description (optional)", key=f"file_export_description_{file_id}"

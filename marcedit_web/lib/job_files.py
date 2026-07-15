@@ -178,7 +178,6 @@ def create_export(
         raise JobFileError("an export purpose is required")
 
     db.init_schema()
-    now = _utc_now_iso()
     target: Path | None = None
     export_id: int | None = None
     try:
@@ -203,14 +202,11 @@ def create_export(
             clean_filename = _safe_export_filename(
                 filename or str(row["display_name"])
             )
-            target = (
-                versions_root()
-                / str(file_id)
-                / "exports"
-                / f"{uuid.uuid4().hex}-{clean_filename}"
+            target = _copy_export_exclusive(
+                Path(version["file_path"]),
+                versions_root() / str(file_id) / "exports",
+                clean_filename,
             )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(Path(version["file_path"]), target)
             if target.stat().st_size != int(version["file_bytes"]):
                 raise JobFileError("export size does not match its source version")
             copied = RecordStore.from_path(target)
@@ -220,6 +216,23 @@ def create_export(
             ):
                 raise JobFileError("export record count does not match its source version")
 
+            row = _transition_row(conn, file_id, user_email)
+            _assert_transition_checkout(
+                conn,
+                file_id,
+                user_email,
+                opened_version_id,
+            )
+            version = conn.execute(
+                "SELECT id,file_path,record_count,file_bytes,validation_json,"
+                "approval_kind FROM job_file_versions"
+                " WHERE id=? AND job_file_id=?",
+                (opened_version_id, file_id),
+            ).fetchone()
+            if version is None:
+                raise JobFileError("job file version not found")
+
+            now = _utc_now_iso()
             state = "ready" if version["approval_kind"] is not None else "draft"
             export_id = int(conn.execute(
                 "INSERT INTO job_file_exports(job_file_id,version_id,purpose,"
@@ -256,17 +269,16 @@ def create_export(
             )
     except Exception as exc:
         if target is not None and target.exists():
-            if export_id is not None:
-                try:
-                    committed = _export_exists_in_db(export_id, target)
-                except Exception as verification_exc:
-                    raise JobFileError(
-                        "export creation could not be confirmed; retained export bytes"
-                    ) from verification_exc
-                if committed:
-                    raise JobFileError(
-                        "export was created, but transaction confirmation failed"
-                    ) from exc
+            try:
+                referenced_export_id = _export_reference_id_for_path(target)
+            except Exception as verification_exc:
+                raise JobFileError(
+                    "export creation could not be confirmed; retained export bytes"
+                ) from verification_exc
+            if referenced_export_id is not None:
+                raise JobFileError(
+                    "export was created, but transaction confirmation failed"
+                ) from exc
             target.unlink(missing_ok=True)
         raise
     return get_export(export_id, user_email)
@@ -814,14 +826,37 @@ def _adoption_version_exists_in_db(
     return row is not None and row["file_path"] == str(target)
 
 
-def _export_exists_in_db(export_id: int, target: Path) -> bool:
-    """Check exact durable export identity after uncertain transaction exit."""
+def _export_reference_id_for_path(target: Path) -> int | None:
+    """Return the durable export referencing a path after uncertain exit."""
     with db.connect() as conn:
         row = conn.execute(
-            "SELECT file_path FROM job_file_exports WHERE id=?",
-            (export_id,),
+            "SELECT id FROM job_file_exports WHERE file_path=?",
+            (str(target),),
         ).fetchone()
-    return row is not None and row["file_path"] == str(target)
+    return int(row["id"]) if row is not None else None
+
+
+def _copy_export_exclusive(
+    source: Path,
+    export_dir: Path,
+    filename: str,
+) -> Path:
+    """Stream to a new path without ever opening an existing artifact."""
+    export_dir.mkdir(parents=True, exist_ok=True)
+    for _attempt in range(10):
+        target = export_dir / f"{uuid.uuid4().hex}-{filename}"
+        try:
+            target_file = target.open("xb")
+        except FileExistsError:
+            continue
+        try:
+            with target_file, source.open("rb") as source_file:
+                shutil.copyfileobj(source_file, target_file)
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return target
+    raise JobFileError("could not allocate a unique export path")
 
 
 def _safe_export_filename(filename: str) -> str:
