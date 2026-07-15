@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -160,6 +161,195 @@ def list_versions(file_id: int, user_email: str) -> list[dict[str, Any]]:
             (file_id, user_email.strip().lower()),
         ).fetchall()
     return [_dict(row) for row in rows]
+
+
+def create_export(
+    *,
+    file_id: int,
+    opened_version_id: int,
+    user_email: str,
+    purpose: str,
+    description: str = "",
+    filename: str | None = None,
+) -> dict[str, Any]:
+    """Retain a labeled copy of the exact checked-out current version."""
+    clean_purpose = purpose.strip()
+    if not clean_purpose:
+        raise JobFileError("an export purpose is required")
+
+    db.init_schema()
+    now = _utc_now_iso()
+    target: Path | None = None
+    export_id: int | None = None
+    try:
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _transition_row(conn, file_id, user_email)
+            _assert_transition_checkout(
+                conn,
+                file_id,
+                user_email,
+                opened_version_id,
+            )
+            version = conn.execute(
+                "SELECT id,file_path,record_count,file_bytes,validation_json,"
+                "approval_kind FROM job_file_versions"
+                " WHERE id=? AND job_file_id=?",
+                (opened_version_id, file_id),
+            ).fetchone()
+            if version is None:
+                raise JobFileError("job file version not found")
+
+            clean_filename = _safe_export_filename(
+                filename or str(row["display_name"])
+            )
+            target = (
+                versions_root()
+                / str(file_id)
+                / "exports"
+                / f"{uuid.uuid4().hex}-{clean_filename}"
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(version["file_path"]), target)
+            if target.stat().st_size != int(version["file_bytes"]):
+                raise JobFileError("export size does not match its source version")
+            copied = RecordStore.from_path(target)
+            if (
+                copied.count() != int(version["record_count"])
+                or copied.malformed_count() != 0
+            ):
+                raise JobFileError("export record count does not match its source version")
+
+            state = "ready" if version["approval_kind"] is not None else "draft"
+            export_id = int(conn.execute(
+                "INSERT INTO job_file_exports(job_file_id,version_id,purpose,"
+                "description,filename,file_path,record_count,validation_json,state,"
+                "created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                (
+                    file_id,
+                    opened_version_id,
+                    clean_purpose,
+                    description.strip(),
+                    clean_filename,
+                    str(target),
+                    int(version["record_count"]),
+                    version["validation_json"],
+                    state,
+                    user_email,
+                    now,
+                ),
+            ).fetchone()["id"])
+            if state == "ready":
+                conn.execute(
+                    "UPDATE job_files SET status='exported',updated_by=?,updated_at=?"
+                    " WHERE id=?",
+                    (user_email, now, file_id),
+                )
+            jobs._record_activity(  # noqa: SLF001 - shared transaction helper
+                conn,
+                int(row["job_id"]),
+                "job-file-export-created",
+                f"Created {state} export for {row['display_name']}: {clean_purpose}",
+                user_email,
+                now,
+                job_file_id=file_id,
+            )
+    except Exception as exc:
+        if target is not None and target.exists():
+            if export_id is not None:
+                try:
+                    committed = _export_exists_in_db(export_id, target)
+                except Exception as verification_exc:
+                    raise JobFileError(
+                        "export creation could not be confirmed; retained export bytes"
+                    ) from verification_exc
+                if committed:
+                    raise JobFileError(
+                        "export was created, but transaction confirmation failed"
+                    ) from exc
+            target.unlink(missing_ok=True)
+        raise
+    return get_export(export_id, user_email)
+
+
+def get_export(export_id: int, user_email: str) -> dict[str, Any]:
+    """Return one retained export visible through its parent job."""
+    db.init_schema()
+    with db.connect() as conn:
+        row = conn.execute(
+            _EXPORT_SELECT
+            + " WHERE job_file_exports.id=? AND job_access.user_email=?",
+            (export_id, user_email.strip().lower()),
+        ).fetchone()
+    if row is None:
+        raise JobFileError("job file export not found")
+    return _dict(row)
+
+
+def list_exports(file_id: int, user_email: str) -> list[dict[str, Any]]:
+    """List retained exports for one accessible file, newest first."""
+    db.init_schema()
+    with db.connect() as conn:
+        rows = conn.execute(
+            _EXPORT_SELECT
+            + " WHERE job_file_exports.job_file_id=?"
+            " AND job_access.user_email=?"
+            " ORDER BY job_file_exports.created_at DESC,job_file_exports.id DESC",
+            (file_id, user_email.strip().lower()),
+        ).fetchall()
+    return [_dict(row) for row in rows]
+
+
+def mark_export_loaded(
+    export_id: int,
+    *,
+    by: str,
+    destination: str,
+    external_id: str = "",
+    note: str = "",
+) -> dict[str, Any]:
+    """Record a manual downstream load without changing or deleting its file."""
+    clean_destination = destination.strip()
+    if not clean_destination:
+        raise JobFileError("a loaded destination is required")
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            _EXPORT_SELECT
+            + " WHERE job_file_exports.id=? AND job_access.user_email=?",
+            (export_id, by.strip().lower()),
+        ).fetchone()
+        if row is None:
+            raise JobFileError("job file export not found")
+        if row["access_role"] not in {"owner", "editor"}:
+            raise JobFileError("owner or editor access required")
+        if row["state"] != "ready":
+            raise JobFileError("only a ready export can be marked loaded")
+        conn.execute(
+            "UPDATE job_file_exports SET state='loaded',loaded_destination=?,"
+            "loaded_external_id=?,loaded_note=?,loaded_by=?,loaded_at=? WHERE id=?",
+            (
+                clean_destination,
+                external_id.strip(),
+                note.strip(),
+                by,
+                now,
+                export_id,
+            ),
+        )
+        jobs._record_activity(  # noqa: SLF001 - shared transaction helper
+            conn,
+            int(row["job_id"]),
+            "job-file-export-loaded",
+            f"Marked {row['display_name']} export loaded to {clean_destination}: "
+            f"{row['purpose']}",
+            by,
+            now,
+            job_file_id=int(row["job_file_id"]),
+        )
+    return get_export(export_id, by)
 
 
 def return_for_review(
@@ -624,6 +814,25 @@ def _adoption_version_exists_in_db(
     return row is not None and row["file_path"] == str(target)
 
 
+def _export_exists_in_db(export_id: int, target: Path) -> bool:
+    """Check exact durable export identity after uncertain transaction exit."""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT file_path FROM job_file_exports WHERE id=?",
+            (export_id,),
+        ).fetchone()
+    return row is not None and row["file_path"] == str(target)
+
+
+def _safe_export_filename(filename: str) -> str:
+    """Return a portable basename suitable for retained export storage."""
+    basename = Path(filename.strip()).name
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", basename).strip("-.")
+    if not clean:
+        raise JobFileError("a valid export filename is required")
+    return clean
+
+
 def _invalidate_approval_and_supersede_exports_in_tx(
     conn,
     file_id: int,
@@ -656,6 +865,15 @@ _VERSION_SELECT = (
     " job_access.role AS access_role"
     " FROM job_file_versions"
     " JOIN job_files ON job_files.id=job_file_versions.job_file_id"
+    " JOIN job_access ON job_access.job_id=job_files.job_id"
+)
+
+_EXPORT_SELECT = (
+    "SELECT job_file_exports.*,job_files.job_id,job_files.display_name,"
+    " job_file_versions.version_number,job_access.role AS access_role"
+    " FROM job_file_exports"
+    " JOIN job_files ON job_files.id=job_file_exports.job_file_id"
+    " JOIN job_file_versions ON job_file_versions.id=job_file_exports.version_id"
     " JOIN job_access ON job_access.job_id=job_files.job_id"
 )
 

@@ -7,6 +7,8 @@ same attachment, open, and archive paths.
 from __future__ import annotations
 
 import datetime as dt
+from pathlib import Path
+
 from marcedit_web.lib import collaboration, db, job_files, locks, session
 
 # One line per file; weights keep Open and the ⋮ trigger from wrapping.
@@ -17,6 +19,141 @@ UPLOADS_HEADERS = (
 
 _EDIT_ROLES = {"owner", "editor"}
 _OPENED_VERSIONS_KEY = "job_file_opened_versions"
+
+
+def render_file_exports(
+    file_row: dict,
+    *,
+    user: str,
+    opened_version_id: int | None,
+) -> None:
+    """Render retained labeled exports and their manual load audit controls."""
+    st = _streamlit()
+    file_id = int(file_row["id"])
+    can_edit = file_row.get("access_role") in _EDIT_ROLES
+    st.markdown("**Exports**")
+    st.caption(
+        "Exports are retained copies of one exact file version. Marking one "
+        "loaded records the external load; it does not complete this file."
+    )
+
+    if can_edit:
+        purpose = st.text_input("Purpose", key=f"file_export_purpose_{file_id}")
+        description = st.text_area(
+            "Description (optional)", key=f"file_export_description_{file_id}"
+        )
+        filename = st.text_input(
+            "Filename (optional)", key=f"file_export_filename_{file_id}"
+        )
+        if st.button("Create export", key=f"file_export_create_{file_id}"):
+            if opened_version_id is None:
+                st.error("Reopen this file before creating an export.")
+            else:
+                try:
+                    created = job_files.create_export(
+                        file_id=file_id,
+                        opened_version_id=int(opened_version_id),
+                        user_email=user,
+                        purpose=purpose,
+                        description=description,
+                        filename=filename or None,
+                    )
+                except job_files.JobFileError as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(
+                        f"Created {created['state']} export: {created['purpose']}."
+                    )
+                    st.rerun()
+
+    exports = job_files.list_exports(file_id, user)
+    if not exports:
+        st.caption("No retained exports yet.")
+        return
+    for export in exports:
+        _render_file_export(export, user=user, can_edit=can_edit)
+
+
+def _render_file_export(export: dict, *, user: str, can_edit: bool) -> None:
+    st = _streamlit()
+    export_id = int(export["id"])
+    state = str(export["state"]).capitalize()
+    st.markdown(
+        f"**{export['purpose']}** — {state} · v{export['version_number']}"
+    )
+    if export.get("description"):
+        st.caption(export["description"])
+    st.caption(
+        f"{export['filename']} · {int(export['record_count']):,} records · "
+        f"created by {export['created_by']} at {export['created_at']}"
+    )
+    if export["state"] == "loaded":
+        details = (
+            f"Loaded to {export['loaded_destination']} by {export['loaded_by']} "
+            f"at {export['loaded_at']}"
+        )
+        if export.get("loaded_external_id"):
+            details += f" · external id {export['loaded_external_id']}"
+        st.caption(details)
+        if export.get("loaded_note"):
+            st.caption(export["loaded_note"])
+
+    path = Path(export["file_path"])
+    ready_key = f"file_export_download_ready_{export_id}"
+    if not path.is_file():
+        st.caption("Retained export file is unavailable.")
+    elif not st.session_state.get(ready_key):
+        if st.button(
+            "Prepare download",
+            key=f"file_export_prepare_{export_id}",
+            help="Loads this retained export from disk for download.",
+        ):
+            st.session_state[ready_key] = True
+            st.rerun()
+    else:
+        st.download_button(
+            label="Download retained export",
+            data=path.read_bytes(),
+            file_name=export["filename"],
+            mime="application/marc",
+            key=f"file_export_download_{export_id}",
+        )
+
+    if export["state"] != "ready" or not can_edit:
+        return
+    destination = st.text_input(
+        "Loaded destination",
+        key=f"file_export_destination_{export_id}",
+    )
+    external_id = st.text_input(
+        "External id (optional)",
+        key=f"file_export_external_id_{export_id}",
+    )
+    note = st.text_area(
+        "Load note (optional)",
+        key=f"file_export_note_{export_id}",
+    )
+    if st.button("Mark loaded", key=f"file_export_loaded_{export_id}"):
+        try:
+            job_files.mark_export_loaded(
+                export_id,
+                by=user,
+                destination=destination,
+                external_id=external_id,
+                note=note,
+            )
+        except job_files.JobFileError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+
+
+def _streamlit():
+    if "st" in globals():
+        return globals()["st"]
+    import streamlit
+
+    return streamlit
 
 
 def _checkout_actions(

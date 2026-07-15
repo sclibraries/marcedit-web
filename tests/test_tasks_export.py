@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import sys
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 
@@ -88,6 +89,165 @@ class _FakeStreamlit:
 
     def spinner(self, _message):
         return _Spinner()
+
+    def text_input(self, _label, *, key, **_kwargs):
+        return self.session_state.get(key, "")
+
+    def text_area(self, _label, *, key, **_kwargs):
+        return self.session_state.get(key, "")
+
+    def rerun(self):
+        self.rerun_called = True
+
+
+def test_file_exports_are_labeled_and_download_from_retained_paths(
+    monkeypatch, tmp_path,
+):
+    """The durable export path, not mutable task output, is delivery evidence."""
+    from marcedit_web.render import job_files as job_files_render
+
+    fake_st = _FakeStreamlit()
+    fake_st.rerun_called = False
+    retained = tmp_path / "retained.mrc"
+    retained.write_bytes(b"retained-export")
+    mutable_output = tmp_path / "task-output.mrc"
+    mutable_output.write_bytes(b"mutable-preview")
+    exports = [
+        {
+            "id": export_id,
+            "job_file_id": 9,
+            "version_id": 20 + export_id,
+            "version_number": export_id,
+            "purpose": f"Purpose {state}",
+            "description": "Retained delivery",
+            "filename": f"{state}.mrc",
+            "file_path": str(retained if state == "ready" else mutable_output),
+            "record_count": 7,
+            "state": state,
+            "created_by": "owner@example.edu",
+            "created_at": "2026-07-15T12:00:00Z",
+            "loaded_destination": "EDS" if state == "loaded" else None,
+            "loaded_external_id": "load-7" if state == "loaded" else None,
+            "loaded_note": "Accepted" if state == "loaded" else None,
+            "loaded_by": "editor@example.edu" if state == "loaded" else None,
+            "loaded_at": "2026-07-15T13:00:00Z" if state == "loaded" else None,
+        }
+        for export_id, state in enumerate(
+            ("draft", "ready", "superseded", "loaded"), start=1
+        )
+    ]
+    monkeypatch.setattr(job_files_render, "st", fake_st, raising=False)
+    monkeypatch.setattr(
+        job_files_render.job_files,
+        "list_exports",
+        lambda file_id, user: exports,
+    )
+
+    job_files_render.render_file_exports(
+        {"id": 9, "display_name": "deletes.mrc", "access_role": "editor"},
+        user="editor@example.edu",
+        opened_version_id=22,
+    )
+
+    rendered = " ".join(fake_st.markdowns + fake_st.captions)
+    assert all(state in rendered for state in ("Draft", "Ready", "Superseded", "Loaded"))
+    assert fake_st.download_buttons == []
+    assert not any(button["label"] == "Mark complete" for button in fake_st.buttons)
+
+    fake_st.clicked_keys.add("file_export_prepare_2")
+    job_files_render.render_file_exports(
+        {"id": 9, "display_name": "deletes.mrc", "access_role": "editor"},
+        user="editor@example.edu",
+        opened_version_id=22,
+    )
+    fake_st.clicked_keys.clear()
+    job_files_render.render_file_exports(
+        {"id": 9, "display_name": "deletes.mrc", "access_role": "editor"},
+        user="editor@example.edu",
+        opened_version_id=22,
+    )
+
+    ready_download = next(
+        button for button in fake_st.download_buttons
+        if button["file_name"] == "ready.mrc"
+    )
+    assert ready_download["data"] == Path(retained).read_bytes()
+
+
+def test_file_export_form_passes_required_labels_and_manual_load_audit(
+    monkeypatch, tmp_path,
+):
+    from marcedit_web.render import job_files as job_files_render
+
+    fake_st = _FakeStreamlit()
+    fake_st.rerun_called = False
+    fake_st.session_state.update({
+        "file_export_purpose_9": "EDS deletion load",
+        "file_export_description_9": "July withdrawal",
+        "file_export_filename_9": "routledge-deletes.mrc",
+        "file_export_destination_4": "EDS",
+        "file_export_external_id_4": "load-2026-07-15",
+        "file_export_note_4": "Accepted",
+    })
+    export_path = tmp_path / "ready.mrc"
+    export_path.write_bytes(b"ready")
+    ready = {
+        "id": 4,
+        "job_file_id": 9,
+        "version_id": 22,
+        "version_number": 3,
+        "purpose": "EDS deletion load",
+        "description": "July withdrawal",
+        "filename": "routledge-deletes.mrc",
+        "file_path": str(export_path),
+        "record_count": 7,
+        "state": "ready",
+        "created_by": "owner@example.edu",
+        "created_at": "2026-07-15T12:00:00Z",
+        "loaded_destination": None,
+        "loaded_external_id": None,
+        "loaded_note": None,
+        "loaded_by": None,
+        "loaded_at": None,
+    }
+    created = []
+    loaded = []
+    monkeypatch.setattr(job_files_render, "st", fake_st, raising=False)
+    monkeypatch.setattr(
+        job_files_render.job_files, "list_exports", lambda *_args: [ready]
+    )
+    monkeypatch.setattr(
+        job_files_render.job_files,
+        "create_export",
+        lambda **kwargs: created.append(kwargs) or ready,
+    )
+    monkeypatch.setattr(
+        job_files_render.job_files,
+        "mark_export_loaded",
+        lambda export_id, **kwargs: loaded.append((export_id, kwargs)) or ready,
+    )
+    fake_st.clicked_keys.update({"file_export_create_9", "file_export_loaded_4"})
+
+    job_files_render.render_file_exports(
+        {"id": 9, "display_name": "deletes.mrc", "access_role": "editor"},
+        user="editor@example.edu",
+        opened_version_id=22,
+    )
+
+    assert created == [{
+        "file_id": 9,
+        "opened_version_id": 22,
+        "user_email": "editor@example.edu",
+        "purpose": "EDS deletion load",
+        "description": "July withdrawal",
+        "filename": "routledge-deletes.mrc",
+    }]
+    assert loaded == [(4, {
+        "by": "editor@example.edu",
+        "destination": "EDS",
+        "external_id": "load-2026-07-15",
+        "note": "Accepted",
+    })]
 
 
 def test_export_filename_keeps_source_name_but_adds_operation_suffix():

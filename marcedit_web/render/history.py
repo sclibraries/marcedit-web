@@ -32,6 +32,7 @@ from marcedit_web.lib import (
 )
 from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.identity import is_anonymous
+from marcedit_web.render import job_files as job_files_render
 
 logger = logging.getLogger("marcedit_web.render.history")
 
@@ -122,6 +123,11 @@ def _render_job_file_history(
         f"current version {current_label}"
     )
     _render_file_transition_controls(file_row, user)
+    job_files_render.render_file_exports(
+        file_row,
+        user=user,
+        opened_version_id=st.session_state.get("job_file_version_id"),
+    )
     can_restore = _can_restore_file(file_row, user)
 
     st.markdown("**Immutable version history**")

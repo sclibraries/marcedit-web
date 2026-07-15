@@ -440,6 +440,12 @@ def test_job_file_history_is_scoped_and_legacy_history_is_separate(
         }],
     )
     monkeypatch.setattr(history, "_can_restore_file", lambda *_args: True)
+    rendered_exports = []
+    monkeypatch.setattr(
+        history.job_files_render,
+        "render_file_exports",
+        lambda file_row, **kwargs: rendered_exports.append((file_row, kwargs)),
+    )
 
     history.render()
 
@@ -454,6 +460,17 @@ def test_job_file_history_is_scoped_and_legacy_history_is_separate(
     assert any(button["label"] == "Approve current" for button in fake_st.buttons)
     assert any(button["label"] == "Add review note" for button in fake_st.buttons)
     assert "1 recorded change" in rendered
+    assert rendered_exports == [(
+        {
+            "id": 9,
+            "job_id": 3,
+            "display_name": "deletes.mrc",
+            "status": "needs_review",
+            "current_version_id": 12,
+            "access_role": "editor",
+        },
+        {"user": "cat@smith.edu", "opened_version_id": 12},
+    )]
 
 
 def test_historical_restore_control_requires_checkout_holder(monkeypatch, tmp_path):
