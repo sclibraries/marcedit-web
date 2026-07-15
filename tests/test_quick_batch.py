@@ -353,6 +353,63 @@ def test_apply_preview_reports_progress(tmp_path):
     assert events == [(2, 2)]
 
 
+def test_job_file_quick_batch_adopts_preview_as_new_version(
+    monkeypatch, tmp_path,
+):
+    """Acceptance promotes preview bytes without rewriting the open version."""
+    from marcedit_web.render import tasks as tasks_render
+
+    store = _store(tmp_path, _record())
+    preview = build_preview(
+        store,
+        QuickBatchRequest(kind="leader", position="05", value="c"),
+    )
+    before = store.path.read_bytes()
+    calls = []
+    monkeypatch.setattr(
+        tasks_render.session,
+        "adopt_current_candidate",
+        lambda **kwargs: calls.append({
+            **kwargs,
+            "candidate_bytes": kwargs["candidate_path"].read_bytes(),
+        }) or {"version_number": 2},
+    )
+
+    created = tasks_render._adopt_quick_batch_preview(store, preview)
+
+    assert created["version_number"] == 2
+    assert store.path.read_bytes() == before
+    assert calls[0]["source_kind"] == "quick-batch"
+    assert calls[0]["summary"]["changed_count"] == 1
+    candidate = RecordStore.from_bytes(
+        calls[0]["candidate_bytes"], tmp_dir=tmp_path / "candidate"
+    )
+    assert str(candidate.get(0).leader)[5] == "c"
+
+
+def test_failed_quick_batch_adoption_keeps_preview_candidate(
+    monkeypatch, tmp_path,
+):
+    from marcedit_web.render import tasks as tasks_render
+
+    store = _store(tmp_path, _record())
+    preview = build_preview(
+        store,
+        QuickBatchRequest(kind="leader", position="05", value="c"),
+    )
+
+    def reject(**kwargs):
+        kwargs["candidate_path"].unlink()
+        raise tasks_render.job_files.JobFileError("stale")
+
+    monkeypatch.setattr(tasks_render.session, "adopt_current_candidate", reject)
+
+    with pytest.raises(tasks_render.job_files.JobFileError, match="stale"):
+        tasks_render._adopt_quick_batch_preview(store, preview)
+
+    assert preview.output_path.is_file()
+
+
 @pytest.mark.parametrize(
     "quick_request, message",
     [

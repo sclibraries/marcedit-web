@@ -39,8 +39,10 @@ from marcedit_web.lib import (
     ai_task_draft,
     batch_runtime,
     batch_replace,
+    collaboration,
     editor,
     gemini_task_draft,
+    job_files,
     marcedit_import,
     note_task_draft,
     quotas,
@@ -58,6 +60,7 @@ from marcedit_web.lib import (
 from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.batch_replace import BatchReplaceRequest
 from marcedit_web.lib.quick_batch import QuickBatchRequest
+from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.lib.run_history import TaskRunRecord
 from marcedit_web.lib.errors import Issue, transform_issue
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
@@ -81,6 +84,24 @@ def _batch_operation(operation: str, *, phase: str, store):
             bytes=file_bytes,
         ) as measurement:
             yield measurement
+
+
+def _uses_job_file_versions() -> bool:
+    return (
+        st.session_state.get("job_file_id") is not None
+        and not st.session_state.get("quick_load_mode", False)
+    )
+
+
+@contextmanager
+def _owned_candidate(source_path: Path, *, prefix: str):
+    workdir = Path(tempfile.mkdtemp(prefix=prefix))
+    candidate_path = workdir / "candidate.mrc"
+    try:
+        shutil.copyfile(source_path, candidate_path)
+        yield candidate_path
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1394,25 +1415,34 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not build task diff summary: %s", exc)
 
-    snapshot = snapshot_actions.record_job_snapshot(
-        job_id=st.session_state.get("current_job_id"),
-        user_email=user,
-        kind="task-run",
-        label=", ".join(selection) or "Task run",
-        before_path=sandbox_input,
-        after_path=sandbox_output_path,
-        summary={
-            "task_names": list(selection),
-            "input_record_count": store.count(),
-            "output_record_count": output_count,
-            "changed_count": (
-                diff_summary.changed_count if diff_summary is not None else 0
-            ),
-            "error_count": result.error_count,
-            "timed_out": bool(result.timed_out),
-            "sandbox_returncode": int(result.returncode or 0),
-        },
-    )
+    task_label = ", ".join(selection) or "Task run"
+    summary = {
+        "task_names": list(selection),
+        "input_record_count": store.count(),
+        "output_record_count": output_count,
+        "changed_count": (
+            diff_summary.changed_count if diff_summary is not None else 0
+        ),
+        "error_count": result.error_count,
+        "timed_out": bool(result.timed_out),
+        "sandbox_returncode": int(result.returncode or 0),
+    }
+    validation = {
+        "error_count": result.error_count,
+        "timed_out": bool(result.timed_out),
+        "sandbox_returncode": int(result.returncode or 0),
+    }
+    snapshot = None
+    if not _uses_job_file_versions():
+        snapshot = snapshot_actions.record_job_snapshot(
+            job_id=st.session_state.get("current_job_id"),
+            user_email=user,
+            kind="task-run",
+            label=task_label,
+            before_path=sandbox_input,
+            after_path=sandbox_output_path,
+            summary=summary,
+        )
     if snapshot is not None:
         audit_event(
             "job-snapshot-created",
@@ -1440,6 +1470,14 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         # instead of rebuilding.
         "_diff_summary": diff_summary,
         "snapshot_id": snapshot["id"] if snapshot is not None else None,
+        "task_label": task_label,
+        "summary": summary,
+        "validation": validation,
+        "preview_version_id": (
+            st.session_state.get("job_file_version_id")
+            if _uses_job_file_versions()
+            else None
+        ),
     }
 
     # TASK-034 + TASK-035: append to per-session run history with
@@ -1559,6 +1597,45 @@ def _render_run_results() -> None:
     # cataloger can verify the task did the expected work before
     # exporting.
     _render_diff_review(results)
+
+    if (
+        _uses_job_file_versions()
+        and not results.get("timed_out")
+        and results.get("sandbox_returncode", 0) == 0
+        and st.button(
+            "Apply as new version",
+            type="primary",
+            key="task_apply_version",
+        )
+    ):
+        if results.get("preview_version_id") != st.session_state.get(
+            "job_file_version_id"
+        ):
+            st.error(
+                "File changed since this task output was previewed. "
+                "Run the task again."
+            )
+        else:
+            try:
+                with _owned_candidate(
+                    Path(results["out_path"]),
+                    prefix="marcedit-web-task-apply-",
+                ) as candidate_path:
+                    version = session.adopt_current_candidate(
+                        candidate_path=candidate_path,
+                        source_kind="task",
+                        label=results["task_label"],
+                        summary=results["summary"],
+                        validation=results["validation"],
+                    )
+            except (
+                job_files.JobFileError,
+                collaboration.CollaborationError,
+            ) as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"Applied as version {version['version_number']}.")
+                st.session_state.pop(K_RUN_RESULTS, None)
 
     st.markdown("**Updated task output is ready as a separate export.**")
     st.caption(_history_location_caption(results.get("snapshot_id")))
@@ -2013,41 +2090,51 @@ def _apply_quick_preview(preview) -> None:
     if store is None:
         st.error("No loaded batch — upload one on Home first.")
         return
-    with snapshot_actions.staged_store_path(store) as before_path:
-        with _batch_operation(
-            "quick-replace", phase="apply", store=store
-        ) as measurement:
-            result = batch_replace.apply_preview(store, preview)
-            if result.error:
-                measurement.mark_error("ApplyError")
-        if result.error:
-            st.error(result.error)
-            return
-
-        user = session.current_user_id()
-        label = f"Find/replace {preview.request.tag}"
-        if preview.request.subfield:
-            label += f"${preview.request.subfield}"
+    if _uses_job_file_versions():
         try:
-            snapshot = snapshot_actions.record_job_snapshot(
-                job_id=st.session_state.get("current_job_id"),
-                user_email=user,
-                kind="quick-replace",
-                label=label,
-                before_path=before_path,
-                after_path=store.path,
-                summary={
-                    "matched_count": preview.matched_count,
-                    "changed_count": preview.changed_count,
-                    "applied_count": result.applied_count,
-                },
-            )
-        except Exception:  # noqa: BLE001 — snapshot loss must not block the apply
-            logger.exception("quick find/replace snapshot failed")
-            snapshot = None
-            st.warning(
-                "Change applied, but recording the history snapshot failed."
-            )
+            result, version = _adopt_quick_replace_preview(store, preview)
+        except (job_files.JobFileError, collaboration.CollaborationError) as exc:
+            st.error(str(exc))
+            return
+        snapshot = None
+        user = session.current_user_id()
+    else:
+        version = None
+        with snapshot_actions.staged_store_path(store) as before_path:
+            with _batch_operation(
+                "quick-replace", phase="apply", store=store
+            ) as measurement:
+                result = batch_replace.apply_preview(store, preview)
+                if result.error:
+                    measurement.mark_error("ApplyError")
+            if result.error:
+                st.error(result.error)
+                return
+
+            user = session.current_user_id()
+            try:
+                snapshot = snapshot_actions.record_job_snapshot(
+                    job_id=st.session_state.get("current_job_id"),
+                    user_email=user,
+                    kind="quick-replace",
+                    label=_quick_replace_label(preview),
+                    before_path=before_path,
+                    after_path=store.path,
+                    summary={
+                        "matched_count": preview.matched_count,
+                        "changed_count": preview.changed_count,
+                        "applied_count": result.applied_count,
+                    },
+                )
+            except Exception:  # noqa: BLE001 — legacy history is best-effort
+                logger.exception("quick find/replace snapshot failed")
+                snapshot = None
+                st.warning(
+                    "Change applied, but recording the history snapshot failed."
+                )
+    if result.error:
+        st.error(result.error)
+        return
     if snapshot is not None:
         audit_event(
             "job-snapshot-created",
@@ -2073,11 +2160,52 @@ def _apply_quick_preview(preview) -> None:
     # pre-apply numbers.
     st.session_state["issues_cache"] = {}
     batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
-    st.success(
-        f"Applied to {result.applied_count} record(s). "
-        "Other records are unchanged."
-    )
+    message = f"Applied to {result.applied_count} record(s)"
+    if version is not None:
+        message += f" as version {version['version_number']}"
+    st.success(message + ". Other records are unchanged.")
     st.rerun()
+
+
+def _quick_replace_label(preview) -> str:
+    label = f"Find/replace {preview.request.tag}"
+    if preview.request.subfield:
+        label += f"${preview.request.subfield}"
+    return label
+
+
+def _adopt_quick_replace_preview(store, preview):
+    if (
+        preview.store_id != id(store)
+        or preview.store_revision != store.revision
+    ):
+        return batch_replace.BatchReplaceResult(
+            error="Batch changed since preview."
+        ), None
+    with snapshot_actions.staged_store_path(store) as candidate_path:
+        candidate_store = RecordStore.from_path(candidate_path)
+        candidate_preview = copy.copy(preview)
+        candidate_preview.store_id = id(candidate_store)
+        candidate_preview.store_revision = candidate_store.revision
+        with _batch_operation(
+            "quick-replace", phase="apply", store=candidate_store
+        ) as measurement:
+            result = batch_replace.apply_preview(candidate_store, candidate_preview)
+            if result.error:
+                measurement.mark_error("ApplyError")
+        if result.error:
+            return result, None
+        version = session.adopt_current_candidate(
+            candidate_path=candidate_path,
+            source_kind="quick-replace",
+            label=_quick_replace_label(preview),
+            summary={
+                "matched_count": preview.matched_count,
+                "changed_count": preview.changed_count,
+                "applied_count": result.applied_count,
+            },
+        )
+    return result, version
 
 
 # ---------------------------------------------------------------------------
@@ -2304,43 +2432,61 @@ def _apply_quick_batch_preview(preview) -> None:
         return
     record_count = preview.record_count
     on_progress, progress, status = _quick_batch_progress("Checking")
-    with snapshot_actions.staged_store_path(store) as before_path:
-        with st.spinner(
-            f"Applying quick batch operation to {record_count:,} record"
-            f"{'s' if record_count != 1 else ''}…"
-        ):
-            with _batch_operation(
-                "quick-batch", phase="apply", store=store
-            ) as measurement:
-                result = quick_batch.apply_preview(
-                    store, preview, progress=on_progress
-                )
-                if result.error:
-                    measurement.mark_error("ApplyError")
-        progress.empty()
-        status.empty()
-        if result.error:
-            st.error(result.error)
+    export_filename = _export_filename(session.current_filename(), "quickbatch")
+    if _uses_job_file_versions():
+        try:
+            version = _adopt_quick_batch_preview(store, preview)
+        except (job_files.JobFileError, collaboration.CollaborationError) as exc:
+            progress.empty()
+            status.empty()
+            st.error(str(exc))
             return
-        export_filename = _export_filename(
-            session.current_filename(), "quickbatch"
+        result = quick_batch.QuickBatchResult(
+            changed_count=preview.changed_count,
+            skipped_count=preview.skipped_count,
         )
-        snapshot = snapshot_actions.record_job_snapshot(
-            job_id=st.session_state.get("current_job_id"),
-            user_email=session.current_user_id(),
-            kind="quick-batch",
-            label=_QB_OPERATION_LABELS.get(
-                preview.request.kind, preview.request.kind
-            ),
-            before_path=before_path,
-            after_path=store.path,
-            summary={
-                "operation_kind": preview.request.kind,
-                "changed_count": result.changed_count,
-                "skipped_count": result.skipped_count,
-                "export_filename": export_filename,
-            },
-        )
+        snapshot = None
+        quick_batch.cleanup_preview(preview)
+        export_source = session.current_store().path
+    else:
+        version = None
+        with snapshot_actions.staged_store_path(store) as before_path:
+            with st.spinner(
+                f"Applying quick batch operation to {record_count:,} record"
+                f"{'s' if record_count != 1 else ''}…"
+            ):
+                with _batch_operation(
+                    "quick-batch", phase="apply", store=store
+                ) as measurement:
+                    result = quick_batch.apply_preview(
+                        store, preview, progress=on_progress
+                    )
+                    if result.error:
+                        measurement.mark_error("ApplyError")
+            if result.error:
+                progress.empty()
+                status.empty()
+                st.error(result.error)
+                return
+            snapshot = snapshot_actions.record_job_snapshot(
+                job_id=st.session_state.get("current_job_id"),
+                user_email=session.current_user_id(),
+                kind="quick-batch",
+                label=_QB_OPERATION_LABELS.get(
+                    preview.request.kind, preview.request.kind
+                ),
+                before_path=before_path,
+                after_path=store.path,
+                summary={
+                    "operation_kind": preview.request.kind,
+                    "changed_count": result.changed_count,
+                    "skipped_count": result.skipped_count,
+                    "export_filename": export_filename,
+                },
+            )
+        export_source = store.path
+    progress.empty()
+    status.empty()
     if snapshot is not None:
         audit_event(
             "job-snapshot-created",
@@ -2364,14 +2510,39 @@ def _apply_quick_batch_preview(preview) -> None:
     _cleanup_disk_backed_export(st.session_state.get(_K_QB_EXPORT))
     st.session_state[_K_QB_EXPORT] = _disk_backed_export(
         filename=export_filename,
-        source_path=store.path,
+        source_path=export_source,
         snapshot=snapshot,
         prefix="marcedit-web-quickbatch-",
     )
-    st.success(
-        f"Applied quick batch operation to {result.changed_count} record(s)."
-    )
+    message = f"Applied quick batch operation to {result.changed_count} record(s)"
+    if version is not None:
+        message += f" as version {version['version_number']}"
+    st.success(message + ".")
     st.rerun()
+
+
+def _adopt_quick_batch_preview(store, preview):
+    if preview.store_revision != store.revision:
+        raise job_files.JobFileError("Loaded batch changed since preview.")
+    if preview.output_path is None or not preview.output_path.is_file():
+        raise job_files.JobFileError("Preview output is no longer available.")
+    with _owned_candidate(
+        preview.output_path,
+        prefix="marcedit-web-quick-batch-apply-",
+    ) as candidate_path:
+        return session.adopt_current_candidate(
+            candidate_path=candidate_path,
+            source_kind="quick-batch",
+            label=_QB_OPERATION_LABELS.get(
+                preview.request.kind,
+                preview.request.kind,
+            ),
+            summary={
+                "operation_kind": preview.request.kind,
+                "changed_count": preview.changed_count,
+                "skipped_count": preview.skipped_count,
+            },
+        )
 
 
 def _render_quick_batch_export() -> None:

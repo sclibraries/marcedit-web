@@ -1,9 +1,4 @@
-"""Quick find/replace apply must record a job snapshot (TASK-143).
-
-The History timeline is built from provenance snapshots; before this
-change, quick find/replace was the only mutating flow that did not
-snapshot, so its changes were invisible in History.
-"""
+"""Quick find/replace acceptance creates immutable file versions."""
 
 from __future__ import annotations
 
@@ -81,10 +76,12 @@ def _preview():
         ),
         matched_count=1,
         changed_count=1,
+        store_id=None,
+        store_revision=0,
     )
 
 
-def _wire(monkeypatch, tasks_render, store, snapshots):
+def _wire(monkeypatch, tasks_render, store, adoptions):
     monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
     monkeypatch.setattr(
         tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
@@ -103,62 +100,116 @@ def _wire(monkeypatch, tasks_render, store, snapshots):
         tasks_render.batch_replace, "apply_preview", fake_apply
     )
 
-    def fake_snapshot(**kwargs):
-        snapshots.append(
-            {
-                **kwargs,
-                "captured_before": Path(kwargs["before_path"]).read_bytes(),
-                "captured_after": Path(kwargs["after_path"]).read_bytes(),
-            }
-        )
-        return {"id": 7, "job_id": 3, "kind": kwargs["kind"]}
-
     monkeypatch.setattr(
-        tasks_render.snapshot_actions, "record_job_snapshot", fake_snapshot
+        tasks_render.session,
+        "adopt_current_candidate",
+        lambda **kwargs: adoptions.append({
+            **kwargs,
+            "candidate_bytes": Path(kwargs["candidate_path"]).read_bytes(),
+        }) or {"version_number": 2},
     )
 
 
-def test_apply_records_quick_replace_snapshot(monkeypatch, tmp_path):
+def test_apply_quick_replace_adopts_candidate_without_mutating_current(
+    monkeypatch, tmp_path,
+):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
     store = _store(tmp_path)
-    snapshots: list[dict] = []
-    _wire(monkeypatch, tasks_render, store, snapshots)
-    fake_st.session_state["current_job_id"] = 3
+    adoptions: list[dict] = []
+    _wire(monkeypatch, tasks_render, store, adoptions)
+    fake_st.session_state.update({
+        "current_job_id": 3,
+        "job_file_id": 4,
+        "job_file_version_id": 1,
+    })
+    before = store.path.read_bytes()
+    preview = _preview()
+    preview.store_id = id(store)
 
-    tasks_render._apply_quick_preview(_preview())
+    tasks_render._apply_quick_preview(preview)
 
-    assert len(snapshots) == 1
-    snap = snapshots[0]
-    assert snap["kind"] == "quick-replace"
-    assert snap["job_id"] == 3
-    assert snap["label"] == "Find/replace 245$a"
-    # before captured pre-apply, after captured post-apply
-    assert b"Old title" in snap["captured_before"]
-    assert b"New title" in snap["captured_after"]
-    assert "before_bytes" not in snap
-    assert "after_bytes" not in snap
-    assert snap["summary"]["changed_count"] == 1
-    assert fake_st.successes  # apply still reports success
+    assert store.path.read_bytes() == before
+    assert len(adoptions) == 1
+    adoption = adoptions[0]
+    assert adoption["source_kind"] == "quick-replace"
+    assert adoption["label"] == "Find/replace 245$a"
+    assert b"New title" in adoption["candidate_bytes"]
+    assert adoption["summary"]["changed_count"] == 1
+    assert fake_st.successes
 
 
-def test_snapshot_failure_does_not_block_apply(monkeypatch, tmp_path):
+def test_quick_replace_adoption_failure_preserves_current(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
     store = _store(tmp_path)
-    snapshots: list[dict] = []
-    _wire(monkeypatch, tasks_render, store, snapshots)
-    fake_st.session_state["current_job_id"] = 3
+    adoptions: list[dict] = []
+    _wire(monkeypatch, tasks_render, store, adoptions)
+    fake_st.session_state.update({
+        "current_job_id": 3,
+        "job_file_id": 4,
+        "job_file_version_id": 1,
+    })
+    before = store.path.read_bytes()
+    preview = _preview()
+    preview.store_id = id(store)
 
     def boom(**kwargs):
-        raise RuntimeError("disk full")
+        raise tasks_render.job_files.JobFileError("file changed since preview")
 
     monkeypatch.setattr(
-        tasks_render.snapshot_actions, "record_job_snapshot", boom
+        tasks_render.session, "adopt_current_candidate", boom
     )
 
-    tasks_render._apply_quick_preview(_preview())
+    tasks_render._apply_quick_preview(preview)
 
-    assert fake_st.successes  # apply completed
-    assert fake_st.warnings  # failure surfaced, not hidden
-    assert fake_st.rerun_called
+    assert store.path.read_bytes() == before
+    assert fake_st.errors == ["file changed since preview"]
+    assert not fake_st.successes
+
+
+def test_quick_replace_rejects_preview_for_an_older_store(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    adoptions = []
+    _wire(monkeypatch, tasks_render, store, adoptions)
+    fake_st.session_state.update({
+        "job_file_id": 4,
+        "job_file_version_id": 2,
+    })
+    preview = _preview()
+    preview.store_id = id(object())
+
+    tasks_render._apply_quick_preview(preview)
+
+    assert fake_st.errors == ["Batch changed since preview."]
+    assert adoptions == []
+
+
+def test_quick_load_retains_in_place_replace_and_snapshot(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    adoptions = []
+    _wire(monkeypatch, tasks_render, store, adoptions)
+    snapshots = []
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **kwargs: snapshots.append(kwargs),
+    )
+    fake_st.session_state.update({
+        "current_job_id": 3,
+        "job_file_id": 4,
+        "job_file_version_id": 1,
+        "quick_load_mode": True,
+    })
+    preview = _preview()
+    preview.store_id = id(store)
+
+    tasks_render._apply_quick_preview(preview)
+
+    assert b"New title" in store.path.read_bytes()
+    assert len(snapshots) == 1
+    assert adoptions == []

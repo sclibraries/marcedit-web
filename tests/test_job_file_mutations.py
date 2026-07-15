@@ -23,7 +23,7 @@ from marcedit_web.lib import (
     view_edit,
 )
 from marcedit_web.lib.record_store import RecordStore
-from marcedit_web.render import edit, fixed_field_helper, single_record_edit
+from marcedit_web.render import edit, fixed_field_helper, history, single_record_edit
 
 
 OWNER = "owner@example.edu"
@@ -98,6 +98,33 @@ def test_adopt_candidate_creates_version_and_swaps_current(
     )["id"] == created["id"]
     assert Path(before["file_path"]).exists()
     assert not candidate.exists()
+
+
+def test_restore_creates_child_from_selected_immutable_version(
+    checked_out_file, candidate, monkeypatch,
+):
+    selected = job_files.get_current_version(checked_out_file["id"], OWNER)
+    current = _adopt(checked_out_file, candidate)
+    state = {
+        "user": OWNER,
+        "current_job_id": checked_out_file["job_id"],
+        "job_file_id": checked_out_file["id"],
+        "job_file_version_id": current["id"],
+        "store": RecordStore.from_path(Path(current["file_path"])),
+    }
+    monkeypatch.setitem(sys.modules, "streamlit", SimpleNamespace(session_state=state))
+    monkeypatch.setattr(history.st, "session_state", state)
+    monkeypatch.setattr(session, "current_user_id", lambda: OWNER)
+
+    restored = history._restore_version(selected["id"])
+
+    assert restored["version_number"] == current["version_number"] + 1
+    assert restored["parent_version_id"] == current["id"]
+    assert restored["source_kind"] == "restore"
+    assert Path(restored["file_path"]).read_bytes() == Path(
+        selected["file_path"]
+    ).read_bytes()
+    assert Path(selected["file_path"]).exists()
 
 
 def test_adopt_candidate_stages_cross_filesystem_candidate(

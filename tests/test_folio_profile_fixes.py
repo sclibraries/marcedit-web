@@ -230,6 +230,50 @@ def test_apply_batch_fixes_to_store_leaves_store_unchanged_on_failure(
             [rule],
             folio_profiles.FolioContext(profile_key="folio-new-instance"),
         )
-
     assert calls == 3
     assert all(record.get("001") is not None for record in store.iter_records())
+
+
+def test_job_file_folio_batch_fix_adopts_candidate_version(
+    monkeypatch, make_record, tmp_path,
+):
+    """FOLIO preview acceptance must leave the opened version immutable."""
+    from marcedit_web.lib.record_store import RecordStore
+    from marcedit_web.render import validate
+
+    store = RecordStore.from_records(
+        [make_record()],
+        tmp_dir=tmp_path / "records",
+        filename="folio.mrc",
+    )
+    rule = _rule("folio-new-load-forbidden-001")
+    context = folio_profiles.FolioContext(profile_key="folio-new-instance")
+    preview = folio_profiles.preview_batch_fixes(
+        store.iter_records(), [rule], context
+    )
+    before = store.path.read_bytes()
+    calls = []
+    monkeypatch.setattr(
+        validate.session,
+        "adopt_current_candidate",
+        lambda **kwargs: calls.append({
+            **kwargs,
+            "candidate_bytes": kwargs["candidate_path"].read_bytes(),
+        }) or {"version_number": 2},
+    )
+
+    created = validate._adopt_folio_batch_fixes(
+        store=store,
+        profile_rules=[rule],
+        folio_context=context,
+        preview=preview,
+    )
+
+    assert created["version_number"] == 2
+    assert store.path.read_bytes() == before
+    assert calls[0]["source_kind"] == "folio-fix"
+    assert calls[0]["summary"]["mode"] == "batch"
+    candidate = RecordStore.from_bytes(
+        calls[0]["candidate_bytes"], tmp_dir=tmp_path / "candidate"
+    )
+    assert candidate.get(0).get("001") is None

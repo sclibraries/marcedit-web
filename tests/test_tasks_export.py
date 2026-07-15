@@ -47,6 +47,7 @@ class _FakeColumn:
 class _FakeStreamlit:
     def __init__(self):
         self.session_state = {}
+        self.clicked_keys: set[str] = set()
         self.buttons: list[dict] = []
         self.captions: list[str] = []
         self.download_buttons: list[dict] = []
@@ -54,6 +55,7 @@ class _FakeStreamlit:
         self.infos: list[str] = []
         self.markdowns: list[str] = []
         self.metrics: list[tuple[str, object]] = []
+        self.successes: list[str] = []
 
     def divider(self):
         pass
@@ -74,9 +76,12 @@ class _FakeStreamlit:
     def error(self, message):
         self.errors.append(str(message))
 
+    def success(self, message):
+        self.successes.append(str(message))
+
     def button(self, label, **kwargs):
         self.buttons.append({"label": label, **kwargs})
-        return False
+        return kwargs.get("key") in self.clicked_keys
 
     def download_button(self, **kwargs):
         self.download_buttons.append(kwargs)
@@ -245,3 +250,111 @@ def test_render_run_results_does_not_read_output_when_diff_summary_missing(
     assert fake_st.buttons[0]["label"] == (
         "Prepare Download source_tasks_20260709_190000.mrc"
     )
+
+
+def test_saved_task_output_requires_explicit_version_adoption(
+    monkeypatch, tmp_path,
+):
+    """A successful run is reviewable output until the cataloger accepts it."""
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    output_path = tmp_path / "output.mrc"
+    input_path = tmp_path / "input.mrc"
+    output_path.write_bytes(b"output")
+    input_path.write_bytes(b"input")
+    results = {
+        "issues": [],
+        "out_filename": "source_tasks.mrc",
+        "out_path": str(output_path),
+        "input_count": 1,
+        "output_count": 1,
+        "error_count": 0,
+        "ran_tasks": ["Leader cleanup"],
+        "timed_out": False,
+        "sandbox_returncode": 0,
+        "sandbox_input_path": str(input_path),
+        "_diff_summary": None,
+        "snapshot_id": None,
+        "task_label": "Leader cleanup",
+        "summary": {"changed_count": 1},
+        "validation": {"error_count": 0},
+        "preview_version_id": 21,
+    }
+    fake_st.session_state.update({
+        tasks_render.K_RUN_RESULTS: results,
+        "job_file_id": 9,
+        "job_file_version_id": 21,
+    })
+    adopted = []
+    monkeypatch.setattr(
+        tasks_render.session,
+        "adopt_current_candidate",
+        lambda **kwargs: adopted.append({
+            **kwargs,
+            "candidate_bytes": kwargs["candidate_path"].read_bytes(),
+        }) or {"version_number": 2},
+    )
+
+    tasks_render._render_run_results()
+
+    assert adopted == []
+    assert any(button["label"] == "Apply as new version" for button in fake_st.buttons)
+    assert fake_st.session_state[tasks_render.K_RUN_RESULTS] is results
+
+    fake_st.clicked_keys.add("task_apply_version")
+    tasks_render._render_run_results()
+
+    assert adopted[0]["candidate_path"] != output_path
+    assert adopted[0]["candidate_bytes"] == b"output"
+    assert adopted[0]["source_kind"] == "task"
+    assert adopted[0]["label"] == "Leader cleanup"
+    assert adopted[0]["summary"] == {"changed_count": 1}
+    assert adopted[0]["validation"] == {"error_count": 0}
+    assert tasks_render.K_RUN_RESULTS not in fake_st.session_state
+
+
+def test_saved_task_output_rejects_a_newer_opened_version(monkeypatch, tmp_path):
+    """An old preview must not overwrite work accepted later in the session."""
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    output_path = tmp_path / "output.mrc"
+    output_path.write_bytes(b"preview")
+    fake_st.session_state.update({
+        tasks_render.K_RUN_RESULTS: {
+            "issues": [],
+            "out_filename": "tasks.mrc",
+            "out_path": str(output_path),
+            "input_count": 1,
+            "output_count": 1,
+            "error_count": 0,
+            "ran_tasks": ["Cleanup"],
+            "timed_out": False,
+            "sandbox_returncode": 0,
+            "sandbox_input_path": None,
+            "_diff_summary": None,
+            "snapshot_id": None,
+            "task_label": "Cleanup",
+            "summary": {},
+            "validation": {},
+            "preview_version_id": 20,
+        },
+        "job_file_id": 9,
+        "job_file_version_id": 21,
+    })
+    fake_st.clicked_keys.add("task_apply_version")
+    monkeypatch.setattr(
+        tasks_render.session,
+        "adopt_current_candidate",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("stale preview must not reach adoption")
+        ),
+    )
+
+    tasks_render._render_run_results()
+
+    assert fake_st.errors == [
+        "File changed since this task output was previewed. Run the task again."
+    ]
+    assert output_path.exists()

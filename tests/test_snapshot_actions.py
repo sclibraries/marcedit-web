@@ -88,3 +88,40 @@ def test_record_edit_snapshot_marks_record_and_source(tmp_path, monkeypatch):
     summary = json.loads(row["summary_json"])
     assert summary["record_index"] == 3
     assert summary["source"] == "view-edit"
+
+
+def test_restore_version_adopts_selected_bytes_as_new_child(monkeypatch, tmp_path):
+    """Restore copies history forward; it never rewinds the current pointer."""
+    from marcedit_web.render import history
+
+    selected = tmp_path / "v1.mrc"
+    selected.write_bytes(b"historical-version")
+    calls = []
+    monkeypatch.setattr(history.st, "session_state", {"job_file_id": 9})
+    monkeypatch.setattr(history.session, "current_user_id", lambda: "cat@example.edu")
+    monkeypatch.setattr(
+        history.job_files,
+        "get_version",
+        lambda version_id, user: {
+            "id": version_id,
+            "job_file_id": 9,
+            "version_number": 1,
+            "file_path": str(selected),
+        },
+    )
+    monkeypatch.setattr(
+        history.session,
+        "adopt_current_candidate",
+        lambda **kwargs: calls.append({
+            **kwargs,
+            "candidate_bytes": Path(kwargs["candidate_path"]).read_bytes(),
+        }) or {"version_number": 4},
+    )
+
+    created = history._restore_version(12)
+
+    assert created["version_number"] == 4
+    assert calls[0]["source_kind"] == "restore"
+    assert calls[0]["label"] == "Restore version 1"
+    assert calls[0]["summary"] == {"restored_version_id": 12}
+    assert calls[0]["candidate_bytes"] == b"historical-version"

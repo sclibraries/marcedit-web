@@ -17,12 +17,19 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import tempfile
 from pathlib import Path
 
 import streamlit as st
 
-from marcedit_web.lib import jobs, provenance, session, task_diff
+from marcedit_web.lib import (
+    job_files,
+    jobs,
+    provenance,
+    session,
+    task_diff,
+)
 from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.identity import is_anonymous
 
@@ -202,14 +209,16 @@ def _render_snapshot_entry(row: dict) -> None:
         st.divider()
         return
 
-    cols = st.columns(4)
-    if cols[0].button(
+    is_job_file = (
+        st.session_state.get("job_file_id") is not None
+        and not st.session_state.get("quick_load_mode", False)
+    )
+    cols = st.columns(3 if is_job_file else 4)
+    download_offset = 0
+    if not is_job_file and cols[0].button(
         "Restore pre-change version",
         key=f"snapshot_restore_{row['id']}",
-        help=(
-            "Replace the current loaded batch with this snapshot's "
-            "before state."
-        ),
+        help="Replace the current loaded batch with this snapshot's before state.",
     ):
         source_path = provenance.restore_path(int(row["id"]))
         filename = session.current_filename() or f"snapshot-{row['id']}.mrc"
@@ -235,23 +244,49 @@ def _render_snapshot_entry(row: dict) -> None:
             "Restored the pre-change version into the current session."
         )
         st.rerun()
+    if not is_job_file:
+        download_offset = 1
 
     _offer_history_download(
-        cols[1],
+        cols[download_offset],
         row.get("before_path"),
         "Download before",
         f"snapshot_{row['id']}_before.mrc",
         key=f"snapshot_before_{row['id']}",
     )
     _offer_history_download(
-        cols[2],
+        cols[download_offset + 1],
         row.get("after_path"),
         "Download after",
         f"snapshot_{row['id']}_after.mrc",
         key=f"snapshot_after_{row['id']}",
     )
-    _offer_diff(cols[3], row, before, after)
+    _offer_diff(cols[download_offset + 2], row, before, after)
     st.divider()
+
+
+def _restore_version(version_id: int) -> dict:
+    user = session.current_user_id()
+    selected = job_files.get_version(version_id, user)
+    current_file_id = st.session_state.get("job_file_id")
+    if current_file_id is None or int(selected["job_file_id"]) != int(
+        current_file_id
+    ):
+        raise job_files.JobFileError(
+            "The selected version does not belong to the open job file."
+        )
+    workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-restore-"))
+    candidate = workdir / "candidate.mrc"
+    try:
+        shutil.copyfile(Path(selected["file_path"]), candidate)
+        return session.adopt_current_candidate(
+            candidate_path=candidate,
+            source_kind="restore",
+            label=f"Restore version {selected['version_number']}",
+            summary={"restored_version_id": selected["id"]},
+        )
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _offer_diff(column, row: dict, before: Path, after: Path) -> None:
