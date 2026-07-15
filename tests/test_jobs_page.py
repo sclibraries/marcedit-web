@@ -174,11 +174,15 @@ def _load_jobs_page(monkeypatch):
     return importlib.reload(page)
 
 
-def _job_file_row(file_id: int = 99) -> dict[str, Any]:
+def _job_file_row(
+    file_id: int = 99,
+    *,
+    status: str = "new",
+) -> dict[str, Any]:
     return {
         "id": file_id,
         "display_name": "batch.mrc",
-        "status": "new",
+        "status": status,
         "current_version_id": 123,
         "current_version_number": 1,
         "current_record_count": 42,
@@ -473,6 +477,64 @@ def test_successful_checkout_captures_exact_current_version(monkeypatch):
     assert fake_st.rerun_called is True
 
 
+def test_same_holder_renew_preserves_existing_tab_version_token(monkeypatch):
+    """Renewing a live lease cannot silently advance this tab's opened version."""
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(
+        session_state={"job_file_opened_versions": {"99": 121}}
+    )
+    monkeypatch.setattr(
+        page.job_files,
+        "_active_checkout",
+        lambda _file_id: {"holder_email": "alice@example.edu"},
+    )
+    monkeypatch.setattr(
+        page.job_files.collaboration,
+        "acquire_file_checkout",
+        lambda *_args: SimpleNamespace(acquired=True),
+    )
+    monkeypatch.setattr(
+        page.work_files,
+        "get_current_version",
+        lambda *_args: {"id": 122},
+    )
+
+    page.job_files._acquire_checkout(
+        fake_st,
+        _job_file_row(status="in_progress"),
+        "alice@example.edu",
+    )
+
+    assert fake_st.session_state["job_file_opened_versions"] == {"99": 121}
+
+
+def test_new_checkout_replaces_stale_tab_version_token(monkeypatch):
+    """Without a live same-holder lease, checkout opens authoritative current."""
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(
+        session_state={"job_file_opened_versions": {"99": 121}}
+    )
+    monkeypatch.setattr(page.job_files, "_active_checkout", lambda _file_id: None)
+    monkeypatch.setattr(
+        page.job_files.collaboration,
+        "acquire_file_checkout",
+        lambda *_args: SimpleNamespace(acquired=True),
+    )
+    monkeypatch.setattr(
+        page.work_files,
+        "get_current_version",
+        lambda *_args: {"id": 122},
+    )
+
+    page.job_files._acquire_checkout(
+        fake_st,
+        _job_file_row(status="in_progress"),
+        "alice@example.edu",
+    )
+
+    assert fake_st.session_state["job_file_opened_versions"] == {"99": 122}
+
+
 def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit(
@@ -511,9 +573,7 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
             "active": 1,
         },
     )
-    monkeypatch.setattr(
-        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
-    )
+    monkeypatch.setattr(page.work_files, "list_files", lambda job_id, user: [_job_file_row()])
     monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
     monkeypatch.setattr(page.jobs, "list_review_notes", lambda job_id, *, user_email, include_resolved=True: [])
     monkeypatch.setattr(page.jobs, "list_activity", lambda job_id, *, user_email: [])
@@ -566,7 +626,9 @@ def test_render_detail_return_for_review_passes_opened_version(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.work_files, "list_files", lambda job_id, user: [_job_file_row()],
+        page.work_files,
+        "list_files",
+        lambda job_id, user: [_job_file_row(status="in_progress")],
     )
     monkeypatch.setattr(page.jobs, "list_access", lambda job_id: [])
     monkeypatch.setattr(
@@ -582,6 +644,48 @@ def test_render_detail_return_for_review_passes_opened_version(monkeypatch):
 
     assert returned == [(99, "alice@example.edu", 122)]
     assert fake_st.rerun_called is True
+
+
+def test_return_for_review_is_hidden_outside_in_progress(monkeypatch):
+    """A held token cannot expose Return for review from approved state."""
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(
+        session_state={"job_file_opened_versions": {"99": 123}}
+    )
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "editor")
+    monkeypatch.setattr(
+        page.job_files,
+        "_active_checkout",
+        lambda _file_id: {
+            "holder_email": "alice@example.edu",
+            "expires_at": "2099-01-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.work_files,
+        "list_files",
+        lambda *_args: [_job_file_row(status="approved")],
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda _job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda *_args, **_kwargs: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert "Return for review" not in [label for label, _ in fake_st.button_calls]
 
 
 def test_return_for_review_is_hidden_without_captured_opened_version(monkeypatch):

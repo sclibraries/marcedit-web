@@ -108,6 +108,38 @@ def test_adopt_candidate_creates_version_and_swaps_current(
     assert "Set leader status to deleted" in activity[-1]["message"]
 
 
+def test_same_user_stale_tab_cannot_return_newer_adopted_version(
+    checked_out_file,
+    candidate,
+):
+    """A preserved v1 tab token cannot hand off v2 adopted in another tab."""
+    opened_version_id = int(checked_out_file["current_version_id"])
+    created = _adopt(checked_out_file, candidate)
+    before_activity = len(
+        jobs.list_activity(checked_out_file["job_id"], user_email=OWNER)
+    )
+
+    with pytest.raises(job_files.JobFileError, match="changed"):
+        job_files.return_for_review(
+            checked_out_file["id"],
+            by=OWNER,
+            opened_version_id=opened_version_id,
+        )
+
+    assert job_files.get_file(
+        checked_out_file["id"], OWNER
+    )["status"] == "in_progress"
+    assert job_files.get_current_version(
+        checked_out_file["id"], OWNER
+    )["id"] == created["id"]
+    assert len(
+        jobs.list_activity(checked_out_file["job_id"], user_email=OWNER)
+    ) == before_activity
+    assert collaboration.release_file_checkout(
+        checked_out_file["id"], OWNER
+    ) is True
+
+
 def test_restore_creates_child_from_selected_immutable_version(
     checked_out_file, candidate, monkeypatch,
 ):

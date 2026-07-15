@@ -142,7 +142,7 @@ def render_job_files_table(
                     st.switch_page("views/C_History.py")
             actions = _checkout_actions(role, holder_email, user)
             opened_version_id = _opened_version_id(st, int(row["id"]))
-            if opened_version_id is None:
+            if opened_version_id is None or row["status"] != "in_progress":
                 actions = tuple(
                     action for action in actions if action != "Return for review"
                 )
@@ -214,8 +214,15 @@ def render_job_files_table(
 
 
 def _acquire_checkout(st, row: dict, user: str) -> None:
+    file_id = int(row["id"])
+    active_checkout = _active_checkout(file_id)
+    preserve_opened_version = (
+        active_checkout is not None
+        and active_checkout["holder_email"] == user
+        and _opened_version_id(st, file_id) is not None
+    )
     try:
-        decision = collaboration.acquire_file_checkout(int(row["id"]), user)
+        decision = collaboration.acquire_file_checkout(file_id, user)
     except collaboration.CollaborationError as exc:
         st.error(str(exc))
         return
@@ -224,12 +231,15 @@ def _acquire_checkout(st, row: dict, user: str) -> None:
             f"Checked out by {decision.holder_email} until {decision.expires_at}."
         )
         return
+    if preserve_opened_version:
+        st.rerun()
+        return
     try:
-        version = job_files.get_current_version(int(row["id"]), user)
+        version = job_files.get_current_version(file_id, user)
     except job_files.JobFileError as exc:
         st.error(str(exc))
         return
-    _set_opened_version(st, int(row["id"]), int(version["id"]))
+    _set_opened_version(st, file_id, int(version["id"]))
     st.rerun()
 
 
