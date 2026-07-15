@@ -362,6 +362,78 @@ def test_partial_rebuild_never_overwrites_a_referenced_version_path(
     assert str(upload_id) in caplog.text
 
 
+def test_partial_rebuild_rolls_back_without_touching_export_referenced_path(
+    tmp_path, monkeypatch, caplog,
+):
+    """An export path is durable ownership even without a version-path match."""
+    root = tmp_path / "job-files"
+    monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(root))
+    job_id = _seed_v11_job(tmp_path)
+    _create_empty_v12_tables()
+    source = tmp_path / "legacy.mrc"
+    source.write_bytes(b"legacy")
+    upload_id = _seed_upload(job_id, source, filename="legacy.mrc")
+    partial_file_id = _seed_partial_job_file(job_id, upload_id)
+    referenced_path = (
+        root / str(partial_file_id) / "versions" / "v000001.mrc"
+    )
+    referenced_path.parent.mkdir(parents=True)
+    referenced_path.write_bytes(b"retained-export")
+    with db.connect() as conn:
+        other_file_id = int(conn.execute(
+            "INSERT INTO job_files(job_id,display_name,created_by,created_at,"
+            "updated_by,updated_at) VALUES(?,?,?,?,?,?) RETURNING id",
+            (
+                job_id,
+                "other.mrc",
+                OWNER,
+                "2026-07-02T09:30:00Z",
+                OWNER,
+                "2026-07-02T09:30:00Z",
+            ),
+        ).fetchone()["id"])
+        other_version_id = int(conn.execute(
+            "INSERT INTO job_file_versions(job_file_id,version_number,file_path,"
+            "record_count,file_bytes,source_kind,created_by,created_at)"
+            " VALUES(?,1,?,?,?,?,?,?) RETURNING id",
+            (
+                other_file_id,
+                str(root / "other-version.mrc"),
+                3,
+                6,
+                "original",
+                OWNER,
+                "2026-07-02T09:30:00Z",
+            ),
+        ).fetchone()["id"])
+        conn.execute(
+            "UPDATE job_files SET current_version_id=? WHERE id=?",
+            (other_version_id, other_file_id),
+        )
+        conn.execute(
+            "INSERT INTO job_file_exports(job_file_id,version_id,purpose,filename,"
+            "file_path,record_count,state,created_by,created_at)"
+            " VALUES(?,?,?,?,?,?,'ready',?,?)",
+            (
+                other_file_id,
+                other_version_id,
+                "Retained delivery",
+                "retained.mrc",
+                str(referenced_path),
+                3,
+                OWNER,
+                "2026-07-02T10:00:00Z",
+            ),
+        )
+
+    with db.connect() as conn:
+        job_files._migrate_uploads_to_job_files(conn)  # noqa: SLF001
+
+    assert referenced_path.read_bytes() == b"retained-export"
+    assert _migrated_file(upload_id) is None
+    assert str(upload_id) in caplog.text
+
+
 def test_failed_pointer_repair_preserves_newly_rebuilt_referenced_bytes(
     tmp_path, monkeypatch, caplog,
 ):

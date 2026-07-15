@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -50,15 +51,33 @@ def test_deployment_docs_gate_swap_limit_on_cgroup_v2():
     assert "MARCEDIT_WEB_MAX_CONCURRENT_BATCHES" in docs
 
 
-def test_job_file_backup_docs_use_configured_storage_root():
+def test_job_file_backup_docs_load_production_env_before_resolving_root(tmp_path):
     """Database rows and immutable artifacts need one configurable snapshot."""
     docs = _repo_file("docs/deployment.md")
+    load_sequence = "\n".join((
+        "set -a",
+        ". ./.env",
+        "set +a",
+        'JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"',
+    ))
 
-    assert 'JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"' in docs
+    assert docs.count(load_sequence) == 2
     assert 'cp -a "$JOB_FILES_ROOT" "$BACKUP_DIR/job-files"' in docs
     assert 'rm -rf "$JOB_FILES_ROOT"' in docs
     assert '"$BACKUP_DIR/job-files" "$JOB_FILES_ROOT"' in docs
     assert "cp -a data/job-files" not in docs
+
+    (tmp_path / ".env").write_text(
+        "MARCEDIT_WEB_JOB_FILES_ROOT=/srv/custom-job-files\n"
+    )
+    result = subprocess.run(
+        ["sh", "-c", load_sequence + "\nprintf '%s' \"$JOB_FILES_ROOT\""],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout == "/srv/custom-job-files"
 
 
 def test_public_systemd_unit_stays_db_free():

@@ -328,6 +328,9 @@ current scriptable command captures SQLite and audit data; production backup
 automation must also copy the configured job-files root into the same dated
 backup while the service remains stopped. This creates one coordinated
 database-and-artifact snapshot rather than two independently timed backups.
+The commands below run from the trusted install directory and source its
+production `.env` (the same file systemd reads) before resolving any storage
+path. Do not source an untrusted environment file.
 
 Scriptable backup during a maintenance window:
 
@@ -335,6 +338,9 @@ Scriptable backup during a maintenance window:
 sudo systemctl stop marcedit-web
 cd /var/www/html/marcedit-web
 BACKUP_DIR=/var/backups/marcedit-web/$(date -u +%F)
+set -a
+. ./.env
+set +a
 JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"
 /var/www/html/marcedit-web/.venv/bin/python \
     -m marcedit_web.ops.backup create "$BACKUP_DIR"
@@ -350,6 +356,9 @@ logs and writes a small manifest. To restore during a maintenance window:
 sudo systemctl stop marcedit-web
 cd /var/www/html/marcedit-web
 BACKUP_DIR=/var/backups/marcedit-web/YYYY-MM-DD
+set -a
+. ./.env
+set +a
 JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"
 /var/www/html/marcedit-web/.venv/bin/python \
     -m marcedit_web.ops.backup restore "$BACKUP_DIR"

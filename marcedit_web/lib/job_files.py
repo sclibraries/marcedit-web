@@ -27,6 +27,24 @@ def versions_root() -> Path:
     return Path(os.environ.get("MARCEDIT_WEB_JOB_FILES_ROOT", "data/job-files"))
 
 
+def _migration_path_is_referenced(
+    conn,
+    path: Path,
+    *,
+    allowed_version_id: int | None = None,
+) -> bool:
+    version_reference = conn.execute(
+        "SELECT 1 FROM job_file_versions WHERE file_path=?"
+        " AND (? IS NULL OR id != ?)",
+        (str(path), allowed_version_id, allowed_version_id),
+    ).fetchone()
+    export_reference = conn.execute(
+        "SELECT 1 FROM job_file_exports WHERE file_path=?",
+        (str(path),),
+    ).fetchone()
+    return version_reference is not None or export_reference is not None
+
+
 def _migrate_uploads_to_job_files(conn) -> None:
     """Copy eligible legacy uploads into immutable first versions once."""
     uploads = conn.execute(
@@ -91,12 +109,15 @@ def _migrate_uploads_to_job_files(conn) -> None:
                     if version is not None
                     else _version_path(file_id, 1)
                 )
-                if version is None and conn.execute(
-                    "SELECT 1 FROM job_file_versions WHERE file_path=?",
-                    (str(target),),
-                ).fetchone() is not None:
+                if _migration_path_is_referenced(
+                    conn,
+                    target,
+                    allowed_version_id=(
+                        int(version["id"]) if version is not None else None
+                    ),
+                ):
                     raise JobFileError(
-                        "legacy v1 path is already referenced by another version"
+                        "legacy v1 path is already referenced by another artifact"
                     )
                 candidate = (
                     versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
@@ -147,10 +168,10 @@ def _migrate_uploads_to_job_files(conn) -> None:
             ):
                 if artifact is None:
                     continue
-                if artifact == target and conn.execute(
-                    "SELECT 1 FROM job_file_versions WHERE file_path=?",
-                    (str(artifact),),
-                ).fetchone() is not None:
+                if artifact == target and _migration_path_is_referenced(
+                    conn,
+                    artifact,
+                ):
                     continue
                 try:
                     artifact.unlink(missing_ok=True)
