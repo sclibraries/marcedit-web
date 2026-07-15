@@ -261,7 +261,7 @@ def adopt_candidate(
     except Exception as exc:
         if renamed and target is not None and version_id is not None:
             try:
-                committed = _adoption_is_current_in_db(
+                committed = _adoption_version_exists_in_db(
                     file_id,
                     version_id,
                     target,
@@ -358,24 +358,19 @@ def _version_path(file_id: int, version_number: int) -> Path:
     )
 
 
-def _adoption_is_current_in_db(
+def _adoption_version_exists_in_db(
     file_id: int,
     version_id: int,
     target: Path,
 ) -> bool:
-    """Read durable state after an uncertain transaction-exit failure."""
+    """Check exact durable version identity after uncertain transaction exit."""
     with db.connect() as conn:
         row = conn.execute(
-            "SELECT job_files.current_version_id,job_file_versions.file_path"
-            " FROM job_files LEFT JOIN job_file_versions"
-            " ON job_file_versions.id=? WHERE job_files.id=?",
+            "SELECT file_path FROM job_file_versions"
+            " WHERE id=? AND job_file_id=?",
             (version_id, file_id),
         ).fetchone()
-    return (
-        row is not None
-        and row["current_version_id"] == version_id
-        and row["file_path"] == str(target)
-    )
+    return row is not None and row["file_path"] == str(target)
 
 
 def _invalidate_approval_and_supersede_exports_in_tx(

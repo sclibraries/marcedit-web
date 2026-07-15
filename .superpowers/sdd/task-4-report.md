@@ -178,3 +178,63 @@ Result: **1145 passed in 16.17s**, with no skipped tests reported.
 
 No unresolved Critical or Important formal-review findings remain in this
 follow-up implementation.
+
+## Formal review follow-up — historical-version reconciliation race
+
+The next formal review identified that durable version existence was still
+coupled to `current_version_id`. A committed v2 could be advanced to historical
+state by a valid v3 adoption before the uncertain-commit reconciliation query;
+the old helper then classified v2 as uncommitted and deleted bytes still
+referenced by v2's row and v3's parent chain.
+
+### Race RED
+
+The public regression commits v2, performs a second public `adopt_candidate`
+that creates v3 from v2 before reconciliation, then raises the original commit
+confirmation error.
+
+Command:
+
+```text
+docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_file_mutations.py
+```
+
+Result: **1 failed, 15 passed in 0.58s**. The v2 database row and v3 parent
+reference remained, but `v000002.mrc` had been deleted.
+
+### Race GREEN
+
+Mutation command after tightening the expected public error type:
+**16 passed in 0.52s**.
+
+Required focused/storage/session command:
+
+```text
+docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_files.py tests/test_job_file_mutations.py tests/test_record_store.py tests/test_session.py
+```
+
+Result: **73 passed in 0.95s**.
+
+Fresh full-suite command:
+
+```text
+docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q
+```
+
+Result: **1146 passed in 16.37s**, with no skipped tests reported.
+
+`git diff --check` passed.
+
+### Race self-review
+
+- Reconciliation now queries the exact `job_file_versions.id`,
+  `job_file_id`, and `file_path`; any matching immutable row preserves its
+  target bytes regardless of whether it remains current.
+- The deterministic regression verifies the complete chain: v1 bytes remain,
+  v2 historical bytes remain, v3 remains current, and v3's parent is v2.
+- The existing commit-before-persistence regression remains green and still
+  proves that an absent version row permits staging/target cleanup.
+- No checkout, access, CAS, staging, validation, export, session, or archive
+  behavior changed.
+
+No unresolved Critical or Important findings remain from this race fix.

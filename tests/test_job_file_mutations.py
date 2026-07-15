@@ -252,7 +252,12 @@ def test_post_rename_failure_rolls_back_database_and_removes_artifacts(
                 / "versions" / "v000002.mrc").exists()
 
 
-def _fail_first_connection_commit(monkeypatch, *, persist_before_raise):
+def _fail_first_connection_commit(
+    monkeypatch,
+    *,
+    persist_before_raise,
+    after_persist=None,
+):
     original_connect = db.connect
     first = True
 
@@ -271,6 +276,8 @@ def _fail_first_connection_commit(monkeypatch, *, persist_before_raise):
             yield conn
             if persist_before_raise:
                 conn.commit()
+                if after_persist is not None:
+                    after_persist()
                 raise RuntimeError("commit persisted but confirmation failed")
             raise RuntimeError("commit failed before persistence")
         except Exception:
@@ -317,6 +324,48 @@ def test_commit_persisted_then_raised_retains_committed_target(
     assert Path(current["file_path"]).exists()
     assert Path(before["file_path"]).exists()
     assert not candidate.exists()
+
+
+def test_commit_reconciliation_retains_version_advanced_to_history(
+    checked_out_file, candidate, monkeypatch, tmp_path,
+):
+    """A later current version must not make committed parent bytes disposable."""
+    before = job_files.get_current_version(checked_out_file["id"], OWNER)
+    later_candidate = tmp_path / "later-candidate.mrc"
+    later_candidate.write_bytes(candidate.read_bytes())
+    adopted = {}
+
+    def advance_current():
+        historical = job_files.get_current_version(checked_out_file["id"], OWNER)
+        adopted["historical"] = historical
+        adopted["later"] = job_files.adopt_candidate(
+            file_id=checked_out_file["id"],
+            opened_version_id=historical["id"],
+            user_email=OWNER,
+            candidate_path=later_candidate,
+            source_kind="task",
+            label="Later valid adoption",
+        )
+
+    _fail_first_connection_commit(
+        monkeypatch,
+        persist_before_raise=True,
+        after_persist=advance_current,
+    )
+
+    with pytest.raises(job_files.JobFileError, match="confirmation failed"):
+        _adopt(checked_out_file, candidate)
+
+    historical = job_files.get_version(adopted["historical"]["id"], OWNER)
+    current = job_files.get_current_version(checked_out_file["id"], OWNER)
+    assert historical["parent_version_id"] == before["id"]
+    assert Path(historical["file_path"]).exists()
+    assert current["id"] == adopted["later"]["id"]
+    assert current["parent_version_id"] == historical["id"]
+    assert Path(current["file_path"]).exists()
+    assert Path(before["file_path"]).exists()
+    assert not candidate.exists()
+    assert not later_candidate.exists()
 
 
 def test_adoption_supersedes_prior_exports(checked_out_file, candidate, tmp_path):
