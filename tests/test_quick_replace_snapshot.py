@@ -201,8 +201,8 @@ def test_quick_load_retains_in_place_replace_and_snapshot(monkeypatch, tmp_path)
     )
     fake_st.session_state.update({
         "current_job_id": 3,
-        "job_file_id": 4,
-        "job_file_version_id": 1,
+        "job_file_id": None,
+        "job_file_version_id": None,
         "quick_load_mode": True,
     })
     preview = _preview()

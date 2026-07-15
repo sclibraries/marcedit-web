@@ -362,12 +362,6 @@ def render_job_files_table(
 
 def _acquire_checkout(st, row: dict, user: str) -> None:
     file_id = int(row["id"])
-    active_checkout = _active_checkout(file_id)
-    preserve_opened_version = (
-        active_checkout is not None
-        and active_checkout["holder_email"] == user
-        and _opened_version_id(st, file_id) is not None
-    )
     try:
         decision = collaboration.acquire_file_checkout(file_id, user)
     except collaboration.CollaborationError as exc:
@@ -378,7 +372,10 @@ def _acquire_checkout(st, row: dict, user: str) -> None:
             f"Checked out by {decision.holder_email} until {decision.expires_at}."
         )
         return
-    if preserve_opened_version:
+    if (
+        getattr(decision, "renewed", False)
+        and _opened_version_id(st, file_id) is not None
+    ):
         st.rerun()
         return
     try:

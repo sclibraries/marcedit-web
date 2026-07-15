@@ -87,10 +87,7 @@ def _batch_operation(operation: str, *, phase: str, store):
 
 
 def _uses_job_file_versions() -> bool:
-    return (
-        st.session_state.get("job_file_id") is not None
-        and not st.session_state.get("quick_load_mode", False)
-    )
+    return st.session_state.get("job_file_id") is not None
 
 
 @contextmanager
@@ -1434,6 +1431,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
     }
     snapshot = None
     if not _uses_job_file_versions():
+        # Non-job Quick Load compatibility boundary: legacy history only.
         snapshot = snapshot_actions.record_job_snapshot(
             job_id=st.session_state.get("current_job_id"),
             user_email=user,
@@ -2113,6 +2111,7 @@ def _apply_quick_preview(preview) -> None:
 
             user = session.current_user_id()
             try:
+                # Non-job Quick Load compatibility boundary: legacy history only.
                 snapshot = snapshot_actions.record_job_snapshot(
                     job_id=st.session_state.get("current_job_id"),
                     user_email=user,
@@ -2473,6 +2472,7 @@ def _apply_quick_batch_preview(preview) -> None:
                 status.empty()
                 st.error(result.error)
                 return
+            # Non-job Quick Load compatibility boundary: legacy history only.
             snapshot = snapshot_actions.record_job_snapshot(
                 job_id=st.session_state.get("current_job_id"),
                 user_email=session.current_user_id(),

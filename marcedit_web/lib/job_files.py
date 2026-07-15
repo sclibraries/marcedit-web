@@ -204,6 +204,9 @@ def attach_file(
 
     now = _utc_now_iso()
     candidate = versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
+    target: Path | None = None
+    file_id: int | None = None
+    version_id: int | None = None
     try:
         candidate.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source_path, candidate)
@@ -242,13 +245,35 @@ def attach_file(
                     now,
                 ),
             ).fetchone()
+            version_id = int(version["id"])
             conn.execute(
                 "UPDATE job_files SET current_version_id=? WHERE id=?",
-                (version["id"], file_id),
+                (version_id, file_id),
             )
-    except Exception:
+    except Exception as exc:
         candidate.unlink(missing_ok=True)
-        if "target" in locals():
+        if (
+            target is not None
+            and target.exists()
+            and file_id is not None
+            and version_id is not None
+        ):
+            try:
+                committed = _attachment_version_exists_in_db(
+                    file_id,
+                    version_id,
+                    target,
+                    upload_id,
+                )
+            except Exception as verification_exc:
+                raise JobFileError(
+                    "attachment could not be confirmed; retained original bytes"
+                ) from verification_exc
+            if committed:
+                raise JobFileError(
+                    "file was attached, but transaction confirmation failed"
+                ) from exc
+        if target is not None:
             target.unlink(missing_ok=True)
         raise
     return get_file(file_id, user_email)
@@ -343,6 +368,39 @@ def create_export(
     export_id: int | None = None
     try:
         with db.connect() as conn:
+            prepared_row = _transition_row(conn, file_id, user_email)
+            if int(prepared_row["current_version_id"]) != opened_version_id:
+                raise JobFileError("file changed since this version was opened")
+            prepared_version = conn.execute(
+                "SELECT id,file_path,record_count,file_bytes,validation_json,"
+                "approval_kind FROM job_file_versions"
+                " WHERE id=? AND job_file_id=?",
+                (opened_version_id, file_id),
+            ).fetchone()
+        if prepared_version is None:
+            raise JobFileError("job file version not found")
+
+        clean_filename = _safe_export_filename(
+            filename or str(prepared_row["display_name"])
+        )
+        target = _copy_export_exclusive(
+            Path(prepared_version["file_path"]),
+            versions_root() / str(file_id) / "exports",
+            clean_filename,
+        )
+        candidate_size = target.stat().st_size
+        if candidate_size != int(prepared_version["file_bytes"]):
+            raise JobFileError("export size does not match its source version")
+        copied = RecordStore.from_path(target)
+        candidate_count = copied.count()
+        candidate_malformed = copied.malformed_count()
+        if (
+            candidate_count != int(prepared_version["record_count"])
+            or candidate_malformed != 0
+        ):
+            raise JobFileError("export record count does not match its source version")
+
+        with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = _transition_row(conn, file_id, user_email)
             _assert_transition_checkout(
@@ -359,39 +417,23 @@ def create_export(
             ).fetchone()
             if version is None:
                 raise JobFileError("job file version not found")
-
-            clean_filename = _safe_export_filename(
-                filename or str(row["display_name"])
+            identity_fields = (
+                "id", "file_path", "record_count", "file_bytes",
+                "validation_json", "approval_kind",
             )
-            target = _copy_export_exclusive(
-                Path(version["file_path"]),
-                versions_root() / str(file_id) / "exports",
-                clean_filename,
+            prepared_identity = tuple(
+                prepared_version[key] for key in identity_fields
             )
-            if target.stat().st_size != int(version["file_bytes"]):
-                raise JobFileError("export size does not match its source version")
-            copied = RecordStore.from_path(target)
+            current_identity = tuple(version[key] for key in identity_fields)
+            if current_identity != prepared_identity:
+                raise JobFileError("export source changed while it was prepared")
             if (
-                copied.count() != int(version["record_count"])
-                or copied.malformed_count() != 0
+                not target.is_file()
+                or target.stat().st_size != candidate_size
+                or candidate_count != int(version["record_count"])
+                or candidate_malformed != 0
             ):
-                raise JobFileError("export record count does not match its source version")
-
-            row = _transition_row(conn, file_id, user_email)
-            _assert_transition_checkout(
-                conn,
-                file_id,
-                user_email,
-                opened_version_id,
-            )
-            version = conn.execute(
-                "SELECT id,file_path,record_count,file_bytes,validation_json,"
-                "approval_kind FROM job_file_versions"
-                " WHERE id=? AND job_file_id=?",
-                (opened_version_id, file_id),
-            ).fetchone()
-            if version is None:
-                raise JobFileError("job file version not found")
+                raise JobFileError("export candidate changed while it was prepared")
 
             now = _utc_now_iso()
             state = "ready" if version["approval_kind"] is not None else "draft"
@@ -985,6 +1027,29 @@ def _adoption_version_exists_in_db(
             (version_id, file_id),
         ).fetchone()
     return row is not None and row["file_path"] == str(target)
+
+
+def _attachment_version_exists_in_db(
+    file_id: int,
+    version_id: int,
+    target: Path,
+    upload_id: int | None,
+) -> bool:
+    """Confirm the exact durable attachment after uncertain transaction exit."""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT job_files.current_version_id,job_files.original_upload_id,"
+            "job_file_versions.file_path FROM job_files"
+            " JOIN job_file_versions ON job_file_versions.job_file_id=job_files.id"
+            " WHERE job_files.id=? AND job_file_versions.id=?",
+            (file_id, version_id),
+        ).fetchone()
+    return (
+        row is not None
+        and int(row["current_version_id"]) == version_id
+        and row["file_path"] == str(target)
+        and row["original_upload_id"] == upload_id
+    )
 
 
 def _export_reference_id_for_path(target: Path) -> int | None:

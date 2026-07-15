@@ -459,7 +459,7 @@ def test_successful_checkout_captures_exact_current_version(monkeypatch):
     monkeypatch.setattr(
         page.job_files.collaboration,
         "acquire_file_checkout",
-        lambda *_args: SimpleNamespace(acquired=True),
+        lambda *_args: SimpleNamespace(acquired=True, renewed=True),
     )
     monkeypatch.setattr(
         page.work_files,
@@ -491,7 +491,7 @@ def test_same_holder_renew_preserves_existing_tab_version_token(monkeypatch):
     monkeypatch.setattr(
         page.job_files.collaboration,
         "acquire_file_checkout",
-        lambda *_args: SimpleNamespace(acquired=True),
+        lambda *_args: SimpleNamespace(acquired=True, renewed=True),
     )
     monkeypatch.setattr(
         page.work_files,
@@ -506,6 +506,37 @@ def test_same_holder_renew_preserves_existing_tab_version_token(monkeypatch):
     )
 
     assert fake_st.session_state["job_file_opened_versions"] == {"99": 121}
+
+
+def test_expiry_gap_during_acquire_refreshes_stale_opened_version(monkeypatch):
+    """A precheck cannot misclassify an expired/replaced lease as renewal."""
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(
+        session_state={"job_file_opened_versions": {"99": 121}}
+    )
+    monkeypatch.setattr(
+        page.job_files,
+        "_active_checkout",
+        lambda _file_id: {"holder_email": "alice@example.edu"},
+    )
+    monkeypatch.setattr(
+        page.job_files.collaboration,
+        "acquire_file_checkout",
+        lambda *_args: SimpleNamespace(acquired=True, renewed=False),
+    )
+    monkeypatch.setattr(
+        page.work_files,
+        "get_current_version",
+        lambda *_args: {"id": 122},
+    )
+
+    page.job_files._acquire_checkout(
+        fake_st,
+        _job_file_row(status="in_progress"),
+        "alice@example.edu",
+    )
+
+    assert fake_st.session_state["job_file_opened_versions"] == {"99": 122}
 
 
 def test_new_checkout_replaces_stale_tab_version_token(monkeypatch):

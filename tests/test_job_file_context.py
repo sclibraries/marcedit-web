@@ -69,6 +69,34 @@ def test_open_job_file_records_exact_context(monkeypatch, attached_file):
     assert fake_st.session_state["store"].filename == "deletes.mrc"
 
 
+def test_open_job_file_caches_exact_version_that_was_loaded(
+    monkeypatch, attached_file,
+):
+    """Two metadata reads cannot leave a token for bytes that were not loaded."""
+    fake_st = _FakeStreamlit({"user": "owner@example.edu"})
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(session, "current_user_id", lambda: "owner@example.edu")
+    row = job_files.get_file(attached_file["id"], "owner@example.edu")
+    version = job_files.get_current_version(
+        attached_file["id"], "owner@example.edu"
+    )
+    monkeypatch.setattr(
+        session.job_files,
+        "get_file",
+        lambda *_args: {**row, "current_version_id": int(version["id"]) + 99},
+    )
+    monkeypatch.setattr(
+        session.job_files,
+        "get_current_version",
+        lambda *_args: version,
+    )
+
+    summary = session.open_job_file(attached_file["id"])
+
+    assert fake_st.session_state["job_file_version_id"] == version["id"]
+    assert summary["job_file_version_id"] == version["id"]
+
+
 def test_init_restores_exact_job_file_after_refresh(monkeypatch, attached_file):
     """Refresh must re-query file access/version, not infer identity from uploads."""
     fake_st = _FakeStreamlit(

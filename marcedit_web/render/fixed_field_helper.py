@@ -283,7 +283,7 @@ def _save_fixed_field_record(
     label: str,
     changed_fields: list[str],
 ) -> dict | None:
-    if st.session_state.get("current_job_id") is None:
+    if st.session_state.get("job_file_id") is None:
         store.replace(index - 1, record)
         store.persist_to_disk()
         return None
@@ -305,39 +305,27 @@ def _save_fixed_field_record(
 
 
 def _fixed_save_gate(index: int) -> tuple[bool, str]:
+    job_file_id = st.session_state.get("job_file_id")
+    if job_file_id is None:
+        return False, ""
     job_id = st.session_state.get("current_job_id")
     if job_id is None:
         return False, ""
     user = session.current_user_id()
     role = jobs.get_access_role(int(job_id), user)
-    job_file_id = st.session_state.get("job_file_id")
-    if job_file_id is not None:
-        lock_row, holds_lock = single_record_edit._job_file_lock_state(
-            int(job_file_id)
-        )
-        if role not in {"owner", "editor"}:
-            return True, "This shared job is read-only for your account."
-        if lock_row and not holds_lock:
-            return (
-                True,
-                "File is checked out by "
-                f"{lock_row['holder_email']} until {lock_row['expires_at']}.",
-            )
-        if not holds_lock:
-            return True, "Check out this file before saving fixed-field edits."
-        return False, ""
-
-    lock_row, holds_lock = single_record_edit._record_lock_state(int(job_id), index)
+    lock_row, holds_lock = single_record_edit._job_file_lock_state(
+        int(job_file_id)
+    )
     if role not in {"owner", "editor"}:
         return True, "This shared job is read-only for your account."
     if lock_row and not holds_lock:
         return (
             True,
-            "Record is checked out by "
+            "File is checked out by "
             f"{lock_row['holder_email']} until {lock_row['expires_at']}.",
         )
-    if not single_record_edit._can_edit_record(role, holds_lock):
-        return True, "Check out this record before saving fixed-field edits."
+    if not holds_lock:
+        return True, "Check out this file before saving fixed-field edits."
     return False, ""
 
 

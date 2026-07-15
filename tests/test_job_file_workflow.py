@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import shutil
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -87,6 +88,55 @@ def test_export_from_approved_current_version_is_ready(
     ).read_bytes()
     assert Path(export["file_path"]).parent.name == "exports"
     assert job_files.get_file(export["job_file_id"], OWNER)["status"] == "exported"
+
+
+def test_export_copy_validation_does_not_block_unrelated_writer(
+    checked_out_file, monkeypatch,
+):
+    """Large export preparation must happen before SQLite's writer lock."""
+    copy_started = threading.Event()
+    release_copy = threading.Event()
+    writer_finished = threading.Event()
+    export_errors: list[Exception] = []
+    real_copy = job_files._copy_export_exclusive  # noqa: SLF001
+
+    def paused_copy(*args, **kwargs):
+        copy_started.set()
+        assert release_copy.wait(timeout=3)
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr(job_files, "_copy_export_exclusive", paused_copy)
+
+    def create_export():
+        try:
+            job_files.create_export(
+                file_id=checked_out_file["id"],
+                opened_version_id=checked_out_file["current_version_id"],
+                user_email=OWNER,
+                purpose="Review copy",
+            )
+        except Exception as exc:  # captured for the parent assertion
+            export_errors.append(exc)
+
+    export_thread = threading.Thread(target=create_export)
+    export_thread.start()
+    assert copy_started.wait(timeout=2)
+
+    def unrelated_write():
+        jobs.create_job(OWNER, "Unrelated work")
+        writer_finished.set()
+
+    writer_thread = threading.Thread(target=unrelated_write)
+    writer_thread.start()
+    try:
+        assert writer_finished.wait(timeout=1)
+    finally:
+        release_copy.set()
+        export_thread.join(timeout=3)
+        writer_thread.join(timeout=3)
+    assert not export_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert export_errors == []
 
 
 def test_unapproved_export_is_retained_as_visibly_distinct_draft(checked_out_file):
@@ -171,9 +221,11 @@ def test_export_rechecks_checkout_after_slow_validation(
             "SELECT COUNT(*) FROM job_activity WHERE job_file_id=?",
             (checked_out_file["id"],),
         ).fetchone()[0]
-    first_check = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-    checks = iter((first_check, first_check + dt.timedelta(hours=1)))
-    monkeypatch.setattr(collaboration, "_now", lambda: next(checks))
+    expired_check = (
+        dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+        + dt.timedelta(hours=1)
+    )
+    monkeypatch.setattr(collaboration, "_now", lambda: expired_check)
 
     with pytest.raises(job_files.JobFileError, match="checkout"):
         job_files.create_export(
@@ -372,16 +424,16 @@ def test_draft_or_superseded_export_cannot_be_marked_loaded(checked_out_file):
 
 def _fail_first_connection_commit(monkeypatch, *, persist_before_raise):
     original_connect = db.connect
-    first = True
+    call_count = 0
 
     @contextmanager
     def failing_connect():
-        nonlocal first
-        if not first:
+        nonlocal call_count
+        call_count += 1
+        if call_count != 2:  # metadata read precedes the short write transaction
             with original_connect() as conn:
                 yield conn
             return
-        first = False
         conn = sqlite3.connect(db.db_path(), isolation_level="DEFERRED")
         conn.row_factory = sqlite3.Row
         try:

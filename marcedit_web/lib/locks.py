@@ -13,6 +13,7 @@ class LockDecision:
     acquired: bool
     holder_email: str | None = None
     expires_at: str | None = None
+    renewed: bool = False
 
 
 def _now() -> dt.datetime:
@@ -54,7 +55,15 @@ def acquire_lock(
             return LockDecision(True, holder, expires_at)
         current_holder = row["holder_email"]
         current_expires = row["expires_at"]
-        if current_holder == holder or _parse_iso(current_expires) <= now:
+        if current_holder == holder and _parse_iso(current_expires) > now:
+            conn.execute(
+                "UPDATE advisory_locks"
+                " SET holder_email=?, expires_at=?, updated_at=?"
+                " WHERE resource_type=? AND resource_id=?",
+                (holder, expires_at, now_iso, resource_type, resource_id),
+            )
+            return LockDecision(True, holder, expires_at, renewed=True)
+        if _parse_iso(current_expires) <= now:
             conn.execute(
                 "UPDATE advisory_locks"
                 " SET holder_email=?, expires_at=?, updated_at=?"

@@ -367,7 +367,15 @@ def _acquire_lock_in_tx(
             (resource_type, resource_id, holder, expires_at, now_iso, now_iso),
         )
         return locks.LockDecision(True, holder, expires_at)
-    if row["holder_email"] == holder or _parse_iso(row["expires_at"]) <= now:
+    if row["holder_email"] == holder and _parse_iso(row["expires_at"]) > now:
+        conn.execute(
+            "UPDATE advisory_locks"
+            " SET holder_email = ?, expires_at = ?, updated_at = ?"
+            " WHERE resource_type = ? AND resource_id = ?",
+            (holder, expires_at, now_iso, resource_type, resource_id),
+        )
+        return locks.LockDecision(True, holder, expires_at, renewed=True)
+    if _parse_iso(row["expires_at"]) <= now:
         conn.execute(
             "UPDATE advisory_locks"
             " SET holder_email = ?, expires_at = ?, updated_at = ?"

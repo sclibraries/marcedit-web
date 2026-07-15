@@ -181,7 +181,11 @@ def test_changed_record_preview_html_marks_added_and_removed_lines():
 
 
 def test_fixed_save_gate_blocks_viewer(monkeypatch):
-    monkeypatch.setattr(fixed_field_helper.st, "session_state", {"current_job_id": 1})
+    monkeypatch.setattr(
+        fixed_field_helper.st,
+        "session_state",
+        {"current_job_id": 1, "job_file_id": 9},
+    )
     monkeypatch.setattr(
         fixed_field_helper.session,
         "current_user_id",
@@ -194,8 +198,8 @@ def test_fixed_save_gate_blocks_viewer(monkeypatch):
     )
     monkeypatch.setattr(
         fixed_field_helper.single_record_edit,
-        "_record_lock_state",
-        lambda job_id, index: (None, True),
+        "_job_file_lock_state",
+        lambda file_id: (None, True),
     )
 
     disabled, message = fixed_field_helper._fixed_save_gate(1)

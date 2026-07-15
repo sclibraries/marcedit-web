@@ -33,7 +33,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import db, jobs
+from . import db
 from .identity import ANONYMOUS, is_anonymous
 from .task_storage import safe_user_slug
 
@@ -88,7 +88,6 @@ def record_upload(
     if is_anonymous(user):
         return None
     now = dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    target_job_id = job_id or jobs.ensure_default_job(user)["id"]
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -102,7 +101,7 @@ def record_upload(
             " VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
             (
                 user,
-                target_job_id,
+                job_id,
                 filename,
                 str(file_path),
                 record_count,

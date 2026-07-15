@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import shutil
+import tempfile
 from pathlib import Path
 
 import pymarc
@@ -58,7 +61,7 @@ def _save_parsed_records(
     records: list[pymarc.Record],
     validation: dict,
 ) -> dict | None:
-    if st.session_state.get("current_job_id") is None:
+    if st.session_state.get("job_file_id") is None:
         store.replace_all(list(records))
         store.persist_to_disk()
         return None
@@ -74,6 +77,100 @@ def _save_parsed_records(
             summary={"record_count": len(records)},
             validation=validation,
         )
+
+
+def _build_marc_editor_parse(text: str, rule_set) -> dict:
+    """Parse/validate editor text and retain only disk-backed save state."""
+    parsed_records, file_errors = mrk_parser.parse_mrk(text)
+    record_objs: list[pymarc.Record] = []
+    record_start_lines: list[int] = []
+    line_errors: list[dict] = []
+    for error in file_errors:
+        line_errors.append({
+            "line_no": error.line_no,
+            "column": error.column,
+            "code": error.code,
+            "message": error.message,
+        })
+    for parsed in parsed_records:
+        record_start_lines.append(parsed.start_line)
+        if parsed.record is not None:
+            record_objs.append(parsed.record)
+        for error in parsed.errors:
+            line_errors.append({
+                "line_no": error.line_no,
+                "column": error.column,
+                "code": error.code,
+                "message": error.message,
+            })
+
+    all_issues = (
+        preflight.run_preflight(records=record_objs, malformed=0)
+        + rules_validate.validate_records(record_objs, rule_set)
+    )
+    issues = [
+        {
+            "severity": issue.severity,
+            "code": issue.code,
+            "message": issue.message,
+            "record_index": issue.record_index,
+        }
+        for issue in all_issues
+    ]
+    fatal_count = sum(
+        1 for error in line_errors if _is_fatal_code(error["code"])
+    ) + sum(1 for issue in all_issues if issue.severity == "error")
+    candidate_path: str | None = None
+    if fatal_count == 0:
+        workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-editor-parse-"))
+        candidate = workdir / "candidate.mrc"
+        try:
+            with candidate.open("wb") as output:
+                writer = pymarc.MARCWriter(output)
+                for record in record_objs:
+                    writer.write(record)
+        except Exception:
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise
+        candidate_path = str(candidate)
+    return {
+        "line_errors": line_errors,
+        "issues": issues,
+        "record_count": len(record_objs),
+        "record_start_lines": record_start_lines,
+        "fatal_count": fatal_count,
+        "candidate_path": candidate_path,
+        "editor_digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+
+
+def _discard_marc_editor_parse(parse_state: dict | None) -> None:
+    """Remove a superseded session-owned candidate, if one exists."""
+    if not parse_state or not parse_state.get("candidate_path"):
+        return
+    candidate = Path(parse_state["candidate_path"])
+    shutil.rmtree(candidate.parent, ignore_errors=True)
+
+
+def _save_parsed_candidate(
+    *,
+    store,
+    candidate_path: Path,
+    record_count: int,
+    validation: dict,
+) -> dict | None:
+    """Save an already validated disk-backed MarcEditor candidate."""
+    if st.session_state.get("job_file_id") is None:
+        # Non-job Quick Load compatibility boundary: mutate only its one-off store.
+        store.replace_from_path(candidate_path)
+        return None
+    return session.adopt_current_candidate(
+        candidate_path=candidate_path,
+        source_kind="marceditor",
+        label="Full MARC editor save",
+        summary={"record_count": record_count},
+        validation=validation,
+    )
 
 
 def _render_single_record_picker(store, total: int, rule_set) -> None:
@@ -203,12 +300,20 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
 
     _MRK_KEY = "marc_editor_text"
     _MRK_SOURCE_KEY = "marc_editor_source_id"
-    source_id = (session.current_filename(), total)
+    source_id = (
+        session.current_filename(),
+        total,
+        st.session_state.get("job_file_id"),
+        st.session_state.get("job_file_version_id"),
+        str(store.path),
+        store.revision,
+    )
 
     if (
         _MRK_KEY not in st.session_state
         or st.session_state.get(_MRK_SOURCE_KEY) != source_id
     ):
+        _discard_marc_editor_parse(st.session_state.get("marc_editor_parse"))
         if over_cap:
             st.session_state[_MRK_KEY] = ""
         else:
@@ -234,7 +339,9 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         st.session_state[_MRK_KEY] = mrk_writer.render_records_mrk(
             store.iter_records()
         )
-        st.session_state.pop("marc_editor_parse", None)
+        _discard_marc_editor_parse(
+            st.session_state.pop("marc_editor_parse", None)
+        )
         st.rerun()
 
     # --- Ace annotations ---------------------------------------------------
@@ -308,56 +415,11 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
 
     if parse_clicked:
         text = st.session_state[_MRK_KEY]
-        parsed_records, file_errors = mrk_parser.parse_mrk(text)
-
-        record_objs: list[pymarc.Record] = []
-        record_start_lines: list[int] = []
-        line_errors_serialized: list[dict] = []
-
-        for fe in file_errors:
-            line_errors_serialized.append({
-                "line_no": fe.line_no,
-                "column": fe.column,
-                "code": fe.code,
-                "message": fe.message,
-            })
-        for pr in parsed_records:
-            record_start_lines.append(pr.start_line)
-            if pr.record is not None:
-                record_objs.append(pr.record)
-            for e in pr.errors:
-                line_errors_serialized.append({
-                    "line_no": e.line_no,
-                    "column": e.column,
-                    "code": e.code,
-                    "message": e.message,
-                })
-
-        preflight_issues = preflight.run_preflight(records=record_objs, malformed=0)
-        rule_issues = rules_validate.validate_records(record_objs, rule_set)
-        all_issues = preflight_issues + rule_issues
-        serialized_issues = [
-            {
-                "severity": i.severity,
-                "code": i.code,
-                "message": i.message,
-                "record_index": i.record_index,
-            }
-            for i in all_issues
-        ]
-
-        fatal_count = sum(
-            1 for e in line_errors_serialized if _is_fatal_code(e["code"])
-        ) + sum(1 for i in all_issues if i.severity == "error")
-
-        st.session_state["marc_editor_parse"] = {
-            "line_errors": line_errors_serialized,
-            "issues": serialized_issues,
-            "record_count": len(record_objs),
-            "record_start_lines": record_start_lines,
-            "fatal_count": fatal_count,
-            "records": record_objs,
-        }
+        _discard_marc_editor_parse(st.session_state.get("marc_editor_parse"))
+        st.session_state["marc_editor_parse"] = _build_marc_editor_parse(
+            text,
+            rule_set,
+        )
         st.rerun()
 
     parse_state = st.session_state.get("marc_editor_parse")
@@ -391,22 +453,38 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         )
 
     if save_clicked and parse_state is not None and fatal == 0:
-        record_objs = parse_state["records"]
+        text = st.session_state[_MRK_KEY]
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if digest != parse_state["editor_digest"]:
+            _discard_marc_editor_parse(
+                st.session_state.pop("marc_editor_parse", None)
+            )
+            st.warning(
+                "Editor text changed after validation. Parse again before saving."
+            )
+            return
         validation = {
             "errors": fatal,
             "warnings": warnings,
             "info": info,
         }
         try:
-            created = _save_parsed_records(
+            created = _save_parsed_candidate(
                 store=store,
-                records=record_objs,
+                candidate_path=Path(parse_state["candidate_path"]),
+                record_count=int(parse_state["record_count"]),
                 validation=validation,
             )
         except (job_files.JobFileError, collaboration.CollaborationError) as exc:
+            _discard_marc_editor_parse(
+                st.session_state.pop("marc_editor_parse", None)
+            )
             st.error(f"Cannot save: {exc}")
             return
         except OSError as exc:
+            _discard_marc_editor_parse(
+                st.session_state.pop("marc_editor_parse", None)
+            )
             st.error(f"Cannot save: edited records were not persisted. {exc}")
             return
         st.session_state["issues_cache"] = {}
@@ -414,14 +492,16 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
         saved_store = session.current_store() or store
         st.session_state.pop(_MRK_KEY, None)
         st.session_state.pop(_MRK_SOURCE_KEY, None)
-        st.session_state.pop("marc_editor_parse", None)
+        _discard_marc_editor_parse(
+            st.session_state.pop("marc_editor_parse", None)
+        )
 
         orig = session.current_filename() or "edited.mrc"
         stem = Path(orig).stem or "edited"
         fname = session.stamped_filename(stem)
 
         st.success(
-            f"Saved **{len(record_objs)}** record(s)"
+            f"Saved **{parse_state['record_count']}** record(s)"
             + (
                 f" as version **{created['version_number']}**"
                 if created is not None

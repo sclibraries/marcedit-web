@@ -124,7 +124,7 @@ def test_require_role_returns_matching_role_and_rejects_viewer():
         )
 
 
-def test_record_upload_attaches_to_default_job():
+def test_record_upload_without_explicit_job_remains_unassigned():
     upload_persistence.record_upload(
         user="alice@example.edu",
         filename="load.mrc",
@@ -134,9 +134,8 @@ def test_record_upload_attaches_to_default_job():
     )
 
     row = upload_persistence.get_active_upload("alice@example.edu")
-    default_job = jobs.ensure_default_job("alice@example.edu")
 
-    assert row["job_id"] == default_job["id"]
+    assert row["job_id"] is None
 
 
 def test_record_upload_can_attach_to_named_job():

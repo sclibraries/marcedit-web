@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pymarc
+
+from marcedit_web.lib import mrk_writer
+from marcedit_web.lib.rules import RuleSet
 from marcedit_web.render import edit
 
 
@@ -20,6 +26,36 @@ def test_marceditor_source_mode_hidden_over_cap():
     modes = edit._editor_mode_options(edit.MAX_EDITOR_RECORDS + 1)
 
     assert modes == [edit.RECORD_MODE]
+
+
+def test_marceditor_parse_state_is_disk_backed_without_record_list(record):
+    """Parsed pymarc objects are request-local, never retained in session state."""
+    text = mrk_writer.render_records_mrk([record])
+
+    state = edit._build_marc_editor_parse(text, RuleSet())
+
+    assert Path(state["candidate_path"]).is_file()
+    assert state["record_count"] == 1
+    assert "records" not in state
+    assert not any(
+        isinstance(value, pymarc.Record)
+        for value in state.values()
+    )
+    edit._discard_marc_editor_parse(state)
+    assert not Path(state["candidate_path"]).exists()
+
+
+def test_superseded_marceditor_parse_removes_previous_candidate(record):
+    """Re-parse cleanup cannot leak session-owned full-batch candidates."""
+    state = edit._build_marc_editor_parse(
+        mrk_writer.render_records_mrk([record]),
+        RuleSet(),
+    )
+    candidate = Path(state["candidate_path"])
+
+    edit._discard_marc_editor_parse(state)
+
+    assert not candidate.exists()
 
 
 def test_marceditor_record_picker_opens_editor_directly(monkeypatch, record):

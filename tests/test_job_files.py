@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shutil
+import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -75,6 +77,84 @@ def test_attachment_rejects_incorrect_file_size(tmp_path):
             record_count=1,
             file_bytes=4,
         )
+
+
+def _fail_attachment_commit(monkeypatch, *, persist_before_raise: bool) -> None:
+    original_connect = db.connect
+    call_count = 0
+
+    @contextmanager
+    def failing_connect():
+        nonlocal call_count
+        call_count += 1
+        if call_count != 2:  # first call is the public API's role check
+            with original_connect() as conn:
+                yield conn
+            return
+        conn = sqlite3.connect(db.db_path(), isolation_level="DEFERRED")
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            yield conn
+            if persist_before_raise:
+                conn.commit()
+                raise RuntimeError("commit persisted but confirmation failed")
+            raise RuntimeError("commit failed before persistence")
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    monkeypatch.setattr(db, "connect", failing_connect)
+
+
+def test_attachment_commit_failure_before_persistence_cleans_original(
+    tmp_path, monkeypatch,
+):
+    """A rolled-back attachment must leave no immutable orphan or SQL row."""
+    source = tmp_path / "incoming.mrc"
+    source.write_bytes(b"first")
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    _fail_attachment_commit(monkeypatch, persist_before_raise=False)
+
+    with pytest.raises(RuntimeError, match="failed before persistence"):
+        job_files.attach_file(
+            job_id=job["id"],
+            user_email="owner@example.edu",
+            source_path=source,
+            filename="deletes.mrc",
+            record_count=1,
+            file_bytes=5,
+        )
+
+    assert job_files.list_files(job["id"], "owner@example.edu") == []
+    assert list(job_files.versions_root().glob("*/versions/*.mrc")) == []
+
+
+def test_attachment_persisted_then_raised_retains_referenced_original(
+    tmp_path, monkeypatch,
+):
+    """Uncertain commit confirmation must never unlink referenced version 1."""
+    source = tmp_path / "incoming.mrc"
+    source.write_bytes(b"first")
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    _fail_attachment_commit(monkeypatch, persist_before_raise=True)
+
+    with pytest.raises(job_files.JobFileError, match="confirmation failed"):
+        job_files.attach_file(
+            job_id=job["id"],
+            user_email="owner@example.edu",
+            source_path=source,
+            filename="deletes.mrc",
+            record_count=1,
+            file_bytes=5,
+        )
+
+    rows = job_files.list_files(job["id"], "owner@example.edu")
+    assert len(rows) == 1
+    current = job_files.get_current_version(rows[0]["id"], "owner@example.edu")
+    assert Path(current["file_path"]).read_bytes() == b"first"
 
 
 def test_attachment_removes_partial_candidate_when_copy_fails(tmp_path, monkeypatch):

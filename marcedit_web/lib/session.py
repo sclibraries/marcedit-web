@@ -376,7 +376,7 @@ def handle_upload(
     #   * anonymous → per-session tmp (wiped on container restart;
     #     not retained across refresh — by design)
     #   * signed-in → stable per-user dir under data/uploads/
-    selected_job_id = job_id or st.session_state.get("current_job_id")
+    selected_job_id = job_id
     if is_anonymous(user):
         store_dir = _session_records_dir()
     else:
@@ -399,17 +399,21 @@ def handle_upload(
             file_bytes=size,
             job_id=selected_job_id,
         )
-        work_file = job_files.attach_file(
-            job_id=int(upload["job_id"]),
-            user_email=user,
-            source_path=Path(upload["file_path"]),
-            filename=upload["filename"],
-            record_count=int(upload["record_count"]),
-            file_bytes=int(upload["file_bytes"]),
-            upload_id=int(upload["id"]),
-            description=description,
-        )
-        _set_job_file_context(work_file)
+        if upload["job_id"] is not None:
+            work_file = job_files.attach_file(
+                job_id=int(upload["job_id"]),
+                user_email=user,
+                source_path=Path(upload["file_path"]),
+                filename=upload["filename"],
+                record_count=int(upload["record_count"]),
+                file_bytes=int(upload["file_bytes"]),
+                upload_id=int(upload["id"]),
+                description=description,
+            )
+            _set_job_file_context(work_file)
+        else:
+            st.session_state["job_file_id"] = None
+            st.session_state["job_file_version_id"] = None
     st.session_state["store"] = store
     _clear_mutation_previews(st.session_state)
     st.session_state["upload_bytes_total"] = new_total
@@ -438,13 +442,19 @@ def handle_upload(
     }
 
 
-def _set_job_file_context(row: dict[str, Any]) -> None:
+def _set_job_file_context(
+    row: dict[str, Any],
+    *,
+    version_id: int | None = None,
+) -> None:
     import streamlit as st
 
     if st.session_state.get("current_job_id") != row["job_id"]:
         st.session_state["current_job_id"] = row["job_id"]
     st.session_state["job_file_id"] = row["id"]
-    st.session_state["job_file_version_id"] = row["current_version_id"]
+    st.session_state["job_file_version_id"] = (
+        row["current_version_id"] if version_id is None else version_id
+    )
 
 
 def open_job_file(file_id: int) -> dict[str, Any]:
@@ -458,7 +468,7 @@ def open_job_file(file_id: int) -> dict[str, Any]:
     store._filename = row["display_name"]
     _clear_mutation_previews(st.session_state)
     st.session_state["store"] = store
-    _set_job_file_context(row)
+    _set_job_file_context(row, version_id=int(version["id"]))
     st.session_state["issues_cache"] = {}
     st.session_state["editor_text"] = None
     st.session_state["editor_dirty"] = False

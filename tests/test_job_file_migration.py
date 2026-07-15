@@ -490,6 +490,31 @@ def test_missing_upload_warns_without_blocking_other_eligible_uploads(
     assert str(missing) in caplog.text
 
 
+def test_v12_restart_retries_upload_after_missing_source_is_restored(
+    tmp_path, monkeypatch,
+):
+    """Schema initialization is also the idempotent reconciliation trigger."""
+    monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files"))
+    job_id = _seed_v11_job(tmp_path)
+    source = tmp_path / "temporarily-missing.mrc"
+    upload_id = _seed_upload(job_id, source, filename="restored.mrc")
+
+    db.reset_for_tests()
+    db.init_schema()
+    assert _migrated_file(upload_id) is None
+    with db.connect() as conn:
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 12
+
+    source.write_bytes(b"restored")
+    db.reset_for_tests()
+    db.init_schema()
+
+    _assert_single_complete_migration(upload_id, b"restored")
+    db.reset_for_tests()
+    db.init_schema()
+    _assert_single_complete_migration(upload_id, b"restored")
+
+
 def test_copy_failure_leaves_no_partial_row_and_migration_continues(
     tmp_path, monkeypatch, caplog,
 ):

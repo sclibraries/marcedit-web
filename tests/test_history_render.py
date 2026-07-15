@@ -562,3 +562,24 @@ def test_restore_permission_checks_role_holder_and_exact_opened_version(
     ) is False
     fake_st.session_state["job_file_version_id"] = 11
     assert history._can_restore_file(file_row, "editor@example.edu") is False
+
+
+def test_history_return_for_review_only_renders_for_in_progress(monkeypatch):
+    """A loaded version token cannot expose Return from new/changes states."""
+    for status in ("new", "changes_requested", "approved"):
+        fake_st = _FakeStreamlit()
+        fake_st.session_state["job_file_version_id"] = 12
+        history = _history(monkeypatch, fake_st)
+
+        history._render_file_transition_controls(
+            {
+                "id": 9,
+                "job_id": 3,
+                "current_version_id": 12,
+                "access_role": "editor",
+                "status": status,
+            },
+            "editor@example.edu",
+        )
+
+        assert "Return for review" not in [row["label"] for row in fake_st.buttons]

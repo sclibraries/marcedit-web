@@ -618,3 +618,56 @@ def test_editor_without_file_checkout_retains_version_and_buffer(
     assert Path(before["file_path"]).read_bytes() == before_bytes
     assert editor_state["draft"] == "copyable unsaved text"
     assert "checkout" in status.errors[-1].lower()
+
+
+@pytest.mark.parametrize("message", ["file changed", "candidate is not readable"])
+def test_fixed_field_failed_save_retains_widget_buffer_and_current_bytes(
+    message, monkeypatch, checked_out_file, editor_state,
+):
+    """Stale/invalid fixed-field saves leave the cataloger's inputs intact."""
+    before = Path(editor_state["store"].path).read_bytes()
+    editor_state["fixed_field_008"] = "copyable unsaved fixed field"
+    edited = deepcopy(editor_state["store"].get(0))
+    edited["001"].data = "must-not-save"
+    monkeypatch.setattr(
+        fixed_field_helper.session,
+        "adopt_current_candidate",
+        lambda **_kwargs: (_ for _ in ()).throw(job_files.JobFileError(message)),
+    )
+
+    with pytest.raises(job_files.JobFileError, match=message):
+        fixed_field_helper._save_fixed_field_record(
+            store=editor_state["store"],
+            index=1,
+            record=edited,
+            label="Fixed field edit",
+            changed_fields=["008"],
+        )
+
+    assert editor_state["fixed_field_008"] == "copyable unsaved fixed field"
+    assert Path(editor_state["store"].path).read_bytes() == before
+
+
+@pytest.mark.parametrize("message", ["file changed", "candidate is not readable"])
+def test_marceditor_failed_save_retains_editor_buffer(
+    message, monkeypatch, tmp_path, editor_state,
+):
+    """Stale/invalid candidate adoption never clears MarcEditor source text."""
+    editor_state["marc_editor_text"] = "copyable unsaved MARC"
+    candidate = tmp_path / "editor-candidate.mrc"
+    candidate.write_bytes(Path(editor_state["store"].path).read_bytes())
+    monkeypatch.setattr(
+        edit.session,
+        "adopt_current_candidate",
+        lambda **_kwargs: (_ for _ in ()).throw(job_files.JobFileError(message)),
+    )
+
+    with pytest.raises(job_files.JobFileError, match=message):
+        edit._save_parsed_candidate(
+            store=editor_state["store"],
+            candidate_path=candidate,
+            record_count=1,
+            validation={"errors": 0},
+        )
+
+    assert editor_state["marc_editor_text"] == "copyable unsaved MARC"

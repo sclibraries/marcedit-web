@@ -26,10 +26,7 @@ from marcedit_web.render._record_modal import open_record_modal
 
 
 def _uses_job_file_versions() -> bool:
-    return (
-        st.session_state.get("job_file_id") is not None
-        and not st.session_state.get("quick_load_mode", False)
-    )
+    return st.session_state.get("job_file_id") is not None
 
 
 # Visual differentiation for the severity column. We use colored
@@ -124,6 +121,7 @@ def _record_folio_snapshot(
     record_index: int | None = None,
 ) -> None:
     with snapshot_actions.staged_store_path(store) as after_path:
+        # Non-job Quick Load compatibility boundary: legacy history only.
         snapshot_actions.record_edit_snapshot(
             job_id=st.session_state.get("current_job_id"),
             user_email=session.current_user_id(),

@@ -126,16 +126,6 @@ def render_inline_edit(
             lock_row=lock_row,
             holds_lock=holds_lock,
         )
-    elif job_id is not None:
-        lock_row, holds_lock = _record_lock_state(int(job_id), index)
-        _render_checkout_controls(
-            job_id=int(job_id),
-            index=index,
-            key_prefix=key_prefix,
-            role=role,
-            lock_row=lock_row,
-            holds_lock=holds_lock,
-        )
 
     # Navigating to a different record while edit is open cancels the
     # previous draft — the buffer was tied to the previous index, so
@@ -163,7 +153,7 @@ def render_inline_edit(
 
     if not st.session_state.get(k_active):
         can_open = _can_edit_record(role, holds_lock)
-        disabled = job_id is not None and not can_open
+        disabled = job_file_id is not None and not can_open
         if st.button(
             "✏️ Edit this record",
             key=f"{key_prefix}_open_{index}",
@@ -194,7 +184,7 @@ def render_inline_edit(
             structured_record_editor.record_to_draft(record),
         )
         can_save = _can_edit_record(role, holds_lock)
-        save_disabled = job_id is not None and not can_save
+        save_disabled = job_file_id is not None and not can_save
         _render_jump_links(draft)
         top_save_clicked, top_cancel_clicked, preview_enabled = (
             _render_structured_action_bar(
@@ -677,7 +667,7 @@ def _save_validated_record(
         return False
 
     created = None
-    if st.session_state.get("current_job_id") is not None:
+    if st.session_state.get("job_file_id") is not None:
         try:
             created = _adopt_record_candidate(
                 store=store,

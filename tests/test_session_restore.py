@@ -194,10 +194,10 @@ def test_handle_upload_keeps_each_signed_in_upload_on_disk(
     assert second_path.read_bytes() == _serialize([record, record])
 
 
-def test_handle_upload_attaches_to_selected_job(
+def test_handle_upload_does_not_infer_job_from_quick_load_selection(
     fake_st, record, tmp_path, monkeypatch,
 ):
-    """Home's selected job should determine where the upload is attached."""
+    """Quick Load remains unassigned even when Home has a selected job."""
     monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
     st = fake_st()
     st.session_state["user"] = "alice@example.edu"
@@ -207,7 +207,7 @@ def test_handle_upload_attaches_to_selected_job(
     session.handle_upload(_FakeUpload("test.mrc", _serialize([record])))
 
     row = upload_persistence.get_active_upload("alice@example.edu")
-    assert row["job_id"] == job["id"]
+    assert row["job_id"] is None
 
 
 def test_load_persisted_upload_reattaches_exact_job_file(
@@ -222,9 +222,15 @@ def test_load_persisted_upload_reattaches_exact_job_file(
 
     first_bytes = _serialize([record])
     second_bytes = _serialize([record, record])
-    session.handle_upload(_FakeUpload("first.mrc", first_bytes))
+    session.handle_upload(
+        _FakeUpload("first.mrc", first_bytes),
+        job_id=job["id"],
+    )
     first = upload_persistence.get_active_upload("alice@example.edu")
-    session.handle_upload(_FakeUpload("second.mrc", second_bytes))
+    session.handle_upload(
+        _FakeUpload("second.mrc", second_bytes),
+        job_id=job["id"],
+    )
 
     summary = session.load_persisted_upload(first["id"])
 
@@ -277,7 +283,10 @@ def test_load_persisted_upload_tolerates_widget_owned_current_job_id(
     st.session_state["user"] = "alice@example.edu"
     job = jobs.create_job("alice@example.edu", "Vendor load June")
     st.session_state["current_job_id"] = job["id"]
-    session.handle_upload(_FakeUpload("first.mrc", _serialize([record])))
+    session.handle_upload(
+        _FakeUpload("first.mrc", _serialize([record])),
+        job_id=job["id"],
+    )
     upload = upload_persistence.get_active_upload("alice@example.edu")
 
     st.session_state = _WidgetOwnedState(
@@ -306,7 +315,10 @@ def test_load_persisted_upload_switches_job_when_key_is_free(
     st.session_state["user"] = "alice@example.edu"
     vendor_job = jobs.create_job("alice@example.edu", "Vendor load June")
     st.session_state["current_job_id"] = vendor_job["id"]
-    session.handle_upload(_FakeUpload("vendor.mrc", _serialize([record])))
+    session.handle_upload(
+        _FakeUpload("vendor.mrc", _serialize([record])),
+        job_id=vendor_job["id"],
+    )
     upload = upload_persistence.get_active_upload("alice@example.edu")
 
     other_job = jobs.create_job("alice@example.edu", "Authority cleanup")
@@ -412,7 +424,11 @@ def test_restore_active_upload_reattaches_existing_store(
     # Step 1: real upload, populates DB + on-disk file.
     st = fake_st()
     st.session_state["user"] = "alice@example.edu"
-    session.handle_upload(_FakeUpload("test.mrc", _serialize([record])))
+    job = jobs.create_job("alice@example.edu", "Refreshable workspace")
+    session.handle_upload(
+        _FakeUpload("test.mrc", _serialize([record])),
+        job_id=job["id"],
+    )
 
     # Step 2: simulate browser refresh — fresh session_state, same user.
     st.session_state.clear()
@@ -438,7 +454,11 @@ def test_restore_active_upload_sets_current_job_id(
     monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
     st = fake_st()
     st.session_state["user"] = "alice@example.edu"
-    session.handle_upload(_FakeUpload("test.mrc", _serialize([record])))
+    job = jobs.create_job("alice@example.edu", "Refresh current job")
+    session.handle_upload(
+        _FakeUpload("test.mrc", _serialize([record])),
+        job_id=job["id"],
+    )
     row = upload_persistence.get_active_upload("alice@example.edu")
     assert row["job_id"] is not None
 
@@ -448,6 +468,50 @@ def test_restore_active_upload_sets_current_job_id(
     session.restore_active_upload()
 
     assert st.session_state.get("current_job_id") == row["job_id"]
+
+
+def test_signed_in_quick_load_is_refreshable_but_unassigned(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """Quick Load persists bytes without creating hidden job-file work."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state.update({
+        "user": "alice@example.edu",
+        "current_job_id": jobs.ensure_default_job("alice@example.edu")["id"],
+        "job_file_id": 99,
+        "job_file_version_id": 100,
+    })
+
+    session.handle_upload(_FakeUpload("quick.mrc", _serialize([record])))
+
+    upload = upload_persistence.get_active_upload("alice@example.edu")
+    assert upload["job_id"] is None
+    assert st.session_state["job_file_id"] is None
+    assert st.session_state["job_file_version_id"] is None
+    assert st.session_state["store"].filename == "quick.mrc"
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM job_files").fetchone()[0] == 0
+
+
+def test_job_workspace_upload_creates_file_and_version(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """An explicit workspace job remains the versioned attachment boundary."""
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "u"))
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    job = jobs.create_job("alice@example.edu", "Routledge")
+
+    session.handle_upload(
+        _FakeUpload("vendor.mrc", _serialize([record])),
+        job_id=job["id"],
+    )
+
+    upload = upload_persistence.get_active_upload("alice@example.edu")
+    assert upload["job_id"] == job["id"]
+    assert st.session_state["job_file_id"] is not None
+    assert st.session_state["job_file_version_id"] is not None
 
 
 def test_restore_active_upload_no_op_for_anonymous(fake_st):

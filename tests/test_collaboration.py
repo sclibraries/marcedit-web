@@ -70,6 +70,24 @@ def test_second_cataloger_can_view_but_not_check_out_same_file(shared_file):
     assert job_files.get_file(shared_file["id"], EDITOR)["id"] == shared_file["id"]
 
 
+def test_checkout_decision_distinguishes_true_renewal_from_new_or_expired(
+    shared_file,
+):
+    """Only an unexpired same-holder row is a renewal of this lease."""
+    first = collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+    renewal = collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+    collaboration.release_file_checkout(shared_file["id"], OWNER)
+    new_after_gap = collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+    collaboration.release_file_checkout(shared_file["id"], OWNER)
+    collaboration.acquire_file_checkout(shared_file["id"], OWNER, ttl_seconds=-1)
+    expired_reacquire = collaboration.acquire_file_checkout(shared_file["id"], OWNER)
+
+    assert first.renewed is False
+    assert renewal.renewed is True
+    assert new_after_gap.renewed is False
+    assert expired_reacquire.renewed is False
+
+
 def test_force_release_requires_owner(shared_file):
     collaboration.acquire_file_checkout(shared_file["id"], EDITOR)
 

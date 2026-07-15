@@ -170,7 +170,7 @@ def _render_file_transition_controls(file_row: dict, user: str) -> None:
         return
     status = str(file_row["status"])
     cols = st.columns(3)
-    if status in {"new", "in_progress", "changes_requested"} and cols[0].button(
+    if status == "in_progress" and cols[0].button(
         "Return for review",
         key=f"file_review_return_{file_id}",
     ):
