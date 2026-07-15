@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import shutil
 import uuid
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from . import db, jobs
+from .record_store import RecordStore
 
 
 class JobFileError(ValueError):
@@ -147,6 +149,120 @@ def get_version(version_id: int, user_email: str) -> dict[str, Any]:
     return _dict(row)
 
 
+def adopt_candidate(
+    *,
+    file_id: int,
+    opened_version_id: int,
+    user_email: str,
+    candidate_path: Path,
+    source_kind: str,
+    label: str,
+    summary: dict[str, Any] | None = None,
+    validation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Atomically adopt owned MARC bytes as a new immutable current version."""
+    from . import collaboration
+
+    owned_candidate = Path(candidate_path)
+    staged_candidate = versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
+    target: Path | None = None
+    renamed = False
+    try:
+        try:
+            store = RecordStore.from_path(owned_candidate)
+        except (OSError, ValueError) as exc:
+            raise JobFileError("candidate is not a readable MARC file") from exc
+        count = store.count()
+        byte_count = owned_candidate.stat().st_size
+        if count == 0:
+            raise JobFileError("candidate contains no MARC records")
+        if store.malformed_count() > 0:
+            raise JobFileError("candidate contains malformed MARC records")
+
+        staged_candidate.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(owned_candidate, staged_candidate)
+        owned_candidate.unlink()
+
+        db.init_schema()
+        now = _utc_now_iso()
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                access = conn.execute(
+                    "SELECT job_access.role,job_files.archived_at FROM job_files"
+                    " LEFT JOIN job_access ON job_access.job_id=job_files.job_id"
+                    " AND job_access.user_email=? WHERE job_files.id=?",
+                    (user_email.strip().lower(), file_id),
+                ).fetchone()
+                if access is None or access["role"] not in {"owner", "editor"}:
+                    raise JobFileError("owner or editor access required")
+                if access["archived_at"] is not None:
+                    raise JobFileError("archived files cannot be changed")
+                try:
+                    collaboration._assert_file_checkout_in_tx(
+                        conn,
+                        file_id,
+                        user_email,
+                        opened_version_id,
+                    )
+                except collaboration.CollaborationError as exc:
+                    raise JobFileError(str(exc)) from exc
+                next_number = int(conn.execute(
+                    "SELECT COALESCE(MAX(version_number),0)+1 AS n"
+                    " FROM job_file_versions WHERE job_file_id=?",
+                    (file_id,),
+                ).fetchone()["n"])
+                target = _version_path(file_id, next_number)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(staged_candidate, target)
+                renamed = True
+                version_id = int(conn.execute(
+                    "INSERT INTO job_file_versions(job_file_id,version_number,"
+                    "parent_version_id,file_path,record_count,file_bytes,source_kind,"
+                    "label,summary_json,validation_json,created_by,created_at)"
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                    (
+                        file_id,
+                        next_number,
+                        opened_version_id,
+                        str(target),
+                        count,
+                        byte_count,
+                        source_kind,
+                        label,
+                        json.dumps(summary or {}),
+                        json.dumps(validation or {}),
+                        user_email,
+                        now,
+                    ),
+                ).fetchone()["id"])
+                changed = conn.execute(
+                    "UPDATE job_files SET current_version_id=?,status='in_progress',"
+                    "updated_by=?,updated_at=? WHERE id=? AND current_version_id=?",
+                    (version_id, user_email, now, file_id, opened_version_id),
+                ).rowcount
+                if changed != 1:
+                    raise JobFileError("file changed since this version was opened")
+                _invalidate_approval_and_supersede_exports_in_tx(
+                    conn,
+                    file_id,
+                    version_id,
+                    now,
+                )
+            except Exception:
+                if renamed and target is not None and target.exists():
+                    os.replace(target, staged_candidate)
+                    renamed = False
+                raise
+    except Exception:
+        owned_candidate.unlink(missing_ok=True)
+        staged_candidate.unlink(missing_ok=True)
+        if target is not None:
+            target.unlink(missing_ok=True)
+        raise
+    return get_version(version_id, user_email)
+
+
 def archive_file(
     file_id: int,
     by: str,
@@ -204,6 +320,30 @@ def archive_file(
             ),
         )
     return get_file(file_id, by)
+
+
+def _version_path(file_id: int, version_number: int) -> Path:
+    return (
+        versions_root()
+        / str(file_id)
+        / "versions"
+        / f"v{version_number:06d}.mrc"
+    )
+
+
+def _invalidate_approval_and_supersede_exports_in_tx(
+    conn,
+    file_id: int,
+    version_id: int,
+    now: str,
+) -> None:
+    """Invalidate prior release state after a new unapproved version wins."""
+    conn.execute(
+        "UPDATE job_file_exports SET state='superseded',superseded_at=?,"
+        "superseded_by_version_id=? WHERE job_file_id=?"
+        " AND state IN ('draft','ready')",
+        (now, version_id, file_id),
+    )
 
 
 _FILE_SELECT = (

@@ -469,6 +469,37 @@ def open_job_file(file_id: int) -> dict[str, Any]:
     }
 
 
+def adopt_current_candidate(
+    *,
+    candidate_path: Path,
+    source_kind: str,
+    label: str,
+    summary: dict[str, Any] | None = None,
+    validation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Adopt candidate bytes for the open job file and reopen that version."""
+    import streamlit as st
+
+    file_id = st.session_state.get("job_file_id")
+    opened_version_id = st.session_state.get("job_file_version_id")
+    if file_id is None or opened_version_id is None:
+        raise job_files.JobFileError(
+            "This change requires a file opened from a job."
+        )
+    created = job_files.adopt_candidate(
+        file_id=int(file_id),
+        opened_version_id=int(opened_version_id),
+        user_email=current_user_id(),
+        candidate_path=Path(candidate_path),
+        source_kind=source_kind,
+        label=label,
+        summary=summary,
+        validation=validation,
+    )
+    open_job_file(int(file_id))
+    return created
+
+
 def current_job_file() -> dict[str, Any] | None:
     """Return the accessible cached work file, clearing stale context."""
     import streamlit as st
