@@ -73,14 +73,17 @@ def _migrate_uploads_to_job_files(conn) -> None:
                     " WHERE job_file_id=? AND version_number=1",
                     (file_row["id"],),
                 ).fetchone()
-            if (
-                version is not None
-                and file_row["current_version_id"] == version["id"]
-                and Path(version["file_path"]).is_file()
-            ):
-                conn.execute("RELEASE SAVEPOINT migrate_legacy_upload")
-                continue
-
+                current_version = conn.execute(
+                    "SELECT id,file_path FROM job_file_versions"
+                    " WHERE job_file_id=? AND id=?",
+                    (file_row["id"], file_row["current_version_id"]),
+                ).fetchone()
+                if (
+                    current_version is not None
+                    and Path(current_version["file_path"]).is_file()
+                ):
+                    conn.execute("RELEASE SAVEPOINT migrate_legacy_upload")
+                    continue
             if file_row is None:
                 conn.execute(
                     "INSERT OR IGNORE INTO job_files(job_id,original_upload_id,"

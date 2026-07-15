@@ -277,6 +277,57 @@ def test_partial_current_pointer_reuses_existing_v1_on_helper_rerun(
     assert _migrated_file(upload_id)["id"] == version_id
 
 
+def test_migration_rerun_preserves_a_later_current_version(
+    tmp_path, monkeypatch,
+):
+    """Reconciliation must not roll completed work back to legacy v1."""
+    root = tmp_path / "job-files"
+    monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(root))
+    job_id = _seed_v11_job(tmp_path)
+    source = tmp_path / "legacy.mrc"
+    source.write_bytes(b"legacy")
+    upload_id = _seed_upload(job_id, source, filename="legacy.mrc")
+
+    db.reset_for_tests()
+    db.init_schema()
+    migrated = _migrated_file(upload_id)
+    v2_path = root / str(migrated["job_file_id"]) / "versions" / "v000002.mrc"
+    v2_path.write_bytes(b"edited")
+    with db.connect() as conn:
+        v2_id = int(conn.execute(
+            "INSERT INTO job_file_versions(job_file_id,version_number,"
+            "parent_version_id,file_path,record_count,file_bytes,source_kind,"
+            "label,created_by,created_at) VALUES(?,2,?,?,?,?,?,?,?,?)"
+            " RETURNING id",
+            (
+                migrated["job_file_id"],
+                migrated["id"],
+                str(v2_path),
+                3,
+                len(b"edited"),
+                "quick-batch",
+                "Leader value",
+                OWNER,
+                "2026-07-03T10:00:00Z",
+            ),
+        ).fetchone()["id"])
+        conn.execute(
+            "UPDATE job_files SET current_version_id=? WHERE id=?",
+            (v2_id, migrated["job_file_id"]),
+        )
+
+    db.reset_for_tests()
+    db.init_schema()
+
+    with db.connect() as conn:
+        current_version_id = conn.execute(
+            "SELECT current_version_id FROM job_files WHERE id=?",
+            (migrated["job_file_id"],),
+        ).fetchone()["current_version_id"]
+    assert current_version_id == v2_id
+    assert v2_path.read_bytes() == b"edited"
+
+
 def test_partial_missing_immutable_v1_rebuilds_bytes_without_duplicates(
     tmp_path, monkeypatch,
 ):
