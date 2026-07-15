@@ -273,6 +273,7 @@ def test_preview_keeps_transformed_batch_on_disk(tmp_path):
     output = RecordStore.from_path(preview.output_path)
     assert [str(record.leader)[5] for record in output.iter_records()] == ["c", "c"]
     assert preview.store_revision == store.revision
+    assert preview.store_id == id(store)
     assert not hasattr(preview, "output_records")
     assert not hasattr(preview, "fingerprints")
 
@@ -336,6 +337,23 @@ def test_apply_preview_refuses_stale_store(tmp_path):
     assert not result.applied
     assert "changed since preview" in (result.error or "")
     assert str(store.get(0).leader)[5] == "n"
+
+
+def test_apply_preview_refuses_same_revision_different_store(tmp_path):
+    """Quick Load also needs identity checks when no job-file ids exist."""
+    previewed = _store(tmp_path / "previewed", _record())
+    current = _store(tmp_path / "current", _record())
+    preview = build_preview(
+        previewed,
+        QuickBatchRequest(kind="leader", position="05", value="c"),
+    )
+
+    result = apply_preview(current, preview)
+
+    assert not result.applied
+    assert result.error == "Loaded batch changed since preview."
+    assert previewed.revision == current.revision == 0
+    assert str(current.get(0).leader)[5] == "n"
 
 
 def test_apply_preview_reports_progress(tmp_path):
@@ -408,6 +426,41 @@ def test_failed_quick_batch_adoption_keeps_preview_candidate(
         tasks_render._adopt_quick_batch_preview(store, preview)
 
     assert preview.output_path.is_file()
+
+
+def test_quick_batch_rejects_same_revision_preview_from_another_file(
+    monkeypatch, tmp_path,
+):
+    from marcedit_web.render import tasks as tasks_render
+
+    old_store = _store(tmp_path / "old", _record())
+    current_store = _store(tmp_path / "current", _record())
+    preview = build_preview(
+        old_store,
+        QuickBatchRequest(kind="leader", position="05", value="c"),
+    )
+    preview.job_file_id = 10
+    preview.job_file_version_id = 100
+    monkeypatch.setattr(tasks_render.st, "session_state", {
+        "job_file_id": 11,
+        "job_file_version_id": 101,
+    })
+    monkeypatch.setattr(
+        tasks_render.session,
+        "adopt_current_candidate",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("cross-file preview must not be adopted")
+        ),
+    )
+
+    with pytest.raises(
+        tasks_render.job_files.JobFileError,
+        match="Loaded file changed since preview",
+    ):
+        tasks_render._adopt_quick_batch_preview(current_store, preview)
+
+    assert current_store.revision == old_store.revision == 0
+    assert str(current_store.get(0).leader)[5] == "n"
 
 
 @pytest.mark.parametrize(

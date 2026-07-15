@@ -137,7 +137,10 @@ class QuickBatchPreview:
     record_count: int = 0
     changed_count: int = 0
     skipped_count: int = 0
+    store_id: int | None = None
     store_revision: int | None = None
+    job_file_id: int | None = None
+    job_file_version_id: int | None = None
     detail_counts: dict[str, int] = field(default_factory=dict)
     error: str | None = None
 
@@ -231,6 +234,7 @@ def build_preview(
         record_count=total,
         changed_count=changed_count,
         skipped_count=skipped_count,
+        store_id=id(store),
         store_revision=store.revision,
         detail_counts=dict(detail_counts),
     )
@@ -252,7 +256,10 @@ def apply_preview(
 ) -> QuickBatchResult:
     if preview.error:
         return QuickBatchResult(error=preview.error)
-    if preview.store_revision != store.revision:
+    if (
+        preview.store_id != id(store)
+        or preview.store_revision != store.revision
+    ):
         return QuickBatchResult(error="Loaded batch changed since preview.")
     if preview.output_path is None or not preview.output_path.is_file():
         return QuickBatchResult(error="Preview output is no longer available.")

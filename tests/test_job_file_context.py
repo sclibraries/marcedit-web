@@ -186,6 +186,7 @@ def test_refresh_adopts_new_current_version_and_clears_mutation_previews(
             "job_file_version_id": old_version["id"],
             "quick_batch_preview": SimpleNamespace(workdir=quick_dir),
             "batch_replace_preview": SimpleNamespace(sandbox_workdir=replace_dir),
+            "folio_safe_fix_preview": object(),
         }
     )
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
@@ -196,3 +197,4 @@ def test_refresh_adopts_new_current_version_and_clears_mutation_previews(
     assert fake_st.session_state["store"].path == new_path
     assert not quick_dir.exists()
     assert not replace_dir.exists()
+    assert "folio_safe_fix_preview" not in fake_st.session_state

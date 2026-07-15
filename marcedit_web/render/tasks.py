@@ -2385,6 +2385,11 @@ def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
             preview = quick_batch.build_preview(
                 store, request, progress=on_progress
             )
+            if _uses_job_file_versions():
+                preview.job_file_id = st.session_state.get("job_file_id")
+                preview.job_file_version_id = st.session_state.get(
+                    "job_file_version_id"
+                )
             if preview.error:
                 measurement.mark_error("PreviewError")
     progress.empty()
@@ -2522,8 +2527,14 @@ def _apply_quick_batch_preview(preview) -> None:
 
 
 def _adopt_quick_batch_preview(store, preview):
-    if preview.store_revision != store.revision:
-        raise job_files.JobFileError("Loaded batch changed since preview.")
+    if (
+        preview.store_id != id(store)
+        or preview.store_revision != store.revision
+        or preview.job_file_id != st.session_state.get("job_file_id")
+        or preview.job_file_version_id
+        != st.session_state.get("job_file_version_id")
+    ):
+        raise job_files.JobFileError("Loaded file changed since preview.")
     if preview.output_path is None or not preview.output_path.is_file():
         raise job_files.JobFileError("Preview output is no longer available.")
     with _owned_candidate(

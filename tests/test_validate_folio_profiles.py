@@ -265,6 +265,56 @@ def test_folio_preview_state_detects_stale_revision():
     ) is False
 
 
+def test_folio_preview_rejects_same_revision_from_another_file(monkeypatch):
+    """Revision zero is common; exact file/store identity prevents cross-apply."""
+    context = folio_profiles.FolioContext(profile_key="folio-new-instance")
+    rules = [
+        rule for rule in folio_profiles.default_rules_for_tests()
+        if rule.key == "folio-new-load-forbidden-001"
+    ]
+    preview = folio_profiles.FolioBatchPreview(
+        total_fixes=1,
+        affected_records=1,
+        affected_record_numbers=[1],
+        by_rule={rules[0].key: 1},
+        affected_records_by_rule={rules[0].key: [1]},
+        samples=[],
+    )
+    old_store = object()
+    current_store = object()
+    state = validate._build_folio_preview_state(
+        preview=preview,
+        store_id=id(old_store),
+        store_revision=0,
+        job_file_id=10,
+        job_file_version_id=100,
+        folio_context=context,
+        profile_rules=rules,
+    )
+    warnings = []
+    monkeypatch.setattr(
+        validate.st,
+        "session_state",
+        {"folio_safe_fix_preview": state},
+    )
+    monkeypatch.setattr(validate.st, "warning", lambda message: warnings.append(message))
+
+    current = validate._current_folio_preview_state(
+        store_id=id(current_store),
+        store_revision=0,
+        job_file_id=11,
+        job_file_version_id=101,
+        folio_context=context,
+        profile_rules=rules,
+    )
+
+    assert current is None
+    assert warnings == [
+        "FOLIO safe-fix preview is stale. Preview again before applying."
+    ]
+    assert "folio_safe_fix_preview" not in validate.st.session_state
+
+
 def test_folio_preview_state_detects_current_context_and_rules():
     """Preview metadata stays valid only for the same context and rule keys."""
     context = folio_profiles.FolioContext(
@@ -286,20 +336,29 @@ def test_folio_preview_state_detects_current_context_and_rules():
 
     state = validate._build_folio_preview_state(
         preview=preview,
+        store_id=42,
         store_revision=2,
+        job_file_id=7,
+        job_file_version_id=8,
         folio_context=context,
         profile_rules=rules,
     )
 
     assert validate._folio_preview_state_is_current(
         state,
+        store_id=42,
         store_revision=2,
+        job_file_id=7,
+        job_file_version_id=8,
         folio_context=context,
         profile_rules=list(reversed(rules)),
     ) is True
     assert validate._folio_preview_state_is_current(
         state,
+        store_id=42,
         store_revision=2,
+        job_file_id=7,
+        job_file_version_id=8,
         folio_context=folio_profiles.FolioContext(profile_key="folio-new-instance"),
         profile_rules=rules,
     ) is False
@@ -333,14 +392,20 @@ def test_folio_preview_state_detects_rule_definition_changes():
 
     state = validate._build_folio_preview_state(
         preview=preview,
+        store_id=42,
         store_revision=2,
+        job_file_id=7,
+        job_file_version_id=8,
         folio_context=context,
         profile_rules=[original_rule],
     )
 
     assert validate._folio_preview_state_is_current(
         state,
+        store_id=42,
         store_revision=2,
+        job_file_id=7,
+        job_file_version_id=8,
         folio_context=context,
         profile_rules=[changed_rule],
     ) is False

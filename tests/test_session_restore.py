@@ -158,11 +158,13 @@ def test_handle_upload_replacement_cleans_stale_preview_artifacts(
     st.session_state["batch_replace_preview"] = SimpleNamespace(
         sandbox_workdir=replace_dir
     )
+    st.session_state["folio_safe_fix_preview"] = object()
 
     session.handle_upload(_FakeUpload("new.mrc", _serialize([record])))
 
     assert "quick_batch_preview" not in st.session_state
     assert "batch_replace_preview" not in st.session_state
+    assert "folio_safe_fix_preview" not in st.session_state
     assert not quick_dir.exists()
     assert not replace_dir.exists()
 

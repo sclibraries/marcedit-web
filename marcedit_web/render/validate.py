@@ -67,6 +67,9 @@ class _FolioPreviewState:
     store_revision: int
     folio_context: folio_profiles.FolioContext
     rule_fingerprints: tuple[str, ...]
+    store_id: int | None = None
+    job_file_id: int | None = None
+    job_file_version_id: int | None = None
 
 
 def _build_folio_context(
@@ -333,12 +336,18 @@ def _build_folio_preview_state(
     store_revision: int,
     folio_context: folio_profiles.FolioContext,
     profile_rules: list[folio_profiles.FolioRule],
+    store_id: int | None = None,
+    job_file_id: int | None = None,
+    job_file_version_id: int | None = None,
 ) -> _FolioPreviewState:
     return _FolioPreviewState(
         preview=preview,
         store_revision=store_revision,
         folio_context=folio_context,
         rule_fingerprints=_rule_fingerprints(profile_rules),
+        store_id=store_id,
+        job_file_id=job_file_id,
+        job_file_version_id=job_file_version_id,
     )
 
 
@@ -348,12 +357,48 @@ def _folio_preview_state_is_current(
     store_revision: int,
     folio_context: folio_profiles.FolioContext,
     profile_rules: list[folio_profiles.FolioRule],
+    store_id: int | None = None,
+    job_file_id: int | None = None,
+    job_file_version_id: int | None = None,
 ) -> bool:
     return (
-        state.store_revision == store_revision
+        state.store_id == store_id
+        and state.store_revision == store_revision
+        and state.job_file_id == job_file_id
+        and state.job_file_version_id == job_file_version_id
         and state.folio_context == folio_context
         and state.rule_fingerprints == _rule_fingerprints(profile_rules)
     )
+
+
+def _current_folio_preview_state(
+    *,
+    store_id: int,
+    store_revision: int,
+    job_file_id: int | None,
+    job_file_version_id: int | None,
+    folio_context: folio_profiles.FolioContext,
+    profile_rules: list[folio_profiles.FolioRule],
+) -> _FolioPreviewState | None:
+    state = st.session_state.get("folio_safe_fix_preview")
+    if not isinstance(state, _FolioPreviewState):
+        st.session_state.pop("folio_safe_fix_preview", None)
+        return None
+    if _folio_preview_state_is_current(
+        state,
+        store_id=store_id,
+        store_revision=store_revision,
+        job_file_id=job_file_id,
+        job_file_version_id=job_file_version_id,
+        folio_context=folio_context,
+        profile_rules=profile_rules,
+    ):
+        return state
+    st.session_state.pop("folio_safe_fix_preview", None)
+    st.warning(
+        "FOLIO safe-fix preview is stale. Preview again before applying."
+    )
+    return None
 
 
 def _find_single_folio_fix_rule(
@@ -541,6 +586,16 @@ def render(
             folio_context.profile_key,
             include_addons=folio_context.addons,
         )
+        job_file_id = (
+            st.session_state.get("job_file_id")
+            if _uses_job_file_versions()
+            else None
+        )
+        job_file_version_id = (
+            st.session_state.get("job_file_version_id")
+            if _uses_job_file_versions()
+            else None
+        )
         if st.button(
             "Preview FOLIO safe fixes",
             key="folio_preview_safe_fixes",
@@ -552,29 +607,22 @@ def render(
                     profile_rules,
                     folio_context,
                 ),
+                store_id=id(store),
                 store_revision=store.revision,
+                job_file_id=job_file_id,
+                job_file_version_id=job_file_version_id,
                 folio_context=folio_context,
                 profile_rules=profile_rules,
             )
             st.rerun()
-        preview_state = st.session_state.get("folio_safe_fix_preview")
-        if preview_state is not None and not isinstance(
-            preview_state,
-            _FolioPreviewState,
-        ):
-            preview_state = None
-            st.session_state.pop("folio_safe_fix_preview", None)
-        if preview_state is not None and not _folio_preview_state_is_current(
-            preview_state,
+        preview_state = _current_folio_preview_state(
+            store_id=id(store),
             store_revision=store.revision,
+            job_file_id=job_file_id,
+            job_file_version_id=job_file_version_id,
             folio_context=folio_context,
             profile_rules=profile_rules,
-        ):
-            preview_state = None
-            st.session_state.pop("folio_safe_fix_preview", None)
-            st.warning(
-                "FOLIO safe-fix preview is stale. Preview again before applying."
-            )
+        )
         if preview_state is not None:
             preview = preview_state.preview
             st.subheader("FOLIO safe-fix preview")
@@ -603,7 +651,10 @@ def render(
             ):
                 if not _folio_preview_state_is_current(
                     preview_state,
+                    store_id=id(store),
                     store_revision=store.revision,
+                    job_file_id=job_file_id,
+                    job_file_version_id=job_file_version_id,
                     folio_context=folio_context,
                     profile_rules=profile_rules,
                 ):

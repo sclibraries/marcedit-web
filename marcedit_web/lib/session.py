@@ -288,6 +288,7 @@ def _clear_mutation_previews(state) -> None:
 
     batch_replace.cleanup_preview(state.pop("batch_replace_preview", None))
     quick_batch.cleanup_preview(state.pop("quick_batch_preview", None))
+    state.pop("folio_safe_fix_preview", None)
 
 
 def handle_upload(
