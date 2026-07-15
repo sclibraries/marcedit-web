@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -291,3 +292,215 @@ def test_archive_rejects_expired_checkout_without_changing_file_or_lock(tmp_path
 def test_archive_is_the_only_file_removal_service():
     """Retained work items must not expose a destructive deletion API."""
     assert not hasattr(job_files, "delete_file_permanently")
+
+
+def test_peer_approval_is_bound_to_exact_current_version(tmp_path):
+    """Approval identifies both the immutable version and its peer reviewer."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    jobs.grant_access(
+        job["id"],
+        "editor@example.edu",
+        "editor",
+        by="owner@example.edu",
+    )
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    version = job_files.get_current_version(
+        attached["id"], "editor@example.edu"
+    )
+    collaboration.acquire_file_checkout(
+        attached["id"], "editor@example.edu"
+    )
+
+    approved = job_files.approve_current(
+        attached["id"],
+        by="editor@example.edu",
+        opened_version_id=version["id"],
+    )
+
+    assert approved["status"] == "approved"
+    assert approved["current_version"]["approval_kind"] == "peer-approved"
+    assert approved["current_version"]["approved_by"] == "editor@example.edu"
+    assert approved["current_version"]["id"] == version["id"]
+
+
+def test_approval_rejects_stale_opened_version_without_mutating_file(tmp_path):
+    """A reviewer cannot approve a version other than the one they opened."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+
+    with pytest.raises(job_files.JobFileError, match="changed"):
+        job_files.approve_current(
+            attached["id"],
+            by="owner@example.edu",
+            opened_version_id=int(attached["current_version_id"]) + 1,
+        )
+
+    current = job_files.get_current_version(
+        attached["id"], "owner@example.edu"
+    )
+    assert current["approval_kind"] is None
+    assert job_files.get_file(
+        attached["id"], "owner@example.edu"
+    )["status"] == "in_progress"
+
+
+def test_approval_cannot_overwrite_existing_immutable_approval(tmp_path):
+    """One version keeps the first approval identity recorded against it."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    jobs.grant_access(
+        job["id"],
+        "editor@example.edu",
+        "editor",
+        by="owner@example.edu",
+    )
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+    approved = job_files.approve_current(
+        attached["id"],
+        by="owner@example.edu",
+        opened_version_id=attached["current_version_id"],
+    )
+    collaboration.release_file_checkout(attached["id"], "owner@example.edu")
+    collaboration.acquire_file_checkout(attached["id"], "editor@example.edu")
+
+    with pytest.raises(job_files.JobFileError, match="already approved"):
+        job_files.approve_current(
+            attached["id"],
+            by="editor@example.edu",
+            opened_version_id=approved["current_version_id"],
+        )
+
+    unchanged = job_files.get_current_version(
+        attached["id"], "owner@example.edu"
+    )
+    assert unchanged["approval_kind"] == "self-approved"
+    assert unchanged["approved_by"] == "owner@example.edu"
+
+
+def test_request_changes_scopes_required_note_and_releases_checkout(tmp_path):
+    """Change requests stay with the reviewed file/version and end review lease."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    first = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    second = attach_fixture(job["id"], tmp_path, "fresh.mrc", b"two")
+    collaboration.acquire_file_checkout(first["id"], "owner@example.edu")
+    job_files.return_for_review(
+        first["id"],
+        by="owner@example.edu",
+        opened_version_id=first["current_version_id"],
+    )
+    collaboration.acquire_file_checkout(first["id"], "owner@example.edu")
+
+    changed = job_files.request_changes(
+        first["id"],
+        by="owner@example.edu",
+        opened_version_id=first["current_version_id"],
+        note="Check leader",
+    )
+
+    assert changed["status"] == "changes_requested"
+    assert jobs.list_review_notes(
+        job["id"], user_email="owner@example.edu", job_file_id=second["id"]
+    ) == []
+    notes = jobs.list_review_notes(
+        job["id"], user_email="owner@example.edu", job_file_id=first["id"]
+    )
+    assert [(row["note"], row["job_file_version_id"]) for row in notes] == [
+        ("Check leader", first["current_version_id"])
+    ]
+    assert collaboration.release_file_checkout(
+        first["id"], "owner@example.edu"
+    ) is False
+
+
+def test_request_changes_requires_review_state(tmp_path):
+    """A change request is a review outcome, not a generic status override."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+
+    with pytest.raises(job_files.JobFileError, match="needs review"):
+        job_files.request_changes(
+            attached["id"],
+            by="owner@example.edu",
+            opened_version_id=attached["current_version_id"],
+            note="Check leader",
+        )
+
+    assert job_files.get_file(
+        attached["id"], "owner@example.edu"
+    )["status"] == "in_progress"
+
+
+def test_approved_file_can_be_completed_only_by_exact_checkout_holder(tmp_path):
+    """Completion is explicit, exact-version, and starts from release-ready state."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+    approved = job_files.approve_current(
+        attached["id"],
+        by="owner@example.edu",
+        opened_version_id=attached["current_version_id"],
+    )
+
+    completed = job_files.set_complete(
+        attached["id"],
+        by="owner@example.edu",
+        opened_version_id=approved["current_version_id"],
+    )
+
+    assert completed["status"] == "complete"
+
+
+def test_list_versions_is_file_scoped_and_oldest_first(tmp_path):
+    """Immutable review history cannot include another file's version rows."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    first = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    second = attach_fixture(job["id"], tmp_path, "fresh.mrc", b"two")
+
+    rows = job_files.list_versions(first["id"], "owner@example.edu")
+
+    assert [(row["job_file_id"], row["version_number"]) for row in rows] == [
+        (first["id"], 1)
+    ]
+    assert all(row["job_file_id"] != second["id"] for row in rows)
+
+
+def test_new_version_preserves_historical_approval(tmp_path):
+    """A later current version invalidates active state, not approval history."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    source = Path("tests/fixtures/sample.mrc")
+    attached = job_files.attach_file(
+        job_id=job["id"],
+        user_email="owner@example.edu",
+        source_path=source,
+        filename="sample.mrc",
+        record_count=7,
+        file_bytes=source.stat().st_size,
+    )
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+    approved = job_files.approve_current(
+        attached["id"],
+        by="owner@example.edu",
+        opened_version_id=attached["current_version_id"],
+    )
+    old = approved["current_version"]
+    candidate = tmp_path / "candidate.mrc"
+    shutil.copyfile(source, candidate)
+
+    new = job_files.adopt_candidate(
+        file_id=attached["id"],
+        opened_version_id=old["id"],
+        user_email="owner@example.edu",
+        candidate_path=candidate,
+        source_kind="restore",
+        label="Restore original",
+    )
+
+    assert job_files.get_file(
+        attached["id"], "owner@example.edu"
+    )["status"] == "in_progress"
+    assert job_files.get_version(
+        old["id"], "owner@example.edu"
+    )["approval_kind"] == "self-approved"
+    assert new["approval_kind"] is None

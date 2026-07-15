@@ -211,7 +211,15 @@ def _render_detail(user: str, job_id: int) -> None:
     activity = jobs.list_activity(job_id, user_email=user)
     if activity:
         for row in reversed(activity[-20:]):
-            st.write(f"{row['created_at']} — {row['actor_email']}: {row['message']}")
+            file_label = (
+                f"[{row['job_file_display_name']}] "
+                if row.get("job_file_display_name")
+                else ""
+            )
+            st.write(
+                f"{row['created_at']} — {row['actor_email']}: "
+                f"{file_label}{row['message']}"
+            )
     else:
         st.caption("No activity recorded yet.")
 

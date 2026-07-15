@@ -10,9 +10,9 @@ import datetime as dt
 from marcedit_web.lib import collaboration, db, job_files, locks, session
 
 # One line per file; weights keep Open and the ⋮ trigger from wrapping.
-UPLOADS_GRID = [3, 1.5, 1, 1, 2, 2, 1, 0.6]
+UPLOADS_GRID = [3, 1.5, 1, 1, 2, 2, 1, 1.5, 0.6]
 UPLOADS_HEADERS = (
-    "Name", "Status", "Version", "Records", "Last editor", "Updated", "", ""
+    "Name", "Status", "Version", "Records", "Last editor", "Updated", "", "", ""
 )
 
 _EDIT_ROLES = {"owner", "editor"}
@@ -126,10 +126,21 @@ def render_job_files_table(
                         icon="📂",
                     )
                     st.switch_page("views/1_View.py")
+            if cols[7].button(
+                "History & review",
+                key=f"{key_prefix}_history_{row['id']}",
+                use_container_width=True,
+            ):
+                try:
+                    session.open_job_file(int(row["id"]))
+                except job_files.JobFileError as exc:
+                    st.error(str(exc))
+                else:
+                    st.switch_page("views/C_History.py")
             actions = _checkout_actions(role, holder_email, user)
             if role not in _EDIT_ROLES:
                 continue
-            with cols[7].popover("⋮"):
+            with cols[8].popover("⋮"):
                 if "Check out" in actions and st.button(
                     "Check out",
                     key=f"{key_prefix}_checkout_{row['id']}",
@@ -155,12 +166,12 @@ def render_job_files_table(
                     use_container_width=True,
                 ):
                     try:
-                        collaboration.return_file_for_review(
+                        job_files.return_for_review(
                             int(row["id"]),
-                            user,
-                            int(row["current_version_id"]),
+                            by=user,
+                            opened_version_id=int(row["current_version_id"]),
                         )
-                    except collaboration.CollaborationError as exc:
+                    except job_files.JobFileError as exc:
                         st.error(str(exc))
                     else:
                         st.rerun()

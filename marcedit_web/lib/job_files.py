@@ -149,6 +149,177 @@ def get_version(version_id: int, user_email: str) -> dict[str, Any]:
     return _dict(row)
 
 
+def list_versions(file_id: int, user_email: str) -> list[dict[str, Any]]:
+    """List one accessible file's immutable versions, oldest first."""
+    db.init_schema()
+    with db.connect() as conn:
+        rows = conn.execute(
+            _VERSION_SELECT
+            + " WHERE job_files.id=? AND job_access.user_email=?"
+            + " ORDER BY job_file_versions.version_number",
+            (file_id, user_email.strip().lower()),
+        ).fetchall()
+    return [_dict(row) for row in rows]
+
+
+def return_for_review(
+    file_id: int,
+    by: str,
+    *,
+    opened_version_id: int,
+) -> dict[str, Any]:
+    """Return the exact checked-out version for review."""
+    from . import collaboration
+
+    try:
+        collaboration.return_file_for_review(
+            file_id,
+            by,
+            opened_version_id,
+        )
+    except collaboration.CollaborationError as exc:
+        raise JobFileError(str(exc)) from exc
+    return _get_file_with_current_version(file_id, by)
+
+
+def request_changes(
+    file_id: int,
+    by: str,
+    note: str,
+    *,
+    opened_version_id: int,
+) -> dict[str, Any]:
+    """Request changes to the exact checked-out version with a required note."""
+    clean_note = note.strip()
+    if not clean_note:
+        raise JobFileError("a change-request note is required")
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _transition_row(conn, file_id, by)
+        _assert_transition_checkout(
+            conn,
+            file_id,
+            by,
+            opened_version_id,
+        )
+        if row["status"] != "needs_review":
+            raise JobFileError(
+                "changes can only be requested when a file needs review"
+            )
+        conn.execute(
+            "INSERT INTO job_review_notes"
+            "(job_id,anchor_kind,anchor_value,note,author_email,category,"
+            "created_at,job_file_id,job_file_version_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                row["job_id"],
+                "job_file",
+                "",
+                clean_note,
+                by,
+                "changes_requested",
+                now,
+                file_id,
+                opened_version_id,
+            ),
+        )
+        _set_status_and_record_activity(
+            conn,
+            row,
+            "changes_requested",
+            by,
+            now,
+            f"{row['display_name']} changes requested: {clean_note}",
+        )
+        conn.execute(
+            "DELETE FROM advisory_locks"
+            " WHERE resource_type='job-file' AND resource_id=?"
+            " AND holder_email=?",
+            (str(file_id), by),
+        )
+    return _get_file_with_current_version(file_id, by)
+
+
+def approve_current(
+    file_id: int,
+    by: str,
+    *,
+    opened_version_id: int,
+) -> dict[str, Any]:
+    """Approve the exact checked-out current version as self or peer review."""
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _transition_row(conn, file_id, by)
+        _assert_transition_checkout(
+            conn,
+            file_id,
+            by,
+            opened_version_id,
+        )
+        current = conn.execute(
+            "SELECT id,created_by,approval_kind FROM job_file_versions"
+            " WHERE id=? AND job_file_id=?",
+            (opened_version_id, file_id),
+        ).fetchone()
+        if current is None:
+            raise JobFileError("job file version not found")
+        if current["approval_kind"] is not None:
+            raise JobFileError("this file version is already approved")
+        approval_kind = (
+            "self-approved" if current["created_by"] == by else "peer-approved"
+        )
+        conn.execute(
+            "UPDATE job_file_versions SET approval_kind=?,approved_by=?,"
+            "approved_at=? WHERE id=?",
+            (approval_kind, by, now, opened_version_id),
+        )
+        _set_status_and_record_activity(
+            conn,
+            row,
+            "approved",
+            by,
+            now,
+            f"{row['display_name']} {approval_kind} at version "
+            f"{row['current_version_number']}",
+        )
+    return _get_file_with_current_version(file_id, by)
+
+
+def set_complete(
+    file_id: int,
+    by: str,
+    *,
+    opened_version_id: int,
+) -> dict[str, Any]:
+    """Explicitly complete an approved or exported exact current version."""
+    db.init_schema()
+    now = _utc_now_iso()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _transition_row(conn, file_id, by)
+        _assert_transition_checkout(
+            conn,
+            file_id,
+            by,
+            opened_version_id,
+        )
+        if row["status"] not in {"approved", "exported"}:
+            raise JobFileError("only approved or exported files can be completed")
+        _set_status_and_record_activity(
+            conn,
+            row,
+            "complete",
+            by,
+            now,
+            f"Completed {row['display_name']}",
+        )
+    return _get_file_with_current_version(file_id, by)
+
+
 def adopt_candidate(
     *,
     file_id: int,
@@ -347,6 +518,75 @@ def archive_file(
             ),
         )
     return get_file(file_id, by)
+
+
+def _transition_row(conn, file_id: int, by: str):
+    row = conn.execute(
+        _FILE_SELECT + " WHERE job_files.id=? AND job_access.user_email=?",
+        (file_id, by.strip().lower()),
+    ).fetchone()
+    if row is None:
+        raise JobFileError("job file not found")
+    if row["access_role"] not in {"owner", "editor"}:
+        raise JobFileError("owner or editor access required")
+    if row["archived_at"] is not None:
+        raise JobFileError("archived files cannot be changed")
+    return row
+
+
+def _assert_transition_checkout(
+    conn,
+    file_id: int,
+    by: str,
+    opened_version_id: int,
+) -> None:
+    from . import collaboration
+
+    try:
+        collaboration._assert_file_checkout_in_tx(
+            conn,
+            file_id,
+            by,
+            opened_version_id,
+        )
+    except collaboration.CollaborationError as exc:
+        raise JobFileError(str(exc)) from exc
+
+
+def _set_status_and_record_activity(
+    conn,
+    row,
+    status: str,
+    by: str,
+    now: str,
+    message: str,
+) -> None:
+    file_id = int(row["id"])
+    conn.execute(
+        "UPDATE job_files SET status=?,updated_by=?,updated_at=? WHERE id=?",
+        (status, by, now, file_id),
+    )
+    jobs._record_activity(  # noqa: SLF001 - shared transaction helper
+        conn,
+        int(row["job_id"]),
+        "job-file-status-changed",
+        message,
+        by,
+        now,
+        job_file_id=file_id,
+    )
+
+
+def _get_file_with_current_version(
+    file_id: int,
+    user_email: str,
+) -> dict[str, Any]:
+    row = get_file(file_id, user_email)
+    row["current_version"] = get_version(
+        int(row["current_version_id"]),
+        user_email,
+    )
+    return row
 
 
 def _version_path(file_id: int, version_number: int) -> Path:

@@ -376,7 +376,10 @@ def list_activity(job_id: int, *, user_email: str) -> list[dict[str, Any]]:
     with db.connect() as conn:
         _require_role(conn, job_id, user_email, {"owner", "editor", "viewer"})
         rows = conn.execute(
-            "SELECT * FROM job_activity WHERE job_id = ? ORDER BY id",
+            "SELECT job_activity.*,job_files.display_name AS job_file_display_name"
+            " FROM job_activity LEFT JOIN job_files"
+            " ON job_files.id=job_activity.job_file_id"
+            " WHERE job_activity.job_id = ? ORDER BY job_activity.id",
             (job_id,),
         ).fetchall()
     return [_dict(row) for row in rows]
@@ -390,6 +393,9 @@ def add_review_note(
     author: str,
     anchor_value: str = "",
     category: str = "note",
+    job_file_id: int | None = None,
+    job_file_version_id: int | None = None,
+    job_file_export_id: int | None = None,
 ) -> dict[str, Any]:
     clean_note = note.strip()
     clean_anchor = anchor_kind.strip()
@@ -403,11 +409,18 @@ def add_review_note(
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         _require_role(conn, job_id, author, {"owner", "editor"})
+        file_name = _validate_review_note_scope(
+            conn,
+            job_id,
+            job_file_id=job_file_id,
+            job_file_version_id=job_file_version_id,
+            job_file_export_id=job_file_export_id,
+        )
         cur = conn.execute(
             "INSERT INTO job_review_notes"
             "(job_id, anchor_kind, anchor_value, note, author_email, category,"
-            " created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " created_at,job_file_id,job_file_version_id,job_file_export_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 job_id,
                 clean_anchor,
@@ -416,6 +429,9 @@ def add_review_note(
                 author,
                 clean_category,
                 now,
+                job_file_id,
+                job_file_version_id,
+                job_file_export_id,
             ),
         )
         note_id = int(cur.lastrowid)
@@ -423,7 +439,16 @@ def add_review_note(
             "UPDATE jobs SET updated_at = ? WHERE id = ?",
             (now, job_id),
         )
-        _record_activity(conn, job_id, "note-added", clean_note, author, now)
+        message = f"{file_name}: {clean_note}" if file_name else clean_note
+        _record_activity(
+            conn,
+            job_id,
+            "note-added",
+            message,
+            author,
+            now,
+            job_file_id=job_file_id,
+        )
         row = _review_note_row(conn, note_id)
     return _dict(row)
 
@@ -448,7 +473,23 @@ def resolve_review_note(note_id: int, *, by: str) -> dict[str, Any]:
             "UPDATE jobs SET updated_at = ? WHERE id = ?",
             (now, job_id),
         )
-        _record_activity(conn, job_id, "note-resolved", row["note"], by, now)
+        file_name = ""
+        if row["job_file_id"] is not None:
+            file_row = conn.execute(
+                "SELECT display_name FROM job_files WHERE id=?",
+                (row["job_file_id"],),
+            ).fetchone()
+            file_name = str(file_row["display_name"]) if file_row else ""
+        message = f"{file_name}: {row['note']}" if file_name else row["note"]
+        _record_activity(
+            conn,
+            job_id,
+            "note-resolved",
+            message,
+            by,
+            now,
+            job_file_id=row["job_file_id"],
+        )
         row = _review_note_row(conn, note_id)
     return _dict(row)
 
@@ -458,18 +499,60 @@ def list_review_notes(
     *,
     user_email: str,
     include_resolved: bool = True,
+    job_file_id: int | None = None,
+    job_file_version_id: int | None = None,
 ) -> list[dict[str, Any]]:
     db.init_schema()
-    resolved_clause = "" if include_resolved else " AND resolved = 0"
+    clauses = ["job_id = ?"]
+    params: list[Any] = [job_id]
+    if not include_resolved:
+        clauses.append("resolved = 0")
+    if job_file_id is not None:
+        clauses.append("job_file_id = ?")
+        params.append(job_file_id)
+    if job_file_version_id is not None:
+        clauses.append("job_file_version_id = ?")
+        params.append(job_file_version_id)
     with db.connect() as conn:
         _require_role(conn, job_id, user_email, {"owner", "editor", "viewer"})
         rows = conn.execute(
-            "SELECT * FROM job_review_notes WHERE job_id = ?"
-            + resolved_clause
+            "SELECT * FROM job_review_notes WHERE "
+            + " AND ".join(clauses)
             + " ORDER BY resolved, id",
-            (job_id,),
+            params,
         ).fetchall()
     return [_dict(row) for row in rows]
+
+
+def _validate_review_note_scope(
+    conn,
+    job_id: int,
+    *,
+    job_file_id: int | None,
+    job_file_version_id: int | None,
+    job_file_export_id: int | None,
+) -> str | None:
+    if job_file_id is None:
+        if job_file_version_id is not None or job_file_export_id is not None:
+            raise JobError("version or export notes require a job file")
+        return None
+    file_row = conn.execute(
+        "SELECT display_name FROM job_files WHERE id=? AND job_id=?",
+        (job_file_id, job_id),
+    ).fetchone()
+    if file_row is None:
+        raise JobError("review note file does not belong to this job")
+    if job_file_version_id is not None and conn.execute(
+        "SELECT 1 FROM job_file_versions WHERE id=? AND job_file_id=?",
+        (job_file_version_id, job_file_id),
+    ).fetchone() is None:
+        raise JobError("review note version does not belong to this file")
+    if job_file_export_id is not None and conn.execute(
+        "SELECT 1 FROM job_file_exports WHERE id=? AND job_file_id=?",
+        (job_file_export_id, job_file_id),
+    ).fetchone() is None:
+        raise JobError("review note export does not belong to this file")
+    return str(file_row["display_name"])
 
 
 def _job_row(conn, job_id: int):

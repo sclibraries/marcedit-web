@@ -59,15 +59,27 @@ def render() -> None:
 
     job_id = st.session_state.get("current_job_id")
     rows = provenance.list_snapshots(int(job_id)) if job_id else []
-    _render_export_banner(rows)
 
     if job_id is None:
+        _render_export_banner(rows)
         st.info(
             "History is recorded once the file is stored in your "
             "workspace. Re-load the file from **Home** to enable it."
         )
         return
 
+    file_id = st.session_state.get("job_file_id")
+    if file_id is not None and not st.session_state.get(
+        "quick_load_mode", False
+    ):
+        versions = job_files.list_versions(int(file_id), user)
+        _render_export_banner(rows, change_count=max(len(versions) - 1, 0))
+        _render_job_file_history(
+            int(job_id), int(file_id), user, rows, versions
+        )
+        return
+
+    _render_export_banner(rows)
     _render_workspace_header(int(job_id))
     if not rows:
         st.info(
@@ -79,17 +91,236 @@ def render() -> None:
     _render_origin_entry(int(job_id))
 
 
+def _render_job_file_history(
+    job_id: int,
+    file_id: int,
+    user: str,
+    legacy_rows: list[dict],
+    versions: list[dict],
+) -> None:
+    """Render immutable history and review controls for one exact job file."""
+    file_row = job_files.get_file(file_id, user)
+    notes = jobs.list_review_notes(
+        job_id,
+        user_email=user,
+        job_file_id=file_id,
+    )
+    st.subheader(f"History & review — {file_row['display_name']}")
+    current_number = next(
+        (
+            row["version_number"]
+            for row in versions
+            if row["id"] == file_row["current_version_id"]
+        ),
+        None,
+    )
+    current_label = (
+        f"v{current_number}" if current_number is not None else "unknown"
+    )
+    st.caption(
+        f"{file_row['status'].replace('_', ' ').capitalize()} · "
+        f"current version {current_label}"
+    )
+    _render_file_transition_controls(file_row, user)
+
+    st.markdown("**Immutable version history**")
+    versions_by_id = {int(row["id"]): row for row in versions}
+    notes_by_version: dict[int | None, list[dict]] = {}
+    for note in notes:
+        version_id = note.get("job_file_version_id")
+        notes_by_version.setdefault(
+            int(version_id) if version_id is not None else None,
+            [],
+        ).append(note)
+    for version in reversed(versions):
+        _render_file_version_entry(
+            version,
+            versions_by_id,
+            notes_by_version.get(int(version["id"]), []),
+            is_current=int(version["id"]) == int(file_row["current_version_id"]),
+        )
+    for note in notes_by_version.get(None, []):
+        _render_review_note(note)
+
+    if legacy_rows:
+        st.subheader("Legacy job history")
+        st.caption(
+            "These retained job snapshots could not be deterministically linked "
+            "to one file version."
+        )
+        for row in legacy_rows:
+            _render_snapshot_entry(row)
+
+
+def _render_file_transition_controls(file_row: dict, user: str) -> None:
+    if file_row.get("access_role") not in {"owner", "editor"}:
+        return
+    file_id = int(file_row["id"])
+    opened_version_id = st.session_state.get("job_file_version_id")
+    if opened_version_id is None:
+        st.warning("Reopen this file before changing its review state.")
+        return
+    status = str(file_row["status"])
+    cols = st.columns(3)
+    if status in {"new", "in_progress", "changes_requested"} and cols[0].button(
+        "Return for review",
+        key=f"file_review_return_{file_id}",
+    ):
+        _run_file_transition(
+            job_files.return_for_review,
+            file_id,
+            user,
+            int(opened_version_id),
+        )
+    if status in {"in_progress", "needs_review"} and cols[1].button(
+        "Approve current",
+        key=f"file_review_approve_{file_id}",
+    ):
+        _run_file_transition(
+            job_files.approve_current,
+            file_id,
+            user,
+            int(opened_version_id),
+        )
+    if status in {"approved", "exported"} and cols[2].button(
+        "Mark complete",
+        key=f"file_review_complete_{file_id}",
+    ):
+        _run_file_transition(
+            job_files.set_complete,
+            file_id,
+            user,
+            int(opened_version_id),
+        )
+    if status == "needs_review":
+        note = st.text_area(
+            "Change request note",
+            key=f"file_review_change_note_{file_id}",
+        )
+        if st.button(
+            "Request changes",
+            key=f"file_review_changes_{file_id}",
+        ):
+            try:
+                job_files.request_changes(
+                    file_id,
+                    by=user,
+                    opened_version_id=int(opened_version_id),
+                    note=note,
+                )
+            except job_files.JobFileError as exc:
+                st.error(str(exc))
+            else:
+                st.rerun()
+    review_note = st.text_area(
+        "Review note",
+        key=f"file_review_note_{file_id}",
+    )
+    if st.button(
+        "Add review note",
+        key=f"file_review_add_note_{file_id}",
+    ):
+        try:
+            jobs.add_review_note(
+                int(file_row["job_id"]),
+                anchor_kind="job_file",
+                note=review_note,
+                author=user,
+                job_file_id=file_id,
+                job_file_version_id=int(opened_version_id),
+            )
+        except jobs.JobError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+
+
+def _run_file_transition(function, file_id: int, user: str, version_id: int) -> None:
+    try:
+        function(file_id, by=user, opened_version_id=version_id)
+    except job_files.JobFileError as exc:
+        st.error(str(exc))
+    else:
+        st.rerun()
+
+
+def _render_file_version_entry(
+    version: dict,
+    versions_by_id: dict[int, dict],
+    notes: list[dict],
+    *,
+    is_current: bool,
+) -> None:
+    current_label = " · current" if is_current else ""
+    st.markdown(
+        f"**v{version['version_number']}{current_label}** — "
+        f"{version['source_kind']} · {version['label'] or '(no label)'}"
+    )
+    st.caption(f"By {version['created_by']} · {version['created_at']}")
+    if version.get("approval_kind"):
+        st.caption(
+            f"{version['approval_kind']} by {version['approved_by']} · "
+            f"{version['approved_at']}"
+        )
+    summary = version.get("summary_json") or "{}"
+    validation = version.get("validation_json") or "{}"
+    if summary != "{}":
+        st.write(f"Summary: {summary}")
+    if validation != "{}":
+        st.write(f"Validation: {validation}")
+    parent_id = version.get("parent_version_id")
+    if parent_id is not None and int(parent_id) in versions_by_id:
+        parent = versions_by_id[int(parent_id)]
+        before = Path(parent["file_path"])
+        after = Path(version["file_path"])
+        if before.exists() and after.exists():
+            column = st.columns(1)[0]
+            _offer_diff(
+                column,
+                {
+                    "id": f"file-version-{version['id']}",
+                    "before_path": str(before),
+                    "after_path": str(after),
+                },
+                before,
+                after,
+            )
+    if not is_current and st.button(
+        "Restore as new version",
+        key=f"file_version_restore_{version['id']}",
+    ):
+        try:
+            _restore_version(int(version["id"]))
+        except job_files.JobFileError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+    for note in notes:
+        _render_review_note(note)
+    st.divider()
+
+
+def _render_review_note(note: dict) -> None:
+    state = "Resolved" if note["resolved"] else "Open"
+    st.write(f"{state} note: {note['note']}")
+    st.caption(f"{note['author_email']} · {note['created_at']}")
+
+
 # ---------------------------------------------------------------------------
 # Export banner
 # ---------------------------------------------------------------------------
 
 
-def _render_export_banner(rows: list[dict]) -> None:
+def _render_export_banner(
+    rows: list[dict],
+    *,
+    change_count: int | None = None,
+) -> None:
     store = session.current_store()
     if store is None:
         return
     filename = session.current_filename() or "(unnamed)"
-    changes = len(rows)
+    changes = len(rows) if change_count is None else change_count
     st.markdown(
         f"**Current file:** `{filename}` · {store.count():,} records · "
         f"{changes} recorded change{'s' if changes != 1 else ''}"

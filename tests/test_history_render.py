@@ -71,6 +71,9 @@ class _FakeStreamlit:
     def markdown(self, message):
         self.markdowns.append(str(message))
 
+    def write(self, value):
+        self.writes.append(str(value))
+
     def info(self, message):
         self.infos.append(str(message))
 
@@ -91,6 +94,9 @@ class _FakeStreamlit:
 
     def table(self, data):
         self.tables.append(data)
+
+    def text_area(self, label, **kwargs):
+        return ""
 
     def columns(self, spec, **kwargs):
         n = spec if isinstance(spec, int) else len(spec)
@@ -350,3 +356,100 @@ def test_anonymous_user_sees_sign_in_notice(monkeypatch):
     history.render()
 
     assert fake_st.infos and "Sign in" in fake_st.infos[0]
+
+
+def test_job_file_history_is_scoped_and_legacy_history_is_separate(
+    monkeypatch, tmp_path
+):
+    """The review page presents immutable file history before unlinked legacy rows."""
+    fake_st = _FakeStreamlit()
+    history = _history(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    legacy = [_snapshot_row(tmp_path, snapshot_id=77)]
+    _wire_loaded(monkeypatch, history, store, legacy)
+    fake_st.session_state.update({
+        "current_job_id": 3,
+        "job_file_id": 9,
+        "job_file_version_id": 12,
+    })
+    original = tmp_path / "v1.mrc"
+    current = tmp_path / "v2.mrc"
+    data = _record().as_marc()
+    original.write_bytes(data)
+    current.write_bytes(data)
+    monkeypatch.setattr(
+        history.job_files,
+        "get_file",
+        lambda file_id, user: {
+            "id": file_id,
+            "job_id": 3,
+            "display_name": "deletes.mrc",
+            "status": "needs_review",
+            "current_version_id": 12,
+            "access_role": "editor",
+        },
+    )
+    monkeypatch.setattr(
+        history.job_files,
+        "list_versions",
+        lambda file_id, user: [
+            {
+                "id": 11,
+                "job_file_id": 9,
+                "version_number": 1,
+                "parent_version_id": None,
+                "file_path": str(original),
+                "source_kind": "original",
+                "label": "deletes.mrc",
+                "created_by": "owner@example.edu",
+                "created_at": "2026-07-10T10:00:00Z",
+                "approval_kind": "self-approved",
+                "approved_by": "owner@example.edu",
+                "approved_at": "2026-07-10T10:05:00Z",
+                "summary_json": "{}",
+                "validation_json": "{}",
+            },
+            {
+                "id": 12,
+                "job_file_id": 9,
+                "version_number": 2,
+                "parent_version_id": 11,
+                "file_path": str(current),
+                "source_kind": "restore",
+                "label": "Restore version 1",
+                "created_by": "editor@example.edu",
+                "created_at": "2026-07-10T11:00:00Z",
+                "approval_kind": "peer-approved",
+                "approved_by": "owner@example.edu",
+                "approved_at": "2026-07-10T11:05:00Z",
+                "summary_json": "{}",
+                "validation_json": "{}",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        history.jobs,
+        "list_review_notes",
+        lambda job_id, *, user_email, job_file_id: [{
+            "id": 5,
+            "note": "Check leader",
+            "job_file_version_id": 12,
+            "author_email": "owner@example.edu",
+            "created_at": "2026-07-10T11:10:00Z",
+            "resolved": 0,
+        }],
+    )
+
+    history.render()
+
+    rendered = " ".join(fake_st.markdowns + fake_st.captions + fake_st.writes)
+    assert "Immutable version history" in rendered
+    assert "Restore version 1" in rendered
+    assert "self-approved" in rendered
+    assert "peer-approved" in rendered
+    assert "Check leader" in rendered
+    assert "Legacy job history" in rendered
+    assert any(button["label"] == "Restore as new version" for button in fake_st.buttons)
+    assert any(button["label"] == "Approve current" for button in fake_st.buttons)
+    assert any(button["label"] == "Add review note" for button in fake_st.buttons)
+    assert "1 recorded change" in rendered

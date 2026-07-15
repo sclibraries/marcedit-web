@@ -501,3 +501,80 @@ def test_viewer_cannot_add_or_resolve_review_notes():
         )
     with pytest.raises(jobs.JobError, match="access denied"):
         jobs.resolve_review_note(note["id"], by="viewer@example.edu")
+
+
+def test_review_notes_for_two_files_do_not_mix(tmp_path, monkeypatch):
+    """Structured file filters prevent review context leaking across work items."""
+    from marcedit_web.lib import job_files
+
+    monkeypatch.setenv(
+        "MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files")
+    )
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = []
+    for filename, data in (("first.mrc", b"one"), ("second.mrc", b"two")):
+        source = tmp_path / filename
+        source.write_bytes(data)
+        attached.append(job_files.attach_file(
+            job_id=job["id"],
+            user_email="owner@example.edu",
+            source_path=source,
+            filename=filename,
+            record_count=1,
+            file_bytes=len(data),
+        ))
+    first, second = attached
+    jobs.add_review_note(
+        job["id"],
+        anchor_kind="job_file",
+        anchor_value="",
+        note="Check leader",
+        author="owner@example.edu",
+        job_file_id=first["id"],
+        job_file_version_id=first["current_version_id"],
+    )
+
+    first_notes = jobs.list_review_notes(
+        job["id"],
+        user_email="owner@example.edu",
+        job_file_id=first["id"],
+    )
+    second_notes = jobs.list_review_notes(
+        job["id"],
+        user_email="owner@example.edu",
+        job_file_id=second["id"],
+    )
+
+    assert len(first_notes) == 1
+    assert second_notes == []
+
+
+def test_file_activity_includes_display_name(tmp_path, monkeypatch):
+    """Aggregate activity remains understandable when a job has many files."""
+    from marcedit_web.lib import collaboration, job_files
+
+    monkeypatch.setenv(
+        "MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files")
+    )
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    source = tmp_path / "deletes.mrc"
+    source.write_bytes(b"one")
+    attached = job_files.attach_file(
+        job_id=job["id"],
+        user_email="owner@example.edu",
+        source_path=source,
+        filename=source.name,
+        record_count=1,
+        file_bytes=3,
+    )
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+
+    job_files.approve_current(
+        attached["id"],
+        by="owner@example.edu",
+        opened_version_id=attached["current_version_id"],
+    )
+
+    activity = jobs.list_activity(job["id"], user_email="owner@example.edu")
+    assert activity[-1]["job_file_id"] == attached["id"]
+    assert "deletes.mrc" in activity[-1]["message"]

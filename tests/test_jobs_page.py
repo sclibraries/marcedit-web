@@ -497,10 +497,10 @@ def test_render_detail_return_for_review_passes_opened_version(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        page.job_files.collaboration,
-        "return_file_for_review",
-        lambda file_id, user, opened_version_id: returned.append(
-            (file_id, user, opened_version_id)
+        page.work_files,
+        "return_for_review",
+        lambda file_id, *, by, opened_version_id: returned.append(
+            (file_id, by, opened_version_id)
         ),
     )
     monkeypatch.setattr(
@@ -531,6 +531,43 @@ def test_render_detail_return_for_review_passes_opened_version(monkeypatch):
 
     assert returned == [(99, "alice@example.edu", 123)]
     assert fake_st.rerun_called is True
+
+
+def test_history_and_review_opens_exact_job_file(monkeypatch):
+    """File review navigation establishes the file/version session context first."""
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit(clicked_keys={"job_upload_history_99"})
+    opened: list[int] = []
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(
+        page.session,
+        "open_job_file",
+        lambda file_id: opened.append(file_id) or {"total": 42},
+    )
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "viewer")
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.work_files, "list_files", lambda *_args: [_job_file_row()]
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda _job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda *_args, **_kwargs: [])
+
+    page._render_detail("viewer@example.edu", 17)
+
+    assert opened == [99]
+    assert fake_st.session_state["switched_to"] == "views/C_History.py"
 
 
 def test_render_detail_admin_archives_without_clearing_unrelated_session_work(
