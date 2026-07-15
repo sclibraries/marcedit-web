@@ -166,6 +166,7 @@ def adopt_candidate(
     owned_candidate = Path(candidate_path)
     staged_candidate = versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
     target: Path | None = None
+    version_id: int | None = None
     renamed = False
     try:
         try:
@@ -176,7 +177,10 @@ def adopt_candidate(
         byte_count = owned_candidate.stat().st_size
         if count == 0:
             raise JobFileError("candidate contains no MARC records")
-        if store.malformed_count() > 0:
+        if (
+            store.malformed_count() > 0
+            or sum(1 for _record in store.iter_records()) != count
+        ):
             raise JobFileError("candidate contains malformed MARC records")
 
         staged_candidate.parent.mkdir(parents=True, exist_ok=True)
@@ -254,7 +258,30 @@ def adopt_candidate(
                     os.replace(target, staged_candidate)
                     renamed = False
                 raise
-    except Exception:
+    except Exception as exc:
+        if renamed and target is not None and version_id is not None:
+            try:
+                committed = _adoption_is_current_in_db(
+                    file_id,
+                    version_id,
+                    target,
+                )
+            except Exception as verification_exc:
+                owned_candidate.unlink(missing_ok=True)
+                staged_candidate.unlink(missing_ok=True)
+                raise JobFileError(
+                    "file version adoption could not be confirmed;"
+                    " retained target bytes"
+                ) from verification_exc
+            if committed:
+                owned_candidate.unlink(missing_ok=True)
+                staged_candidate.unlink(missing_ok=True)
+                raise JobFileError(
+                    "file version was adopted, but transaction confirmation failed"
+                ) from exc
+            if target.exists():
+                os.replace(target, staged_candidate)
+                renamed = False
         owned_candidate.unlink(missing_ok=True)
         staged_candidate.unlink(missing_ok=True)
         if target is not None:
@@ -328,6 +355,26 @@ def _version_path(file_id: int, version_number: int) -> Path:
         / str(file_id)
         / "versions"
         / f"v{version_number:06d}.mrc"
+    )
+
+
+def _adoption_is_current_in_db(
+    file_id: int,
+    version_id: int,
+    target: Path,
+) -> bool:
+    """Read durable state after an uncertain transaction-exit failure."""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT job_files.current_version_id,job_file_versions.file_path"
+            " FROM job_files LEFT JOIN job_file_versions"
+            " ON job_file_versions.id=? WHERE job_files.id=?",
+            (version_id, file_id),
+        ).fetchone()
+    return (
+        row is not None
+        and row["current_version_id"] == version_id
+        and row["file_path"] == str(target)
     )
 
 

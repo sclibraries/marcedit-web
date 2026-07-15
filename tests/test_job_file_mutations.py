@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import io
+import sqlite3
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -151,6 +152,23 @@ def test_adoption_rejects_partially_malformed_candidate(
     assert not candidate.exists()
 
 
+def test_adoption_rejects_framed_record_that_pymarc_cannot_parse(
+    checked_out_file, candidate,
+):
+    """A plausible record length must not substitute for MARC parsing."""
+    malformed = bytearray(candidate.read_bytes())
+    malformed[12:17] = b"99999"
+    candidate.write_bytes(malformed)
+
+    with pytest.raises(job_files.JobFileError, match="malformed"):
+        _adopt(checked_out_file, candidate)
+
+    assert job_files.get_current_version(
+        checked_out_file["id"], OWNER
+    )["id"] == checked_out_file["current_version_id"]
+    assert not candidate.exists()
+
+
 @pytest.mark.parametrize("access_change", ["revoked", "viewer"])
 def test_adoption_rechecks_editor_access_inside_transaction(
     access_change, checked_out_file, candidate,
@@ -232,6 +250,73 @@ def test_post_rename_failure_rolls_back_database_and_removes_artifacts(
     assert not candidate.exists()
     assert not (job_files.versions_root() / str(checked_out_file["id"])
                 / "versions" / "v000002.mrc").exists()
+
+
+def _fail_first_connection_commit(monkeypatch, *, persist_before_raise):
+    original_connect = db.connect
+    first = True
+
+    @contextmanager
+    def failing_connect():
+        nonlocal first
+        if not first:
+            with original_connect() as conn:
+                yield conn
+            return
+        first = False
+        conn = sqlite3.connect(db.db_path(), isolation_level="DEFERRED")
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            yield conn
+            if persist_before_raise:
+                conn.commit()
+                raise RuntimeError("commit persisted but confirmation failed")
+            raise RuntimeError("commit failed before persistence")
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    monkeypatch.setattr(db, "connect", failing_connect)
+
+
+def test_commit_failure_before_persistence_cleans_uncommitted_target(
+    checked_out_file, candidate, monkeypatch,
+):
+    before = job_files.get_current_version(checked_out_file["id"], OWNER)
+    _fail_first_connection_commit(monkeypatch, persist_before_raise=False)
+
+    with pytest.raises(RuntimeError, match="commit failed before persistence"):
+        _adopt(checked_out_file, candidate)
+
+    current = job_files.get_current_version(checked_out_file["id"], OWNER)
+    assert current["id"] == before["id"]
+    assert Path(before["file_path"]).exists()
+    assert not candidate.exists()
+    assert not (job_files.versions_root() / str(checked_out_file["id"])
+                / "versions" / "v000002.mrc").exists()
+
+
+def test_commit_persisted_then_raised_retains_committed_target(
+    checked_out_file, candidate, monkeypatch,
+):
+    before = job_files.get_current_version(checked_out_file["id"], OWNER)
+    _fail_first_connection_commit(monkeypatch, persist_before_raise=True)
+
+    with pytest.raises(
+        job_files.JobFileError,
+        match="adopted.*confirmation failed",
+    ):
+        _adopt(checked_out_file, candidate)
+
+    current = job_files.get_current_version(checked_out_file["id"], OWNER)
+    assert current["id"] != before["id"]
+    assert current["parent_version_id"] == before["id"]
+    assert Path(current["file_path"]).exists()
+    assert Path(before["file_path"]).exists()
+    assert not candidate.exists()
 
 
 def test_adoption_supersedes_prior_exports(checked_out_file, candidate, tmp_path):

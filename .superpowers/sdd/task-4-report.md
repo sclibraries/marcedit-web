@@ -104,3 +104,77 @@ Result: **1142 passed in 15.92s**, with no skipped tests reported.
   remains disk-backed/bounded-memory via `shutil.copyfile`.
 - Standalone lint tooling is absent from the supplied Docker image; full pytest
   and `git diff --check` are clean.
+
+## Formal review follow-up — uncertain commit and structural validation
+
+The controller's formal review found two additional gaps:
+
+1. A transaction-exit exception could occur after SQLite had durably committed.
+   Unconditional outer cleanup would then unlink the adopted target while the
+   committed current pointer still referenced it.
+2. MARC framing alone could count a plausible-length record whose leader or
+   directory could not be parsed by pymarc.
+
+### Follow-up RED
+
+Command:
+
+```text
+docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_file_mutations.py
+```
+
+Result: **2 failed, 13 passed in 0.57s**.
+
+- A commit persisted and then raised; the gateway propagated the raw exception
+  and deleted the committed target.
+- A correctly framed record with an invalid `99999` MARC base address was
+  adopted because it had one indexed frame and no truncated suffix.
+
+The paired commit-before-persistence regression passed under the old code,
+confirming that ordinary rollback cleanup was already correct and isolating the
+bug to uncertain transaction-exit outcomes.
+
+### Follow-up GREEN
+
+Mutation gateway command after the fix: **15 passed in 0.47s**.
+
+Required focused/storage/session command:
+
+```text
+docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_files.py tests/test_job_file_mutations.py tests/test_record_store.py tests/test_session.py
+```
+
+Result: **72 passed in 0.84s**.
+
+Fresh full-suite command:
+
+```text
+docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q
+```
+
+Result: **1145 passed in 16.17s**, with no skipped tests reported.
+
+`git diff --check` passed.
+
+### Follow-up self-review
+
+- The normal operation-failure path still restores target bytes to staging
+  before the database context rolls back.
+- Only a failure escaping transaction context exit while the target is still
+  adopted triggers a fresh durable-state query.
+- If version row and current pointer committed with the exact target path, the
+  target is retained and `JobFileError` explicitly reports that adoption
+  succeeded but transaction confirmation failed.
+- If the durable query shows no committed adoption, target bytes return to
+  staging and all candidate artifacts are removed.
+- If the durable query itself fails, target bytes are conservatively retained;
+  this may leave an orphan but cannot create a committed pointer to missing
+  bytes.
+- Candidate validation now iterates every indexed record through pymarc and
+  compares successfully parsed records to the frame count. Iteration reads one
+  record at a time from disk and retains no full-file or record-list copy.
+- Cross-filesystem staging, checkout/access/version checks, prior immutable
+  bytes, export supersession, and archive-only behavior are unchanged.
+
+No unresolved Critical or Important formal-review findings remain in this
+follow-up implementation.
