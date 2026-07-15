@@ -226,7 +226,6 @@ if start_path == _START_PATH_JOB:
         selected_job_id = st.selectbox(
             "Job",
             options=job_ids,
-            index=job_ids.index(current_job_id),
             format_func=lambda job_id: next(
                 _job_label(job) for job in job_rows if job["id"] == job_id
             ),

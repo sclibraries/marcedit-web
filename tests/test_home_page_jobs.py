@@ -107,6 +107,7 @@ class _FakeStreamlit:
         self.switch_pages: list[str] = []
         self.rerun_called = False
         self.button_calls: list[tuple[str, dict[str, Any]]] = []
+        self.selectbox_calls: list[tuple[str, dict[str, Any]]] = []
         self.download_buttons: list[dict[str, Any]] = []
         self.popovers: list[str] = []
         self.column_calls: list[tuple[Any, dict[str, Any]]] = []
@@ -197,14 +198,15 @@ class _FakeStreamlit:
         return ""
 
     def selectbox(self, label: str, options: list[Any], **kwargs: Any) -> Any:
+        self.selectbox_calls.append((label, kwargs))
         index = kwargs.get("index", 0)
-        value = options[index]
         key = kwargs.get("key")
+        if key is not None and key in self.session_state:
+            self.session_state.mark_widget(key)
+            return self.session_state[key]
+        value = options[index]
         if key is not None:
-            if key not in self.session_state:
-                self.session_state.set_widget_value(key, value)
-            else:
-                self.session_state.mark_widget(key)
+            self.session_state.set_widget_value(key, value)
         return value
 
     def file_uploader(self, *args: Any, **kwargs: Any) -> Any:
@@ -590,6 +592,22 @@ def test_create_job_uses_rerun_handoff_instead_of_mutating_widget_state(monkeypa
     pending_job_id = state[module._PENDING_CURRENT_JOB_ID]
     assert pending_job_id != default["id"]
     assert state["current_job_id"] == default["id"]
+
+
+def test_job_selector_does_not_supply_a_default_over_session_state(monkeypatch):
+    """A keyed selector must not trigger Streamlit's conflicting-default warning."""
+    default = jobs.ensure_default_job("cataloger@example.edu")
+    state = _SessionState(
+        {"current_job_id": default["id"], "home_start_path": "Job Workspace"}
+    )
+    fake_st = _FakeStreamlit(session_state=state)
+
+    _run_home(monkeypatch, fake_st)
+
+    job_select = next(
+        kwargs for label, kwargs in fake_st.selectbox_calls if label == "Job"
+    )
+    assert "index" not in job_select
 
 
 # ---------------------------------------------------------------------------

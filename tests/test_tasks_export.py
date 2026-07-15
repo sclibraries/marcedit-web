@@ -362,6 +362,23 @@ def test_history_location_caption_explains_unsigned_fallback():
     )
 
 
+def test_disk_backed_export_retains_job_version_history_reference(tmp_path):
+    """A versioned job mutation must advertise its durable History entry."""
+    tasks_render = _tasks_render()
+    source = tmp_path / "source.mrc"
+    source.write_bytes(b"updated")
+
+    export = tasks_render._disk_backed_export(
+        filename="updated.mrc",
+        source_path=source,
+        snapshot=None,
+        job_file_version={"id": 22},
+        prefix="task-151-history-",
+    )
+
+    assert export["job_file_version_id"] == 22
+
+
 def test_batch_operation_uses_shared_gate_and_telemetry(monkeypatch, tmp_path):
     tasks_render = _tasks_render()
     source_path = tmp_path / "source.mrc"

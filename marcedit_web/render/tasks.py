@@ -1870,6 +1870,7 @@ def _disk_backed_export(
     filename: str,
     source_path: Path,
     snapshot: dict | None,
+    job_file_version: dict | None = None,
     prefix: str,
 ) -> dict:
     snapshot_path = snapshot.get("after_path") if snapshot else None
@@ -1889,6 +1890,9 @@ def _disk_backed_export(
         "temporary": temporary,
         "temporary_dir": temporary_dir,
         "snapshot_id": snapshot["id"] if snapshot is not None else None,
+        "job_file_version_id": (
+            job_file_version["id"] if job_file_version is not None else None
+        ),
     }
 
 
@@ -2517,6 +2521,7 @@ def _apply_quick_batch_preview(preview) -> None:
         filename=export_filename,
         source_path=export_source,
         snapshot=snapshot,
+        job_file_version=version,
         prefix="marcedit-web-quickbatch-",
     )
     message = f"Applied quick batch operation to {result.changed_count} record(s)"
@@ -2561,10 +2566,8 @@ def _render_quick_batch_export() -> None:
     if not export:
         return
     st.markdown("**Updated batch is loaded in this session.**")
-    if export.get("snapshot_id"):
-        st.caption(_history_location_caption(export.get("snapshot_id")))
-    else:
-        st.caption(_history_location_caption(None))
+    history_id = export.get("snapshot_id") or export.get("job_file_version_id")
+    st.caption(_history_location_caption(history_id))
     path_str = export.get("path")
     if not path_str:
         st.caption("Updated export file is not available in this session.")

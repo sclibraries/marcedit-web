@@ -283,6 +283,28 @@ def test_render_quick_batch_export_shows_download_and_history_location(
     assert fake_st.session_state.get("quick_batch_download_ready") is None
 
 
+def test_render_quick_batch_export_links_job_version_history(
+    monkeypatch, tmp_path,
+):
+    """Versioned job changes must not claim rollback history is unavailable."""
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    export_path = tmp_path / "quick-ui-job-export.mrc"
+    export_path.write_bytes(b"updated")
+    fake_st.session_state[tasks_render._K_QB_EXPORT] = {
+        "filename": "quick-ui-job.mrc",
+        "path": str(export_path),
+        "snapshot_id": None,
+        "job_file_version_id": 22,
+    }
+
+    tasks_render._render_quick_batch_export()
+
+    assert fake_st.captions == [
+        "Rollback and before/after downloads are available on the History page."
+    ]
+
+
 def test_render_quick_batch_export_download_reads_path_only_after_prepare(
     monkeypatch, tmp_path,
 ):
