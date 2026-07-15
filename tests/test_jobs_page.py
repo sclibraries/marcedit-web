@@ -31,6 +31,12 @@ class _FakeColumn:
     def __init__(self, st: "_FakeStreamlit") -> None:
         self._st = st
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
     def title(self, text: str) -> None:
         self._st.titles.append(text)
 
@@ -85,6 +91,8 @@ class _FakeStreamlit:
         self.toasts: list[tuple[str, Any]] = []
         self.warnings: list[str] = []
         self.file_uploader_labels: list[str] = []
+        self.tab_calls: list[list[str]] = []
+        self.render_order: list[tuple[str, Any]] = []
         self.rerun_called = False
 
     def title(self, text: str) -> None:
@@ -144,6 +152,12 @@ class _FakeStreamlit:
 
     def subheader(self, text: str) -> None:
         self.subheaders.append(text)
+        self.render_order.append(("subheader", text))
+
+    def tabs(self, labels: list[str]) -> list[_FakeContainer]:
+        self.tab_calls.append(list(labels))
+        self.render_order.append(("tabs", tuple(labels)))
+        return [_FakeContainer(self) for _label in labels]
 
     def dataframe(self, data: Any, **kwargs: Any) -> None:
         self.dataframes.append((data, kwargs))
@@ -1003,7 +1017,7 @@ def test_render_detail_viewer_file_actions_are_read_only(monkeypatch):
     assert fake_st.popovers == []
 
 
-def test_render_detail_loads_sharing_and_review_notes_for_job_members(monkeypatch):
+def test_render_detail_is_file_first_and_preserves_owner_controls(monkeypatch):
     page = _load_jobs_page(monkeypatch)
     fake_st = _FakeStreamlit()
     access_calls: list[int] = []
@@ -1047,20 +1061,23 @@ def test_render_detail_loads_sharing_and_review_notes_for_job_members(monkeypatc
 
     assert access_calls == [17]
     assert note_calls == [(17, "alice@example.edu", True)]
-    assert fake_st.subheaders == [
-        "Status",
-        "Files",
-        "Sharing",
-        "Review notes",
-        "Activity",
-        "Archive",
+    assert fake_st.tab_calls == [
+        ["Review notes", "People", "Activity", "Settings"]
     ]
+    files_position = fake_st.render_order.index(("subheader", "Files"))
+    handoff_position = fake_st.render_order.index(("subheader", "Next handoff"))
+    tabs_position = fake_st.render_order.index((
+        "tabs",
+        ("Review notes", "People", "Activity", "Settings"),
+    ))
+    assert files_position < tabs_position
+    assert handoff_position < tabs_position
     assert [label for label, _ in fake_st.button_calls] == [
         "Back to jobs",
         "How jobs work",
         "Update status",
-        "Grant access",
         "Add note",
+        "Grant access",
         "Archive job",
     ]
 
@@ -1138,7 +1155,6 @@ def test_render_detail_hides_archive_action_for_default_personal_uploads_job(mon
 
     page._render_detail("alice@example.edu", 17)
 
-    assert "Archive" not in fake_st.subheaders
     assert "Archive job" not in [label for label, _ in fake_st.button_calls]
 
 

@@ -107,26 +107,13 @@ def _render_list(user: str) -> None:
                 st.rerun()
 
 
-def _render_detail(user: str, job_id: int) -> None:
-    role = jobs.get_access_role(job_id, user)
-    if role is None:
-        st.error(_DETAIL_UNAVAILABLE)
-        return
-    job = jobs.get_job(job_id)
-    if job is None:
-        st.error(_DETAIL_UNAVAILABLE)
-        return
-
-    if st.button("Back to jobs", key="jobs_back"):
-        st.session_state.pop("selected_job_detail_id", None)
-        st.rerun()
-    _render_jobs_heading(
-        str(job["name"]),
-        f"{_status_label(job['status'])} · {role} · owned by {job['owner_email']}",
-        help_key=f"jobs_help_detail_{job_id}",
-    )
-
-    st.subheader("Status")
+def _render_handoff(
+    user: str,
+    job_id: int,
+    job: dict[str, object],
+    role: str | None,
+) -> None:
+    st.subheader("Next handoff")
     if _can_edit(role) and job["active"]:
         workflow_statuses = _workflow_statuses()
         current_status = str(job["status"])
@@ -156,8 +143,10 @@ def _render_detail(user: str, job_id: int) -> None:
             else:
                 st.rerun()
     else:
-        st.write(_status_label(job["status"]))
+        st.write(_status_label(str(job["status"])))
 
+
+def _render_files(user: str, job_id: int, role: str | None) -> None:
     st.subheader("Files")
     job_files.render_attach_file(
         job_id,
@@ -176,46 +165,49 @@ def _render_detail(user: str, job_id: int) -> None:
     else:
         st.caption("No files attached to this job yet.")
 
-    st.subheader("Sharing")
+
+def _render_people(user: str, job_id: int, role: str | None) -> None:
     access_rows = jobs.list_access(job_id)
     st.dataframe(access_rows, hide_index=True, use_container_width=True)
-    if _can_manage(role):
-        share_email = st.text_input(
-            "Cataloger email",
-            placeholder="name@example.edu",
-            key=f"job_share_email_{job_id}",
+    if not _can_manage(role):
+        return
+    share_email = st.text_input(
+        "Cataloger email",
+        placeholder="name@example.edu",
+        key=f"job_share_email_{job_id}",
+    )
+    share_role = st.selectbox(
+        "Role",
+        ["editor", "viewer"],
+        key=f"job_share_role_{job_id}",
+    )
+    if st.button("Grant access", key=f"job_share_grant_{job_id}"):
+        try:
+            jobs.grant_access(job_id, share_email, share_role, by=user)
+        except jobs.JobError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
+
+    revoke_options = [
+        row["user_email"] for row in access_rows if row["role"] != "owner"
+    ]
+    if revoke_options:
+        revoke_email = st.selectbox(
+            "Remove access",
+            revoke_options,
+            key=f"job_share_revoke_email_{job_id}",
         )
-        share_role = st.selectbox(
-            "Role",
-            ["editor", "viewer"],
-            key=f"job_share_role_{job_id}",
-        )
-        if st.button("Grant access", key=f"job_share_grant_{job_id}"):
+        if st.button("Revoke access", key=f"job_share_revoke_{job_id}"):
             try:
-                jobs.grant_access(job_id, share_email, share_role, by=user)
+                jobs.revoke_access(job_id, revoke_email, by=user)
             except jobs.JobError as exc:
                 st.error(str(exc))
             else:
                 st.rerun()
 
-        revoke_options = [
-            row["user_email"] for row in access_rows if row["role"] != "owner"
-        ]
-        if revoke_options:
-            revoke_email = st.selectbox(
-                "Remove access",
-                revoke_options,
-                key=f"job_share_revoke_email_{job_id}",
-            )
-            if st.button("Revoke access", key=f"job_share_revoke_{job_id}"):
-                try:
-                    jobs.revoke_access(job_id, revoke_email, by=user)
-                except jobs.JobError as exc:
-                    st.error(str(exc))
-                else:
-                    st.rerun()
 
-    st.subheader("Review notes")
+def _render_review_notes(user: str, job_id: int, role: str | None) -> None:
     notes = jobs.list_review_notes(job_id, user_email=user)
     if notes:
         for note in notes:
@@ -237,33 +229,35 @@ def _render_detail(user: str, job_id: int) -> None:
     else:
         st.caption("No review notes yet.")
 
-    if _can_edit(role):
-        anchor_kind = st.selectbox(
-            "Note anchor",
-            ["job", "record", "control_number", "validation_issue", "field"],
-            key=f"note_anchor_kind_{job_id}",
-        )
-        anchor_value = st.text_input(
-            "Anchor value",
-            key=f"note_anchor_value_{job_id}",
-            placeholder="Record number, 001/OCLC, issue id, or field",
-        )
-        note_text = st.text_area("Note", key=f"note_text_{job_id}")
-        if st.button("Add note", key=f"add_note_{job_id}"):
-            try:
-                jobs.add_review_note(
-                    job_id,
-                    anchor_kind=anchor_kind,
-                    anchor_value=anchor_value,
-                    note=note_text,
-                    author=user,
-                )
-            except jobs.JobError as exc:
-                st.error(str(exc))
-            else:
-                st.rerun()
+    if not _can_edit(role):
+        return
+    anchor_kind = st.selectbox(
+        "Note anchor",
+        ["job", "record", "control_number", "validation_issue", "field"],
+        key=f"note_anchor_kind_{job_id}",
+    )
+    anchor_value = st.text_input(
+        "Anchor value",
+        key=f"note_anchor_value_{job_id}",
+        placeholder="Record number, 001/OCLC, issue id, or field",
+    )
+    note_text = st.text_area("Note", key=f"note_text_{job_id}")
+    if st.button("Add note", key=f"add_note_{job_id}"):
+        try:
+            jobs.add_review_note(
+                job_id,
+                anchor_kind=anchor_kind,
+                anchor_value=anchor_value,
+                note=note_text,
+                author=user,
+            )
+        except jobs.JobError as exc:
+            st.error(str(exc))
+        else:
+            st.rerun()
 
-    st.subheader("Activity")
+
+def _render_activity(user: str, job_id: int) -> None:
     activity = jobs.list_activity(job_id, user_email=user)
     if activity:
         for row in reversed(activity[-20:]):
@@ -274,25 +268,77 @@ def _render_detail(user: str, job_id: int) -> None:
     else:
         st.caption("No activity recorded yet.")
 
-    if _can_manage(role) and (not job["active"] or _can_archive(job)):
-        st.subheader("Archive")
-        if job["active"]:
-            if st.button("Archive job", key=f"archive_job_{job_id}"):
-                try:
-                    jobs.archive_job(job_id, by=user)
-                except jobs.JobError as exc:
-                    st.error(str(exc))
-                else:
-                    st.session_state.pop("selected_job_detail_id", None)
-                    st.rerun()
+
+def _render_settings(
+    user: str,
+    job_id: int,
+    job: dict[str, object],
+    role: str | None,
+) -> None:
+    can_change_archive = _can_manage(role) and (
+        not job["active"] or _can_archive(job)
+    )
+    if not can_change_archive:
+        st.caption("No job settings are available here.")
+        return
+    if job["active"]:
+        if st.button("Archive job", key=f"archive_job_{job_id}"):
+            try:
+                jobs.archive_job(job_id, by=user)
+            except jobs.JobError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state.pop("selected_job_detail_id", None)
+                st.rerun()
+    elif st.button("Restore job", key=f"restore_job_{job_id}"):
+        try:
+            jobs.restore_job(job_id, by=user)
+        except jobs.JobError as exc:
+            st.error(str(exc))
         else:
-            if st.button("Restore job", key=f"restore_job_{job_id}"):
-                try:
-                    jobs.restore_job(job_id, by=user)
-                except jobs.JobError as exc:
-                    st.error(str(exc))
-                else:
-                    st.rerun()
+            st.rerun()
+
+
+def _render_detail(user: str, job_id: int) -> None:
+    role = jobs.get_access_role(job_id, user)
+    if role is None:
+        st.error(_DETAIL_UNAVAILABLE)
+        return
+    job = jobs.get_job(job_id)
+    if job is None:
+        st.error(_DETAIL_UNAVAILABLE)
+        return
+
+    if st.button("Back to jobs", key="jobs_back"):
+        st.session_state.pop("selected_job_detail_id", None)
+        st.rerun()
+    _render_jobs_heading(
+        str(job["name"]),
+        f"{_status_label(job['status'])} · {role} · owned by {job['owner_email']}",
+        help_key=f"jobs_help_detail_{job_id}",
+    )
+
+    files_col, handoff_col = st.columns(
+        [4, 1],
+        vertical_alignment="top",
+        gap="large",
+    )
+    with files_col:
+        _render_files(user, job_id, role)
+    with handoff_col:
+        _render_handoff(user, job_id, job, role)
+
+    review_tab, people_tab, activity_tab, settings_tab = st.tabs(
+        ["Review notes", "People", "Activity", "Settings"]
+    )
+    with review_tab:
+        _render_review_notes(user, job_id, role)
+    with people_tab:
+        _render_people(user, job_id, role)
+    with activity_tab:
+        _render_activity(user, job_id)
+    with settings_tab:
+        _render_settings(user, job_id, job, role)
 
 
 def _render() -> None:
