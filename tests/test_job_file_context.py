@@ -15,8 +15,9 @@ from marcedit_web.lib import db, job_files, jobs, session, upload_persistence
 
 
 class _FakeStreamlit:
-    def __init__(self, state=None):
+    def __init__(self, state=None, query_params=None):
         self.session_state = state or {}
+        self.query_params = query_params or {}
         self.toasts = []
 
     def toast(self, message, icon=None):
@@ -71,6 +72,7 @@ def test_open_job_file_records_exact_context(monkeypatch, attached_file):
     assert fake_st.session_state["current_job_id"] == attached_file["job_id"]
     assert fake_st.session_state["store"].filename == "deletes.mrc"
     assert fake_st.session_state["quick_load_mode"] is False
+    assert fake_st.query_params["job_file"] == str(attached_file["id"])
 
 
 def test_open_job_file_caches_exact_version_that_was_loaded(
@@ -122,6 +124,36 @@ def test_init_restores_exact_job_file_after_refresh(monkeypatch, attached_file):
     assert fake_st.session_state["store"].filename == "deletes.mrc"
 
 
+def test_init_restores_shared_file_from_refresh_query(monkeypatch, attached_file):
+    """A fresh editor session can revalidate exact context without owning upload."""
+    fake_st = _FakeStreamlit(
+        {"user": "owner@example.edu"},
+        query_params={"job_file": str(attached_file["id"])},
+    )
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+
+    session.init()
+
+    assert fake_st.session_state["job_file_id"] == attached_file["id"]
+    assert (
+        fake_st.session_state["job_file_version_id"]
+        == attached_file["current_version_id"]
+    )
+    assert fake_st.session_state["store"].filename == "deletes.mrc"
+
+
+def test_init_syncs_query_after_page_navigation(monkeypatch, attached_file):
+    """Streamlit page switches clear the URL query after context is opened."""
+    fake_st = _FakeStreamlit({"user": "owner@example.edu"})
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    session.open_job_file(attached_file["id"])
+    fake_st.query_params.clear()
+
+    session.init()
+
+    assert fake_st.query_params["job_file"] == str(attached_file["id"])
+
+
 def test_current_job_file_clears_inaccessible_cached_context(
     monkeypatch, attached_file,
 ):
@@ -131,7 +163,8 @@ def test_current_job_file_clears_inaccessible_cached_context(
             "job_file_id": attached_file["id"],
             "job_file_version_id": attached_file["current_version_id"],
             "store": object(),
-        }
+        },
+        query_params={"job_file": str(attached_file["id"])},
     )
     monkeypatch.setitem(sys.modules, "streamlit", fake_st)
     monkeypatch.setattr(session, "current_user_id", lambda: "outsider@example.edu")
@@ -140,6 +173,7 @@ def test_current_job_file_clears_inaccessible_cached_context(
     assert fake_st.session_state["job_file_id"] is None
     assert fake_st.session_state["job_file_version_id"] is None
     assert fake_st.session_state["store"] is None
+    assert "job_file" not in fake_st.query_params
 
 
 def test_inaccessible_job_file_context_does_not_fall_back_to_legacy_upload(

@@ -45,6 +45,7 @@ logger = logging.getLogger("marcedit_web.session")
 
 _PUBLIC_MAX_UPLOAD_BYTES = 5 * 1024 * 1024     # 5 MB anonymous cap
 _PRIVATE_MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB authenticated cap
+_JOB_FILE_QUERY_KEY = "job_file"
 
 
 def max_upload_bytes() -> int:
@@ -97,7 +98,16 @@ def init() -> None:
                 st.session_state[key] = default
     if not st.session_state.get("user"):
         st.session_state["user"] = current_user()
-    if not restore_job_file_context():
+    if st.session_state.get("job_file_id") is None:
+        query_file_id = _job_file_id_from_query()
+        if query_file_id is not None:
+            st.session_state["job_file_id"] = query_file_id
+    had_job_file_context = restore_job_file_context()
+    if had_job_file_context:
+        active_file_id = st.session_state.get("job_file_id")
+        if active_file_id is not None:
+            _set_job_file_query(int(active_file_id))
+    else:
         restore_active_upload()
     # Flush toasts queued by the PREVIOUS run's action handlers (TASK-136):
     # queue_toast + this flush is what lets feedback survive st.rerun()
@@ -358,6 +368,7 @@ def handle_upload(
         st.session_state["store"] = None
         st.session_state["job_file_id"] = None
         st.session_state["job_file_version_id"] = None
+        _set_job_file_query(None)
         st.session_state["issues_cache"] = {}
         st.session_state["editor_text"] = None
         st.session_state["editor_dirty"] = False
@@ -435,6 +446,7 @@ def handle_upload(
         else:
             st.session_state["job_file_id"] = None
             st.session_state["job_file_version_id"] = None
+            _set_job_file_query(None)
     st.session_state["store"] = store
     _clear_mutation_previews(st.session_state)
     st.session_state["upload_bytes_total"] = new_total
@@ -476,6 +488,35 @@ def _set_job_file_context(
     st.session_state["job_file_version_id"] = (
         row["current_version_id"] if version_id is None else version_id
     )
+    _set_job_file_query(int(row["id"]))
+
+
+def _job_file_id_from_query() -> int | None:
+    import streamlit as st
+
+    try:
+        raw = st.query_params.get(_JOB_FILE_QUERY_KEY)
+    except Exception:
+        return None
+    if isinstance(raw, list):
+        raw = raw[0] if raw else None
+    try:
+        file_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return file_id if file_id > 0 else None
+
+
+def _set_job_file_query(file_id: int | None) -> None:
+    import streamlit as st
+
+    try:
+        if file_id is None:
+            st.query_params.pop(_JOB_FILE_QUERY_KEY, None)
+        else:
+            st.query_params[_JOB_FILE_QUERY_KEY] = str(file_id)
+    except Exception:
+        return
 
 
 def open_job_file(file_id: int) -> dict[str, Any]:
@@ -725,6 +766,7 @@ def detach_loaded_batch(file_path) -> None:
     st.session_state["store"] = None
     st.session_state["job_file_id"] = None
     st.session_state["job_file_version_id"] = None
+    _set_job_file_query(None)
     _clear_mutation_previews(st.session_state)
     st.session_state["issues_cache"] = {}
     st.session_state["editor_text"] = None

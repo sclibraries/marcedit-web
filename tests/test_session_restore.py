@@ -26,6 +26,7 @@ class _FakeSt:
 
     def __init__(self):
         self.session_state: dict = {}
+        self.query_params: dict[str, str] = {}
         self.toasts: list[tuple[str, str | None]] = []
         self.runtime = types.SimpleNamespace(
             scriptrunner=types.SimpleNamespace(
@@ -531,6 +532,7 @@ def test_signed_in_quick_load_is_refreshable_but_unassigned(
         "job_file_id": 99,
         "job_file_version_id": 100,
     })
+    st.query_params["job_file"] = "99"
 
     session.handle_upload(_FakeUpload("quick.mrc", _serialize([record])))
 
@@ -538,6 +540,7 @@ def test_signed_in_quick_load_is_refreshable_but_unassigned(
     assert upload["job_id"] is None
     assert st.session_state["job_file_id"] is None
     assert st.session_state["job_file_version_id"] is None
+    assert "job_file" not in st.query_params
     assert st.session_state["store"].filename == "quick.mrc"
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM job_files").fetchone()[0] == 0
