@@ -24,3 +24,16 @@ Design: [Job File Work Items](../docs/superpowers/specs/2026-07-14-job-file-work
 Plan: [Implementation Plan](../docs/superpowers/plans/2026-07-14-job-file-work-items.md)
 
 Status: In-Progress
+
+Task 9 automated verification:
+- Conservative v11-to-v12 upload migration and Routledge two-file acceptance:
+  passing.
+- Focused job-file migration/workflow/render suite: 100 passed, zero skipped.
+- Complete Docker pytest suite: 1,211 passed, zero skipped.
+- Render mutation source gate: no matches.
+
+Remaining completion gates:
+- Controller whole-branch code review with no unresolved Critical or Important
+  findings.
+- Signed-in interactive Routledge two-file workflow verification, including
+  refresh handoffs and visibly blocked stale/non-holder mutations.

@@ -455,3 +455,136 @@ def test_export_commit_persisted_then_raised_retains_row_and_bytes(
     assert Path(exports[0]["file_path"]).read_bytes() == Path(
         source["file_path"]
     ).read_bytes()
+
+
+def test_routledge_job_handles_deletion_and_fresh_files_independently(tmp_path):
+    """The cataloger handoff keeps two Routledge deliverables fully separate."""
+    source = Path("tests/fixtures/sample.mrc")
+    job = jobs.create_job(OWNER, "Routledge load")
+    jobs.grant_access(job["id"], EDITOR, "editor", by=OWNER)
+
+    deletion = job_files.attach_file(
+        job_id=job["id"],
+        user_email=OWNER,
+        source_path=source,
+        filename="current-routledge.mrc",
+        record_count=7,
+        file_bytes=source.stat().st_size,
+    )
+    assert collaboration.acquire_file_checkout(deletion["id"], OWNER).acquired
+    deletion_candidate = tmp_path / "deletion-candidate.mrc"
+    shutil.copyfile(source, deletion_candidate)
+    deletion_version = job_files.adopt_candidate(
+        file_id=deletion["id"],
+        opened_version_id=deletion["current_version_id"],
+        user_email=OWNER,
+        candidate_path=deletion_candidate,
+        source_kind="quick-batch",
+        label="Set leader record status to deleted",
+    )
+    job_files.return_for_review(
+        deletion["id"],
+        OWNER,
+        opened_version_id=deletion_version["id"],
+    )
+    assert collaboration.acquire_file_checkout(deletion["id"], EDITOR).acquired
+    job_files.approve_current(
+        deletion["id"],
+        EDITOR,
+        opened_version_id=deletion_version["id"],
+    )
+    deletion_note = jobs.add_review_note(
+        job["id"],
+        anchor_kind="job_file",
+        note="Deletion file approved for EDS.",
+        author=EDITOR,
+        job_file_id=deletion["id"],
+        job_file_version_id=deletion_version["id"],
+    )
+    deletion_export = job_files.create_export(
+        file_id=deletion["id"],
+        opened_version_id=deletion_version["id"],
+        user_email=EDITOR,
+        purpose="EDS deletion load",
+    )
+    loaded_deletion = job_files.mark_export_loaded(
+        deletion_export["id"],
+        by=OWNER,
+        destination="EDS",
+    )
+
+    fresh = job_files.attach_file(
+        job_id=job["id"],
+        user_email=OWNER,
+        source_path=source,
+        filename="fresh-routledge.mrc",
+        record_count=7,
+        file_bytes=source.stat().st_size,
+    )
+    assert collaboration.acquire_file_checkout(fresh["id"], OWNER).acquired
+    fresh_candidate = tmp_path / "fresh-candidate.mrc"
+    shutil.copyfile(source, fresh_candidate)
+    fresh_version = job_files.adopt_candidate(
+        file_id=fresh["id"],
+        opened_version_id=fresh["current_version_id"],
+        user_email=OWNER,
+        candidate_path=fresh_candidate,
+        source_kind="task",
+        label="Routledge normalization",
+    )
+    job_files.return_for_review(
+        fresh["id"],
+        OWNER,
+        opened_version_id=fresh_version["id"],
+    )
+    assert collaboration.acquire_file_checkout(fresh["id"], OWNER).acquired
+    job_files.approve_current(
+        fresh["id"],
+        OWNER,
+        opened_version_id=fresh_version["id"],
+    )
+    fresh_note = jobs.add_review_note(
+        job["id"],
+        anchor_kind="job_file",
+        note="Replacement file normalized and self-approved.",
+        author=OWNER,
+        job_file_id=fresh["id"],
+        job_file_version_id=fresh_version["id"],
+    )
+    replacement_export = job_files.create_export(
+        file_id=fresh["id"],
+        opened_version_id=fresh_version["id"],
+        user_email=OWNER,
+        purpose="EDS replacement load",
+    )
+
+    assert deletion["id"] != fresh["id"]
+    assert job_files.get_file(deletion["id"], OWNER)["status"] == "exported"
+    assert job_files.get_file(fresh["id"], OWNER)["status"] == "exported"
+    assert loaded_deletion["state"] == "loaded"
+    assert replacement_export["state"] == "ready"
+    assert deletion_export["version_id"] != replacement_export["version_id"]
+    assert [row["version_number"] for row in job_files.list_versions(
+        deletion["id"], OWNER
+    )] == [1, 2]
+    assert [row["version_number"] for row in job_files.list_versions(
+        fresh["id"], OWNER
+    )] == [1, 2]
+    assert job_files.get_version(deletion_version["id"], OWNER)[
+        "approval_kind"
+    ] == "peer-approved"
+    assert job_files.get_version(fresh_version["id"], OWNER)[
+        "approval_kind"
+    ] == "self-approved"
+    assert [row["id"] for row in jobs.list_review_notes(
+        job["id"], user_email=OWNER, job_file_id=deletion["id"]
+    )] == [deletion_note["id"]]
+    assert [row["id"] for row in jobs.list_review_notes(
+        job["id"], user_email=OWNER, job_file_id=fresh["id"]
+    )] == [fresh_note["id"]]
+    activity_file_ids = {
+        row["job_file_id"]
+        for row in jobs.list_activity(job["id"], user_email=OWNER)
+        if row["job_file_id"] is not None
+    }
+    assert {deletion["id"], fresh["id"]}.issubset(activity_file_ids)

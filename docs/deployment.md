@@ -26,11 +26,13 @@ That's the entire operator contract.
 /var/www/html/marcedit-web/      # the repo
 ├── .venv/                       # python3.9 venv, owned by marcedit
 ├── marcedit_web/                # app code
-├── data/                        # SQLite, audit, uploads (marcedit-owned)
+├── data/                        # SQLite and durable artifacts (marcedit-owned)
 │   ├── marcedit.db              # SQLite (WAL mode)
 │   ├── marcedit.db-wal
 │   ├── marcedit.db-shm
 │   ├── audit/audit-YYYY-MM-DD.log
+│   ├── job-files/<file-id>/versions/vNNNNNN.mrc
+│   ├── job-files/<file-id>/exports/*.mrc
 │   ├── tasks/
 │   └── uploads/<user>/jobs/<job-id>/<upload-id>/upload.mrc
 ├── .streamlit/secrets.toml      # gitignored (Google OAuth)
@@ -57,6 +59,7 @@ The most operationally important ones:
 | `MARCEDIT_WEB_PROXY_SECRET` | Shared secret Apache injects to prove a request came through the proxy. Without it, header identity is refused (fail-closed). Must match `/etc/httpd/marcedit-web-attestation.conf`. |
 | `MARCEDIT_WEB_AUDIT_DIR` | Audit JSONL location. |
 | `MARCEDIT_WEB_DB_PATH` | SQLite path. |
+| `MARCEDIT_WEB_JOB_FILES_ROOT` | Immutable job-file versions and retained exports; defaults to `data/job-files`. |
 | `MARCEDIT_WEB_TASKS_ROOT` | Where per-user task .py files materialize. |
 | `MARCEDIT_WEB_UPLOADS_ROOT` | Where signed-in users' uploads persist. |
 
@@ -159,6 +162,11 @@ layer:
   overwrite the venv or app code.
 
 ### Large-batch memory guardrails (TASK-147)
+
+Job-file originals, versions, exports, and large-batch candidates remain
+disk-backed rather than being retained as whole in-memory batches. Concurrent
+operations still consume CPU, temporary disk capacity, and worker time, so the
+admission limit and host free-space monitoring remain operational constraints.
 
 The private unit starts cgroup reclaim at `MemoryHigh=1536M` and retains the
 hard `MemoryMax=2G` ceiling. The application admits two saved-task or quick
@@ -313,12 +321,22 @@ the database boundary. The advisory lock table is a foundation for future
 shared-job and record checkout flows; it is not a user-facing collaboration UI
 by itself.
 
-Scriptable backup:
+The SQLite database and `MARCEDIT_WEB_JOB_FILES_ROOT` form one recovery unit:
+version and export rows are not usable without their immutable MARC files.
+Back them up and restore them together from the same maintenance window. The
+current scriptable command captures SQLite and audit data; production backup
+automation must also copy the job-files root into the same dated backup.
+
+Scriptable backup during a maintenance window:
 
 ```bash
+sudo systemctl stop marcedit-web
 cd /var/www/html/marcedit-web
+BACKUP_DIR=/var/backups/marcedit-web/$(date -u +%F)
 /var/www/html/marcedit-web/.venv/bin/python \
-    -m marcedit_web.ops.backup create /var/backups/marcedit-web/$(date -u +%F)
+    -m marcedit_web.ops.backup create "$BACKUP_DIR"
+cp -a data/job-files "$BACKUP_DIR/job-files"
+sudo systemctl start marcedit-web
 ```
 
 The backup command uses `sqlite3.Connection.backup`, so committed WAL content
@@ -330,11 +348,15 @@ sudo systemctl stop marcedit-web
 cd /var/www/html/marcedit-web
 /var/www/html/marcedit-web/.venv/bin/python \
     -m marcedit_web.ops.backup restore /var/backups/marcedit-web/YYYY-MM-DD
+rm -rf data/job-files
+cp -a /var/backups/marcedit-web/YYYY-MM-DD/job-files data/job-files
 sudo systemctl start marcedit-web
 ```
 
 Cold-copy fallback: stop the service, copy `marcedit.db`, `marcedit.db-wal`,
-`marcedit.db-shm`, and `data/audit/`, then restart.
+`marcedit.db-shm`, `data/audit/`, and the complete job-files root as one set,
+then restart. Never restore the database and job-files root from different
+backup generations.
 
 Schema version tracked in the `_schema_version` table. v1 added
 `audit_events` (TASK-049); v2 added `tasks` (TASK-050); v3 added
@@ -343,11 +365,11 @@ v5 added `advisory_locks` (TASK-083); v6 added `jobs`, `job_access`, and
 `uploads.job_id` (TASK-081); v7 added `job_snapshots` (TASK-082); v8 added
 `job_versions` (TASK-094). Migrations run on first request and are idempotent.
 
-The job model is forward-compatible with collaboration work in TASK-086:
-`jobs.owner_email` identifies the owner, and `job_access` grants `owner`,
-`editor`, or `viewer` access. Owners can grant/revoke editor/viewer access from
-the private Home page. Record checkout, presence, and batch-operation locking
-are staged in the remaining TASK-086 child tickets.
+The job workflow supports shared asynchronous handoffs: owners and editors can
+invite collaborators, check out a file, return an immutable version for review,
+approve it, and resume from authoritative state after refresh. Checkout and
+stale-version checks serialize mutations; this is not simultaneous Google
+Docs-style editing of the same file.
 
 ## Smoke tests after deploy
 

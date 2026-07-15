@@ -434,6 +434,10 @@ def _migrate_to_v12(conn: sqlite3.Connection) -> None:
     if "job_file_id" not in activity_cols:
         conn.execute("ALTER TABLE job_activity ADD COLUMN job_file_id INTEGER")
 
+    from . import job_files
+
+    job_files._migrate_uploads_to_job_files(conn)  # noqa: SLF001
+
 
 def _seed_folio_profiles(conn: sqlite3.Connection) -> None:
     """Seed default FOLIO profiles and rules without overwriting local edits."""

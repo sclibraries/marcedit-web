@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
 import re
 import shutil
@@ -15,12 +16,91 @@ from . import db, jobs
 from .record_store import RecordStore
 
 
+logger = logging.getLogger("marcedit_web.job_files")
+
+
 class JobFileError(ValueError):
     """Raised when a job-file operation is invalid."""
 
 
 def versions_root() -> Path:
     return Path(os.environ.get("MARCEDIT_WEB_JOB_FILES_ROOT", "data/job-files"))
+
+
+def _migrate_uploads_to_job_files(conn) -> None:
+    """Copy eligible legacy uploads into immutable first versions once."""
+    uploads = conn.execute(
+        "SELECT uploads.id,uploads.job_id,uploads.filename,uploads.file_path,"
+        "uploads.record_count,uploads.file_bytes,uploads.user_email,"
+        "uploads.uploaded_at FROM uploads"
+        " LEFT JOIN job_files ON job_files.original_upload_id=uploads.id"
+        " WHERE uploads.removed_at IS NULL AND uploads.job_id IS NOT NULL"
+        " AND job_files.id IS NULL ORDER BY uploads.id"
+    ).fetchall()
+    for upload in uploads:
+        source = Path(upload["file_path"])
+        candidate = versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
+        target: Path | None = None
+        conn.execute("SAVEPOINT migrate_legacy_upload")
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, candidate)
+            created = conn.execute(
+                "INSERT OR IGNORE INTO job_files(job_id,original_upload_id,"
+                "display_name,created_by,created_at,updated_by,updated_at)"
+                " VALUES(?,?,?,?,?,?,?) RETURNING id",
+                (
+                    upload["job_id"],
+                    upload["id"],
+                    upload["filename"],
+                    upload["user_email"],
+                    upload["uploaded_at"],
+                    upload["user_email"],
+                    upload["uploaded_at"],
+                ),
+            ).fetchone()
+            if created is None:
+                candidate.unlink(missing_ok=True)
+                conn.execute("RELEASE SAVEPOINT migrate_legacy_upload")
+                continue
+            file_id = int(created["id"])
+            target = _version_path(file_id, 1)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(candidate, target)
+            version_id = int(
+                conn.execute(
+                    "INSERT INTO job_file_versions(job_file_id,version_number,"
+                    "file_path,record_count,file_bytes,source_kind,label,created_by,"
+                    "created_at) VALUES(?,1,?,?,?,?,?,?,?) RETURNING id",
+                    (
+                        file_id,
+                        str(target),
+                        upload["record_count"],
+                        upload["file_bytes"],
+                        "legacy-upload",
+                        upload["filename"],
+                        upload["user_email"],
+                        upload["uploaded_at"],
+                    ),
+                ).fetchone()["id"]
+            )
+            conn.execute(
+                "UPDATE job_files SET current_version_id=? WHERE id=?",
+                (version_id, file_id),
+            )
+            conn.execute("RELEASE SAVEPOINT migrate_legacy_upload")
+        except Exception as exc:  # noqa: BLE001 - isolate each legacy artifact
+            conn.execute("ROLLBACK TO SAVEPOINT migrate_legacy_upload")
+            conn.execute("RELEASE SAVEPOINT migrate_legacy_upload")
+            candidate.unlink(missing_ok=True)
+            if target is not None:
+                target.unlink(missing_ok=True)
+            logger.warning(
+                "migration: skipping upload %s at %s: %s",
+                upload["id"],
+                source,
+                exc,
+            )
 
 
 def attach_file(
