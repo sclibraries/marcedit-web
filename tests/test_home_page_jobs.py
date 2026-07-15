@@ -490,6 +490,9 @@ def test_job_workspace_archives_selected_file_from_home(monkeypatch, tmp_path):
             "quick_load_mode": False,
             "current_job_id": shared["id"],
             "home_start_path": "Job Workspace",
+            "job_file_opened_versions": {
+                str(work_file["id"]): work_file["current_version_id"]
+            },
         }
     )
     fake_st = _FakeStreamlit(

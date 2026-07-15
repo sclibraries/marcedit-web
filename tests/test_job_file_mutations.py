@@ -98,6 +98,14 @@ def test_adopt_candidate_creates_version_and_swaps_current(
     )["id"] == created["id"]
     assert Path(before["file_path"]).exists()
     assert not candidate.exists()
+    activity = jobs.list_activity(
+        checked_out_file["job_id"], user_email=OWNER
+    )
+    assert activity[-1]["job_file_id"] == checked_out_file["id"]
+    assert activity[-1]["kind"] == "job-file-version-adopted"
+    assert "v2" in activity[-1]["message"]
+    assert "quick-batch" in activity[-1]["message"]
+    assert "Set leader status to deleted" in activity[-1]["message"]
 
 
 def test_restore_creates_child_from_selected_immutable_version(

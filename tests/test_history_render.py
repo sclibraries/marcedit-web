@@ -439,6 +439,7 @@ def test_job_file_history_is_scoped_and_legacy_history_is_separate(
             "resolved": 0,
         }],
     )
+    monkeypatch.setattr(history, "_can_restore_file", lambda *_args: True)
 
     history.render()
 
@@ -453,3 +454,94 @@ def test_job_file_history_is_scoped_and_legacy_history_is_separate(
     assert any(button["label"] == "Approve current" for button in fake_st.buttons)
     assert any(button["label"] == "Add review note" for button in fake_st.buttons)
     assert "1 recorded change" in rendered
+
+
+def test_historical_restore_control_requires_checkout_holder(monkeypatch, tmp_path):
+    """Read access alone never exposes the immutable restore mutation."""
+    fake_st = _FakeStreamlit()
+    history = _history(monkeypatch, fake_st)
+    path = tmp_path / "v1.mrc"
+    path.write_bytes(_record().as_marc())
+    version = {
+        "id": 11,
+        "version_number": 1,
+        "parent_version_id": None,
+        "file_path": str(path),
+        "source_kind": "original",
+        "label": "deletes.mrc",
+        "created_by": "owner@example.edu",
+        "created_at": "2026-07-10T10:00:00Z",
+        "approval_kind": None,
+        "summary_json": "{}",
+        "validation_json": "{}",
+    }
+
+    history._render_file_version_entry(
+        version,
+        {11: version},
+        [],
+        is_current=False,
+        can_restore=False,
+    )
+
+    assert "Restore as new version" not in [row["label"] for row in fake_st.buttons]
+
+
+def test_checkout_holder_sees_historical_restore_control(monkeypatch, tmp_path):
+    """An editor holding the file checkout may restore with the opened token."""
+    fake_st = _FakeStreamlit()
+    history = _history(monkeypatch, fake_st)
+    path = tmp_path / "v1.mrc"
+    path.write_bytes(_record().as_marc())
+    version = {
+        "id": 11,
+        "version_number": 1,
+        "parent_version_id": None,
+        "file_path": str(path),
+        "source_kind": "original",
+        "label": "deletes.mrc",
+        "created_by": "owner@example.edu",
+        "created_at": "2026-07-10T10:00:00Z",
+        "approval_kind": None,
+        "summary_json": "{}",
+        "validation_json": "{}",
+    }
+
+    history._render_file_version_entry(
+        version,
+        {11: version},
+        [],
+        is_current=False,
+        can_restore=True,
+    )
+
+    assert "Restore as new version" in [row["label"] for row in fake_st.buttons]
+
+
+def test_restore_permission_checks_role_holder_and_exact_opened_version(
+    monkeypatch,
+):
+    """Restore visibility derives from role, active holder, and opened version."""
+    fake_st = _FakeStreamlit()
+    history = _history(monkeypatch, fake_st)
+    from marcedit_web.render import job_files as job_files_render
+
+    fake_st.session_state["job_file_version_id"] = 12
+    file_row = {
+        "id": 9,
+        "current_version_id": 12,
+        "access_role": "editor",
+    }
+    monkeypatch.setattr(
+        job_files_render,
+        "_active_checkout",
+        lambda _file_id: {"holder_email": "editor@example.edu"},
+    )
+
+    assert history._can_restore_file(file_row, "editor@example.edu") is True
+    assert history._can_restore_file(file_row, "other@example.edu") is False
+    assert history._can_restore_file(
+        {**file_row, "access_role": "viewer"}, "editor@example.edu"
+    ) is False
+    fake_st.session_state["job_file_version_id"] = 11
+    assert history._can_restore_file(file_row, "editor@example.edu") is False

@@ -122,6 +122,7 @@ def _render_job_file_history(
         f"current version {current_label}"
     )
     _render_file_transition_controls(file_row, user)
+    can_restore = _can_restore_file(file_row, user)
 
     st.markdown("**Immutable version history**")
     versions_by_id = {int(row["id"]): row for row in versions}
@@ -138,6 +139,7 @@ def _render_job_file_history(
             versions_by_id,
             notes_by_version.get(int(version["id"]), []),
             is_current=int(version["id"]) == int(file_row["current_version_id"]),
+            can_restore=can_restore,
         )
     for note in notes_by_version.get(None, []):
         _render_review_note(note)
@@ -250,6 +252,7 @@ def _render_file_version_entry(
     notes: list[dict],
     *,
     is_current: bool,
+    can_restore: bool,
 ) -> None:
     current_label = " · current" if is_current else ""
     st.markdown(
@@ -285,7 +288,7 @@ def _render_file_version_entry(
                 before,
                 after,
             )
-    if not is_current and st.button(
+    if can_restore and not is_current and st.button(
         "Restore as new version",
         key=f"file_version_restore_{version['id']}",
     ):
@@ -298,6 +301,21 @@ def _render_file_version_entry(
     for note in notes:
         _render_review_note(note)
     st.divider()
+
+
+def _can_restore_file(file_row: dict, user: str) -> bool:
+    """Return whether the exact open version may be restored by this viewer."""
+    from marcedit_web.render import job_files as job_files_render
+
+    if file_row.get("access_role") not in {"owner", "editor"}:
+        return False
+    opened_version_id = st.session_state.get("job_file_version_id")
+    if opened_version_id is None or int(opened_version_id) != int(
+        file_row["current_version_id"]
+    ):
+        return False
+    checkout = job_files_render._active_checkout(int(file_row["id"]))
+    return checkout is not None and checkout["holder_email"] == user
 
 
 def _render_review_note(note: dict) -> None:

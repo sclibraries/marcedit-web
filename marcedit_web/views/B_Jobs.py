@@ -31,6 +31,14 @@ def _can_archive(job: dict[str, object]) -> bool:
     return str(job.get("name")) != jobs.DEFAULT_JOB_NAME
 
 
+def _activity_message(row: dict[str, object]) -> str:
+    message = str(row["message"])
+    file_name = str(row.get("job_file_display_name") or "")
+    if not file_name or file_name in message:
+        return message
+    return f"[{file_name}] {message}"
+
+
 def _render_list(user: str) -> None:
     st.title("Jobs")
     st.caption("Shared cataloging workspaces for vendor loads, review, and handoff.")
@@ -211,14 +219,9 @@ def _render_detail(user: str, job_id: int) -> None:
     activity = jobs.list_activity(job_id, user_email=user)
     if activity:
         for row in reversed(activity[-20:]):
-            file_label = (
-                f"[{row['job_file_display_name']}] "
-                if row.get("job_file_display_name")
-                else ""
-            )
             st.write(
                 f"{row['created_at']} — {row['actor_email']}: "
-                f"{file_label}{row['message']}"
+                + _activity_message(row)
             )
     else:
         st.caption("No activity recorded yet.")

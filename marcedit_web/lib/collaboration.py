@@ -78,6 +78,10 @@ def return_file_for_review(
             user_email,
             opened_version_id,
         )
+        if file_row["status"] != "in_progress":
+            raise CollaborationError(
+                "only an in-progress file can be returned for review"
+            )
         _set_file_status_in_tx(
             conn,
             file_row,

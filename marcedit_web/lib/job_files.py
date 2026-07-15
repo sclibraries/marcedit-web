@@ -364,7 +364,8 @@ def adopt_candidate(
             conn.execute("BEGIN IMMEDIATE")
             try:
                 access = conn.execute(
-                    "SELECT job_access.role,job_files.archived_at FROM job_files"
+                    "SELECT job_access.role,job_files.archived_at,"
+                    "job_files.job_id,job_files.display_name FROM job_files"
                     " LEFT JOIN job_access ON job_access.job_id=job_files.job_id"
                     " AND job_access.user_email=? WHERE job_files.id=?",
                     (user_email.strip().lower(), file_id),
@@ -423,6 +424,16 @@ def adopt_candidate(
                     file_id,
                     version_id,
                     now,
+                )
+                jobs._record_activity(  # noqa: SLF001 - shared transaction helper
+                    conn,
+                    int(access["job_id"]),
+                    "job-file-version-adopted",
+                    f"Adopted {access['display_name']} v{next_number} via "
+                    f"{source_kind}: {label or '(no label)'}",
+                    user_email,
+                    now,
+                    job_file_id=file_id,
                 )
             except Exception:
                 if renamed and target is not None and target.exists():

@@ -16,6 +16,7 @@ UPLOADS_HEADERS = (
 )
 
 _EDIT_ROLES = {"owner", "editor"}
+_OPENED_VERSIONS_KEY = "job_file_opened_versions"
 
 
 def _checkout_actions(
@@ -119,6 +120,7 @@ def render_job_files_table(
                 except job_files.JobFileError as exc:
                     st.error(str(exc))
                 else:
+                    _remember_opened_version(st, row, summary)
                     total = int(summary.get("total", 0))
                     session.queue_toast(
                         f"Opened {row['display_name']} — {total:,} "
@@ -132,12 +134,18 @@ def render_job_files_table(
                 use_container_width=True,
             ):
                 try:
-                    session.open_job_file(int(row["id"]))
+                    summary = session.open_job_file(int(row["id"]))
                 except job_files.JobFileError as exc:
                     st.error(str(exc))
                 else:
+                    _remember_opened_version(st, row, summary)
                     st.switch_page("views/C_History.py")
             actions = _checkout_actions(role, holder_email, user)
+            opened_version_id = _opened_version_id(st, int(row["id"]))
+            if opened_version_id is None:
+                actions = tuple(
+                    action for action in actions if action != "Return for review"
+                )
             if role not in _EDIT_ROLES:
                 continue
             with cols[8].popover("⋮"):
@@ -159,6 +167,7 @@ def render_job_files_table(
                     use_container_width=True,
                 ):
                     collaboration.release_file_checkout(int(row["id"]), user)
+                    _forget_opened_version(st, int(row["id"]))
                     st.rerun()
                 if "Return for review" in actions and st.button(
                     "Return for review",
@@ -169,15 +178,16 @@ def render_job_files_table(
                         job_files.return_for_review(
                             int(row["id"]),
                             by=user,
-                            opened_version_id=int(row["current_version_id"]),
+                            opened_version_id=int(opened_version_id),
                         )
                     except job_files.JobFileError as exc:
                         st.error(str(exc))
                     else:
+                        _forget_opened_version(st, int(row["id"]))
                         st.rerun()
                 if "Force release" in actions:
                     _render_force_release(st, row, user, key_prefix)
-                if holder_email == user:
+                if holder_email == user and opened_version_id is not None:
                     if st.button(
                         "Remove from job",
                         key=f"{key_prefix}_remove_{row['id']}",
@@ -187,11 +197,12 @@ def render_job_files_table(
                             job_files.archive_file(
                                 int(row["id"]),
                                 by=user,
-                                opened_version_id=int(row["current_version_id"]),
+                                opened_version_id=int(opened_version_id),
                             )
                         except job_files.JobFileError as exc:
                             st.error(str(exc))
                         else:
+                            _forget_opened_version(st, int(row["id"]))
                             session.queue_toast(
                                 f"Archived {row['display_name']}.",
                                 icon="🗂️",
@@ -213,7 +224,36 @@ def _acquire_checkout(st, row: dict, user: str) -> None:
             f"Checked out by {decision.holder_email} until {decision.expires_at}."
         )
         return
+    try:
+        version = job_files.get_current_version(int(row["id"]), user)
+    except job_files.JobFileError as exc:
+        st.error(str(exc))
+        return
+    _set_opened_version(st, int(row["id"]), int(version["id"]))
     st.rerun()
+
+
+def _remember_opened_version(st, row: dict, summary: dict) -> None:
+    version_id = summary.get("job_file_version_id")
+    if version_id is not None:
+        _set_opened_version(st, int(row["id"]), int(version_id))
+
+
+def _set_opened_version(st, file_id: int, version_id: int) -> None:
+    versions = dict(st.session_state.get(_OPENED_VERSIONS_KEY, {}))
+    versions[str(file_id)] = version_id
+    st.session_state[_OPENED_VERSIONS_KEY] = versions
+
+
+def _opened_version_id(st, file_id: int) -> int | None:
+    value = st.session_state.get(_OPENED_VERSIONS_KEY, {}).get(str(file_id))
+    return int(value) if value is not None else None
+
+
+def _forget_opened_version(st, file_id: int) -> None:
+    versions = dict(st.session_state.get(_OPENED_VERSIONS_KEY, {}))
+    versions.pop(str(file_id), None)
+    st.session_state[_OPENED_VERSIONS_KEY] = versions
 
 
 def _render_force_release(st, row: dict, user: str, key_prefix: str) -> None:

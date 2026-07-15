@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -191,6 +192,23 @@ def test_status_label_is_cataloger_readable(monkeypatch):
 
     assert page._status_label("needs_review") == "Needs review"
     assert page._status_label("ready_to_load") == "Ready to load"
+
+
+def test_activity_message_adds_file_identity_without_duplicate_name(monkeypatch):
+    page = _load_jobs_page(monkeypatch)
+
+    assert page._activity_message(
+        {
+            "job_file_display_name": "deletes.mrc",
+            "message": "Force-released checkout",
+        }
+    ) == "[deletes.mrc] Force-released checkout"
+    assert page._activity_message(
+        {
+            "job_file_display_name": "deletes.mrc",
+            "message": "Adopted deletes.mrc v2 via quick-batch",
+        }
+    ) == "Adopted deletes.mrc v2 via quick-batch"
 
 
 def test_format_size_uses_human_units(monkeypatch):
@@ -398,6 +416,7 @@ def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
         lambda file_id: loaded.append(file_id) or {
             "filename": "batch.mrc",
             "total": 42,
+            "job_file_version_id": 123,
         },
     )
     monkeypatch.setattr(page.jobs, "get_access_role", lambda job_id, user_email: "editor")
@@ -426,11 +445,40 @@ def test_render_detail_load_button_loads_upload_and_opens_view(monkeypatch):
     assert fake_st.session_state["pending_toasts"] == [
         ("Opened batch.mrc — 42 records", "📂")
     ]
+    assert fake_st.session_state["job_file_opened_versions"] == {"99": 123}
+
+
+def test_successful_checkout_captures_exact_current_version(monkeypatch):
+    """Checkout captures a token once; later row refreshes cannot replace it."""
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+    monkeypatch.setattr(
+        page.job_files.collaboration,
+        "acquire_file_checkout",
+        lambda *_args: SimpleNamespace(acquired=True),
+    )
+    monkeypatch.setattr(
+        page.work_files,
+        "get_current_version",
+        lambda *_args: {"id": 122},
+    )
+
+    page.job_files._acquire_checkout(
+        fake_st,
+        _job_file_row(),
+        "alice@example.edu",
+    )
+
+    assert fake_st.session_state["job_file_opened_versions"] == {"99": 122}
+    assert fake_st.rerun_called is True
 
 
 def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
     page = _load_jobs_page(monkeypatch)
-    fake_st = _FakeStreamlit(clicked_keys={"job_upload_remove_99"})
+    fake_st = _FakeStreamlit(
+        session_state={"job_file_opened_versions": {"99": 123}},
+        clicked_keys={"job_upload_remove_99"},
+    )
     removed: list[tuple[int, str, int]] = []
 
     monkeypatch.setattr(page, "st", fake_st)
@@ -481,7 +529,10 @@ def test_render_detail_remove_button_soft_removes_upload(monkeypatch):
 
 def test_render_detail_return_for_review_passes_opened_version(monkeypatch):
     page = _load_jobs_page(monkeypatch)
-    fake_st = _FakeStreamlit(clicked_keys={"job_upload_review_99"})
+    fake_st = _FakeStreamlit(
+        session_state={"job_file_opened_versions": {"99": 122}},
+        clicked_keys={"job_upload_review_99"},
+    )
     returned: list[tuple[int, str, int]] = []
 
     monkeypatch.setattr(page, "st", fake_st)
@@ -529,8 +580,46 @@ def test_render_detail_return_for_review_passes_opened_version(monkeypatch):
 
     page._render_detail("alice@example.edu", 17)
 
-    assert returned == [(99, "alice@example.edu", 123)]
+    assert returned == [(99, "alice@example.edu", 122)]
     assert fake_st.rerun_called is True
+
+
+def test_return_for_review_is_hidden_without_captured_opened_version(monkeypatch):
+    """A refreshed row is not an opened-version token for a substantive handoff."""
+    page = _load_jobs_page(monkeypatch)
+    fake_st = _FakeStreamlit()
+    monkeypatch.setattr(page, "st", fake_st)
+    monkeypatch.setitem(sys.modules, "streamlit", fake_st)
+    monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "editor")
+    monkeypatch.setattr(
+        page.job_files,
+        "_active_checkout",
+        lambda file_id: {
+            "holder_email": "alice@example.edu",
+            "expires_at": "2099-01-01T00:00:00Z",
+        },
+    )
+    monkeypatch.setattr(
+        page.jobs,
+        "get_job",
+        lambda job_id: {
+            "id": job_id,
+            "name": "Vendor load",
+            "status": "active",
+            "owner_email": "owner@example.edu",
+            "active": 1,
+        },
+    )
+    monkeypatch.setattr(
+        page.work_files, "list_files", lambda *_args: [_job_file_row()]
+    )
+    monkeypatch.setattr(page.jobs, "list_access", lambda _job_id: [])
+    monkeypatch.setattr(page.jobs, "list_review_notes", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(page.jobs, "list_activity", lambda *_args, **_kwargs: [])
+
+    page._render_detail("alice@example.edu", 17)
+
+    assert "Return for review" not in [label for label, _ in fake_st.button_calls]
 
 
 def test_history_and_review_opens_exact_job_file(monkeypatch):
@@ -543,7 +632,10 @@ def test_history_and_review_opens_exact_job_file(monkeypatch):
     monkeypatch.setattr(
         page.session,
         "open_job_file",
-        lambda file_id: opened.append(file_id) or {"total": 42},
+        lambda file_id: opened.append(file_id) or {
+            "total": 42,
+            "job_file_version_id": 123,
+        },
     )
     monkeypatch.setattr(page.jobs, "get_access_role", lambda *_args: "viewer")
     monkeypatch.setattr(
@@ -568,6 +660,7 @@ def test_history_and_review_opens_exact_job_file(monkeypatch):
 
     assert opened == [99]
     assert fake_st.session_state["switched_to"] == "views/C_History.py"
+    assert fake_st.session_state["job_file_opened_versions"] == {"99": 123}
 
 
 def test_render_detail_admin_archives_without_clearing_unrelated_session_work(
@@ -577,7 +670,11 @@ def test_render_detail_admin_archives_without_clearing_unrelated_session_work(
     page = _load_jobs_page(monkeypatch)
     quick_load_store = object()
     fake_st = _FakeStreamlit(
-        session_state={"role": "admin", "store": quick_load_store},
+        session_state={
+            "role": "admin",
+            "store": quick_load_store,
+            "job_file_opened_versions": {"99": 123},
+        },
         clicked_keys={"job_upload_remove_99"},
     )
     archived: list[tuple[int, str, int]] = []

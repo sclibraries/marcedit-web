@@ -378,6 +378,39 @@ def test_approval_cannot_overwrite_existing_immutable_approval(tmp_path):
     assert unchanged["approved_by"] == "owner@example.edu"
 
 
+def test_approved_file_cannot_be_returned_for_review(tmp_path):
+    """Return is only the in-progress handoff and cannot erase approval state."""
+    job = jobs.create_job("owner@example.edu", "Routledge")
+    attached = attach_fixture(job["id"], tmp_path, "deletes.mrc", b"one")
+    collaboration.acquire_file_checkout(attached["id"], "owner@example.edu")
+    approved = job_files.approve_current(
+        attached["id"],
+        by="owner@example.edu",
+        opened_version_id=attached["current_version_id"],
+    )
+    before_activity = len(
+        jobs.list_activity(job["id"], user_email="owner@example.edu")
+    )
+
+    with pytest.raises(job_files.JobFileError, match="in-progress"):
+        job_files.return_for_review(
+            attached["id"],
+            by="owner@example.edu",
+            opened_version_id=approved["current_version_id"],
+        )
+
+    unchanged = job_files.get_file(attached["id"], "owner@example.edu")
+    version = job_files.get_current_version(attached["id"], "owner@example.edu")
+    assert unchanged["status"] == "approved"
+    assert version["approval_kind"] == "self-approved"
+    assert len(
+        jobs.list_activity(job["id"], user_email="owner@example.edu")
+    ) == before_activity
+    assert collaboration.release_file_checkout(
+        attached["id"], "owner@example.edu"
+    ) is True
+
+
 def test_request_changes_scopes_required_note_and_releases_checkout(tmp_path):
     """Change requests stay with the reviewed file/version and end review lease."""
     job = jobs.create_job("owner@example.edu", "Routledge")
