@@ -49,10 +49,11 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 logger = logging.getLogger("marcedit_web.sandbox")
 
@@ -65,6 +66,7 @@ _AS_BYTES = 512 * 1024 * 1024     # 512 MB virtual memory
 _FSIZE_BYTES = 1024 * 1024 * 1024  # 1 GB single-file write cap
 _NPROC = 32                        # subprocess can't fork-bomb
 MAX_RETAINED_ERRORS = 200
+_TERMINATION_GRACE_SECONDS = 2
 
 
 @dataclass
@@ -86,7 +88,8 @@ class SandboxResult:
     ``error_count`` is exact while ``errors`` retains only the first capped
     diagnostics. ``stderr`` is the raw child stderr — surfaced for debugging
     when the run failed outside the per-record loop (import error, segfault,
-    etc). ``timed_out`` is True when a processing-time cap fired.
+    etc). ``timed_out`` is True when a processing-time cap fired;
+    ``cancelled`` is independently True for a user-requested stop.
     """
 
     output_path: Path
@@ -95,6 +98,7 @@ class SandboxResult:
     stderr: str = ""
     returncode: int = 0
     timed_out: bool = False
+    cancelled: bool = False
 
 
 # Inlined driver script — passed via -c to the child. Kept here so the
@@ -115,9 +119,19 @@ def _parse_args():
     ap.add_argument("--tasks", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--errors", required=True)
+    ap.add_argument("--progress")
     ap.add_argument("--max-errors", required=True, type=int)
     ap.add_argument("--cpu-seconds", required=True, type=int)
     return ap.parse_args()
+
+
+def _write_progress(path, processed_records):
+    if not path:
+        return
+    temporary = path + ".tmp"
+    with open(temporary, "w") as progress_file:
+        json.dump({"processed_records": processed_records}, progress_file)
+    os.replace(temporary, path)
 
 
 # Defensive re-set of rlimits inside the child. The parent's preexec_fn
@@ -165,6 +179,7 @@ def main():
                             "task": None,
                             "message": "pymarc skipped a malformed record",
                         })
+                    _write_progress(args.progress, idx)
                     continue
                 failed_task = None
                 try:
@@ -209,6 +224,7 @@ def main():
                     # Keep original record so the output batch stays the
                     # same cardinality as the input.
                     writer.write(record)
+                _write_progress(args.progress, idx)
 
     with open(args.errors, "w") as f:
         json.dump({"error_count": error_count, "errors": errors}, f)
@@ -242,6 +258,10 @@ def run_tasks_subprocess(
     input_path: Optional[Path] = None,
     timeout: float = DEFAULT_PROCESSING_LIMIT_SECONDS,
     tmp_dir: Optional[Path] = None,
+    progress_path: Optional[Path] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
+    cancel_requested: Optional[Callable[[], bool]] = None,
+    poll_interval: float = 0.25,
 ) -> SandboxResult:
     """Apply ``tasks`` (in order) to every record in the input.
 
@@ -263,6 +283,8 @@ def run_tasks_subprocess(
     temp files, can't spawn python at all).
     """
     cpu_seconds = _cpu_limit_seconds(timeout)
+    if poll_interval <= 0:
+        raise ValueError("poll_interval must be greater than zero")
     if (record_bytes is None) == (input_path is None):
         raise ValueError(
             "exactly one of record_bytes or input_path is required"
@@ -291,7 +313,14 @@ def run_tasks_subprocess(
     tasks_path = workdir / "tasks.json"
     output_path = workdir / "output.mrc"
     errors_path = workdir / "errors.json"
+    stderr_path = workdir / "stderr.log"
+    for result_path in (output_path, errors_path, stderr_path):
+        result_path.unlink(missing_ok=True)
     tasks_path.write_text(json.dumps(tasks_list))
+    if progress_path is not None:
+        progress_path = progress_path.absolute()
+        progress_path.parent.mkdir(parents=True, exist_ok=True)
+        progress_path.unlink(missing_ok=True)
 
     cmd = [
         sys.executable,
@@ -304,6 +333,8 @@ def run_tasks_subprocess(
         "--max-errors", str(MAX_RETAINED_ERRORS),
         "--cpu-seconds", str(cpu_seconds),
     ]
+    if progress_path is not None:
+        cmd.extend(["--progress", str(progress_path)])
     # Cleansed environment: PYTHONPATH (for marcedit_web imports),
     # PATH (for the python invocation), HOME (some libraries demand
     # one). Nothing else.
@@ -315,33 +346,90 @@ def run_tasks_subprocess(
     }
 
     timed_out = False
+    cancelled = False
     stderr = ""
     returncode = 0
+    communicated_stderr = None
+    stderr_file = stderr_path.open("w", encoding="utf-8")
     try:
-        completed = subprocess.run(
-            cmd,
-            cwd=str(workdir),
-            env=env,
-            preexec_fn=partial(_preexec_set_limits, cpu_seconds),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        stderr = completed.stderr
-        returncode = completed.returncode
-        if returncode == -signal.SIGXCPU:
-            timed_out = True
-            logger.warning(
-                "sandbox exceeded CPU processing limit after %.1fs",
-                timeout,
+        try:
+            process = subprocess.Popen(
+                cmd,
+                cwd=str(workdir),
+                env=env,
+                preexec_fn=partial(_preexec_set_limits, cpu_seconds),
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_file,
+                text=True,
+                start_new_session=True,
             )
-    except subprocess.TimeoutExpired as exc:
+        except FileNotFoundError as exc:
+            # The python interpreter wasn't found — that's a launcher bug.
+            raise RuntimeError(
+                f"sandbox could not spawn python: {exc}"
+            ) from exc
+
+        started_at = time.monotonic()
+        last_progress = None
+        process_reaped = False
+        try:
+            while True:
+                if process.poll() is not None:
+                    _, communicated_stderr = process.communicate()
+                    process_reaped = True
+                    break
+
+                last_progress = _report_progress(
+                    progress_path,
+                    progress_callback,
+                    last_progress,
+                )
+                if cancel_requested is not None and cancel_requested():
+                    cancelled = True
+                    _, communicated_stderr = _terminate_process_group(process)
+                    process_reaped = True
+                    break
+
+                remaining = timeout - (time.monotonic() - started_at)
+                if remaining <= 0:
+                    timed_out = True
+                    _, communicated_stderr = _terminate_process_group(process)
+                    process_reaped = True
+                    logger.warning("sandbox timed out after %.1fs", timeout)
+                    break
+
+                try:
+                    _, communicated_stderr = process.communicate(
+                        timeout=min(poll_interval, remaining),
+                    )
+                    process_reaped = True
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+
+            _report_progress(
+                progress_path,
+                progress_callback,
+                last_progress,
+            )
+        except BaseException:
+            if not process_reaped:
+                _terminate_process_group(process)
+            raise
+    finally:
+        stderr_file.close()
+
+    if communicated_stderr is not None:
+        stderr = communicated_stderr
+    elif stderr_path.exists():
+        stderr = stderr_path.read_text(errors="replace")
+    returncode = process.returncode
+    if returncode == -signal.SIGXCPU and not cancelled:
         timed_out = True
-        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        logger.warning("sandbox timed out after %.1fs", timeout)
-    except FileNotFoundError as exc:
-        # The python interpreter wasn't found — that's a launcher bug.
-        raise RuntimeError(f"sandbox could not spawn python: {exc}") from exc
+        logger.warning(
+            "sandbox exceeded CPU processing limit after %.1fs",
+            timeout,
+        )
 
     try:
         error_payload = (
@@ -367,7 +455,7 @@ def run_tasks_subprocess(
                 f"sandbox exceeded {timeout:.0f}s maximum processing time"
             ),
         })
-    elif returncode != 0:
+    elif returncode != 0 and not cancelled:
         error_count += 1
         _retain_terminal_error(errors, {
             "index": 0,
@@ -386,7 +474,49 @@ def run_tasks_subprocess(
         stderr=stderr,
         returncode=returncode,
         timed_out=timed_out,
+        cancelled=cancelled,
     )
+
+
+def _report_progress(
+    progress_path: Optional[Path],
+    progress_callback: Optional[Callable[[int], None]],
+    last_progress: Optional[int],
+) -> Optional[int]:
+    """Report a complete, changed progress sidecar value at most once."""
+    if progress_path is None or progress_callback is None:
+        return last_progress
+    try:
+        payload = json.loads(progress_path.read_text())
+        processed_records = payload["processed_records"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return last_progress
+    if (
+        not isinstance(processed_records, int)
+        or processed_records == last_progress
+    ):
+        return last_progress
+    progress_callback(processed_records)
+    return processed_records
+
+
+def _terminate_process_group(
+    process: subprocess.Popen,
+) -> tuple[Optional[str], Optional[str]]:
+    """Terminate the owned group, then reap its unreused leader PID."""
+    if _signal_process_group(process, signal.SIGTERM):
+        time.sleep(_TERMINATION_GRACE_SECONDS)
+        _signal_process_group(process, signal.SIGKILL)
+    return process.communicate()
+
+
+def _signal_process_group(process: subprocess.Popen, sig: int) -> bool:
+    """Signal the owned process group; report whether it still exists."""
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _retain_terminal_error(errors: list[dict], error: dict) -> None:

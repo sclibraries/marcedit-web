@@ -1,240 +1,131 @@
-# Task 4 Report — Atomic immutable version adoption
+# TASK-156 Task 4 Report — Cancellable sandbox progress
 
-Ticket: [TASK-151](../../.tickets/TASK-151-job-file-work-items-implementation.md)
+Ticket: [TASK-156](../../.tickets/TASK-156-durable-operation-queue.md)
 
 ## Status
 
-Completed. The single job-file mutation gateway validates and stages candidate
-MARC bytes, rechecks current editor access plus the holder's unexpired checkout
-and exact opened version inside one write transaction, creates an immutable
-child version, compare-and-swaps the current pointer, resets release state, and
-supersedes draft/ready exports. The session wrapper reopens the adopted current
-version and clears stale previews through `open_job_file`.
+Completed. `run_tasks_subprocess` remains backward compatible while adding an
+atomic progress sidecar, deduplicated progress callback, cancellation callback,
+bounded polling, and a distinct `SandboxResult.cancelled` outcome. The sandbox
+now launches in a new POSIX session and terminates the entire owned process
+group with SIGTERM, a bounded two-second grace, SIGKILL, and one final reap.
 
 ## Files
 
-- `marcedit_web/lib/job_files.py`
-- `marcedit_web/lib/session.py`
-- `tests/test_job_file_mutations.py` (new)
+- `marcedit_web/lib/sandbox.py`
+- `tests/test_sandbox.py`
+- `.superpowers/sdd/task-4-report.md`
 
-`tests/test_job_files.py` required no Task 4 change; its existing archive-only
-retention tests remained in the focused regression selection.
+No queue lifecycle, runner, worker, UI, result-publishing, or deployment files
+were changed.
 
 ## TDD evidence
 
+All meaningful test commands used the supported Docker service and existing
+`marcedit-web` Compose project/network:
+
+```text
+docker compose --project-name marcedit-web run --rm --no-deps marcedit-web pytest <paths> -q
+```
+
 ### Initial RED
 
-Command:
+`tests/test_sandbox.py`: **2 failed, 23 passed in 4.27s**. The two intended
+failures were `TypeError` for the missing `progress_path` and
+`cancel_requested` keyword arguments. Production code was unchanged at this
+point.
+
+### Core GREEN
+
+After adding child progress writes, parent polling, `Popen`, and cancellation,
+the required sandbox behaviors passed. Legacy tests that mocked
+`subprocess.run` were updated to exercise the new `Popen` boundary while
+retaining their CPU-limit, elapsed-timeout, SIGXCPU, and ordinary nonzero-exit
+assertions.
+
+Additional RED/GREEN cycles proved edge behavior rather than relying on code
+inspection:
+
+- callback cleanup RED: the callback exception propagated but sent no signal
+  and did not reap the child; GREEN terminates and reaps before reraising;
+- process-exit race RED: `ProcessLookupError` escaped from `killpg`; GREEN
+  treats the disappeared group as completion and reaps the leader;
+- cancellation/SIGXCPU RED: one result was both cancelled and timed out;
+  GREEN makes observed cancellation win classification;
+- independent-review RED: **3 failed** for completion losing to cancellation,
+  stale reused-workdir artifacts, and inherited stdout/stderr pipes;
+- descendant teardown RED: SIGTERM was sent but SIGKILL was omitted when the
+  leader accepted TERM while a descendant could ignore it; GREEN holds the
+  leader unreaped through the grace/KILL attempt and then communicates once.
+
+Final focused sandbox result: **33 passed in 8.54s**.
+
+## Signal, cancellation, and progress evidence
+
+- `start_new_session=True` creates a new process group for every sandbox.
+- Cancellation and elapsed timeout use the same group teardown path.
+- Teardown sends SIGTERM, waits exactly the bounded two-second grace while the
+  unreaped leader prevents PID/PGID reuse, attempts SIGKILL for any surviving
+  group member, then performs a single final `communicate()` reap.
+- Tests cover TERM-resistant leaders, leaders exiting while descendants may
+  survive, a group disappearing between observation and signal, and callback
+  failure racing with leader exit.
+- Child stderr is redirected to a disk-backed file. Descendants cannot keep a
+  parent-owned capture pipe open, and stderr remains available for existing
+  error normalization.
+- Cancellation is neither a timeout nor an ordinary nonzero failure, including
+  a concurrent SIGXCPU return.
+- Progress JSON is written to a temporary sibling and atomically replaced.
+  Parent polling ignores invalid/partial JSON and reports each changed integer
+  value only once. Final progress is read after child completion.
+- Reused workdirs clear prior output, errors, stderr, and progress before
+  launch, preventing stale results on early cancellation.
+
+## Compatibility and full verification
+
+Required compatibility command:
 
 ```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_files.py tests/test_job_file_mutations.py
+pytest tests/test_sandbox.py tests/test_tasks_export.py tests/test_batch_replace.py tests/test_codegen_safety.py -q
 ```
 
-Result: **8 failed, 11 passed**. Every failure was the expected missing API:
-`job_files.adopt_candidate` or `session.adopt_current_candidate`.
-
-The first host-side `pytest` attempt did not reach tests because the local
-environment could not import `marcedit_web`; Docker was used for all meaningful
-RED/GREEN and completion evidence.
-
-### Initial GREEN
-
-Same focused command: **19 passed in 0.61s**.
-
-Required storage/session command:
-
-```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_files.py tests/test_job_file_mutations.py tests/test_record_store.py tests/test_session.py
-```
-
-Result: **65 passed in 0.77s**.
-
-### Review-driven RED
-
-Independent review identified cross-filesystem candidate rename, stale access,
-and partially malformed candidate gaps. Regression command:
-
-```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_file_mutations.py
-```
-
-Result: **4 failed, 8 passed**, specifically proving:
-
-- direct `/tmp` to durable-root `os.replace` failed with simulated `EXDEV`;
-- a valid record followed by malformed bytes was accepted;
-- revoked access mutated before the return lookup failed;
-- downgraded viewer access was accepted.
-
-### Final GREEN
-
-Required focused storage/session command after fixes: **69 passed in 0.83s**.
+Final result: **120 passed in 12.54s**.
 
 Final full-suite command:
 
 ```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q
+pytest -q
 ```
 
-Result: **1142 passed in 15.92s**, with no skipped tests reported.
+Final result after the simplify pass: **1331 passed, 12 skipped in 33.66s**.
+The 12 skips were reported by pytest and are not claimed as coverage:
 
-`git diff --check` passed. The Docker image does not contain `ruff` (`exec:
-"ruff": executable file not found`), so a separate lint run was unavailable.
+- 7 deployment-unit cases whose service/docs files are absent from the built
+  image context;
+- 5 Docker configuration cases whose `.dockerignore`/`Dockerfile` files are
+  absent from the built image context.
 
-## Self-review
+`python3 -m py_compile marcedit_web/lib/sandbox.py tests/test_sandbox.py` and
+`git diff --check` both passed.
 
-- Candidate indexing and malformed/empty rejection happen before database work.
-- Candidates are copied to a unique pending path beneath the durable job-files
-  root before the atomic rename, avoiding cross-device rename failures.
-- Current owner/editor access, non-archived state, checkout holder/expiry, and
-  exact opened version are all checked after `BEGIN IMMEDIATE`.
-- On failure after rename, target bytes move back to staging before SQLite
-  rollback; outer cleanup removes the original, staging, and target paths.
-- The current-pointer update is an explicit compare-and-swap and is covered by
-  a forced post-rename pointer failure test.
-- Prior immutable bytes and approval history remain intact; the new version is
-  unapproved, file status returns to `in_progress`, and draft/ready exports are
-  superseded. Loaded exports are retained.
-- No deletion API or editor/batch call-site conversion was added.
+## Self-review and independent review
 
-## Concerns
+Self-review found and fixed cancellation/SIGXCPU double classification,
+callback-exception cleanup, and the `killpg` exit race. Independent review then
+identified three boundary issues: inherited-pipe hangs/descendant survival,
+completion misclassification, and stale artifacts in reused workdirs. Each was
+given a regression and fixed. A second review found that leader-based TERM
+completion could still leave a TERM-ignoring descendant; teardown was revised
+to retain the unreaped process-group identity through grace and KILL. Final
+independent re-review reported no remaining Critical or Important findings.
 
-- No unresolved Critical or Important review findings.
-- Candidate staging temporarily requires space for one additional copy under
-  the durable root. This is required for a same-filesystem atomic rename and
-  remains disk-backed/bounded-memory via `shutil.copyfile`.
-- Standalone lint tooling is absent from the supplied Docker image; full pytest
-  and `git diff --check` are clean.
+## Concerns and constraints
 
-## Formal review follow-up — uncertain commit and structural validation
-
-The controller's formal review found two additional gaps:
-
-1. A transaction-exit exception could occur after SQLite had durably committed.
-   Unconditional outer cleanup would then unlink the adopted target while the
-   committed current pointer still referenced it.
-2. MARC framing alone could count a plausible-length record whose leader or
-   directory could not be parsed by pymarc.
-
-### Follow-up RED
-
-Command:
-
-```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_file_mutations.py
-```
-
-Result: **2 failed, 13 passed in 0.57s**.
-
-- A commit persisted and then raised; the gateway propagated the raw exception
-  and deleted the committed target.
-- A correctly framed record with an invalid `99999` MARC base address was
-  adopted because it had one indexed frame and no truncated suffix.
-
-The paired commit-before-persistence regression passed under the old code,
-confirming that ordinary rollback cleanup was already correct and isolating the
-bug to uncertain transaction-exit outcomes.
-
-### Follow-up GREEN
-
-Mutation gateway command after the fix: **15 passed in 0.47s**.
-
-Required focused/storage/session command:
-
-```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_files.py tests/test_job_file_mutations.py tests/test_record_store.py tests/test_session.py
-```
-
-Result: **72 passed in 0.84s**.
-
-Fresh full-suite command:
-
-```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q
-```
-
-Result: **1145 passed in 16.17s**, with no skipped tests reported.
-
-`git diff --check` passed.
-
-### Follow-up self-review
-
-- The normal operation-failure path still restores target bytes to staging
-  before the database context rolls back.
-- Only a failure escaping transaction context exit while the target is still
-  adopted triggers a fresh durable-state query.
-- If version row and current pointer committed with the exact target path, the
-  target is retained and `JobFileError` explicitly reports that adoption
-  succeeded but transaction confirmation failed.
-- If the durable query shows no committed adoption, target bytes return to
-  staging and all candidate artifacts are removed.
-- If the durable query itself fails, target bytes are conservatively retained;
-  this may leave an orphan but cannot create a committed pointer to missing
-  bytes.
-- Candidate validation now iterates every indexed record through pymarc and
-  compares successfully parsed records to the frame count. Iteration reads one
-  record at a time from disk and retains no full-file or record-list copy.
-- Cross-filesystem staging, checkout/access/version checks, prior immutable
-  bytes, export supersession, and archive-only behavior are unchanged.
-
-No unresolved Critical or Important formal-review findings remain in this
-follow-up implementation.
-
-## Formal review follow-up — historical-version reconciliation race
-
-The next formal review identified that durable version existence was still
-coupled to `current_version_id`. A committed v2 could be advanced to historical
-state by a valid v3 adoption before the uncertain-commit reconciliation query;
-the old helper then classified v2 as uncommitted and deleted bytes still
-referenced by v2's row and v3's parent chain.
-
-### Race RED
-
-The public regression commits v2, performs a second public `adopt_candidate`
-that creates v3 from v2 before reconciliation, then raises the original commit
-confirmation error.
-
-Command:
-
-```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_file_mutations.py
-```
-
-Result: **1 failed, 15 passed in 0.58s**. The v2 database row and v3 parent
-reference remained, but `v000002.mrc` had been deleted.
-
-### Race GREEN
-
-Mutation command after tightening the expected public error type:
-**16 passed in 0.52s**.
-
-Required focused/storage/session command:
-
-```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q tests/test_job_files.py tests/test_job_file_mutations.py tests/test_record_store.py tests/test_session.py
-```
-
-Result: **73 passed in 0.95s**.
-
-Fresh full-suite command:
-
-```text
-docker compose run --rm -v "$PWD:/app" -v "$PWD/tests:/app/tests" marcedit-web pytest -q
-```
-
-Result: **1146 passed in 16.37s**, with no skipped tests reported.
-
-`git diff --check` passed.
-
-### Race self-review
-
-- Reconciliation now queries the exact `job_file_versions.id`,
-  `job_file_id`, and `file_path`; any matching immutable row preserves its
-  target bytes regardless of whether it remains current.
-- The deterministic regression verifies the complete chain: v1 bytes remain,
-  v2 historical bytes remain, v3 remains current, and v3's parent is v2.
-- The existing commit-before-persistence regression remains green and still
-  proves that an absent version row permits staging/target cleanup.
-- No checkout, access, CAS, staging, validation, export, session, or archive
-  behavior changed.
-
-No unresolved Critical or Important findings remain from this race fix.
+- This boundary remains POSIX-specific and retains the existing POSIX pytest
+  guard. Supported verification ran in the Linux/Python 3.9 Docker service.
+- Cancellation/elapsed-timeout teardown can intentionally take the full
+  two-second grace before KILL. This is the specified bound and is required to
+  give cooperative group members time to exit while still guaranteeing
+  descendant cleanup.
+- The sandbox remains a resource-limited subprocess boundary, not a complete
+  security sandbox; the existing module-level limitations remain unchanged.

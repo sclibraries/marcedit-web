@@ -8,11 +8,11 @@ resource.setrlimit), which Docker/Linux provides. Skip on Windows hosts.
 from __future__ import annotations
 
 import io
+import json
 import os
 import signal
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pymarc
 import pytest
@@ -51,6 +51,26 @@ def _read_output(result: SandboxResult) -> list[pymarc.Record]:
         ]
 
 
+class _CompletedPopen:
+    """Small completed-process double for parent-boundary assertions."""
+
+    pid = 1234
+
+    def __init__(self, *, returncode=0, stderr="", already_completed=False):
+        self._completion_returncode = returncode
+        self.returncode = returncode if already_completed else None
+        self.stderr = stderr
+        self.communicate_timeouts = []
+
+    def communicate(self, timeout=None):
+        self.communicate_timeouts.append(timeout)
+        self.returncode = self._completion_returncode
+        return "", self.stderr
+
+    def poll(self):
+        return self.returncode
+
+
 @pytest.fixture
 def one_record_bytes(record) -> bytes:
     """A serialized 1-record MARC blob."""
@@ -60,6 +80,11 @@ def one_record_bytes(record) -> bytes:
 @pytest.fixture
 def three_records_bytes(make_record) -> bytes:
     return _serialize([make_record(), make_record(), make_record()])
+
+
+@pytest.fixture
+def two_records_bytes(make_record) -> bytes:
+    return _serialize([make_record(), make_record()])
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +105,286 @@ def test_noop_task_round_trips(one_record_bytes):
     assert reread[0].get("001").data == "1234567890"
 
 
+def test_progress_sidecar_reaches_input_count(tmp_path, two_records_bytes):
+    """Each completed input record advances durable observable progress."""
+    progress = tmp_path / "progress.json"
+    observed = []
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        two_records_bytes,
+        progress_path=progress,
+        progress_callback=observed.append,
+    )
+
+    assert result.cancelled is False
+    assert json.loads(progress.read_text())["processed_records"] == 2
+    assert observed[-1] == 2
+
+
+def test_cancellation_terminates_sandbox_process_group(
+    tmp_path, one_record_bytes,
+):
+    """A user cancellation stops runaway work without becoming a timeout."""
+    checks = iter([False, True])
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="slow", body="while True: pass")],
+        one_record_bytes,
+        timeout=30,
+        tmp_dir=tmp_path,
+        cancel_requested=lambda: next(checks, True),
+        poll_interval=0.01,
+    )
+
+    assert result.cancelled is True
+    assert result.timed_out is False
+    assert result.error_count == 0
+    assert not any(
+        error["code"] == "sandbox-nonzero-exit"
+        for error in result.errors
+    )
+
+
+def test_cancellation_wins_cpu_signal_classification(
+    one_record_bytes, monkeypatch,
+):
+    """An observed cancellation is never reclassified as CPU timeout."""
+    process = _CompletedPopen(returncode=-signal.SIGXCPU)
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *_a, **_k: process)
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="busy", body="while True: pass")],
+        one_record_bytes,
+        cancel_requested=lambda: True,
+    )
+
+    assert result.cancelled is True
+    assert result.timed_out is False
+    assert result.error_count == 0
+
+
+def test_completed_child_wins_cancellation_poll_race(
+    one_record_bytes, monkeypatch,
+):
+    """Completion already visible to the parent is not cancellation."""
+    process = _CompletedPopen(returncode=0, already_completed=True)
+    cancellation_checks = []
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *_a, **_k: process)
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        one_record_bytes,
+        cancel_requested=lambda: cancellation_checks.append(True) or True,
+    )
+
+    assert result.returncode == 0
+    assert result.cancelled is False
+    assert result.timed_out is False
+    assert cancellation_checks == []
+
+
+def test_cancelled_reused_workdir_does_not_return_stale_artifacts(
+    tmp_path, one_record_bytes, monkeypatch,
+):
+    """Early cancellation cannot expose errors/output from an earlier run."""
+    (tmp_path / "errors.json").write_text(
+        '{"error_count": 1, "errors": [{"code": "stale"}]}'
+    )
+    (tmp_path / "output.mrc").write_bytes(b"stale output")
+
+    class RunningPopen:
+        pid = 6789
+        returncode = None
+
+        def communicate(self, timeout=None):
+            self.returncode = -signal.SIGTERM
+            return "", "cancelled"
+
+        def poll(self):
+            return self.returncode
+
+    process = RunningPopen()
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *_a, **_k: process)
+    monkeypatch.setattr(sandbox.os, "killpg", lambda *_a: None)
+    monkeypatch.setattr(sandbox.time, "sleep", lambda _seconds: None)
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="slow", body="while True: pass")],
+        one_record_bytes,
+        tmp_dir=tmp_path,
+        cancel_requested=lambda: True,
+    )
+
+    assert result.cancelled is True
+    assert result.error_count == 0
+    assert result.errors == []
+    assert not result.output_path.exists()
+
+
+def test_progress_callback_ignores_invalid_and_duplicate_sidecars(tmp_path):
+    """Polling never exposes partial JSON or repeats an observed count."""
+    progress_path = tmp_path / "progress.json"
+    observed = []
+
+    progress_path.write_text('{"processed_records":')
+    last_progress = sandbox._report_progress(
+        progress_path, observed.append, None,
+    )
+    progress_path.write_text('{"processed_records": 7}')
+    last_progress = sandbox._report_progress(
+        progress_path, observed.append, last_progress,
+    )
+    last_progress = sandbox._report_progress(
+        progress_path, observed.append, last_progress,
+    )
+
+    assert last_progress == 7
+    assert observed == [7]
+
+
+def test_process_group_termination_escalates_and_reaps(monkeypatch):
+    """A SIGTERM-resistant sandbox is SIGKILLed after the bounded grace."""
+    signals = []
+
+    class StubbornPopen:
+        pid = 5678
+        returncode = None
+        reaped = False
+
+        def communicate(self, timeout=None):
+            if timeout == 2:
+                raise sandbox.subprocess.TimeoutExpired("sandbox", timeout)
+            self.returncode = -signal.SIGKILL
+            self.reaped = True
+            return "", "stubborn stderr"
+
+        def poll(self):
+            return self.returncode
+
+    process = StubbornPopen()
+    monkeypatch.setattr(
+        sandbox.os,
+        "killpg",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+    monkeypatch.setattr(sandbox.time, "sleep", lambda _seconds: None)
+
+    _, stderr = sandbox._terminate_process_group(process)
+
+    assert signals == [
+        (process.pid, signal.SIGTERM),
+        (process.pid, signal.SIGKILL),
+    ]
+    assert process.reaped is True
+    assert stderr == "stubborn stderr"
+
+
+def test_process_group_kills_descendants_after_leader_accepts_term(
+    monkeypatch,
+):
+    """Leader exit cannot suppress KILL for a TERM-ignoring descendant."""
+    signals = []
+
+    class ExitingLeaderPopen:
+        pid = 5790
+        returncode = None
+
+        def communicate(self, timeout=None):
+            self.returncode = -signal.SIGTERM
+            return "", "leader exited"
+
+        def poll(self):
+            return self.returncode
+
+    process = ExitingLeaderPopen()
+    monkeypatch.setattr(
+        sandbox.os,
+        "killpg",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+    monkeypatch.setattr(sandbox.time, "sleep", lambda _seconds: None)
+
+    sandbox._terminate_process_group(process)
+
+    assert signals == [
+        (process.pid, signal.SIGTERM),
+        (process.pid, signal.SIGKILL),
+    ]
+
+
+def test_process_group_exit_race_is_reaped_without_reused_pid_signal(
+    monkeypatch,
+):
+    """A group disappearing after poll is completion, not a kill failure."""
+    process = _CompletedPopen(stderr="finished during signal race")
+    process.returncode = None
+
+    def process_gone(_pid, _sig):
+        process.returncode = 0
+        raise ProcessLookupError
+
+    monkeypatch.setattr(sandbox.os, "killpg", process_gone)
+
+    _, stderr = sandbox._terminate_process_group(process)
+
+    assert process.returncode == 0
+    assert process.communicate_timeouts == [None]
+    assert stderr == "finished during signal race"
+
+
+def test_progress_callback_failure_still_reaps_child(
+    tmp_path, one_record_bytes, monkeypatch,
+):
+    """A callback/leader-exit race still cleans the owned process group."""
+    progress_path = tmp_path / "progress.json"
+    signals = []
+
+    class ProgressThenWaitPopen:
+        pid = 4321
+        returncode = None
+        reaped = False
+
+        def communicate(self, timeout=None):
+            if timeout is None:
+                self.returncode = -signal.SIGTERM
+                self.reaped = True
+                return "", "callback cleanup"
+            progress_path.write_text('{"processed_records": 1}')
+            raise sandbox.subprocess.TimeoutExpired("sandbox", timeout)
+
+        def poll(self):
+            return self.returncode
+
+    process = ProgressThenWaitPopen()
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *_a, **_k: process)
+    monkeypatch.setattr(
+        sandbox.os,
+        "killpg",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+    monkeypatch.setattr(sandbox.time, "sleep", lambda _seconds: None)
+
+    def fail_callback(_processed_records):
+        process.returncode = 0
+        raise RuntimeError("progress sink unavailable")
+
+    with pytest.raises(RuntimeError, match="progress sink unavailable"):
+        run_tasks_subprocess(
+            [TaskSpec(name="noop", body="pass")],
+            one_record_bytes,
+            progress_path=progress_path,
+            progress_callback=fail_callback,
+            poll_interval=0.01,
+        )
+
+    assert signals == [
+        (process.pid, signal.SIGTERM),
+        (process.pid, signal.SIGKILL),
+    ]
+    assert process.reaped is True
+
+
 def test_default_processing_limit_reaches_parent_and_child(
     one_record_bytes, monkeypatch,
 ):
@@ -87,13 +392,17 @@ def test_default_processing_limit_reaches_parent_and_child(
     captured = {}
     resource_limits = []
 
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["timeout"] = kwargs["timeout"]
-        captured["preexec_fn"] = kwargs["preexec_fn"]
-        return SimpleNamespace(stderr="", returncode=0)
+    process = _CompletedPopen()
 
-    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["preexec_fn"] = kwargs["preexec_fn"]
+        captured["start_new_session"] = kwargs["start_new_session"]
+        captured["stdout"] = kwargs["stdout"]
+        captured["stderr"] = kwargs["stderr"]
+        return process
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(
         sandbox.resource,
         "setrlimit",
@@ -105,11 +414,15 @@ def test_default_processing_limit_reaches_parent_and_child(
     run_tasks_subprocess(
         [TaskSpec(name="noop", body="pass")],
         one_record_bytes,
+        poll_interval=400,
     )
     captured["preexec_fn"]()
 
     assert sandbox.DEFAULT_PROCESSING_LIMIT_SECONDS == 300
-    assert captured["timeout"] == 300
+    assert process.communicate_timeouts == [pytest.approx(300, abs=0.01)]
+    assert captured["start_new_session"] is True
+    assert captured["stdout"] == sandbox.subprocess.DEVNULL
+    assert captured["stderr"] != sandbox.subprocess.PIPE
     cpu_arg = captured["cmd"].index("--cpu-seconds")
     assert captured["cmd"][cpu_arg + 1] == "300"
     assert (
@@ -124,12 +437,13 @@ def test_fractional_timeout_uses_one_cpu_second(
     """Fast tests never turn a fractional timeout into a zero CPU limit."""
     captured = {}
 
-    def fake_run(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["timeout"] = kwargs["timeout"]
-        return SimpleNamespace(stderr="", returncode=0)
+    process = _CompletedPopen()
 
-    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return process
+
+    monkeypatch.setattr(sandbox.subprocess, "Popen", fake_popen)
 
     run_tasks_subprocess(
         [TaskSpec(name="noop", body="pass")],
@@ -138,7 +452,7 @@ def test_fractional_timeout_uses_one_cpu_second(
     )
 
     cpu_arg = captured["cmd"].index("--cpu-seconds")
-    assert captured["timeout"] == 0.1
+    assert process.communicate_timeouts == [pytest.approx(0.1, abs=0.01)]
     assert captured["cmd"][cpu_arg + 1] == "1"
 
 
@@ -165,14 +479,11 @@ def test_sigxcpu_completion_is_reported_as_timeout(
     one_record_bytes, monkeypatch,
 ):
     """A child reaching its CPU soft limit keeps timeout safety gates active."""
-    monkeypatch.setattr(
-        sandbox.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            stderr="CPU time limit exceeded",
-            returncode=-signal.SIGXCPU,
-        ),
+    process = _CompletedPopen(
+        stderr="CPU time limit exceeded",
+        returncode=-signal.SIGXCPU,
     )
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *_a, **_k: process)
 
     result = run_tasks_subprocess(
         [TaskSpec(name="busy", body="while True:\n    pass\n")],
@@ -190,14 +501,8 @@ def test_ordinary_nonzero_completion_is_not_reported_as_timeout(
     one_record_bytes, monkeypatch,
 ):
     """Only the CPU-limit signal is normalized to timeout state."""
-    monkeypatch.setattr(
-        sandbox.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            stderr="ordinary failure",
-            returncode=7,
-        ),
-    )
+    process = _CompletedPopen(stderr="ordinary failure", returncode=7)
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *_a, **_k: process)
 
     result = run_tasks_subprocess(
         [TaskSpec(name="noop", body="pass")],
