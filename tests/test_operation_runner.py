@@ -5,7 +5,9 @@ from __future__ import annotations
 import dataclasses
 import io
 import json
+import shutil
 import threading
+import time
 from pathlib import Path
 
 import pymarc
@@ -458,6 +460,46 @@ def test_lease_heartbeat_runs_while_chunk_input_is_being_created(
     assert heartbeat_seen.is_set()
 
 
+def test_lease_heartbeat_starts_before_existing_attempt_cleanup(
+    lease, monkeypatch
+):
+    attempt_dir = (
+        operations.operations_root()
+        / str(lease.operation_id)
+        / f"attempt-{lease.attempt}"
+    )
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "stale").write_text("old attempt")
+    heartbeat_seen = threading.Event()
+    real_renew = operations.renew_lease
+    real_rmtree = shutil.rmtree
+
+    def capture_renew(current_lease, **kwargs):
+        result = real_renew(current_lease, **kwargs)
+        if threading.current_thread().name == "operation-lease-heartbeat":
+            heartbeat_seen.set()
+        return result
+
+    def blocked_rmtree(path, *args, **kwargs):
+        if Path(path) == attempt_dir:
+            assert heartbeat_seen.wait(1)
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(operation_runner.operations, "renew_lease", capture_renew)
+    monkeypatch.setattr(operation_runner.shutil, "rmtree", blocked_rmtree)
+    monkeypatch.setattr(
+        operation_runner.sandbox,
+        "run_tasks_subprocess",
+        _copying_sandbox([]),
+    )
+
+    outcome = operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert outcome.output_records == 12
+    assert heartbeat_seen.is_set()
+
+
 def test_lease_heartbeat_runs_during_final_diff_validation(lease, monkeypatch):
     heartbeat_seen = threading.Event()
     validation_started = threading.Event()
@@ -524,6 +566,111 @@ def test_heartbeat_ownership_failure_propagates_and_cleans_attempt(
         / str(lease.operation_id)
         / f"attempt-{lease.attempt}"
     ).exists()
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["failure", "cancel"])
+def test_shutdown_rechecks_heartbeat_before_returning_candidate(
+    lease, monkeypatch, cancel
+):
+    shutdown_window = threading.Event()
+    heartbeat_entered = threading.Event()
+    release_heartbeat = threading.Event()
+    real_renew = operations.renew_lease
+    real_asdict = operation_runner.asdict
+
+    def fail_during_shutdown(current_lease, **kwargs):
+        if (
+            threading.current_thread().name == "operation-lease-heartbeat"
+            and shutdown_window.is_set()
+        ):
+            heartbeat_entered.set()
+            assert release_heartbeat.wait(1)
+            if cancel:
+                operations.request_cancel(
+                    lease.operation_id, by="owner@smith.edu"
+                )
+                return real_renew(current_lease, **kwargs)
+            raise operations.OperationError("operation is no longer running")
+        return real_renew(current_lease, **kwargs)
+
+    def synchronize_outcome(value):
+        shutdown_window.set()
+        assert heartbeat_entered.wait(1)
+        release_heartbeat.set()
+        return real_asdict(value)
+
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(operation_runner.operations, "renew_lease", fail_during_shutdown)
+    monkeypatch.setattr(operation_runner, "asdict", synchronize_outcome)
+    monkeypatch.setattr(
+        operation_runner.sandbox,
+        "run_tasks_subprocess",
+        _copying_sandbox([]),
+    )
+
+    expected = (
+        operation_runner.OperationCancelled
+        if cancel
+        else operations.OperationError
+    )
+    with pytest.raises(expected):
+        operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert not (
+        operations.operations_root()
+        / str(lease.operation_id)
+        / f"attempt-{lease.attempt}"
+    ).exists()
+
+
+def test_blocked_heartbeat_shutdown_is_bounded_and_reported(lease, monkeypatch):
+    shutdown_window = threading.Event()
+    heartbeat_entered = threading.Event()
+    release_heartbeat = threading.Event()
+    shutdown_started = []
+    real_renew = operations.renew_lease
+    real_asdict = operation_runner.asdict
+
+    def block_during_shutdown(current_lease, **kwargs):
+        if (
+            threading.current_thread().name == "operation-lease-heartbeat"
+            and shutdown_window.is_set()
+        ):
+            heartbeat_entered.set()
+            release_heartbeat.wait(1)
+            raise operations.OperationError("operation is no longer running")
+        return real_renew(current_lease, **kwargs)
+
+    def synchronize_outcome(value):
+        shutdown_started.append(time.monotonic())
+        shutdown_window.set()
+        assert heartbeat_entered.wait(1)
+        return real_asdict(value)
+
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_STOP_SECONDS", 0.05)
+    monkeypatch.setattr(operation_runner.operations, "renew_lease", block_during_shutdown)
+    monkeypatch.setattr(operation_runner, "asdict", synchronize_outcome)
+    monkeypatch.setattr(
+        operation_runner.sandbox,
+        "run_tasks_subprocess",
+        _copying_sandbox([]),
+    )
+
+    with pytest.raises(operation_runner.OperationRunError) as raised:
+        operation_runner.run_saved_task_operation(lease, chunk_size=5)
+    elapsed = time.monotonic() - shutdown_started[0]
+    release_heartbeat.set()
+    for thread in threading.enumerate():
+        if thread.name == "operation-lease-heartbeat":
+            thread.join(1)
+
+    assert raised.value.code == "lease-heartbeat-shutdown-timeout"
+    assert elapsed < 0.5
+    assert not any(
+        thread.name == "operation-lease-heartbeat"
+        for thread in threading.enumerate()
+    )
 
 
 def test_input_permission_errors_have_a_stable_run_error(lease, monkeypatch):

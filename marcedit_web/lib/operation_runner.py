@@ -18,6 +18,9 @@ from .record_store import RecordStore
 logger = logging.getLogger("marcedit_web.operation_runner")
 
 _LEASE_HEARTBEAT_SECONDS = 10.0
+# ``db.connect`` uses sqlite3's five-second busy timeout.  Six seconds gives
+# an in-flight renewal time to finish while keeping attempt shutdown bounded.
+_LEASE_HEARTBEAT_STOP_SECONDS = 6.0
 
 
 class OperationCancelled(RuntimeError):
@@ -61,11 +64,27 @@ class _LeaseHeartbeat:
         self._thread.start()
         self._started = True
 
-    def stop(self) -> None:
+    def stop_and_check(self, *, final_renew: bool = False) -> None:
+        """Stop within the SQLite timeout bound and surface renewal state."""
         if not self._started:
             return
         self._stop.set()
-        self._thread.join()
+        self._thread.join(_LEASE_HEARTBEAT_STOP_SECONDS)
+        if self._thread.is_alive():
+            raise OperationRunError(
+                "lease-heartbeat-shutdown-timeout",
+                "Lease maintenance did not stop within the safety limit.",
+            )
+        self.check()
+        if final_renew:
+            try:
+                operations.renew_lease(self._lease)
+            except operations.OperationError as exc:
+                if operations.is_lease_cancelling(self._lease):
+                    raise OperationCancelled(
+                        "Operation cancellation was requested."
+                    )
+                raise
 
     def check(self) -> None:
         with self._lock:
@@ -75,6 +94,9 @@ class _LeaseHeartbeat:
             raise OperationCancelled("Operation cancellation was requested.")
         if failure is not None:
             raise failure
+
+    def is_alive(self) -> bool:
+        return self._started and self._thread.is_alive()
 
     def _run(self) -> None:
         while not self._stop.wait(_LEASE_HEARTBEAT_SECONDS):
@@ -144,21 +166,13 @@ def run_saved_task_operation(
         / str(lease.operation_id)
         / f"attempt-{lease.attempt}"
     )
-    try:
-        if attempt_dir.exists():
-            shutil.rmtree(attempt_dir)
-        attempt_dir.mkdir(parents=True)
-    except OSError as exc:
-        raise OperationRunError(
-            "candidate-unwritable",
-            "Operation workspace could not be prepared.",
-        ) from exc
     candidate_path = attempt_dir / "candidate.mrc"
     completed = 0
     error_count = 0
     retained_errors: list[dict[str, Any]] = []
     last_progress = -1
     heartbeat = _LeaseHeartbeat(lease)
+    cleanup_owned = False
 
     def renew(*, phase: str | None = None, processed: int | None = None) -> None:
         nonlocal last_progress
@@ -191,8 +205,18 @@ def run_saved_task_operation(
         return False
 
     try:
-        renew()
         heartbeat.start()
+        renew()
+        cleanup_owned = True
+        try:
+            if attempt_dir.exists():
+                shutil.rmtree(attempt_dir)
+            attempt_dir.mkdir(parents=True)
+        except OSError as exc:
+            raise OperationRunError(
+                "candidate-unwritable",
+                "Operation workspace could not be prepared.",
+            ) from exc
         try:
             input_file = input_path.open("rb")
         except OSError as exc:
@@ -313,7 +337,7 @@ def run_saved_task_operation(
                 "Combined output failed final record validation.",
             )
         renew(processed=completed)
-        return RunOutcome(
+        outcome = RunOutcome(
             candidate_path=candidate_path,
             input_records=completed,
             output_records=output_count,
@@ -322,12 +346,27 @@ def run_saved_task_operation(
             errors=tuple(retained_errors),
             summary=asdict(diff),
         )
+        heartbeat.stop_and_check(final_renew=True)
+        return outcome
     except BaseException as exc:
+        shutdown_timed_out = (
+            isinstance(exc, OperationRunError)
+            and exc.code == "lease-heartbeat-shutdown-timeout"
+        )
+        if heartbeat.is_alive() and not shutdown_timed_out:
+            try:
+                heartbeat.stop_and_check()
+            except BaseException:
+                logger.exception(
+                    "lease heartbeat shutdown failed"
+                    " operation_id=%s attempt=%s",
+                    lease.operation_id,
+                    lease.attempt,
+                )
         _log_failed_attempt(lease, exc)
-        shutil.rmtree(attempt_dir, ignore_errors=True)
+        if cleanup_owned:
+            shutil.rmtree(attempt_dir, ignore_errors=True)
         raise
-    finally:
-        heartbeat.stop()
 
 
 def _parse_tasks(request: dict[str, Any]) -> tuple[sandbox.TaskSpec, ...]:
