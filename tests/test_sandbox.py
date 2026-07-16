@@ -11,6 +11,7 @@ import io
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pymarc
 import pytest
@@ -76,6 +77,87 @@ def test_noop_task_round_trips(one_record_bytes):
     reread = _read_output(result)
     assert len(reread) == 1
     assert reread[0].get("001").data == "1234567890"
+
+
+def test_default_processing_limit_reaches_parent_and_child(
+    one_record_bytes, monkeypatch,
+):
+    """Large legitimate runs get one shared five-minute safety budget."""
+    captured = {}
+    resource_limits = []
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["timeout"] = kwargs["timeout"]
+        captured["preexec_fn"] = kwargs["preexec_fn"]
+        return SimpleNamespace(stderr="", returncode=0)
+
+    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        sandbox.resource,
+        "setrlimit",
+        lambda resource_id, value: resource_limits.append(
+            (resource_id, value)
+        ),
+    )
+
+    run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        one_record_bytes,
+    )
+    captured["preexec_fn"]()
+
+    assert sandbox.DEFAULT_PROCESSING_LIMIT_SECONDS == 300
+    assert captured["timeout"] == 300
+    cpu_arg = captured["cmd"].index("--cpu-seconds")
+    assert captured["cmd"][cpu_arg + 1] == "300"
+    assert (
+        sandbox.resource.RLIMIT_CPU,
+        (300, 300),
+    ) in resource_limits
+
+
+def test_fractional_timeout_uses_one_cpu_second(
+    one_record_bytes, monkeypatch,
+):
+    """Fast tests never turn a fractional timeout into a zero CPU limit."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["timeout"] = kwargs["timeout"]
+        return SimpleNamespace(stderr="", returncode=0)
+
+    monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
+
+    run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        one_record_bytes,
+        timeout=0.1,
+    )
+
+    cpu_arg = captured["cmd"].index("--cpu-seconds")
+    assert captured["timeout"] == 0.1
+    assert captured["cmd"][cpu_arg + 1] == "1"
+
+
+def test_injected_timeout_reaches_child_cpu_limit(one_record_bytes):
+    """The defensive in-child CPU limit matches the invocation budget."""
+    result = run_tasks_subprocess(
+        [TaskSpec(
+            name="inspect-limit",
+            body=(
+                "import resource\n"
+                "cpu_limit = resource.getrlimit(resource.RLIMIT_CPU)[0]\n"
+                "assert cpu_limit == 2, cpu_limit\n"
+            ),
+        )],
+        one_record_bytes,
+        timeout=2.0,
+    )
+
+    assert result.returncode == 0
+    assert result.errors == []
 
 
 def test_delete_tag_via_transforms_helper(one_record_bytes):
@@ -245,15 +327,20 @@ def test_filesystem_side_effect_lands_in_sandbox_workdir(
 
 
 def test_long_running_task_times_out(one_record_bytes):
-    """A wall-clock-busy task is killed by the timeout parameter."""
-    # Use a tight timeout so the test doesn't spend 30s.
+    """Runaway task code is stopped with a user-readable diagnostic."""
     result = run_tasks_subprocess(
         [TaskSpec(name="busy", body="while True:\n    pass\n")],
         one_record_bytes,
         timeout=2.0,
     )
+
     assert result.timed_out is True
-    assert any(e["code"] == "sandbox-timeout" for e in result.errors)
+    timeout_error = next(
+        error for error in result.errors
+        if error["code"] == "sandbox-timeout"
+    )
+    assert "maximum processing time" in timeout_error["message"]
+    assert "wall clock" not in timeout_error["message"]
 
 
 def test_memory_bomb_killed_or_caught(one_record_bytes):

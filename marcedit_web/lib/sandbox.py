@@ -42,12 +42,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import resource
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -57,7 +59,7 @@ logger = logging.getLogger("marcedit_web.sandbox")
 # Bytes-per-resource ceilings. Tuned for "100K records of small/medium
 # pymarc.Record objects fits in 512 MB" — there's some headroom for
 # pymarc + marcedit_web import overhead.
-_CPU_SECONDS = 30
+DEFAULT_PROCESSING_LIMIT_SECONDS = 300
 _AS_BYTES = 512 * 1024 * 1024     # 512 MB virtual memory
 _FSIZE_BYTES = 1024 * 1024 * 1024  # 1 GB single-file write cap
 _NPROC = 32                        # subprocess can't fork-bomb
@@ -106,12 +108,26 @@ import resource
 import sys
 import traceback
 
+def _parse_args():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", required=True)
+    ap.add_argument("--tasks", required=True)
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--errors", required=True)
+    ap.add_argument("--max-errors", required=True, type=int)
+    ap.add_argument("--cpu-seconds", required=True, type=int)
+    return ap.parse_args()
+
+
 # Defensive re-set of rlimits inside the child. The parent's preexec_fn
 # also sets these; we duplicate here so the limits are visible if
 # someone bypasses preexec.
-def _set_limits():
+def _set_limits(cpu_seconds):
     try:
-        resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
+        resource.setrlimit(
+            resource.RLIMIT_CPU,
+            (cpu_seconds, cpu_seconds),
+        )
         resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024,
                                                  512 * 1024 * 1024))
         resource.setrlimit(resource.RLIMIT_FSIZE, (1024 * 1024 * 1024,
@@ -121,21 +137,14 @@ def _set_limits():
         # Already at the limit or unsupported; not fatal.
         pass
 
-_set_limits()
+args = _parse_args()
+_set_limits(args.cpu_seconds)
 
 import pymarc
 from marcedit_web.lib import transforms  # standard helpers in scope
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--input", required=True)
-    ap.add_argument("--tasks", required=True)
-    ap.add_argument("--output", required=True)
-    ap.add_argument("--errors", required=True)
-    ap.add_argument("--max-errors", required=True, type=int)
-    args = ap.parse_args()
-
     with open(args.tasks) as f:
         tasks = json.load(f)
 
@@ -209,13 +218,17 @@ if __name__ == "__main__":
 """
 
 
-def _preexec_set_limits() -> None:
-    """preexec_fn for the parent's Popen.
+def _cpu_limit_seconds(timeout: float) -> int:
+    """Return a positive whole-second CPU budget for an elapsed timeout."""
+    return max(1, math.ceil(timeout))
 
-    Runs in the child between fork() and exec(); the limits stick to
-    the new process and any of its descendants.
-    """
-    resource.setrlimit(resource.RLIMIT_CPU, (_CPU_SECONDS, _CPU_SECONDS))
+
+def _preexec_set_limits(cpu_seconds: int) -> None:
+    """Apply resource limits in the child between fork and exec."""
+    resource.setrlimit(
+        resource.RLIMIT_CPU,
+        (cpu_seconds, cpu_seconds),
+    )
     resource.setrlimit(resource.RLIMIT_AS, (_AS_BYTES, _AS_BYTES))
     resource.setrlimit(resource.RLIMIT_FSIZE, (_FSIZE_BYTES, _FSIZE_BYTES))
     resource.setrlimit(resource.RLIMIT_NPROC, (_NPROC, _NPROC))
@@ -226,7 +239,7 @@ def run_tasks_subprocess(
     record_bytes: Optional[bytes] = None,
     *,
     input_path: Optional[Path] = None,
-    timeout: float = 30.0,
+    timeout: float = DEFAULT_PROCESSING_LIMIT_SECONDS,
     tmp_dir: Optional[Path] = None,
 ) -> SandboxResult:
     """Apply ``tasks`` (in order) to every record in the input.
@@ -248,6 +261,7 @@ def run_tasks_subprocess(
     ``RuntimeError`` only on launcher-level problems (can't write the
     temp files, can't spawn python at all).
     """
+    cpu_seconds = _cpu_limit_seconds(timeout)
     if (record_bytes is None) == (input_path is None):
         raise ValueError(
             "exactly one of record_bytes or input_path is required"
@@ -287,6 +301,7 @@ def run_tasks_subprocess(
         "--output", str(output_path),
         "--errors", str(errors_path),
         "--max-errors", str(MAX_RETAINED_ERRORS),
+        "--cpu-seconds", str(cpu_seconds),
     ]
     # Cleansed environment: PYTHONPATH (for marcedit_web imports),
     # PATH (for the python invocation), HOME (some libraries demand
@@ -306,7 +321,7 @@ def run_tasks_subprocess(
             cmd,
             cwd=str(workdir),
             env=env,
-            preexec_fn=_preexec_set_limits,
+            preexec_fn=partial(_preexec_set_limits, cpu_seconds),
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -341,7 +356,9 @@ def run_tasks_subprocess(
             "index": 0,
             "code": "sandbox-timeout",
             "task": None,
-            "message": f"sandbox exceeded {timeout:.0f}s wall clock",
+            "message": (
+                f"sandbox exceeded {timeout:.0f}s maximum processing time"
+            ),
         })
     elif returncode != 0:
         error_count += 1
