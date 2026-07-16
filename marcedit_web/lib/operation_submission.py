@@ -54,6 +54,12 @@ def submit_job_task_run(
     db.init_schema()
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        _require_job_submission_source(
+            conn,
+            user_email=user_email,
+            file_id=file_id,
+            source_version_id=source_version_id,
+        )
         operation_id = _insert_operation(
             conn,
             submitted_by=user_email,
@@ -78,7 +84,8 @@ def submit_job_task_run(
             expires_at=None,
         )
         _record_submitted(conn, operation_id, user_email, now)
-    return operations.get_operation(operation_id)
+        created = _created_operation(conn, operation_id)
+    return created
 
 
 def submit_quick_load_task_run(
@@ -100,6 +107,9 @@ def submit_quick_load_task_run(
         operations.operations_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
     )
     target: Path | None = None
+    operation_dir: Path | None = None
+    operation_dir_owned = False
+    target_owned = False
     try:
         source_size = source_path.stat().st_size
         candidate.parent.mkdir(parents=True, exist_ok=True)
@@ -131,9 +141,17 @@ def submit_quick_load_task_run(
                 submitted_at=now,
                 artifacts_expire_at=expires_at,
             )
-            target = operations.operations_root() / str(operation_id) / "input.mrc"
-            target.parent.mkdir(parents=True, exist_ok=True)
+            operation_dir = operations.operations_root() / str(operation_id)
+            try:
+                operation_dir.mkdir()
+            except FileExistsError as exc:
+                raise operations.OperationError(
+                    "operation artifact directory already exists"
+                ) from exc
+            operation_dir_owned = True
+            target = operation_dir / "input.mrc"
             os.replace(candidate, target)
+            target_owned = True
             _insert_input_artifact(
                 conn,
                 operation_id=operation_id,
@@ -147,12 +165,53 @@ def submit_quick_load_task_run(
                 expires_at=expires_at,
             )
             _record_submitted(conn, operation_id, user_email, now)
-        return operations.get_operation(operation_id)
+            created = _created_operation(conn, operation_id)
+        return created
     except Exception:
         candidate.unlink(missing_ok=True)
-        if target is not None:
+        if target_owned and target is not None:
             target.unlink(missing_ok=True)
+        if operation_dir_owned and operation_dir is not None:
+            try:
+                operation_dir.rmdir()
+            except OSError:
+                pass
         raise
+
+
+def _require_job_submission_source(
+    conn,
+    *,
+    user_email: str,
+    file_id: int,
+    source_version_id: int,
+) -> None:
+    source = conn.execute(
+        "SELECT job_files.job_id FROM job_files"
+        " JOIN job_file_versions"
+        " ON job_file_versions.job_file_id=job_files.id"
+        " WHERE job_files.id=? AND job_file_versions.id=?",
+        (file_id, source_version_id),
+    ).fetchone()
+    if source is None:
+        raise operations.OperationError("source version does not belong to job file")
+    access = conn.execute(
+        "SELECT role FROM job_access"
+        " WHERE job_id=? AND user_email=? AND role IN ('owner','editor')",
+        (int(source["job_id"]), user_email.strip().lower()),
+    ).fetchone()
+    if access is None:
+        raise jobs.JobError("access denied")
+
+
+def _created_operation(conn, operation_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM operations WHERE id=?",
+        (operation_id,),
+    ).fetchone()
+    if row is None:
+        raise operations.OperationError("operation not found")
+    return {key: row[key] for key in row.keys()}
 
 
 def _insert_operation(
