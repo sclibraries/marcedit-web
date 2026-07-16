@@ -11,6 +11,7 @@ services:
       - ./data:/app/data
       - ./.streamlit:/app/.streamlit:ro
       - ./tests:/app/tests:ro
+      - ./scripts/benchmark-large-batch.py:/app/scripts/benchmark-large-batch.py:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
     environment:

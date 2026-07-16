@@ -13,6 +13,16 @@ def test_compose_passes_gemini_key_from_environment():
     assert "GEMINI_API_KEY=${GEMINI_API_KEY:-}" in compose
 
 
+def test_compose_mounts_large_batch_benchmark_read_only():
+    """Docker tests need the benchmark without exposing all host scripts."""
+    compose = Path("docker-compose.yml").read_text()
+
+    assert (
+        "- ./scripts/benchmark-large-batch.py:"
+        "/app/scripts/benchmark-large-batch.py:ro"
+    ) in compose
+
+
 # --- TASK-069: secrets must never be baked into the image -------------------
 #
 # These read build-context files (Dockerfile/.dockerignore) that exist on the
