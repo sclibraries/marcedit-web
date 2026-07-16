@@ -554,7 +554,7 @@ def test_v12_restart_retries_upload_after_missing_source_is_restored(
     db.init_schema()
     assert _migrated_file(upload_id) is None
     with db.connect() as conn:
-        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 12
+        assert conn.execute("SELECT version FROM _schema_version").fetchone()[0] == 13
 
     source.write_bytes(b"restored")
     db.reset_for_tests()

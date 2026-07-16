@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -151,6 +151,8 @@ def init_schema() -> None:
                 _migrate_to_v11(conn)
             if current_version < 12:
                 _migrate_to_v12(conn)
+            if current_version < 13:
+                _migrate_to_v13(conn)
             from . import job_files
 
             job_files._migrate_uploads_to_job_files(conn)  # noqa: SLF001
@@ -436,6 +438,103 @@ def _migrate_to_v12(conn: sqlite3.Connection) -> None:
     }
     if "job_file_id" not in activity_cols:
         conn.execute("ALTER TABLE job_activity ADD COLUMN job_file_id INTEGER")
+
+
+def _migrate_to_v13(conn: sqlite3.Connection) -> None:
+    """Add durable queued operations and worker health (TASK-156)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind TEXT NOT NULL CHECK(kind IN ('saved-task-run')),
+            request_version INTEGER NOT NULL DEFAULT 1 CHECK(request_version = 1),
+            submitted_by TEXT NOT NULL,
+            job_id INTEGER REFERENCES jobs(id),
+            job_file_id INTEGER REFERENCES job_files(id),
+            source_version_id INTEGER REFERENCES job_file_versions(id),
+            state TEXT NOT NULL CHECK(state IN
+              ('queued','running','cancelling','completed','failed','cancelled')),
+            phase TEXT NOT NULL DEFAULT 'queued',
+            request_json TEXT NOT NULL,
+            processed_records INTEGER NOT NULL DEFAULT 0 CHECK(processed_records >= 0),
+            total_records INTEGER NOT NULL CHECK(total_records >= 0),
+            output_records INTEGER CHECK(output_records >= 0),
+            changed_records INTEGER CHECK(changed_records >= 0),
+            error_count INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0),
+            summary_json TEXT NOT NULL DEFAULT '{}',
+            terminal_message TEXT NOT NULL DEFAULT '',
+            attempt INTEGER NOT NULL DEFAULT 0 CHECK(attempt >= 0),
+            lease_owner TEXT,
+            lease_token TEXT,
+            lease_heartbeat_at TEXT,
+            lease_expires_at TEXT,
+            cancel_requested_by TEXT,
+            cancel_requested_at TEXT,
+            submitted_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            notification_ack_at TEXT,
+            artifacts_expire_at TEXT,
+            applied_version_id INTEGER REFERENCES job_file_versions(id),
+            applied_by TEXT,
+            applied_at TEXT,
+            rolled_back_version_id INTEGER REFERENCES job_file_versions(id),
+            rolled_back_by TEXT,
+            rolled_back_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS operation_artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_id INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK(role IN ('input','result')),
+            filename TEXT NOT NULL,
+            file_path TEXT NOT NULL UNIQUE,
+            record_count INTEGER NOT NULL CHECK(record_count >= 0),
+            file_bytes INTEGER NOT NULL CHECK(file_bytes >= 0),
+            queue_owned INTEGER NOT NULL CHECK(queue_owned IN (0,1)),
+            source_version_id INTEGER REFERENCES job_file_versions(id),
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS operation_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_id INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            actor_email TEXT NOT NULL,
+            details_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS operation_errors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_id INTEGER NOT NULL REFERENCES operations(id) ON DELETE CASCADE,
+            ordinal INTEGER NOT NULL,
+            record_index INTEGER NOT NULL CHECK(record_index >= 0),
+            code TEXT NOT NULL,
+            task_name TEXT,
+            message TEXT NOT NULL,
+            UNIQUE(operation_id, ordinal)
+        );
+        CREATE TABLE IF NOT EXISTS queue_worker_status (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+            worker_id TEXT NOT NULL,
+            pid INTEGER NOT NULL,
+            software_version TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            current_operation_id INTEGER REFERENCES operations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_operations_state_submitted
+          ON operations(state, submitted_at, id);
+        CREATE INDEX IF NOT EXISTS idx_operations_submitter
+          ON operations(submitted_by, submitted_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_operations_job
+          ON operations(job_id, submitted_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_operation_events_operation
+          ON operation_events(operation_id, id);
+        CREATE INDEX IF NOT EXISTS idx_operation_errors_operation
+          ON operation_errors(operation_id, ordinal);
+        CREATE INDEX IF NOT EXISTS idx_operation_artifacts_operation
+          ON operation_artifacts(operation_id, role);
+    """)
 
 
 def _seed_folio_profiles(conn: sqlite3.Connection) -> None:

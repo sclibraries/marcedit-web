@@ -169,4 +169,4 @@ def test_v12_adds_durable_job_file_tables_and_audit_links():
     assert {"job_file_id", "job_file_version_id", "job_file_export_id"}.issubset(note_cols)
     assert "job_file_id" in activity_cols
     assert "current_version_id" not in file_foreign_keys
-    assert db.SCHEMA_VERSION == 12
+    assert db.SCHEMA_VERSION == 13

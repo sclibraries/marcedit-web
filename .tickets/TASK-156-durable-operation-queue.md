@@ -19,4 +19,4 @@ Success Criteria:
 - A successfully applied queued result can be rolled back by creating a new immutable version from the prior version; history is not erased.
 - Intent-focused TDD tests, restart/recovery tests, focused integration tests, and code review pass before deployment.
 
-Status: Todo
+Status: In-Progress

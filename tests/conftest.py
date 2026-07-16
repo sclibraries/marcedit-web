@@ -26,6 +26,10 @@ def _isolated_sqlite(monkeypatch, tmp_path):
     monkeypatch.setenv("MARCEDIT_WEB_DB_PATH", str(tmp_path / "test-suite.db"))
     monkeypatch.setenv("MARCEDIT_WEB_TASKS_ROOT", str(tmp_path / "tasks"))
     monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(tmp_path / "uploads"))
+    monkeypatch.setenv(
+        "MARCEDIT_WEB_OPERATIONS_ROOT",
+        str(tmp_path / "operations"),
+    )
     _db.reset_for_tests()
     yield
     _db.reset_for_tests()
