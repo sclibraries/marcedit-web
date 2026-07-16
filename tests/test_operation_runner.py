@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
+import threading
 from pathlib import Path
 
 import pymarc
@@ -37,6 +39,7 @@ def lease(tmp_path: Path) -> operations.Lease:
     input_path = tmp_path / "input.mrc"
     input_path.write_bytes(_mrc_bytes(12))
     request = {
+        "version": 1,
         "tasks": [
             {"name": "first", "body": "record['001'].data += 'A'", "imports": []},
             {"name": "second", "body": "record['001'].data += 'B'", "imports": []},
@@ -174,6 +177,41 @@ def test_chunk_errors_use_input_wide_indices(lease, monkeypatch):
 
     assert outcome.error_count == 2
     assert [error["index"] for error in outcome.errors] == [3, 8]
+
+
+def test_exact_error_count_survives_global_detail_cap(lease, monkeypatch):
+    calls = []
+
+    def many_errors(tasks, *, input_path, tmp_dir, progress_callback, **kwargs):
+        chunk_count = len(_control_numbers(input_path))
+        calls.append(chunk_count)
+        progress_callback(chunk_count)
+        output = tmp_dir / "output.mrc"
+        output.write_bytes(input_path.read_bytes())
+        return sandbox.SandboxResult(
+            output_path=output,
+            error_count=500,
+            errors=[
+                {
+                    "index": (index % chunk_count) + 1,
+                    "code": "transform-failed",
+                    "message": str(index),
+                }
+                for index in range(150)
+            ],
+        )
+
+    monkeypatch.setattr(
+        operation_runner.sandbox, "run_tasks_subprocess", many_errors
+    )
+
+    outcome = operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert calls == [5, 5, 2]
+    assert outcome.error_count == 1500
+    assert len(outcome.errors) == sandbox.MAX_RETAINED_ERRORS
+    assert outcome.errors[0]["index"] == 1
+    assert outcome.errors[150]["index"] == 6
 
 
 def test_cancellation_discards_the_private_aggregate(lease, monkeypatch):
@@ -357,3 +395,189 @@ def test_valid_but_incomplete_input_cannot_change_submitted_cardinality(
         operation_runner.run_saved_task_operation(lease, chunk_size=5)
 
     assert raised.value.code == "input-cardinality-mismatch"
+
+
+@pytest.mark.parametrize("version", [None, 2, "1"])
+def test_runner_rejects_missing_or_unknown_request_versions(lease, version):
+    request = dict(lease.request)
+    if version is None:
+        request.pop("version")
+    else:
+        request["version"] = version
+    invalid = dataclasses.replace(lease, request=request)
+
+    with pytest.raises(operation_runner.OperationRunError) as raised:
+        operation_runner.run_saved_task_operation(invalid, chunk_size=5)
+
+    assert raised.value.code == "unsupported-request-version"
+    assert str(raised.value) == "Operation request version is not supported."
+
+
+def test_runner_rejects_an_empty_task_snapshot(lease):
+    invalid = dataclasses.replace(
+        lease,
+        request={"version": 1, "tasks": []},
+    )
+
+    with pytest.raises(operation_runner.OperationRunError) as raised:
+        operation_runner.run_saved_task_operation(invalid, chunk_size=5)
+
+    assert raised.value.code == "invalid-request"
+    assert str(raised.value) == "Operation must include at least one task."
+
+
+def test_lease_heartbeat_runs_while_chunk_input_is_being_created(
+    lease, monkeypatch
+):
+    heartbeat_seen = threading.Event()
+    real_renew = operations.renew_lease
+    real_write_chunk = operation_runner._write_chunk
+
+    def capture_renew(current_lease, **kwargs):
+        result = real_renew(current_lease, **kwargs)
+        if threading.current_thread().name == "operation-lease-heartbeat":
+            heartbeat_seen.set()
+        return result
+
+    def blocked_write_chunk(reader, path, limit):
+        assert heartbeat_seen.wait(1)
+        return real_write_chunk(reader, path, limit)
+
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(operation_runner.operations, "renew_lease", capture_renew)
+    monkeypatch.setattr(operation_runner, "_write_chunk", blocked_write_chunk)
+    monkeypatch.setattr(
+        operation_runner.sandbox,
+        "run_tasks_subprocess",
+        _copying_sandbox([]),
+    )
+
+    outcome = operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert outcome.output_records == 12
+    assert heartbeat_seen.is_set()
+
+
+def test_lease_heartbeat_runs_during_final_diff_validation(lease, monkeypatch):
+    heartbeat_seen = threading.Event()
+    validation_started = threading.Event()
+    real_renew = operations.renew_lease
+    real_diff = operation_runner.task_diff.compute_task_diff
+
+    def capture_renew(current_lease, **kwargs):
+        result = real_renew(current_lease, **kwargs)
+        if (
+            threading.current_thread().name == "operation-lease-heartbeat"
+            and validation_started.is_set()
+        ):
+            heartbeat_seen.set()
+        return result
+
+    def blocked_diff(input_path, output_path):
+        validation_started.set()
+        assert heartbeat_seen.wait(1)
+        return real_diff(input_path, output_path)
+
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(operation_runner.operations, "renew_lease", capture_renew)
+    monkeypatch.setattr(
+        operation_runner.task_diff, "compute_task_diff", blocked_diff
+    )
+    monkeypatch.setattr(
+        operation_runner.sandbox,
+        "run_tasks_subprocess",
+        _copying_sandbox([]),
+    )
+
+    outcome = operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert outcome.output_records == 12
+    assert heartbeat_seen.is_set()
+
+
+def test_heartbeat_ownership_failure_propagates_and_cleans_attempt(
+    lease, monkeypatch
+):
+    heartbeat_failed = threading.Event()
+    real_renew = operations.renew_lease
+    real_write_chunk = operation_runner._write_chunk
+
+    def fail_heartbeat(current_lease, **kwargs):
+        if threading.current_thread().name == "operation-lease-heartbeat":
+            heartbeat_failed.set()
+            raise operations.OperationError("operation is no longer running")
+        return real_renew(current_lease, **kwargs)
+
+    def blocked_write_chunk(reader, path, limit):
+        assert heartbeat_failed.wait(1)
+        return real_write_chunk(reader, path, limit)
+
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(operation_runner.operations, "renew_lease", fail_heartbeat)
+    monkeypatch.setattr(operation_runner, "_write_chunk", blocked_write_chunk)
+
+    with pytest.raises(operations.OperationError, match="no longer running"):
+        operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert not (
+        operations.operations_root()
+        / str(lease.operation_id)
+        / f"attempt-{lease.attempt}"
+    ).exists()
+
+
+def test_input_permission_errors_have_a_stable_run_error(lease, monkeypatch):
+    input_path = Path(lease.input_artifact["file_path"])
+    real_open = Path.open
+
+    def deny_input(path, *args, **kwargs):
+        if path == input_path:
+            raise PermissionError("denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_input)
+
+    with pytest.raises(operation_runner.OperationRunError) as raised:
+        operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert raised.value.code == "input-unreadable"
+
+
+def test_candidate_permission_errors_have_a_stable_run_error(lease, monkeypatch):
+    candidate_path = (
+        operations.operations_root()
+        / str(lease.operation_id)
+        / f"attempt-{lease.attempt}"
+        / "candidate.mrc"
+    )
+    real_open = Path.open
+
+    def deny_candidate(path, *args, **kwargs):
+        if path == candidate_path:
+            raise PermissionError("denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_candidate)
+
+    with pytest.raises(operation_runner.OperationRunError) as raised:
+        operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert raised.value.code == "candidate-unwritable"
+
+
+def test_chunk_output_permission_errors_have_a_stable_run_error(
+    lease, monkeypatch
+):
+    real_open = Path.open
+
+    def deny_output(path, *args, **kwargs):
+        if path.name == "output.mrc" and args and args[0] == "rb":
+            raise PermissionError("denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_output)
+
+    with pytest.raises(operation_runner.OperationRunError) as raised:
+        operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert raised.value.code == "output-unreadable"

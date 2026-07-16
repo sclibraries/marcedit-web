@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,8 @@ from . import operations, sandbox, task_diff
 from .record_store import RecordStore
 
 logger = logging.getLogger("marcedit_web.operation_runner")
+
+_LEASE_HEARTBEAT_SECONDS = 10.0
 
 
 class OperationCancelled(RuntimeError):
@@ -36,6 +39,64 @@ class RunOutcome:
     error_count: int
     errors: tuple[dict[str, Any], ...]
     summary: dict[str, Any]
+
+
+class _LeaseHeartbeat:
+    """Renew one lease from a dedicated thread during blocking local work."""
+
+    def __init__(self, lease: operations.Lease) -> None:
+        self._lease = lease
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._failure: BaseException | None = None
+        self._cancelled = False
+        self._started = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name="operation-lease-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+        self._started = True
+
+    def stop(self) -> None:
+        if not self._started:
+            return
+        self._stop.set()
+        self._thread.join()
+
+    def check(self) -> None:
+        with self._lock:
+            failure = self._failure
+            cancelled = self._cancelled
+        if cancelled:
+            raise OperationCancelled("Operation cancellation was requested.")
+        if failure is not None:
+            raise failure
+
+    def _run(self) -> None:
+        while not self._stop.wait(_LEASE_HEARTBEAT_SECONDS):
+            try:
+                operations.renew_lease(self._lease)
+            except operations.OperationError as exc:
+                try:
+                    cancelling = operations.is_lease_cancelling(self._lease)
+                except BaseException as check_exc:
+                    with self._lock:
+                        self._failure = check_exc
+                    return
+                with self._lock:
+                    if cancelling:
+                        self._cancelled = True
+                    else:
+                        self._failure = exc
+                return
+            except BaseException as exc:
+                with self._lock:
+                    self._failure = exc
+                return
 
 
 def queue_chunk_records() -> int:
@@ -83,17 +144,25 @@ def run_saved_task_operation(
         / str(lease.operation_id)
         / f"attempt-{lease.attempt}"
     )
-    if attempt_dir.exists():
-        shutil.rmtree(attempt_dir)
-    attempt_dir.mkdir(parents=True)
+    try:
+        if attempt_dir.exists():
+            shutil.rmtree(attempt_dir)
+        attempt_dir.mkdir(parents=True)
+    except OSError as exc:
+        raise OperationRunError(
+            "candidate-unwritable",
+            "Operation workspace could not be prepared.",
+        ) from exc
     candidate_path = attempt_dir / "candidate.mrc"
     completed = 0
     error_count = 0
     retained_errors: list[dict[str, Any]] = []
     last_progress = -1
+    heartbeat = _LeaseHeartbeat(lease)
 
     def renew(*, phase: str | None = None, processed: int | None = None) -> None:
         nonlocal last_progress
+        heartbeat.check()
         if processed is not None and processed < last_progress:
             return
         try:
@@ -110,6 +179,7 @@ def run_saved_task_operation(
             last_progress = processed
 
     def cancellation_requested() -> bool:
+        heartbeat.check()
         if operations.is_lease_cancelling(lease):
             return True
         try:
@@ -121,9 +191,22 @@ def run_saved_task_operation(
         return False
 
     try:
-        with input_path.open("rb") as input_file, candidate_path.open(
-            "wb"
-        ) as candidate:
+        renew()
+        heartbeat.start()
+        try:
+            input_file = input_path.open("rb")
+        except OSError as exc:
+            raise OperationRunError(
+                "input-unreadable", "Operation input file could not be read."
+            ) from exc
+        try:
+            candidate = candidate_path.open("wb")
+        except OSError as exc:
+            input_file.close()
+            raise OperationRunError(
+                "candidate-unwritable", "Operation candidate could not be written."
+            ) from exc
+        with input_file, candidate:
             reader = iter(
                 pymarc.MARCReader(input_file, to_unicode=True, permissive=True)
             )
@@ -131,7 +214,13 @@ def run_saved_task_operation(
             while True:
                 chunk_number += 1
                 chunk_dir = attempt_dir / f"chunk-{chunk_number}"
-                chunk_dir.mkdir()
+                try:
+                    chunk_dir.mkdir()
+                except OSError as exc:
+                    raise OperationRunError(
+                        "candidate-unwritable",
+                        "Operation chunk workspace could not be prepared.",
+                    ) from exc
                 chunk_input = chunk_dir / "input.mrc"
                 try:
                     chunk_records = _write_chunk(reader, chunk_input, size)
@@ -180,8 +269,7 @@ def run_saved_task_operation(
                             translated.get("index", 0)
                         )
                         retained_errors.append(translated)
-                    with result.output_path.open("rb") as output:
-                        shutil.copyfileobj(output, candidate)
+                    _append_chunk_output(result.output_path, candidate)
                     completed += chunk_records
                     renew(processed=completed)
                 finally:
@@ -193,9 +281,15 @@ def run_saved_task_operation(
                 "Operation input no longer matches its submitted record count.",
             )
         renew(phase="validating", processed=completed)
-        output_store = RecordStore.from_path(candidate_path)
-        output_count = output_store.count()
-        iterated_count = sum(1 for _ in output_store.iter_records())
+        try:
+            output_store = RecordStore.from_path(candidate_path)
+            output_count = output_store.count()
+            iterated_count = sum(1 for _ in output_store.iter_records())
+        except OSError as exc:
+            raise OperationRunError(
+                "candidate-unreadable",
+                "Combined output could not be read for validation.",
+            ) from exc
         if output_store.malformed_count() or output_count != completed:
             raise OperationRunError(
                 "aggregate-invalid",
@@ -206,7 +300,13 @@ def run_saved_task_operation(
                 "aggregate-invalid",
                 "Combined output contained an unreadable MARC record.",
             )
-        diff = task_diff.compute_task_diff(input_path, candidate_path)
+        try:
+            diff = task_diff.compute_task_diff(input_path, candidate_path)
+        except OSError as exc:
+            raise OperationRunError(
+                "validation-io-error",
+                "Input or combined output could not be read for validation.",
+            ) from exc
         if diff.total_in != completed or diff.total_out != completed:
             raise OperationRunError(
                 "aggregate-invalid",
@@ -226,12 +326,23 @@ def run_saved_task_operation(
         _log_failed_attempt(lease, exc)
         shutil.rmtree(attempt_dir, ignore_errors=True)
         raise
+    finally:
+        heartbeat.stop()
 
 
 def _parse_tasks(request: dict[str, Any]) -> tuple[sandbox.TaskSpec, ...]:
+    if request.get("version") != 1 or isinstance(request.get("version"), bool):
+        raise OperationRunError(
+            "unsupported-request-version",
+            "Operation request version is not supported.",
+        )
     raw_tasks = request.get("tasks")
     if not isinstance(raw_tasks, list):
         raise OperationRunError("invalid-request", "Operation tasks are invalid.")
+    if not raw_tasks:
+        raise OperationRunError(
+            "invalid-request", "Operation must include at least one task."
+        )
     parsed = []
     for raw in raw_tasks:
         if not isinstance(raw, dict):
@@ -259,23 +370,54 @@ def _parse_tasks(request: dict[str, Any]) -> tuple[sandbox.TaskSpec, ...]:
 def _write_chunk(reader, path: Path, limit: int) -> int:
     count = 0
     try:
-        with path.open("wb") as output:
+        output = path.open("wb")
+    except OSError as exc:
+        raise OperationRunError(
+            "candidate-unwritable",
+            "Operation chunk input could not be written.",
+        ) from exc
+    try:
+        with output:
             writer = pymarc.MARCWriter(output)
             while count < limit:
                 try:
                     record = next(reader)
                 except StopIteration:
                     break
+                except OSError as exc:
+                    raise OperationRunError(
+                        "input-unreadable",
+                        "Operation input file could not be read.",
+                    ) from exc
+                except Exception as exc:
+                    raise OperationRunError(
+                        "malformed-input", "Input contains invalid MARC data."
+                    ) from exc
                 if record is None:
                     raise OperationRunError(
                         "malformed-input",
                         "Input contains an unreadable MARC record.",
                     )
-                writer.write(record)
+                try:
+                    writer.write(record)
+                except OSError as exc:
+                    raise OperationRunError(
+                        "candidate-unwritable",
+                        "Operation chunk input could not be written.",
+                    ) from exc
+                except Exception as exc:
+                    raise OperationRunError(
+                        "malformed-input", "Input contains invalid MARC data."
+                    ) from exc
                 count += 1
             writer.close(close_fh=False)
     except OperationRunError:
         raise
+    except OSError as exc:
+        raise OperationRunError(
+            "candidate-unwritable",
+            "Operation chunk input could not be written.",
+        ) from exc
     except Exception as exc:
         raise OperationRunError(
             "malformed-input", "Input contains invalid MARC data."
@@ -289,26 +431,49 @@ def _validate_chunk_output(
     expected_records: int,
     chunk_number: int,
 ) -> None:
-    if not path.is_file():
+    try:
+        if not path.is_file():
+            raise OperationRunError(
+                "malformed-output",
+                f"Chunk {chunk_number} produced no MARC output.",
+            )
+        store = RecordStore.from_path(path)
+        if store.malformed_count():
+            raise OperationRunError(
+                "malformed-output",
+                f"Chunk {chunk_number} produced malformed MARC output.",
+            )
+        if store.count() != expected_records:
+            raise OperationRunError(
+                "cardinality-mismatch",
+                f"Chunk {chunk_number} changed the number of records.",
+            )
+        if sum(1 for _ in store.iter_records()) != expected_records:
+            raise OperationRunError(
+                "malformed-output",
+                f"Chunk {chunk_number} produced unreadable MARC output.",
+            )
+    except OSError as exc:
         raise OperationRunError(
-            "malformed-output", f"Chunk {chunk_number} produced no MARC output."
-        )
-    store = RecordStore.from_path(path)
-    if store.malformed_count():
+            "output-unreadable",
+            f"Chunk {chunk_number} output could not be read.",
+        ) from exc
+
+
+def _append_chunk_output(path: Path, candidate) -> None:
+    try:
+        output = path.open("rb")
+    except OSError as exc:
         raise OperationRunError(
-            "malformed-output",
-            f"Chunk {chunk_number} produced malformed MARC output.",
-        )
-    if store.count() != expected_records:
+            "output-unreadable", "Chunk output could not be read."
+        ) from exc
+    try:
+        with output:
+            shutil.copyfileobj(output, candidate)
+    except OSError as exc:
         raise OperationRunError(
-            "cardinality-mismatch",
-            f"Chunk {chunk_number} changed the number of records.",
-        )
-    if sum(1 for _ in store.iter_records()) != expected_records:
-        raise OperationRunError(
-            "malformed-output",
-            f"Chunk {chunk_number} produced unreadable MARC output.",
-        )
+            "candidate-unwritable", "Operation candidate could not be written."
+        ) from exc
 
 
 def _log_failed_attempt(lease: operations.Lease, exc: BaseException) -> None:
