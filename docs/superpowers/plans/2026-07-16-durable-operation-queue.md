@@ -474,11 +474,15 @@ it with `WHERE id=? AND state='queued'`, increment `attempt`, set a UUID token,
 set `started_at=COALESCE(started_at, now)`, append `claimed`, and return the
 request plus input artifact from the same transaction.
 
-Every lease-owned mutation must use a predicate containing all three guards:
+Every lease-owned mutation must use a predicate containing the operation ID,
+current lease token, and lifecycle-appropriate state. Running mutations use:
 
 ```sql
 WHERE id=? AND state='running' AND lease_token=?
 ```
+
+`finish_cancelled` runs after cancellation has transitioned the operation and
+therefore requires `WHERE id=? AND state='cancelling' AND lease_token=?`.
 
 `complete_operation` adds `AND cancel_requested_at IS NULL`, validates and
 moves the owned result into the operation result path before inserting the
