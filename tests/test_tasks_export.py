@@ -17,6 +17,11 @@ class _Spinner:
         return False
 
 
+class _RunStatus(_Spinner):
+    def update(self, **_kwargs):
+        pass
+
+
 def _tasks_render():
     sys.modules.setdefault(
         "streamlit_ace",
@@ -89,6 +94,12 @@ class _FakeStreamlit:
 
     def spinner(self, _message):
         return _Spinner()
+
+    def status(self, _message, **_kwargs):
+        return _RunStatus()
+
+    def write(self, _message):
+        pass
 
     def text_input(self, _label, *, key, **_kwargs):
         return self.session_state.get(key, "")
@@ -520,6 +531,76 @@ def test_timed_out_task_output_is_not_publishable(monkeypatch, tmp_path):
         "output is ready" in message.lower()
         for message in fake_st.markdowns
     )
+
+
+def test_signed_in_quick_load_timeout_does_not_create_legacy_snapshot(
+    monkeypatch, tmp_path, record,
+):
+    """Timed-out partial bytes must not enter downloadable legacy history."""
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    sandbox_workdir = tmp_path / "sandbox"
+    sandbox_workdir.mkdir()
+    partial_output = sandbox_workdir / "partial-output.mrc"
+    partial_output.write_bytes(record.as_marc())
+    store = SimpleNamespace(
+        count=lambda: 1,
+        write_mrc_to=lambda path: path.write_bytes(record.as_marc()),
+    )
+    result = tasks_render.sandbox.SandboxResult(
+        output_path=partial_output,
+        errors=[],
+        error_count=0,
+        returncode=124,
+        timed_out=True,
+    )
+    errors = []
+
+    @contextmanager
+    def measured_run(*_args, **_kwargs):
+        yield SimpleNamespace(mark_error=errors.append)
+
+    snapshots = []
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@example.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_filename", lambda: "quick-load.mrc"
+    )
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": "pass"},
+    )
+    monkeypatch.setattr(
+        tasks_render.sandbox, "run_tasks_subprocess", lambda *_a, **_k: result
+    )
+    monkeypatch.setattr(tasks_render, "_batch_operation", measured_run)
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tasks_render.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: str(sandbox_workdir),
+    )
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **kwargs: snapshots.append(kwargs) or {"id": 9, **kwargs},
+    )
+    fake_st.session_state.update({
+        "current_job_id": 7,
+        "job_file_id": None,
+        "quick_load_mode": True,
+    })
+
+    tasks_render._execute_sandboxed_run(["Leader cleanup"], tmp_path)
+
+    assert errors == ["SandboxTimeout"]
+    assert snapshots == []
+    assert fake_st.session_state["task_run_history"][0].timed_out is True
+    assert fake_st.session_state[tasks_render.K_RUN_RESULTS]["snapshot_id"] is None
 
 
 def test_saved_task_output_requires_explicit_version_adoption(

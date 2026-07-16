@@ -1439,7 +1439,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         "sandbox_returncode": int(result.returncode or 0),
     }
     snapshot = None
-    if not _uses_job_file_versions():
+    if not result.timed_out and not _uses_job_file_versions():
         # Non-job Quick Load compatibility boundary: legacy history only.
         snapshot = snapshot_actions.record_job_snapshot(
             job_id=st.session_state.get("current_job_id"),
