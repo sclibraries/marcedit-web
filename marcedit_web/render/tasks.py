@@ -68,6 +68,13 @@ from marcedit_web.render.batch_status import loaded_batch_status
 
 logger = logging.getLogger("marcedit_web.render.tasks")
 
+TASK_TIMEOUT_STATUS = "⚠️ Run reached the maximum processing time"
+TASK_TIMEOUT_MESSAGE = (
+    "This run exceeded the maximum processing time of 5 minutes and stopped "
+    "before all records were completed. No partial output was applied or "
+    "made available for download."
+)
+
 
 @contextmanager
 def _batch_operation(operation: str, *, phase: str, store):
@@ -1257,6 +1264,7 @@ def _cancel_callback() -> None:
 
 def _render_run_panel(registered, tasks_dir: Path) -> None:
     available_names = [t.name for t in registered]
+    processing_minutes = sandbox.DEFAULT_PROCESSING_LIMIT_SECONDS // 60
     selection = st.multiselect(
         "Tasks to run (applied in the listed order)",
         options=available_names,
@@ -1270,9 +1278,10 @@ def _render_run_panel(registered, tasks_dir: Path) -> None:
         key="tasks_run_selection",
     )
     st.caption(
-        "ℹ️ Runs apply in the sandbox, which has CPU / memory / wall-"
-        "clock limits. Large batches may take up to 30 seconds — "
-        "**leave this tab open until the status below reports Done**."
+        "ℹ️ Runs apply in the sandbox, which has CPU, memory, and maximum "
+        f"processing-time limits. Large batches may take up to "
+        f"{processing_minutes} minutes — **leave this tab open until the "
+        "status below reports Done**."
     )
     if st.button(
         "Run selected tasks",
@@ -1340,7 +1349,7 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
                 measurement.mark_error("SandboxNonzeroExit")
         if result.timed_out:
             status.update(
-                label="⚠️ Run hit the wall-clock limit",
+                label=TASK_TIMEOUT_STATUS,
                 state="error",
                 expanded=False,
             )
@@ -1558,10 +1567,7 @@ def _render_run_results() -> None:
     )
 
     if results.get("timed_out"):
-        st.error(
-            "Sandbox hit the wall-clock limit. Output may be partial. "
-            "Reduce the batch size or split the task into smaller steps."
-        )
+        st.error(TASK_TIMEOUT_MESSAGE)
     elif results.get("sandbox_returncode", 0) != 0:
         st.warning(
             f"Sandbox exited with code {results['sandbox_returncode']}. "
@@ -1595,6 +1601,9 @@ def _render_run_results() -> None:
     # cataloger can verify the task did the expected work before
     # exporting.
     _render_diff_review(results)
+
+    if results.get("timed_out"):
+        return
 
     if (
         _uses_job_file_versions()

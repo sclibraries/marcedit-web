@@ -96,6 +96,9 @@ class _FakeStreamlit:
     def text_area(self, _label, *, key, **_kwargs):
         return self.session_state.get(key, "")
 
+    def multiselect(self, _label, *, options, default, **_kwargs):
+        return list(default)
+
     def rerun(self):
         self.rerun_called = True
 
@@ -467,29 +470,34 @@ def test_render_run_results_uses_output_path_without_session_bytes(
     ]
 
 
-def test_render_run_results_does_not_read_output_when_diff_summary_missing(
-    monkeypatch, tmp_path,
-):
+def test_run_panel_explains_the_five_minute_processing_limit(monkeypatch):
+    """Catalogers see the real temporary budget before starting work."""
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render()
     monkeypatch.setattr(tasks_render, "st", fake_st)
-    monkeypatch.setattr(
-        tasks_render.task_diff,
-        "compute_task_diff",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("diff should not rebuild during render")
-        ),
-    )
+
+    tasks_render._render_run_panel([], Path("/unused"))
+
+    rendered = " ".join(fake_st.captions)
+    assert "5 minutes" in rendered
+    assert "wall-clock" not in rendered
+
+
+def test_timed_out_task_output_is_not_publishable(monkeypatch, tmp_path):
+    """An incomplete MARC prefix is diagnostic evidence, not an export."""
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
     input_path = tmp_path / "input.mrc"
-    output_path = tmp_path / "output.mrc"
+    output_path = tmp_path / "partial-output.mrc"
     input_path.write_bytes(b"input")
-    output_path.write_bytes(b"output")
+    output_path.write_bytes(b"partial")
     fake_st.session_state[tasks_render.K_RUN_RESULTS] = {
         "issues": [],
         "out_filename": "source_tasks_20260709_190000.mrc",
         "out_path": str(output_path),
-        "input_count": 1,
-        "output_count": 1,
+        "input_count": 60_498,
+        "output_count": 43_762,
         "ran_tasks": ["Leader cleanup"],
         "timed_out": True,
         "sandbox_returncode": 124,
@@ -500,9 +508,17 @@ def test_render_run_results_does_not_read_output_when_diff_summary_missing(
 
     tasks_render._render_run_results()
 
+    assert tasks_render.TASK_TIMEOUT_STATUS == (
+        "⚠️ Run reached the maximum processing time"
+    )
+    assert fake_st.errors == [tasks_render.TASK_TIMEOUT_MESSAGE]
+    assert "maximum processing time" in fake_st.errors[0]
+    assert "wall-clock" not in fake_st.errors[0]
+    assert fake_st.buttons == []
     assert fake_st.download_buttons == []
-    assert fake_st.buttons[0]["label"] == (
-        "Prepare Download source_tasks_20260709_190000.mrc"
+    assert not any(
+        "output is ready" in message.lower()
+        for message in fake_st.markdowns
     )
 
 
