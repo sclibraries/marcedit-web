@@ -255,6 +255,12 @@ unapplied result or roll back an applied Job result.
 - Other editors and viewers may not cancel another user's operation.
 - Operation visibility follows source access. Quick Load operations are private
   to their submitter. Job operation visibility follows current Job access.
+  Application admins may additionally view operation metadata and diagnostics
+  required to exercise cancel-any queue administration, but artifact download
+  and result actions still require source access.
+- Submitting a Job-file task run requires current owner/editor access. It does
+  not require checkout because submission creates an unapplied candidate;
+  applying that candidate requires the checkout and version guards below.
 - Applying a Job result requires owner/editor access, the existing Job-file
   checkout, and the exact source version still being current.
 - Rollback requires the same mutation authority and checkout protections as any
