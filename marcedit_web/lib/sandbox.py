@@ -45,6 +45,7 @@ import logging
 import math
 import os
 import resource
+import signal
 import subprocess
 import sys
 import tempfile
@@ -85,7 +86,7 @@ class SandboxResult:
     ``error_count`` is exact while ``errors`` retains only the first capped
     diagnostics. ``stderr`` is the raw child stderr — surfaced for debugging
     when the run failed outside the per-record loop (import error, segfault,
-    etc). ``timed_out`` is True when the wall clock cap fired.
+    etc). ``timed_out`` is True when a processing-time cap fired.
     """
 
     output_path: Path
@@ -126,7 +127,7 @@ def _set_limits(cpu_seconds):
     try:
         resource.setrlimit(
             resource.RLIMIT_CPU,
-            (cpu_seconds, cpu_seconds),
+            (cpu_seconds, cpu_seconds + 1),
         )
         resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024,
                                                  512 * 1024 * 1024))
@@ -227,7 +228,7 @@ def _preexec_set_limits(cpu_seconds: int) -> None:
     """Apply resource limits in the child between fork and exec."""
     resource.setrlimit(
         resource.RLIMIT_CPU,
-        (cpu_seconds, cpu_seconds),
+        (cpu_seconds, cpu_seconds + 1),
     )
     resource.setrlimit(resource.RLIMIT_AS, (_AS_BYTES, _AS_BYTES))
     resource.setrlimit(resource.RLIMIT_FSIZE, (_FSIZE_BYTES, _FSIZE_BYTES))
@@ -328,6 +329,12 @@ def run_tasks_subprocess(
         )
         stderr = completed.stderr
         returncode = completed.returncode
+        if returncode == -signal.SIGXCPU:
+            timed_out = True
+            logger.warning(
+                "sandbox exceeded CPU processing limit after %.1fs",
+                timeout,
+            )
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")

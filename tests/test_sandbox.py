@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -113,7 +114,7 @@ def test_default_processing_limit_reaches_parent_and_child(
     assert captured["cmd"][cpu_arg + 1] == "300"
     assert (
         sandbox.resource.RLIMIT_CPU,
-        (300, 300),
+        (300, 301),
     ) in resource_limits
 
 
@@ -148,8 +149,8 @@ def test_injected_timeout_reaches_child_cpu_limit(one_record_bytes):
             name="inspect-limit",
             body=(
                 "import resource\n"
-                "cpu_limit = resource.getrlimit(resource.RLIMIT_CPU)[0]\n"
-                "assert cpu_limit == 2, cpu_limit\n"
+                "cpu_limit = resource.getrlimit(resource.RLIMIT_CPU)\n"
+                "assert cpu_limit == (2, 3), cpu_limit\n"
             ),
         )],
         one_record_bytes,
@@ -158,6 +159,56 @@ def test_injected_timeout_reaches_child_cpu_limit(one_record_bytes):
 
     assert result.returncode == 0
     assert result.errors == []
+
+
+def test_sigxcpu_completion_is_reported_as_timeout(
+    one_record_bytes, monkeypatch,
+):
+    """A child reaching its CPU soft limit keeps timeout safety gates active."""
+    monkeypatch.setattr(
+        sandbox.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stderr="CPU time limit exceeded",
+            returncode=-signal.SIGXCPU,
+        ),
+    )
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="busy", body="while True:\n    pass\n")],
+        one_record_bytes,
+        timeout=2.0,
+    )
+
+    assert result.returncode == -signal.SIGXCPU
+    assert result.timed_out is True
+    assert result.error_count == 1
+    assert result.errors[-1]["code"] == "sandbox-timeout"
+
+
+def test_ordinary_nonzero_completion_is_not_reported_as_timeout(
+    one_record_bytes, monkeypatch,
+):
+    """Only the CPU-limit signal is normalized to timeout state."""
+    monkeypatch.setattr(
+        sandbox.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            stderr="ordinary failure",
+            returncode=7,
+        ),
+    )
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        one_record_bytes,
+        timeout=2.0,
+    )
+
+    assert result.returncode == 7
+    assert result.timed_out is False
+    assert result.error_count == 1
+    assert result.errors[-1]["code"] == "sandbox-nonzero-exit"
 
 
 def test_delete_tag_via_transforms_helper(one_record_bytes):
