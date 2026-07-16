@@ -49,6 +49,15 @@ def test_operations_root_uses_the_isolated_test_directory(tmp_path):
     assert operations.operations_root() == tmp_path / "operations"
 
 
+def test_retention_days_defaults_to_thirty_and_rejects_invalid_values(monkeypatch):
+    monkeypatch.delenv("MARCEDIT_WEB_OPERATION_RETENTION_DAYS", raising=False)
+    assert operations.retention_days() == 30
+    for value in ("0", "-1", "many"):
+        monkeypatch.setenv("MARCEDIT_WEB_OPERATION_RETENTION_DAYS", value)
+        with pytest.raises(operations.OperationError, match="positive integer"):
+            operations.retention_days()
+
+
 def test_get_operation_returns_a_plain_dict(queued_operation):
     assert type(queued_operation) is dict
     assert queued_operation["submitted_by"] == "owner@smith.edu"

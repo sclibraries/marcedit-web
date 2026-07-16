@@ -15,6 +15,21 @@ class OperationError(ValueError):
     """Raised when an operation action is missing or unauthorized."""
 
 
+def retention_days() -> int:
+    raw = os.environ.get("MARCEDIT_WEB_OPERATION_RETENTION_DAYS", "30")
+    try:
+        days = int(raw)
+    except ValueError as exc:
+        raise OperationError(
+            "MARCEDIT_WEB_OPERATION_RETENTION_DAYS must be a positive integer"
+        ) from exc
+    if days <= 0:
+        raise OperationError(
+            "MARCEDIT_WEB_OPERATION_RETENTION_DAYS must be a positive integer"
+        )
+    return days
+
+
 def operations_root() -> Path:
     return Path(
         os.environ.get("MARCEDIT_WEB_OPERATIONS_ROOT", "data/operations")
