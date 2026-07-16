@@ -307,6 +307,23 @@ def is_cancel_requested(lease: Lease) -> bool:
     return row is None or row["state"] != "running" or row["cancel_requested_at"] is not None
 
 
+def is_lease_cancelling(lease: Lease) -> bool:
+    """Return whether the current lease is in a user-requested cancel state.
+
+    Unlike :func:`is_cancel_requested`, this deliberately returns ``False``
+    for a stale or missing lease.  The runner uses it to distinguish the
+    expected cancellation race from ownership loss after a failed renewal.
+    """
+    db.init_schema()
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM operations WHERE id=? AND state='cancelling'"
+            " AND lease_token=? AND cancel_requested_at IS NOT NULL",
+            (lease.operation_id, lease.token),
+        ).fetchone()
+    return row is not None
+
+
 def finish_cancelled(lease: Lease) -> dict[str, Any]:
     db.init_schema()
     now = _iso(_now())
