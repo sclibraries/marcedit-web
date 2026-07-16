@@ -349,6 +349,7 @@ def run_saved_task_operation(
         heartbeat.stop_and_check(final_renew=True)
         return outcome
     except BaseException as exc:
+        superseding_lease_error: BaseException | None = None
         shutdown_timed_out = (
             isinstance(exc, OperationRunError)
             and exc.code == "lease-heartbeat-shutdown-timeout"
@@ -356,6 +357,16 @@ def run_saved_task_operation(
         if heartbeat.is_alive() and not shutdown_timed_out:
             try:
                 heartbeat.stop_and_check()
+            except (OperationCancelled, operations.OperationError) as lease_exc:
+                if isinstance(exc, OperationRunError):
+                    superseding_lease_error = lease_exc
+                else:
+                    logger.exception(
+                        "lease state changed while handling an internal failure"
+                        " operation_id=%s attempt=%s",
+                        lease.operation_id,
+                        lease.attempt,
+                    )
             except BaseException:
                 logger.exception(
                     "lease heartbeat shutdown failed"
@@ -363,9 +374,25 @@ def run_saved_task_operation(
                     lease.operation_id,
                     lease.attempt,
                 )
-        _log_failed_attempt(lease, exc)
+        try:
+            _log_failed_attempt(lease, exc)
+        except BaseException:
+            logger.exception(
+                "attempt failure logging failed operation_id=%s attempt=%s",
+                lease.operation_id,
+                lease.attempt,
+            )
         if cleanup_owned:
-            shutil.rmtree(attempt_dir, ignore_errors=True)
+            try:
+                shutil.rmtree(attempt_dir, ignore_errors=True)
+            except BaseException:
+                logger.exception(
+                    "attempt cleanup failed operation_id=%s attempt=%s",
+                    lease.operation_id,
+                    lease.attempt,
+                )
+        if superseding_lease_error is not None:
+            raise superseding_lease_error from exc
         raise
 
 

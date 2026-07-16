@@ -673,6 +673,70 @@ def test_blocked_heartbeat_shutdown_is_bounded_and_reported(lease, monkeypatch):
     )
 
 
+@pytest.mark.parametrize("cancel", [False, True], ids=["lease-loss", "cancel"])
+def test_lease_state_discovered_while_stopping_supersedes_processing_error(
+    lease, monkeypatch, caplog, cancel
+):
+    processing_failed = threading.Event()
+    heartbeat_entered = threading.Event()
+    release_heartbeat = threading.Event()
+    real_renew = operations.renew_lease
+
+    def fail_heartbeat_after_processing(current_lease, **kwargs):
+        if (
+            threading.current_thread().name == "operation-lease-heartbeat"
+            and processing_failed.is_set()
+        ):
+            heartbeat_entered.set()
+            assert release_heartbeat.wait(1)
+            if cancel:
+                operations.request_cancel(
+                    lease.operation_id, by="owner@smith.edu"
+                )
+                return real_renew(current_lease, **kwargs)
+            raise operations.OperationError("operation is no longer running")
+        return real_renew(current_lease, **kwargs)
+
+    def processing_error(tasks, *, tmp_dir, **kwargs):
+        processing_failed.set()
+        assert heartbeat_entered.wait(1)
+        release_heartbeat.set()
+        output = tmp_dir / "output.mrc"
+        output.write_bytes(b"")
+        return sandbox.SandboxResult(
+            output_path=output,
+            errors=[],
+            timed_out=True,
+        )
+
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        operation_runner.operations,
+        "renew_lease",
+        fail_heartbeat_after_processing,
+    )
+    monkeypatch.setattr(
+        operation_runner.sandbox,
+        "run_tasks_subprocess",
+        processing_error,
+    )
+
+    expected = (
+        operation_runner.OperationCancelled
+        if cancel
+        else operations.OperationError
+    )
+    with pytest.raises(expected):
+        operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+    assert "'code': 'chunk-timeout'" in caplog.text
+    assert not (
+        operations.operations_root()
+        / str(lease.operation_id)
+        / f"attempt-{lease.attempt}"
+    ).exists()
+
+
 def test_input_permission_errors_have_a_stable_run_error(lease, monkeypatch):
     input_path = Path(lease.input_artifact["file_path"])
     real_open = Path.open
