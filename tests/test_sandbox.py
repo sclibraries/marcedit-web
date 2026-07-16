@@ -164,6 +164,80 @@ def test_cancellation_wins_cpu_signal_classification(
     assert result.error_count == 0
 
 
+def test_cancellation_preempts_progress_callbacks(
+    tmp_path, one_record_bytes, monkeypatch,
+):
+    """Once cancellation is observed, durable progress is no longer renewed."""
+    progress_path = tmp_path / "progress.json"
+    cancellation_state = {"observed": False}
+    cancellation_checks = iter([False, True])
+    observed_progress = []
+
+    class ProgressPopen:
+        pid = 6790
+        returncode = None
+
+        def communicate(self, timeout=None):
+            if timeout is not None:
+                progress_path.write_text('{"processed_records": 1}')
+                raise sandbox.subprocess.TimeoutExpired("sandbox", timeout)
+            progress_path.write_text('{"processed_records": 2}')
+            self.returncode = -signal.SIGKILL
+            return "", "cancelled"
+
+        def poll(self):
+            return self.returncode
+
+    def cancel_requested():
+        requested = next(cancellation_checks, True)
+        cancellation_state["observed"] = requested
+        return requested
+
+    def record_progress(processed_records):
+        if cancellation_state["observed"]:
+            raise RuntimeError("lease entered cancelling state")
+        observed_progress.append(processed_records)
+
+    process = ProgressPopen()
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *_a, **_k: process)
+    monkeypatch.setattr(sandbox.os, "killpg", lambda *_a: None)
+    monkeypatch.setattr(sandbox.time, "sleep", lambda _seconds: None)
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="slow", body="while True: pass")],
+        one_record_bytes,
+        progress_path=progress_path,
+        progress_callback=record_progress,
+        cancel_requested=cancel_requested,
+        poll_interval=0.01,
+    )
+
+    assert result.cancelled is True
+    assert result.timed_out is False
+    assert observed_progress == []
+    assert json.loads(progress_path.read_text())["processed_records"] == 2
+
+
+def test_startup_removes_stale_progress_temporary(
+    tmp_path, one_record_bytes, monkeypatch,
+):
+    """A prior interrupted atomic write cannot leak into the next run."""
+    progress_path = tmp_path / "progress.json"
+    temporary_path = Path(str(progress_path) + ".tmp")
+    temporary_path.write_text("stale partial progress")
+    process = _CompletedPopen(returncode=0, already_completed=True)
+    monkeypatch.setattr(sandbox.subprocess, "Popen", lambda *_a, **_k: process)
+
+    result = run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        one_record_bytes,
+        progress_path=progress_path,
+    )
+
+    assert result.returncode == 0
+    assert not temporary_path.exists()
+
+
 def test_completed_child_wins_cancellation_poll_race(
     one_record_bytes, monkeypatch,
 ):

@@ -321,6 +321,7 @@ def run_tasks_subprocess(
         progress_path = progress_path.absolute()
         progress_path.parent.mkdir(parents=True, exist_ok=True)
         progress_path.unlink(missing_ok=True)
+        Path(str(progress_path) + ".tmp").unlink(missing_ok=True)
 
     cmd = [
         sys.executable,
@@ -379,16 +380,17 @@ def run_tasks_subprocess(
                     process_reaped = True
                     break
 
-                last_progress = _report_progress(
-                    progress_path,
-                    progress_callback,
-                    last_progress,
-                )
                 if cancel_requested is not None and cancel_requested():
                     cancelled = True
                     _, communicated_stderr = _terminate_process_group(process)
                     process_reaped = True
                     break
+
+                last_progress = _report_progress(
+                    progress_path,
+                    progress_callback,
+                    last_progress,
+                )
 
                 remaining = timeout - (time.monotonic() - started_at)
                 if remaining <= 0:
@@ -407,11 +409,12 @@ def run_tasks_subprocess(
                 except subprocess.TimeoutExpired:
                     continue
 
-            _report_progress(
-                progress_path,
-                progress_callback,
-                last_progress,
-            )
+            if not cancelled:
+                _report_progress(
+                    progress_path,
+                    progress_callback,
+                    last_progress,
+                )
         except BaseException:
             if not process_reaped:
                 _terminate_process_group(process)

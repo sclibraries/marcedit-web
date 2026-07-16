@@ -129,3 +129,39 @@ independent re-review reported no remaining Critical or Important findings.
   descendant cleanup.
 - The sandbox remains a resource-limited subprocess boundary, not a complete
   security sandbox; the existing module-level limitations remain unchanged.
+
+## Controller-review follow-up
+
+An independent controller rejected the first Task 4 commit because progress was
+reported before checking cancellation and was reported again unconditionally
+after cancellation teardown. Future queue progress callbacks renew the lease;
+once the operation enters `cancelling`, that callback must not run. The
+controller also found that startup removed `progress.json` but not the fixed
+atomic-write sibling `progress.json.tmp`.
+
+Strict follow-up RED command:
+
+```text
+pytest tests/test_sandbox.py::test_cancellation_preempts_progress_callbacks tests/test_sandbox.py::test_startup_removes_stale_progress_temporary -q
+```
+
+Result: **2 failed** for the intended reasons. The cancellation test raised
+`RuntimeError: lease entered cancelling state` from the unconditional final
+progress callback after teardown advanced the sidecar. The temporary cleanup
+test found the stale `.tmp` sibling still present.
+
+The surgical fix makes each poll order completion, cancellation, then progress;
+it skips the final progress callback only for a cancelled result and removes the
+fixed `.tmp` sibling at startup. Successful non-cancelled completion retains its
+final progress read.
+
+Focused GREEN evidence:
+
+- targeted cancellation/temporary/success-final-progress tests: **3 passed in
+  0.18s**;
+- complete sandbox suite: **35 passed in 6.31s**;
+- required compatibility set: **122 passed in 9.95s**;
+- final full Docker suite: **1333 passed, 12 skipped in 30.76s**.
+
+The same 12 build-context skips listed above were explicitly reported. No skip
+is claimed as coverage.
