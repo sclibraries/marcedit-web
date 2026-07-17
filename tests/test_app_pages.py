@@ -6,7 +6,8 @@ import importlib
 
 PUBLIC_ALLOWED = {"Home", "View", "Validate", "Report", "MarcTools"}
 PRIVATE_ONLY = {
-    "Workspace", "Jobs", "History", "Find", "MarcEditor", "Tasks", "Diff", "Dedupe", "Admin",
+    "Workspace", "Jobs", "History", "Operations", "Find", "MarcEditor",
+    "Tasks", "Diff", "Dedupe", "Admin",
 }
 SANDBOX = "Tasks"
 ADMIN = "Admin"
@@ -49,3 +50,18 @@ def test_public_mode_does_not_register_jobs_page(monkeypatch):
     app = _load_app(monkeypatch, "public")
     paths = _url_paths(app.build_pages(public=True))
     assert "Jobs" not in paths
+
+
+def test_private_mode_registers_operations_with_material_icon(monkeypatch):
+    app = _load_app(monkeypatch, "private")
+    pages = app.build_pages(public=False)
+    operation_page = next(
+        page for page in pages["Start"] if page.url_path == "Operations"
+    )
+    assert operation_page.script == "views/D_Operations.py"
+    assert operation_page.icon == ":material/pending_actions:"
+
+
+def test_public_mode_never_registers_operations(monkeypatch):
+    app = _load_app(monkeypatch, "public")
+    assert "Operations" not in _url_paths(app.build_pages(public=True))

@@ -69,26 +69,72 @@ def get_operation(operation_id: int) -> dict[str, Any]:
 def list_visible_operations(user_email: str) -> list[dict[str, Any]]:
     """Return operations whose current source access includes the user."""
     db.init_schema()
+    email = user_email.strip().lower()
     with db.connect() as conn:
-        if _is_admin(conn, user_email):
+        is_admin = _is_admin(conn, email)
+        select = (
+            "SELECT operations.*,jobs.name AS source_job_name,"
+            " job_files.display_name AS source_file_name,"
+            " job_file_versions.version_number AS source_version_number,"
+            " job_access.role AS viewer_role,"
+            " (SELECT filename FROM operation_artifacts"
+            " WHERE operation_id=operations.id AND role='input'"
+            " ORDER BY id LIMIT 1) AS source_input_name"
+            " FROM operations LEFT JOIN jobs ON jobs.id=operations.job_id"
+            " LEFT JOIN job_files ON job_files.id=operations.job_file_id"
+            " LEFT JOIN job_file_versions"
+            " ON job_file_versions.id=operations.source_version_id"
+            " LEFT JOIN job_access ON job_access.job_id=operations.job_id"
+            " AND job_access.user_email=?"
+        )
+        if is_admin:
             rows = conn.execute(
-                "SELECT * FROM operations"
-                " ORDER BY submitted_at DESC, id DESC"
+                select
+                + " ORDER BY operations.submitted_at DESC, operations.id DESC",
+                (email,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT operations.* FROM operations"
-                " LEFT JOIN job_access"
-                " ON job_access.job_id=operations.job_id"
-                " AND job_access.user_email=?"
-                " WHERE (operations.job_id IS NULL"
+                select
+                + " WHERE (operations.job_id IS NULL"
                 " AND operations.submitted_by=?)"
                 " OR (operations.job_id IS NOT NULL"
                 " AND job_access.user_email IS NOT NULL)"
                 " ORDER BY operations.submitted_at DESC, operations.id DESC",
-                (user_email, user_email),
+                (email, email),
             ).fetchall()
-    return [_dict(row) for row in rows]
+    visible = []
+    for row in rows:
+        item = _dict(row)
+        has_source_access = (
+            item["submitted_by"] == email
+            if item["job_id"] is None
+            else item["viewer_role"] is not None
+        )
+        item["can_access_artifacts"] = has_source_access
+        item["can_cancel"] = (
+            item["submitted_by"] == email
+            or is_admin
+            or item["viewer_role"] == "owner"
+        )
+        if item["job_id"] is None:
+            item["source_label"] = item["source_input_name"] or "Quick Load file"
+        else:
+            file_name = item["source_file_name"] or "Job file"
+            version = item["source_version_number"]
+            version_label = f" · v{version}" if version is not None else ""
+            job_name = item["source_job_name"] or "Job"
+            item["source_label"] = f"{job_name} · {file_name}{version_label}"
+        for internal_name in (
+            "source_job_name",
+            "source_file_name",
+            "source_version_number",
+            "source_input_name",
+            "viewer_role",
+        ):
+            item.pop(internal_name, None)
+        visible.append(item)
+    return visible
 
 
 def list_artifacts(

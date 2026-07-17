@@ -107,6 +107,19 @@ def test_public_read_model_shows_quick_load_to_its_submitter(queued_operation):
     assert [row["id"] for row in visible] == [queued_operation["id"]]
 
 
+def test_visible_read_model_includes_safe_source_and_action_metadata(
+    queued_operation, tmp_path,
+):
+    _attach_input(queued_operation["id"], tmp_path)
+
+    row = operations.list_visible_operations("owner@smith.edu")[0]
+
+    assert row["source_label"] == "input.mrc"
+    assert row["can_cancel"] is True
+    assert row["can_access_artifacts"] is True
+    assert "file_path" not in row
+
+
 def test_job_operation_visibility_follows_current_job_access():
     operation_id, job_id = _job_operation()
     with db.connect() as conn:
