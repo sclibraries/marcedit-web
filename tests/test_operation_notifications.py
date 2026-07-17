@@ -373,11 +373,13 @@ def test_app_header_only_adds_bell_for_private_approved_users(monkeypatch):
     assert app._should_render_notification_bell("owner@smith.edu") is False
 
 
-def test_app_calls_first_return_only_after_access_gate_and_before_navigation():
+def test_app_registers_navigation_before_alerts_and_runs_it_last():
     import marcedit_web.App as app
 
     source = inspect.getsource(app)
-    gate = source.index("access_gate.enforce_access()")
+    navigation = source.index("navigation = st.navigation(")
+    header = source.index("_render_auth_header()", navigation)
+    gate = source.index("access_gate.enforce_access(", header)
     notice = source.index("_render_first_return_notification()", gate)
-    navigation = source.index("st.navigation(", notice)
-    assert gate < notice < navigation
+    run = source.index("navigation.run()", notice)
+    assert navigation < header < gate < notice < run

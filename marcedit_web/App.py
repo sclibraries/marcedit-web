@@ -261,8 +261,24 @@ if __name__ == "__main__":
         initial_sidebar_state="expanded",
     )
 
+    public = runmode.is_public()
+    user = None
+    decision = None
+    navigation = None
+    if public:
+        navigation = st.navigation(_to_st_pages(build_pages(public=True)))
+    else:
+        user, decision = access_gate.resolve_access()
+        if decision.outcome == "approved":
+            navigation = st.navigation(_to_st_pages(build_pages(public=False)))
+
     _render_auth_header()
-    access_gate.enforce_access()   # private-mode gate; no-op in public
+    access_gate.enforce_access(
+        user=user,
+        decision=decision,
+    )
     _render_first_return_notification()
 
-    st.navigation(_to_st_pages(build_pages(public=runmode.is_public()))).run()
+    # Unauthorized private runs stop in enforce_access before this point.
+    assert navigation is not None
+    navigation.run()

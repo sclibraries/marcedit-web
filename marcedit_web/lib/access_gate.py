@@ -1,10 +1,11 @@
 # marcedit_web/lib/access_gate.py
 """Private-unit authorization gate (TASK-088).
 
-Sits at the top of ``App.py`` in private mode, after the sign-in header
-and before ``st.navigation(...).run()``. Approved users proceed (their
-role cached in session_state); everyone else gets a friendly screen and
-``st.stop()``. No-op in public mode.
+Sits at the top of ``App.py`` in private mode. The access decision is
+resolved before private navigation is registered, so unauthorized users
+never receive private routes. Approved users proceed (their role cached
+in session_state); everyone else gets a friendly screen and ``st.stop()``.
+No-op in public mode.
 
 The decision is factored out of the rendering so it is unit-testable
 without a Streamlit runtime — mirrors ``session.enforce_auth``.
@@ -35,6 +36,12 @@ def gate_decision(user: str | None = None) -> authz.Decision:
     return authz.authorize(user)
 
 
+def resolve_access() -> tuple[str, authz.Decision]:
+    """Resolve the current user and their decision exactly once."""
+    user = _resolve_user()
+    return user, gate_decision(user)
+
+
 _SCREENS = {
     "denied": (
         "**Sign-in required.** This deployment requires a Five-College "
@@ -53,7 +60,11 @@ _SCREENS = {
 }
 
 
-def enforce_access() -> None:
+def enforce_access(
+    *,
+    user: str | None = None,
+    decision: authz.Decision | None = None,
+) -> None:
     """Render-and-stop for non-approved users; cache role for approved.
 
     No-op in public mode (the public unit is anonymous by design).
@@ -63,8 +74,10 @@ def enforce_access() -> None:
 
     import streamlit as st
 
-    user = _resolve_user()
-    decision = gate_decision(user)
+    if decision is None:
+        if user is None:
+            user = _resolve_user()
+        decision = gate_decision(user)
     if decision.outcome == "approved":
         st.session_state["role"] = decision.role
         return
