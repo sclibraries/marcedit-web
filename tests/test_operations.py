@@ -996,6 +996,8 @@ def test_storage_reconciliation_deletes_quarantine_outside_database_lock(
 def test_storage_reconciliation_closes_root_fd_if_quarantine_open_fails(
     queued_operation, monkeypatch
 ):
+    orphan = operations.operations_root() / "999"
+    orphan.mkdir(parents=True)
     real_open_queue_directory = operations._open_queue_directory
     real_close = operations.os.close
     root_fd = None
@@ -1033,7 +1035,7 @@ def test_storage_reconciliation_batches_large_debris_sets(
     input_path = _attach_input(queued_operation["id"], tmp_path)
     pending = operations.operations_root() / "pending"
     pending.mkdir(parents=True)
-    debris_count = operations._RECONCILE_RENAME_BATCH + 7
+    debris_count = operations._RECONCILE_SCAN_BATCH + 7
     for number in range(debris_count):
         (pending / f"abandoned-{number}.mrc").write_bytes(b"partial")
 
@@ -1042,7 +1044,7 @@ def test_storage_reconciliation_batches_large_debris_sets(
 
     first_removed = operations.reconcile_operation_storage()
 
-    assert first_removed == operations._RECONCILE_RENAME_BATCH
+    assert first_removed == operations._RECONCILE_SCAN_BATCH
     assert input_path.exists()
     assert operations.renew_lease(lease)["state"] == "running"
     removed = first_removed
@@ -1051,6 +1053,120 @@ def test_storage_reconciliation_batches_large_debris_sets(
 
     assert removed == debris_count
     assert not list(pending.glob("abandoned-*"))
+
+
+def test_reconciliation_cursor_rotates_past_large_ineligible_prefix(
+    queued_operation, tmp_path, monkeypatch
+):
+    input_path = _attach_input(queued_operation["id"], tmp_path)
+    lease = operations.claim_next("worker-a")
+    assert lease is not None
+    operation_dir = operations.operations_root() / str(lease.operation_id)
+    active_attempt = operation_dir / "attempt-active"
+    active_attempt.mkdir(parents=True)
+    referenced_result = operation_dir / "result-attempt-referenced.mrc"
+    referenced_result.write_bytes(b"result")
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO operation_artifacts(operation_id,role,filename,file_path,"
+            "record_count,file_bytes,queue_owned,created_at)"
+            " VALUES (?, 'result', 'result.mrc', ?, 3, 6, 1, ?)",
+            (
+                lease.operation_id,
+                str(referenced_result),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+    pending = operations.operations_root() / "pending"
+    pending.mkdir(parents=True)
+    future = time.time() + operations._PENDING_COPYING_GRACE_SECONDS
+    for number in range(operations._RECONCILE_SCAN_BATCH + 3):
+        stage = pending / f"copying-{number:04d}.mrc"
+        stage.write_bytes(b"live")
+        os.utime(stage, (future, future))
+    eligible = pending / "zz-eligible.mrc"
+    eligible.write_bytes(b"stale")
+    checked_per_pass = []
+    real_eligible = operations._reconciliation_candidate_is_eligible
+
+    def count_check(conn, candidate):
+        checked_per_pass[-1] += 1
+        return real_eligible(conn, candidate)
+
+    monkeypatch.setattr(
+        operations,
+        "_reconciliation_candidate_is_eligible",
+        count_check,
+    )
+
+    checked_per_pass.append(0)
+    assert operations.reconcile_operation_storage() == 0
+    assert checked_per_pass[-1] == operations._RECONCILE_SCAN_BATCH
+    assert eligible.exists()
+    cursor_path = operations.operations_root() / ".reconcile-cursor"
+    persisted = json.loads(cursor_path.read_text())
+    assert persisted["version"] == 1
+    assert persisted["after"].endswith("copying-0099.mrc")
+    # The next call reconstructs discovery from disk; no module-memory cursor
+    # participates, matching a worker process restart.
+    checked_per_pass.append(0)
+    assert operations.reconcile_operation_storage() == 1
+    assert checked_per_pass[-1] <= operations._RECONCILE_SCAN_BATCH
+
+    assert not eligible.exists()
+    assert input_path.exists()
+    assert active_attempt.exists()
+    assert referenced_result.exists()
+    assert operations.renew_lease(lease)["state"] == "running"
+    assert cursor_path.is_file()
+
+
+def test_reconciliation_slow_discovery_does_not_block_lease_renewal(
+    queued_operation, tmp_path, monkeypatch
+):
+    _attach_input(queued_operation["id"], tmp_path)
+    lease = operations.claim_next("worker-a")
+    assert lease is not None
+    scan_started = threading.Event()
+    continue_scan = threading.Event()
+    real_scan = operations._scan_reconciliation_candidates
+
+    def slow_scan(root):
+        scan_started.set()
+        assert continue_scan.wait(5)
+        return real_scan(root)
+
+    monkeypatch.setattr(operations, "_scan_reconciliation_candidates", slow_scan)
+    thread = threading.Thread(target=operations.reconcile_operation_storage)
+    thread.start()
+    assert scan_started.wait(5)
+
+    renewed = operations.renew_lease(lease)
+
+    assert renewed["state"] == "running"
+    continue_scan.set()
+    thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_reconciliation_cursor_replaces_symlink_without_following(tmp_path):
+    outside = tmp_path / "outside-cursor"
+    outside.mkdir()
+    protected = outside / "protected.txt"
+    protected.write_text("keep")
+    root = operations.operations_root()
+    root.mkdir(parents=True)
+    cursor = root / ".reconcile-cursor"
+    cursor.symlink_to(protected)
+    pending = root / "pending"
+    pending.mkdir()
+    (pending / "abandoned.mrc").write_bytes(b"stale")
+
+    assert operations.reconcile_operation_storage() == 1
+
+    assert cursor.is_file()
+    assert not cursor.is_symlink()
+    assert protected.read_text() == "keep"
 
 
 def test_fail_operation_requires_current_running_lease(queued_operation, tmp_path):

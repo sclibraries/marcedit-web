@@ -8,6 +8,7 @@ import os
 import sqlite3
 import stat
 import uuid
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,7 +37,8 @@ _PENDING_COPYING_GRACE_SECONDS = 24 * 60 * 60
 _QUARANTINE_DIRECTORY = ".quarantine"
 # Bound filesystem mutation while SQLite serializes claims and publications.
 # Later hourly/startup passes continue from the remaining eligible debris.
-_RECONCILE_RENAME_BATCH = 100
+_RECONCILE_SCAN_BATCH = 100
+_RECONCILE_CURSOR = ".reconcile-cursor"
 
 
 class OperationError(ValueError):
@@ -50,6 +52,14 @@ class Lease:
     attempt: int
     request: dict[str, Any]
     input_artifact: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _ReconciliationCandidate:
+    key: str
+    kind: str
+    operation_id: int | None
+    name: str
 
 
 def retention_days() -> int:
@@ -867,83 +877,54 @@ def reconcile_operation_storage() -> int:
     root = operations_root()
     root.mkdir(parents=True, exist_ok=True)
     _ensure_quarantine_directory(root)
+    candidates = _scan_reconciliation_candidates(root)
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        referenced = {
-            _absolute_queue_path(Path(row["file_path"]))
-            for row in conn.execute(
-                "SELECT file_path FROM operation_artifacts"
-                " UNION SELECT file_path FROM job_file_versions"
-            ).fetchall()
-        }
-        active_ids = {
-            int(row["id"])
-            for row in conn.execute(
-                "SELECT id FROM operations"
-                " WHERE state IN ('running','cancelling')"
-            ).fetchall()
-        }
-        operation_ids = {
-            int(row["id"])
-            for row in conn.execute("SELECT id FROM operations").fetchall()
-        }
-        _quarantine_storage_paths(referenced, active_ids, operation_ids)
+        selected = _reconciliation_window(candidates, _read_reconcile_cursor(root))
+        for candidate in selected:
+            if _reconciliation_candidate_is_eligible(conn, candidate):
+                _quarantine_reconciliation_candidate(root, candidate)
+        if selected:
+            _write_reconcile_cursor(root, selected[-1].key)
     # Recursive work must never hold SQLite's global writer lock. A crash here
     # is harmless: a later pass retries every entry already in quarantine.
     return _delete_quarantine_entries(root)
 
 
-def _quarantine_storage_paths(
-    referenced: set[Path],
-    active_ids: set[int],
-    operation_ids: set[int],
-) -> int:
-    root = operations_root()
+def _scan_reconciliation_candidates(
+    root: Path,
+) -> list[_ReconciliationCandidate]:
+    """Discover and sort candidates without holding SQLite's writer lock."""
+    candidates: list[_ReconciliationCandidate] = []
     try:
         root_fd = _open_queue_directory(root, ())
     except FileNotFoundError:
-        return 0
-    quarantined = 0
+        return candidates
     try:
-        quarantine_fd = _open_queue_directory(root, (_QUARANTINE_DIRECTORY,))
-        try:
-            with os.scandir(root_fd) as entries:
-                for directory_entry in entries:
-                    entry = directory_entry.name
-                    if quarantined >= _RECONCILE_RENAME_BATCH:
-                        break
-                    if entry == "pending":
-                        quarantined += _quarantine_pending(
-                            root_fd,
-                            quarantine_fd,
-                            root,
-                            referenced,
-                            limit=_RECONCILE_RENAME_BATCH - quarantined,
-                        )
-                        continue
-                    try:
-                        operation_id = int(entry)
-                    except ValueError:
-                        continue
-                    if operation_id not in operation_ids:
-                        quarantined += int(
-                            _quarantine_entry(root_fd, entry, quarantine_fd)
-                        )
-                        continue
-                    quarantined += _quarantine_operation_children(
-                        root_fd,
-                        quarantine_fd,
-                        root,
-                        entry,
-                        active=operation_id in active_ids,
-                        referenced=referenced,
-                        limit=_RECONCILE_RENAME_BATCH - quarantined,
-                    )
-        finally:
-            os.close(quarantine_fd)
+        with os.scandir(root_fd) as entries:
+            root_entries = sorted(entry.name for entry in entries)
+        for entry in root_entries:
+            if entry == "pending":
+                candidates.extend(_scan_pending_candidates(root_fd))
+                continue
+            try:
+                operation_id = int(entry)
+            except ValueError:
+                continue
+            candidates.append(
+                _ReconciliationCandidate(
+                    key=f"1/{operation_id:020d}",
+                    kind="operation",
+                    operation_id=operation_id,
+                    name=entry,
+                )
+            )
+            candidates.extend(
+                _scan_operation_candidates(root_fd, operation_id, entry)
+            )
     finally:
         os.close(root_fd)
-    return quarantined
+    return sorted(candidates, key=lambda candidate: candidate.key)
 
 
 def list_unread_notifications(user_email: str) -> list[dict[str, Any]]:
@@ -1454,14 +1435,9 @@ def _delete_quarantine_entries(root: Path) -> int:
     return removed
 
 
-def _quarantine_pending(
+def _scan_pending_candidates(
     root_fd: int,
-    quarantine_fd: int,
-    root: Path,
-    referenced: set[Path],
-    *,
-    limit: int,
-) -> int:
+) -> list[_ReconciliationCandidate]:
     try:
         pending_fd = os.open(
             "pending",
@@ -1471,60 +1447,28 @@ def _quarantine_pending(
             dir_fd=root_fd,
         )
     except OSError:
-        return 0
-    quarantined = 0
+        return []
     try:
         with os.scandir(pending_fd) as entries:
-            for directory_entry in entries:
-                name = directory_entry.name
-                if quarantined >= limit:
-                    break
-                path = _absolute_queue_path(root / "pending" / name)
-                if path in referenced:
-                    continue
-                grace_seconds = None
-                if name.startswith("copying-"):
-                    # Copy plus MARC validation can be lengthy for the maximum
-                    # supported input. A full day protects a live submitter while
-                    # still allowing hard-kill debris to be reclaimed.
-                    grace_seconds = _PENDING_COPYING_GRACE_SECONDS
-                elif name.startswith("ready-"):
-                    grace_seconds = _PENDING_READY_GRACE_SECONDS
-                if grace_seconds is not None:
-                    try:
-                        age = _now().timestamp() - os.stat(
-                            name,
-                            dir_fd=pending_fd,
-                            follow_symlinks=False,
-                        ).st_mtime
-                    except OSError:
-                        continue
-                    # A future mtime is treated as live. Queue storage and its
-                    # clock are trusted-host inputs; later passes reclaim it once
-                    # wall time advances beyond the applicable grace period.
-                    if age < grace_seconds:
-                        continue
-                try:
-                    quarantined += int(
-                        _quarantine_entry(pending_fd, name, quarantine_fd)
-                    )
-                except OSError:
-                    continue
+            names = sorted(entry.name for entry in entries)
     finally:
         os.close(pending_fd)
-    return quarantined
+    return [
+        _ReconciliationCandidate(
+            key=f"0/pending/{name}",
+            kind="pending",
+            operation_id=None,
+            name=name,
+        )
+        for name in names
+    ]
 
 
-def _quarantine_operation_children(
+def _scan_operation_candidates(
     root_fd: int,
-    quarantine_fd: int,
-    root: Path,
+    operation_id: int,
     entry: str,
-    *,
-    active: bool,
-    referenced: set[Path],
-    limit: int,
-) -> int:
+) -> list[_ReconciliationCandidate]:
     try:
         operation_fd = os.open(
             entry,
@@ -1534,31 +1478,202 @@ def _quarantine_operation_children(
             dir_fd=root_fd,
         )
     except OSError:
-        return 0
-    quarantined = 0
+        return []
     try:
         with os.scandir(operation_fd) as entries:
-            for directory_entry in entries:
-                if quarantined >= limit:
-                    break
-                name = directory_entry.name
-                is_attempt = name.startswith("attempt-")
-                is_publication = name.startswith("result-attempt-")
-                path = _absolute_queue_path(root / entry / name)
-                eligible = (
-                    (is_attempt and not active)
-                    or (is_publication and path not in referenced)
-                )
-                if eligible:
-                    try:
-                        quarantined += int(
-                            _quarantine_entry(operation_fd, name, quarantine_fd)
-                        )
-                    except OSError:
-                        continue
+            names = sorted(
+                entry.name
+                for entry in entries
+                if entry.name.startswith(("attempt-", "result-attempt-"))
+            )
     finally:
         os.close(operation_fd)
-    return quarantined
+    return [
+        _ReconciliationCandidate(
+            key=f"2/{operation_id:020d}/{name}",
+            kind=("attempt" if name.startswith("attempt-") else "publication"),
+            operation_id=operation_id,
+            name=name,
+        )
+        for name in names
+    ]
+
+
+def _reconciliation_window(
+    candidates: list[_ReconciliationCandidate],
+    cursor: str,
+) -> list[_ReconciliationCandidate]:
+    if not candidates:
+        return []
+    keys = [candidate.key for candidate in candidates]
+    start = bisect_right(keys, cursor)
+    if start == len(candidates):
+        start = 0
+    return candidates[start : start + _RECONCILE_SCAN_BATCH]
+
+
+def _reconciliation_candidate_is_eligible(
+    conn: sqlite3.Connection,
+    candidate: _ReconciliationCandidate,
+) -> bool:
+    if candidate.kind == "pending":
+        path = _absolute_queue_path(
+            operations_root() / "pending" / candidate.name
+        )
+        if _reconciliation_path_is_referenced(conn, path):
+            return False
+        return _pending_candidate_is_old_enough(candidate.name)
+
+    assert candidate.operation_id is not None
+    row = conn.execute(
+        "SELECT state FROM operations WHERE id=?",
+        (candidate.operation_id,),
+    ).fetchone()
+    if candidate.kind == "operation":
+        return row is None
+    if row is None:
+        return False
+    if candidate.kind == "attempt":
+        return row["state"] not in {"running", "cancelling"}
+    path = _absolute_queue_path(
+        operations_root() / str(candidate.operation_id) / candidate.name
+    )
+    return not _reconciliation_path_is_referenced(conn, path)
+
+
+def _reconciliation_path_is_referenced(
+    conn: sqlite3.Connection,
+    path: Path,
+) -> bool:
+    row = conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM operation_artifacts WHERE file_path=?)"
+        " OR EXISTS(SELECT 1 FROM job_file_versions WHERE file_path=?)",
+        (str(path), str(path)),
+    ).fetchone()
+    assert row is not None
+    return bool(row[0])
+
+
+def _pending_candidate_is_old_enough(name: str) -> bool:
+    grace_seconds = None
+    if name.startswith("copying-"):
+        grace_seconds = _PENDING_COPYING_GRACE_SECONDS
+    elif name.startswith("ready-"):
+        grace_seconds = _PENDING_READY_GRACE_SECONDS
+    if grace_seconds is None:
+        return True
+    root = operations_root()
+    try:
+        pending_fd = _open_queue_directory(root, ("pending",))
+    except OSError:
+        return False
+    try:
+        metadata = os.stat(name, dir_fd=pending_fd, follow_symlinks=False)
+    except OSError:
+        return False
+    finally:
+        os.close(pending_fd)
+    age = _now().timestamp() - metadata.st_mtime
+    # A future mtime is treated as live trusted-host state until wall time
+    # advances beyond the applicable grace period.
+    return age >= grace_seconds
+
+
+def _quarantine_reconciliation_candidate(
+    root: Path,
+    candidate: _ReconciliationCandidate,
+) -> bool:
+    root_fd = _open_queue_directory(root, ())
+    try:
+        quarantine_fd = _open_queue_directory(root, (_QUARANTINE_DIRECTORY,))
+        try:
+            if candidate.kind in {"pending", "attempt", "publication"}:
+                parts = (
+                    ("pending",)
+                    if candidate.kind == "pending"
+                    else (str(candidate.operation_id),)
+                )
+                try:
+                    parent_fd = _open_queue_directory(root, parts)
+                except OSError:
+                    return False
+                try:
+                    return _quarantine_entry(
+                        parent_fd,
+                        candidate.name,
+                        quarantine_fd,
+                    )
+                finally:
+                    os.close(parent_fd)
+            return _quarantine_entry(root_fd, candidate.name, quarantine_fd)
+        finally:
+            os.close(quarantine_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _read_reconcile_cursor(root: Path) -> str:
+    try:
+        root_fd = _open_queue_directory(root, ())
+    except OSError:
+        return ""
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            cursor_fd = os.open(_RECONCILE_CURSOR, flags, dir_fd=root_fd)
+        except OSError:
+            return ""
+        try:
+            raw = os.read(cursor_fd, 4096)
+        finally:
+            os.close(cursor_fd)
+    finally:
+        os.close(root_fd)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    cursor = payload.get("after") if isinstance(payload, dict) else None
+    return cursor if isinstance(cursor, str) and len(cursor) <= 1024 else ""
+
+
+def _write_reconcile_cursor(root: Path, cursor: str) -> None:
+    root_fd = _open_queue_directory(root, ())
+    temporary = f"{_RECONCILE_CURSOR}-{uuid.uuid4().hex}.tmp"
+    descriptor: int | None = None
+    try:
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=root_fd)
+        payload = json.dumps(
+            {"version": 1, "after": cursor},
+            sort_keys=True,
+        ).encode("utf-8")
+        offset = 0
+        while offset < len(payload):
+            offset += os.write(descriptor, payload[offset:])
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(
+            temporary,
+            _RECONCILE_CURSOR,
+            src_dir_fd=root_fd,
+            dst_dir_fd=root_fd,
+        )
+        os.fsync(root_fd)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=root_fd)
+        except FileNotFoundError:
+            pass
+        os.close(root_fd)
 
 
 def _open_queue_directory(root: Path, parts: tuple[str, ...]) -> int:
