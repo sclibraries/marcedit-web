@@ -20,3 +20,25 @@ services:
       - MARCEDIT_WEB_PROXY_SECRET=${MARCEDIT_WEB_PROXY_SECRET:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     restart: unless-stopped
+
+  marcedit-web-worker:
+    build: .
+    image: marcedit-web:dev
+    volumes:
+      - ./marcedit_web:/app/marcedit_web:ro
+      - ./data:/app/data
+      - ./.streamlit:/app/.streamlit:ro
+      - ./tests:/app/tests:ro
+      - ./scripts/benchmark-large-batch.py:/app/scripts/benchmark-large-batch.py:ro
+      - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=2048
+      - MARCEDIT_WEB_PROXY_SECRET=${MARCEDIT_WEB_PROXY_SECRET:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    command: python -m marcedit_web.ops.worker
+    depends_on:
+      marcedit-web:
+        condition: service_healthy
+    restart: unless-stopped

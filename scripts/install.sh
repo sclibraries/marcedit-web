@@ -7,7 +7,7 @@
 #
 #   1. Created the marcedit system user.
 #   2. Dropped /etc/sudoers.d/marcedit.
-#   3. Dropped /etc/systemd/system/marcedit-web.service.
+#   3. Dropped the private app and worker units in /etc/systemd/system/.
 #   4. Added the Apache <Location> block to the libtools2 vhost.
 #
 # This script is idempotent — safe to re-run.
@@ -40,7 +40,7 @@ echo "→ Installing dependencies..."
 .venv/bin/pip install -r requirements.txt
 
 echo "→ Ensuring data directories exist..."
-mkdir -p data/audit data/tasks data/uploads
+mkdir -p data/audit data/tasks data/uploads data/operations
 
 if [ ! -f .env ]; then
     echo "ℹ No .env found. Copy .env.example to .env and fill in production values:"
@@ -55,9 +55,14 @@ fi
 echo
 echo "✓ Install complete."
 echo
-echo "To start the service (one-time, requires root):"
-echo "    sudo /bin/systemctl enable --now marcedit-web"
+echo "To install and start the services (one-time, requires root):"
+echo "    sudo install -m 0644 deploy/marcedit-web-private.service /etc/systemd/system/"
+echo "    sudo install -m 0644 deploy/marcedit-web-worker.service /etc/systemd/system/"
+echo "    sudo /bin/systemctl daemon-reload"
+echo "    sudo /bin/systemctl enable --now marcedit-web-private"
+echo "    sudo /bin/systemctl enable --now marcedit-web-worker"
 echo
 echo "Then verify with:"
-echo "    sudo /bin/systemctl status marcedit-web"
+echo "    sudo /bin/systemctl status marcedit-web-private marcedit-web-worker"
 echo "    curl -fs http://127.0.0.1:8501/marcedit-web/_stcore/health"
+echo "    .venv/bin/python -m marcedit_web.ops.worker --check"

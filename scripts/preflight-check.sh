@@ -19,6 +19,24 @@ pass() { echo "  ✓ $*";    SUMMARY_PASS=$((SUMMARY_PASS+1)); }
 fail() { echo "  ✗ $*";    SUMMARY_FAIL=$((SUMMARY_FAIL+1)); }
 info() { echo "  ℹ $*";    SUMMARY_INFO=$((SUMMARY_INFO+1)); }
 
+env_value() {
+    key="$1"
+    awk -F= -v key="$key" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+}
+
+check_positive_setting() {
+    key="$1"
+    default="$2"
+    value="$(env_value "$key")"
+    if [ -z "$value" ]; then
+        value="$default"
+    fi
+    case "$value" in
+        0|*[!0-9]*) fail "$key must be a positive integer" ;;
+        *) pass "$key is a positive integer" ;;
+    esac
+}
+
 echo "=== marcedit-web preflight check ==="
 echo
 
@@ -97,6 +115,54 @@ if [ -f "$ENV_FILE" ]; then
     fi
 else
     info "$ENV_FILE not found yet (created from .env.example during install)"
+fi
+echo
+
+echo "[Durable operation worker]"
+WORKER_UNIT=/etc/systemd/system/marcedit-web-worker.service
+if [ -f "$WORKER_UNIT" ]; then
+    pass "$WORKER_UNIT is installed"
+else
+    fail "$WORKER_UNIT is missing"
+fi
+
+if [ -f "$ENV_FILE" ]; then
+    OPERATIONS_ROOT="$(env_value MARCEDIT_WEB_OPERATIONS_ROOT)"
+else
+    OPERATIONS_ROOT=""
+fi
+if [ -z "$OPERATIONS_ROOT" ]; then
+    OPERATIONS_ROOT="$DATA_DIR/operations"
+fi
+OPERATIONS_ROOT_ALLOWED=1
+case "$OPERATIONS_ROOT" in
+    "$DATA_DIR"|"$DATA_DIR"/*) ;;
+    *)
+        fail "$OPERATIONS_ROOT must be within $DATA_DIR for systemd/Compose write access"
+        OPERATIONS_ROOT_ALLOWED=0
+        ;;
+esac
+if [ "$OPERATIONS_ROOT_ALLOWED" -ne 1 ]; then
+    :
+elif [ ! -d "$OPERATIONS_ROOT" ]; then
+    fail "$OPERATIONS_ROOT is missing (run scripts/install.sh before preflight)"
+elif [ "$(id -un)" = "marcedit" ]; then
+    if [ -w "$OPERATIONS_ROOT" ]; then
+        pass "$OPERATIONS_ROOT writable by marcedit"
+    else
+        fail "$OPERATIONS_ROOT NOT writable by marcedit"
+    fi
+elif sudo -nu marcedit test -w "$OPERATIONS_ROOT" 2>/dev/null; then
+    pass "$OPERATIONS_ROOT writable by marcedit"
+else
+    fail "$OPERATIONS_ROOT writability for marcedit could not be confirmed"
+fi
+
+if [ -f "$ENV_FILE" ]; then
+    check_positive_setting MARCEDIT_WEB_QUEUE_CHUNK_RECORDS 5000
+    check_positive_setting MARCEDIT_WEB_OPERATION_RETENTION_DAYS 30
+else
+    info "$ENV_FILE not found; queue integer settings cannot be verified"
 fi
 echo
 

@@ -23,6 +23,28 @@ def test_compose_mounts_large_batch_benchmark_read_only():
     ) in compose
 
 
+def test_compose_worker_shares_private_configuration_without_a_port():
+    """The worker needs app state and settings, never network exposure."""
+    compose = Path("docker-compose.yml").read_text()
+    marker = "  marcedit-web-worker:"
+
+    assert marker in compose
+    worker = compose.split(marker, 1)[1]
+    assert "build: ." in worker
+    assert "image: marcedit-web:dev" in worker
+    assert "container_name:" not in worker
+    assert "ports:" not in worker
+    assert "- ./marcedit_web:/app/marcedit_web:ro" in worker
+    assert "- ./data:/app/data" in worker
+    assert "- ./.streamlit:/app/.streamlit:ro" in worker
+    assert "PYTHONUNBUFFERED=1" in worker
+    assert "MARCEDIT_WEB_PROXY_SECRET=${MARCEDIT_WEB_PROXY_SECRET:-}" in worker
+    assert "GEMINI_API_KEY=${GEMINI_API_KEY:-}" in worker
+    assert "python -m marcedit_web.ops.worker" in worker
+    assert "condition: service_healthy" in worker
+    assert "restart: unless-stopped" in worker
+
+
 # --- TASK-069: secrets must never be baked into the image -------------------
 #
 # These read build-context files (Dockerfile/.dockerignore) that exist on the

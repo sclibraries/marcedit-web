@@ -33,6 +33,7 @@ That's the entire operator contract.
 │   ├── audit/audit-YYYY-MM-DD.log
 │   ├── job-files/<file-id>/versions/vNNNNNN.mrc
 │   ├── job-files/<file-id>/exports/*.mrc
+│   ├── operations/<operation-id>/
 │   ├── tasks/
 │   └── uploads/<user>/jobs/<job-id>/<upload-id>/upload.mrc
 ├── .streamlit/secrets.toml      # gitignored (Google OAuth)
@@ -60,6 +61,9 @@ The most operationally important ones:
 | `MARCEDIT_WEB_AUDIT_DIR` | Audit JSONL location. |
 | `MARCEDIT_WEB_DB_PATH` | SQLite path. |
 | `MARCEDIT_WEB_JOB_FILES_ROOT` | Immutable job-file versions and retained exports; defaults to `data/job-files`. |
+| `MARCEDIT_WEB_OPERATIONS_ROOT` | Durable queued inputs, candidates, and attempt workspaces; defaults to `data/operations` and must stay below the service-writable `data/` root. |
+| `MARCEDIT_WEB_QUEUE_CHUNK_RECORDS` | Positive record count processed per sandbox chunk; defaults to `5000`. |
+| `MARCEDIT_WEB_OPERATION_RETENTION_DAYS` | Positive number of days to retain queue-owned Quick Load files and unapplied Job candidates; defaults to `30`. |
 | `MARCEDIT_WEB_TASKS_ROOT` | Where per-user task .py files materialize. |
 | `MARCEDIT_WEB_UPLOADS_ROOT` | Where signed-in users' uploads persist. |
 
@@ -128,13 +132,16 @@ AND a `REMOTE_USER` header is present, OAuth wins.
 
 ## Service management
 
-The systemd unit is `marcedit-web.service`.
+The authenticated application uses `marcedit-web-private.service`; its durable
+queue runs independently in `marcedit-web-worker.service`. The public unit does
+not read the queue database or start queued work.
 
 ```bash
-sudo systemctl status marcedit-web
-sudo systemctl restart marcedit-web   # marcedit user can do this via NOPASSWD
-sudo systemctl stop marcedit-web
-journalctl -u marcedit-web -f         # follow stdout/stderr
+sudo systemctl status marcedit-web-private marcedit-web-worker
+sudo systemctl restart marcedit-web-private
+sudo systemctl restart marcedit-web-worker
+journalctl -u marcedit-web-private -f
+journalctl -u marcedit-web-worker -f
 ```
 
 Private service startup runs a readiness probe before Streamlit starts:
@@ -148,6 +155,39 @@ The probe initializes the schema if needed and verifies the SQLite database
 accepts a rollbacked write transaction. This is intentionally stricter than
 Streamlit's built-in `/_stcore/health`, which only proves the process is
 serving HTTP.
+
+Verify that the worker has written a heartbeat within the last 15 seconds:
+
+```bash
+cd /var/www/html/marcedit-web
+/var/www/html/marcedit-web/.venv/bin/python -m marcedit_web.ops.worker --check
+```
+
+A failed check means the worker is stopped, repeatedly failing its readiness
+probe, or cannot write the shared SQLite database. Inspect both service status
+and `journalctl -u marcedit-web-worker`; correlate failures with the operation
+ID shown in the in-app Operations history. Logs intentionally omit MARC record
+contents, task bodies, and credentials.
+
+### Queue behavior during deploy and recovery
+
+`scripts/deploy.sh` stops the worker before pulling code so an old worker cannot
+write while the private app applies an additive schema migration. It starts the
+worker only after HTTP and database readiness pass, then requires a fresh
+heartbeat. If deployment fails, the worker remains stopped and queued work stays
+durable in SQLite.
+
+An operation interrupted while running keeps its immutable input and lease. On
+the next healthy worker start, an expired running lease is requeued and starts
+again from that input; partial attempt output is never published. An interrupted
+cancellation remains a cancellation request and is finalized rather than
+restarted. Users may also cancel queued or running work from the Operations page.
+
+The worker removes expired queue-owned Quick Load files and unapplied Job
+candidates during idle maintenance. They are retained for 30 days by default;
+set `MARCEDIT_WEB_OPERATION_RETENTION_DAYS` to another positive integer in
+`.env` when policy requires it. Audit rows, events, bounded errors, and applied
+immutable Job versions are not removed by this cleanup.
 
 The unit replicates the Dockerfile's hardening at the systemd
 layer:
@@ -321,13 +361,14 @@ the database boundary. The advisory lock table is a foundation for future
 shared-job and record checkout flows; it is not a user-facing collaboration UI
 by itself.
 
-The SQLite database and `MARCEDIT_WEB_JOB_FILES_ROOT` form one recovery unit:
-version and export rows are not usable without their immutable MARC files.
-Back them up and restore them together from the same maintenance window. The
-current scriptable command captures SQLite and audit data; production backup
-automation must also copy the configured job-files root into the same dated
-backup while the service remains stopped. This creates one coordinated
-database-and-artifact snapshot rather than two independently timed backups.
+The SQLite database, `MARCEDIT_WEB_JOB_FILES_ROOT`, and
+`MARCEDIT_WEB_OPERATIONS_ROOT` form one recovery unit: version, queue, and
+artifact rows are not usable without their immutable MARC files. Back them up
+and restore them together from the same maintenance window. The current
+scriptable command captures SQLite and audit data; production backup automation
+must also copy the configured job-files and operations roots into the same dated
+backup while both private services remain stopped. This creates one coordinated
+database-and-artifact snapshot rather than independently timed backups.
 The commands below run from the trusted install directory and source its
 production `.env` (the same file systemd reads) before resolving any storage
 path. Do not source an untrusted environment file.
@@ -335,17 +376,21 @@ path. Do not source an untrusted environment file.
 Scriptable backup during a maintenance window:
 
 ```bash
-sudo systemctl stop marcedit-web
+sudo systemctl stop marcedit-web-worker
+sudo systemctl stop marcedit-web-private
 cd /var/www/html/marcedit-web
 BACKUP_DIR=/var/backups/marcedit-web/$(date -u +%F)
 set -a
 . ./.env
 set +a
 JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"
+OPERATIONS_ROOT="${MARCEDIT_WEB_OPERATIONS_ROOT:-data/operations}"
 /var/www/html/marcedit-web/.venv/bin/python \
     -m marcedit_web.ops.backup create "$BACKUP_DIR"
 cp -a "$JOB_FILES_ROOT" "$BACKUP_DIR/job-files"
-sudo systemctl start marcedit-web
+cp -a "$OPERATIONS_ROOT" "$BACKUP_DIR/operations"
+sudo systemctl start marcedit-web-private
+sudo systemctl start marcedit-web-worker
 ```
 
 The backup command uses `sqlite3.Connection.backup`, so committed WAL content
@@ -353,25 +398,31 @@ is folded into the backed-up `marcedit.db`; it also copies `data/audit/` JSONL
 logs and writes a small manifest. To restore during a maintenance window:
 
 ```bash
-sudo systemctl stop marcedit-web
+sudo systemctl stop marcedit-web-worker
+sudo systemctl stop marcedit-web-private
 cd /var/www/html/marcedit-web
 BACKUP_DIR=/var/backups/marcedit-web/YYYY-MM-DD
 set -a
 . ./.env
 set +a
 JOB_FILES_ROOT="${MARCEDIT_WEB_JOB_FILES_ROOT:-data/job-files}"
+OPERATIONS_ROOT="${MARCEDIT_WEB_OPERATIONS_ROOT:-data/operations}"
 /var/www/html/marcedit-web/.venv/bin/python \
     -m marcedit_web.ops.backup restore "$BACKUP_DIR"
 rm -rf "$JOB_FILES_ROOT"
 mkdir -p "$(dirname "$JOB_FILES_ROOT")"
 cp -a "$BACKUP_DIR/job-files" "$JOB_FILES_ROOT"
-sudo systemctl start marcedit-web
+rm -rf "$OPERATIONS_ROOT"
+mkdir -p "$(dirname "$OPERATIONS_ROOT")"
+cp -a "$BACKUP_DIR/operations" "$OPERATIONS_ROOT"
+sudo systemctl start marcedit-web-private
+sudo systemctl start marcedit-web-worker
 ```
 
-Cold-copy fallback: stop the service, copy `marcedit.db`, `marcedit.db-wal`,
-`marcedit.db-shm`, `data/audit/`, and the complete job-files root as one set,
-then restart. Never restore the database and job-files root from different
-backup generations.
+Cold-copy fallback: stop the worker and private app, copy `marcedit.db`,
+`marcedit.db-wal`, `marcedit.db-shm`, `data/audit/`, and the complete job-files
+and operations roots as one set, then start the app before the worker. Never
+restore the database and artifact roots from different backup generations.
 
 Schema version tracked in the `_schema_version` table. v1 added
 `audit_events` (TASK-049); v2 added `tasks` (TASK-050); v3 added

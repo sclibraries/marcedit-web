@@ -1,13 +1,17 @@
 # /etc/sudoers.d/marcedit
 #
-# Two NOPASSWD rules:
+# NOPASSWD rules serve two narrowly scoped purposes:
 #
-# 1. The marcedit service user can restart its own service. The deploy
-#    script needs this so the human deployer doesn't have to type a
-#    password mid-deploy.
+# 1. The marcedit service user can restart the private app and control the
+#    durable worker. The deploy script needs these exact lifecycle commands
+#    so the human deployer doesn't have to type a password mid-deploy.
 #
 # 2. The named human dev account(s) can become marcedit. Add more
 #    accounts here as more devs are authorized to deploy.
 
 marcedit  ALL=(root)    NOPASSWD: /bin/systemctl restart marcedit-web
+marcedit  ALL=(root)    NOPASSWD: /bin/systemctl restart marcedit-web-private
+marcedit  ALL=(root)    NOPASSWD: /bin/systemctl start marcedit-web-worker
+marcedit  ALL=(root)    NOPASSWD: /bin/systemctl stop marcedit-web-worker
+marcedit  ALL=(root)    NOPASSWD: /bin/systemctl restart marcedit-web-worker
 roconnell ALL=(marcedit) NOPASSWD: ALL

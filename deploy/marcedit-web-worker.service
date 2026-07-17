@@ -1,0 +1,31 @@
+[Unit]
+Description=marcedit-web durable operation worker
+Documentation=https://github.com/smith-libraries/marcedit-web
+After=network.target
+
+[Service]
+Type=simple
+User=marcedit
+Group=marcedit
+WorkingDirectory=/var/www/html/marcedit-web
+EnvironmentFile=/var/www/html/marcedit-web/.env
+Environment=MARCEDIT_WEB_MODE=private
+Environment=MARCEDIT_WEB_PROD=1
+Environment=MARCEDIT_WEB_DB_PATH=/var/www/html/marcedit-web/data/marcedit.db
+ExecStartPre=/var/www/html/marcedit-web/.venv/bin/python -m marcedit_web.ops.health
+ExecStart=/var/www/html/marcedit-web/.venv/bin/python -m marcedit_web.ops.worker
+Restart=on-failure
+RestartSec=5
+
+MemoryHigh=1536M
+MemoryMax=2G
+CPUQuota=200%
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/www/html/marcedit-web/data
+
+[Install]
+WantedBy=multi-user.target

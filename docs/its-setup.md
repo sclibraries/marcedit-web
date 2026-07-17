@@ -40,18 +40,28 @@ install -m 0440 /var/www/html/marcedit-web/deploy/marcedit.sudoers \
 visudo -cf /etc/sudoers.d/marcedit
 ```
 
-This grants two NOPASSWD permissions: the marcedit account can
-`systemctl restart marcedit-web`, and the named dev account
-(`roconnell`) can `sudo -iu marcedit` to run deploys.
+This lets the `marcedit` account restart the private app and start, stop, or
+restart the durable worker through exact command rules. The named dev account
+(`roconnell`) may `sudo -iu marcedit` to run deploys. It does not grant the
+service user unrestricted root or `systemctl` access.
 
-### 3. Install and enable the systemd unit
+### 3. Install the private app and worker systemd units
 
 ```bash
-install -m 0644 /var/www/html/marcedit-web/deploy/marcedit-web.service \
-    /etc/systemd/system/marcedit-web.service
+install -m 0644 \
+    /var/www/html/marcedit-web/deploy/marcedit-web-private.service \
+    /etc/systemd/system/marcedit-web-private.service
+install -m 0644 \
+    /var/www/html/marcedit-web/deploy/marcedit-web-worker.service \
+    /etc/systemd/system/marcedit-web-worker.service
 systemctl daemon-reload
 # Wait to enable until after the venv exists (see Verification below).
 ```
+
+The private app owns the authenticated Streamlit port and runs additive schema
+migrations during readiness. The worker uses the same `marcedit` user, `.env`,
+SQLite database, and `data/` tree but opens no network port. Do not install the
+legacy `marcedit-web.service` alongside this two-service private deployment.
 
 ### 4. Add the Apache `<Location>` block
 
@@ -95,16 +105,7 @@ is documented in a comment inside the snippet.
 
 ## Part 2 — Verification
 
-Run the preflight script from the repo:
-
-```bash
-bash /var/www/html/marcedit-web/scripts/preflight-check.sh
-```
-
-You should see green checks for: python3.9, all Apache modules,
-marcedit user, data directory writability.
-
-Then ask the dev team to do their part:
+Ask the dev team to do their part:
 
 1. `cd /var/www/html && git clone <repo URL> marcedit-web` (as the
    dev account; chown to marcedit:marcedit afterwards)
@@ -116,17 +117,33 @@ Then ask the dev team to do their part:
 4. Optionally copy `.streamlit/secrets.toml.example` to
    `.streamlit/secrets.toml` for Google OAuth
 
-When that's done, you enable + start the service:
+Run preflight after install and `.env` configuration so it can verify the
+installed worker unit, writable `data/operations` root, and positive queue
+chunk/retention settings without creating or revealing configuration values:
 
 ```bash
-systemctl enable --now marcedit-web
-systemctl status marcedit-web
+bash /var/www/html/marcedit-web/scripts/preflight-check.sh
+```
+
+You should see green checks for Python 3.9, Apache modules, the `marcedit` user,
+data and operations-directory writability, the worker unit, and queue settings.
+
+When that's done, enable and start the private app before the worker:
+
+```bash
+systemctl enable --now marcedit-web-private
+systemctl enable --now marcedit-web-worker
+systemctl status marcedit-web-private marcedit-web-worker
 ```
 
 Then confirm end-to-end:
 
 ```bash
 curl -fs http://127.0.0.1:8501/marcedit-web/_stcore/health
+# expected: "ok"
+
+cd /var/www/html/marcedit-web
+/var/www/html/marcedit-web/.venv/bin/python -m marcedit_web.ops.worker --check
 # expected: "ok"
 
 curl -I https://libtools2.smith.edu/marcedit-web/
@@ -147,12 +164,21 @@ cd /var/www/html/marcedit-web
 bash scripts/deploy.sh
 ```
 
-The deploy script pulls main, refreshes the venv, restarts the
-service via the NOPASSWD sudoers rule, and polls the healthcheck.
+The deploy script stops the worker before changing code, waits for its previous
+heartbeat to expire, pulls main, refreshes the venv, restarts the private app,
+and verifies HTTP plus database readiness. Only then does it start the worker
+and require a fresh heartbeat. If any step fails, it leaves the worker stopped
+so queued work remains durable and recoverable.
+
+An interrupted running operation is recovered from its immutable input after
+its lease expires; partial attempt output is not published. A cancellation
+request remains durable during deployment and is finalized rather than
+restarted. Users may cancel queued or running work from the Operations page.
 
 ### Log locations
 
-- App stdout/stderr: `journalctl -u marcedit-web`
+- Private app stdout/stderr: `journalctl -u marcedit-web-private`
+- Durable worker stdout/stderr: `journalctl -u marcedit-web-worker`
 - Audit log (JSONL, one file per UTC day): `/var/www/html/marcedit-web/data/audit/audit-YYYY-MM-DD.log`
 - Apache access/error: wherever libtools2's vhost already logs
 
@@ -179,5 +205,19 @@ The mutable state lives in `/var/www/html/marcedit-web/data/`:
 - `audit/*.log` — JSONL audit log
 - `tasks/*.py` — legacy file-backed tasks (kept as backup; SQL is canonical)
 - `uploads/<user>/jobs/<job-id>/<upload-id>/upload.mrc` — persisted per-upload MARC files
+- `operations/` — immutable queued inputs and retained result artifacts
 
-`rsync` this directory to your preferred backup target.
+Stop the worker before the private app, then back up the complete `data/` tree
+as one recovery generation. Start the private app before the worker after the
+snapshot:
+
+```bash
+systemctl stop marcedit-web-worker
+systemctl stop marcedit-web-private
+rsync -a /var/www/html/marcedit-web/data/ /your/backup/target/data/
+systemctl start marcedit-web-private
+systemctl start marcedit-web-worker
+```
+
+See `docs/deployment.md` for the coordinated SQLite backup/restore commands and
+configured job-file and operations-root handling.

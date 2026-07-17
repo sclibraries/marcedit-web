@@ -88,6 +88,135 @@ def test_public_systemd_unit_stays_db_free():
     assert "MARCEDIT_WEB_DB_PATH" not in unit
 
 
+def test_worker_systemd_unit_is_hardened_and_uses_private_data():
+    """The queue worker must share private state without opening a port."""
+    unit = _deploy_file("deploy/marcedit-web-worker.service")
+    active = {
+        line.strip()
+        for line in unit.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "User=marcedit" in active
+    assert "Group=marcedit" in active
+    assert "WorkingDirectory=/var/www/html/marcedit-web" in active
+    assert "EnvironmentFile=/var/www/html/marcedit-web/.env" in active
+    assert "Environment=MARCEDIT_WEB_MODE=private" in active
+    assert "Environment=MARCEDIT_WEB_PROD=1" in active
+    assert (
+        "Environment=MARCEDIT_WEB_DB_PATH="
+        "/var/www/html/marcedit-web/data/marcedit.db"
+    ) in active
+    assert (
+        "ExecStartPre=/var/www/html/marcedit-web/.venv/bin/python "
+        "-m marcedit_web.ops.health"
+    ) in active
+    assert (
+        "ExecStart=/var/www/html/marcedit-web/.venv/bin/python "
+        "-m marcedit_web.ops.worker"
+    ) in active
+    assert "Restart=on-failure" in active
+    assert "RestartSec=5" in active
+    assert "MemoryHigh=1536M" in active
+    assert "MemoryMax=2G" in active
+    assert "CPUQuota=200%" in active
+    assert "NoNewPrivileges=true" in active
+    assert "ProtectSystem=strict" in active
+    assert "ProtectHome=true" in active
+    assert "PrivateTmp=true" in active
+    assert "ReadWritePaths=/var/www/html/marcedit-web/data" in active
+    assert not any("--server.port" in line for line in active)
+
+
+def test_deploy_quiesces_worker_until_app_and_schema_are_ready():
+    """Old worker code must not write while new code migrates the database."""
+    script = _repo_file("scripts/deploy.sh")
+
+    # The failure trap also stops the worker; rindex selects the actual
+    # pre-update quiesce command from the rollout body.
+    stop_worker = script.rindex("systemctl stop marcedit-web-worker")
+    pull_code = script.index("git pull origin main")
+    restart_app = script.index("systemctl restart marcedit-web-private")
+    app_health = script.index("/_stcore/health")
+    schema_health = script.index("-m marcedit_web.ops.health")
+    start_worker = script.index("systemctl start marcedit-web-worker")
+    stale_heartbeat = script.index("-m marcedit_web.ops.worker --check")
+    worker_health = script.rindex("-m marcedit_web.ops.worker --check")
+
+    assert script.count("-m marcedit_web.ops.worker --check") == 2
+    assert stop_worker < stale_heartbeat < pull_code < restart_app
+    assert restart_app < app_health < schema_health < start_worker < worker_health
+    assert "journalctl -u marcedit-web-private -u marcedit-web-worker" in script
+
+
+def test_install_and_sudoers_cover_worker_lifecycle_with_exact_commands():
+    """Deployment gets only the specific root actions its rollout requires."""
+    install = _repo_file("scripts/install.sh")
+    sudoers = _repo_file("deploy/marcedit.sudoers")
+
+    assert "mkdir -p data/audit data/tasks data/uploads data/operations" in install
+    assert "systemctl daemon-reload" in install
+    assert "systemctl enable --now marcedit-web-worker" in install
+    for action in ("start", "stop", "restart"):
+        assert (
+            f"marcedit  ALL=(root)    NOPASSWD: /bin/systemctl {action} "
+            "marcedit-web-worker"
+        ) in sudoers
+    assert (
+        "marcedit  ALL=(root)    NOPASSWD: /bin/systemctl restart "
+        "marcedit-web-private"
+    ) in sudoers
+
+
+def test_preflight_validates_worker_unit_storage_and_queue_settings():
+    """A bad queue deployment must fail before it accepts durable work."""
+    script = _repo_file("scripts/preflight-check.sh")
+
+    assert "/etc/systemd/system/marcedit-web-worker.service" in script
+    assert "MARCEDIT_WEB_OPERATIONS_ROOT" in script
+    assert "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS" in script
+    assert "MARCEDIT_WEB_OPERATION_RETENTION_DAYS" in script
+    assert "positive integer" in script
+    assert "must be within $DATA_DIR" in script
+    assert "mkdir" not in script
+
+
+def test_deployment_docs_cover_queue_operations_and_recovery():
+    """Operators need enough context to diagnose without exposing MARC data."""
+    docs = _repo_file("docs/deployment.md")
+
+    assert "journalctl -u marcedit-web-worker" in docs
+    assert "python -m marcedit_web.ops.worker --check" in docs
+    assert "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS" in docs
+    assert "MARCEDIT_WEB_OPERATION_RETENTION_DAYS" in docs
+    assert "30 days" in docs
+    assert "data/operations" in docs
+    assert "cancell" in docs.lower()
+    assert "immutable input" in docs.lower()
+
+
+def test_its_setup_installs_and_operates_the_private_app_and_worker():
+    """The linked one-time setup guide must not leave the durable queue idle."""
+    docs = _repo_file("docs/its-setup.md")
+
+    private_install = docs.index("deploy/marcedit-web-private.service")
+    worker_install = docs.index("deploy/marcedit-web-worker.service")
+    daemon_reload = docs.index("systemctl daemon-reload")
+    private_enable = docs.index("systemctl enable --now marcedit-web-private")
+    worker_enable = docs.index("systemctl enable --now marcedit-web-worker")
+
+    assert private_install < worker_install < daemon_reload
+    assert daemon_reload < private_enable < worker_enable
+    assert "systemctl status marcedit-web-private marcedit-web-worker" in docs
+    assert "python -m marcedit_web.ops.worker --check" in docs
+    assert "journalctl -u marcedit-web-private" in docs
+    assert "journalctl -u marcedit-web-worker" in docs
+    assert "data/operations" in docs
+    assert "immutable input" in docs.lower()
+    assert "cancell" in docs.lower()
+    assert "restarts the service via" not in docs
+
+
 def _deploy_file(path: str) -> str:
     """Like _repo_file, but a missing file is a FAILURE when deploy/
     exists (host checkout) — skip only inside the built image, where

@@ -5,16 +5,10 @@
 # Run as the marcedit service user (typically via
 # ``sudo -iu marcedit bash scripts/deploy.sh``). This script:
 #
-#   1. Pulls the latest code from origin/main.
-#   2. Refreshes the venv with current requirements.txt.
-#   3. Asks systemd (via the NOPASSWD sudoers rule) to restart
-#      the marcedit-web service.
-#   4. Polls the Streamlit healthcheck for 30s and exits non-zero
-#      if the service doesn't come back up.
-#
-# DB migration is intentionally not a step here:
-# ``marcedit_web.lib.db.init_schema()`` is idempotent and runs on
-# first request.
+#   1. Stops the durable worker so old code cannot write during migration.
+#   2. Pulls code and refreshes the venv.
+#   3. Restarts the private app and verifies HTTP plus database readiness.
+#   4. Starts the worker and requires a fresh database heartbeat.
 
 set -euo pipefail
 
@@ -32,6 +26,33 @@ if [ ! -d .venv ]; then
     exit 1
 fi
 
+deployment_failed() {
+    status=$?
+    trap - ERR
+    sudo /bin/systemctl stop marcedit-web-worker >/dev/null 2>&1 || true
+    echo "✗ Deploy failed; the queue worker has been left stopped so queued work remains recoverable."
+    echo "  Inspect both units: journalctl -u marcedit-web-private -u marcedit-web-worker"
+    exit "$status"
+}
+trap deployment_failed ERR
+
+echo "→ Stopping durable operation worker..."
+sudo /bin/systemctl stop marcedit-web-worker
+
+echo "→ Waiting for the previous worker heartbeat to expire..."
+previous_heartbeat_stale=0
+for i in {1..20}; do
+    if ! .venv/bin/python -m marcedit_web.ops.worker --check >/dev/null 2>&1; then
+        previous_heartbeat_stale=1
+        break
+    fi
+    sleep 1
+done
+if [ "$previous_heartbeat_stale" -ne 1 ]; then
+    echo "✗ Previous worker heartbeat remained fresh after the service stopped."
+    false
+fi
+
 echo "→ Pulling latest code..."
 git pull origin main
 
@@ -39,17 +60,42 @@ echo "→ Refreshing venv..."
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 
-echo "→ Restarting marcedit-web..."
-sudo /bin/systemctl restart marcedit-web
+echo "→ Restarting private application..."
+sudo /bin/systemctl restart marcedit-web-private
 
-echo "→ Waiting for healthcheck (up to 30s)..."
+echo "→ Waiting for application healthcheck (up to 30s)..."
+app_ready=0
 for i in {1..30}; do
     if curl -fs http://127.0.0.1:8501/marcedit-web/_stcore/health >/dev/null 2>&1; then
-        echo "✓ Deploy complete (healthcheck OK)."
-        exit 0
+        app_ready=1
+        break
     fi
     sleep 1
 done
+if [ "$app_ready" -ne 1 ]; then
+    echo "✗ Private application healthcheck did not respond within 30s."
+    false
+fi
 
-echo "✗ Healthcheck did not respond within 30s. Check 'journalctl -u marcedit-web' for details."
-exit 1
+echo "→ Verifying database schema and write readiness..."
+.venv/bin/python -m marcedit_web.ops.health
+
+echo "→ Starting durable operation worker..."
+sudo /bin/systemctl start marcedit-web-worker
+
+echo "→ Waiting for a fresh worker heartbeat (up to 30s)..."
+worker_ready=0
+for i in {1..30}; do
+    if .venv/bin/python -m marcedit_web.ops.worker --check >/dev/null 2>&1; then
+        worker_ready=1
+        break
+    fi
+    sleep 1
+done
+if [ "$worker_ready" -ne 1 ]; then
+    echo "✗ Durable operation worker did not publish a fresh heartbeat within 30s."
+    false
+fi
+
+trap - ERR
+echo "✓ Deploy complete (application ready; worker heartbeat fresh)."
