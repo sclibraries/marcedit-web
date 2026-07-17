@@ -128,6 +128,31 @@ def test_job_submission_allows_editor_without_checkout_and_uses_exact_version(
     assert artifact["queue_owned"] == 0
 
 
+def test_submission_normalizes_quick_load_and_job_submitter_identity(tmp_path):
+    source = tmp_path / "mixed-case-quick.mrc"
+    source.write_bytes(sample_mrc_bytes())
+    quick = operation_submission.submit_quick_load_task_run(
+        user_email=" Owner@Smith.EDU ",
+        source_path=source,
+        filename="mixed-case-quick.mrc",
+        record_count=2,
+        task_specs=[_task()],
+    )
+    _, attached, version = _attached_file(tmp_path)
+    job = operation_submission.submit_job_task_run(
+        user_email=" Owner@Smith.EDU ",
+        file_id=attached["id"],
+        source_version_id=version["id"],
+        task_specs=[_task()],
+    )
+
+    assert quick["submitted_by"] == "owner@smith.edu"
+    assert job["submitted_by"] == "owner@smith.edu"
+    assert operations.list_events(
+        quick["id"], "owner@smith.edu"
+    )[0]["actor_email"] == "owner@smith.edu"
+
+
 def test_job_submission_rejects_viewer_access(tmp_path):
     job, attached, version = _attached_file(tmp_path)
     jobs.grant_access(job["id"], "viewer@smith.edu", "viewer", by="owner@smith.edu")

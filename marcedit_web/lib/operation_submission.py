@@ -39,14 +39,15 @@ def submit_job_task_run(
     source_version_id: int,
     task_specs: Sequence[sandbox.TaskSpec],
 ) -> dict[str, Any]:
+    email = user_email.strip().lower()
     request_json = json.dumps(_request_payload(task_specs))
-    file_row = job_files.get_file(file_id, user_email)
+    file_row = job_files.get_file(file_id, email)
     jobs.require_role(
         int(file_row["job_id"]),
-        user_email,
+        email,
         {"owner", "editor"},
     )
-    version = job_files.get_version(source_version_id, user_email)
+    version = job_files.get_version(source_version_id, email)
     if int(version["job_file_id"]) != file_id:
         raise operations.OperationError("source version does not belong to job file")
 
@@ -56,13 +57,13 @@ def submit_job_task_run(
         conn.execute("BEGIN IMMEDIATE")
         _require_job_submission_source(
             conn,
-            user_email=user_email,
+            user_email=email,
             file_id=file_id,
             source_version_id=source_version_id,
         )
         operation_id = _insert_operation(
             conn,
-            submitted_by=user_email,
+            submitted_by=email,
             request_json=request_json,
             total_records=int(version["record_count"]),
             submitted_at=now,
@@ -83,7 +84,7 @@ def submit_job_task_run(
             created_at=now,
             expires_at=None,
         )
-        _record_submitted(conn, operation_id, user_email, now)
+        _record_submitted(conn, operation_id, email, now)
         created = _created_operation(conn, operation_id)
     return created
 
@@ -96,6 +97,7 @@ def submit_quick_load_task_run(
     record_count: int,
     task_specs: Sequence[sandbox.TaskSpec],
 ) -> dict[str, Any]:
+    email = user_email.strip().lower()
     request_json = json.dumps(_request_payload(task_specs))
     clean_filename = filename.strip()
     if not clean_filename or not source_path.is_file():
@@ -135,7 +137,7 @@ def submit_quick_load_task_run(
             conn.execute("BEGIN IMMEDIATE")
             operation_id = _insert_operation(
                 conn,
-                submitted_by=user_email,
+                submitted_by=email,
                 request_json=request_json,
                 total_records=record_count,
                 submitted_at=now,
@@ -164,7 +166,7 @@ def submit_quick_load_task_run(
                 created_at=now,
                 expires_at=expires_at,
             )
-            _record_submitted(conn, operation_id, user_email, now)
+            _record_submitted(conn, operation_id, email, now)
             created = _created_operation(conn, operation_id)
         return created
     except Exception:

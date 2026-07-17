@@ -14,7 +14,7 @@ from marcedit_web.lib import db, operations
 def _insert_operation(
     operation_id: int,
     *,
-    submitted_by: str = "owner@smith.edu",
+    submitted_by: str = "Owner@Smith.edu",
     state: str = "completed",
     error_count: int = 0,
     cancelled_by: str | None = None,
@@ -46,7 +46,7 @@ def test_unread_notifications_are_terminal_submitter_owned_and_source_safe():
     _insert_operation(1)
     _insert_operation(2, state="failed")
     _insert_operation(3, state="cancelled", cancelled_by="admin@smith.edu")
-    _insert_operation(4, state="cancelled", cancelled_by="OWNER@smith.edu")
+    _insert_operation(4, state="cancelled", cancelled_by=" OWNER@smith.edu ")
     _insert_operation(5, state="running", completed_at=None)
     _insert_operation(6, submitted_by="other@smith.edu")
 

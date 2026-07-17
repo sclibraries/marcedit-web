@@ -184,6 +184,32 @@ def test_visible_read_model_includes_safe_source_and_action_metadata(
     assert "file_path" not in row
 
 
+def test_mixed_case_quick_load_submitter_keeps_visibility_and_actions(tmp_path):
+    db.init_schema()
+    with db.connect() as conn:
+        operation_id = int(conn.execute(
+            "INSERT INTO operations(kind,submitted_by,state,request_json,"
+            "total_records,submitted_at) VALUES"
+            "('saved-task-run','Owner@Smith.edu','queued','{}',3,"
+            "'2026-07-17T12:00:00Z') RETURNING id"
+        ).fetchone()["id"])
+    _attach_input(operation_id, tmp_path)
+
+    row = operations.list_visible_operations(" OWNER@SMITH.EDU ")[0]
+
+    assert row["id"] == operation_id
+    assert row["can_access_artifacts"] is True
+    assert row["can_cancel"] is True
+    assert operations.list_artifacts(
+        operation_id, "owner@smith.edu"
+    )[0]["role"] == "input"
+    cancelled = operations.request_cancel(
+        operation_id, by="OWNER@smith.edu"
+    )
+    assert cancelled["state"] == "cancelled"
+    assert cancelled["cancel_requested_by"] == "owner@smith.edu"
+
+
 def test_visible_read_model_is_an_exact_safe_allowlist(queued_operation, tmp_path):
     _attach_input(queued_operation["id"], tmp_path)
     with db.connect() as conn:

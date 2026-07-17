@@ -252,7 +252,7 @@ def _quick_artifact(
             " FROM operations JOIN operation_artifacts AS input"
             " ON input.operation_id=operations.id AND input.role='input'"
             " WHERE operations.id=? AND operations.job_id IS NULL"
-            " AND operations.submitted_by=?",
+            " AND LOWER(TRIM(operations.submitted_by))=?",
             (operation_id, user_email),
         ).fetchone()
         if operation is None:

@@ -520,6 +520,32 @@ def test_reopen_quick_load_replaces_store_and_retains_artifacts(
     assert item["result"].exists()
 
 
+def test_reopen_quick_load_accepts_existing_mixed_case_submitter(
+    completed_quick_operation,
+    monkeypatch,
+):
+    item = completed_quick_operation
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE operations SET submitted_by='Owner@Example.EDU' WHERE id=?",
+            (item["id"],),
+        )
+    state = {"user": "OWNER@EXAMPLE.EDU", "store": None}
+    monkeypatch.setitem(
+        sys.modules,
+        "streamlit",
+        SimpleNamespace(session_state=state, query_params={}),
+    )
+
+    store = operation_results.reopen_quick_load(
+        item["id"],
+        user_email=" Owner@Example.edu ",
+        use_result=True,
+    )
+
+    assert store.filename == "vendor-original-queued-result.mrc"
+
+
 def test_reopen_quick_load_rejects_cross_user_and_expired_artifact(
     completed_quick_operation,
     monkeypatch,

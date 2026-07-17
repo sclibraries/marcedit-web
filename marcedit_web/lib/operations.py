@@ -124,7 +124,7 @@ def list_visible_operations(user_email: str) -> list[dict[str, Any]]:
             rows = conn.execute(
                 select
                 + " WHERE (operations.job_id IS NULL"
-                " AND operations.submitted_by=?)"
+                " AND LOWER(TRIM(operations.submitted_by))=?)"
                 " OR (operations.job_id IS NOT NULL"
                 " AND job_access.user_email IS NOT NULL)"
                 " ORDER BY operations.submitted_at DESC, operations.id DESC",
@@ -133,8 +133,9 @@ def list_visible_operations(user_email: str) -> list[dict[str, Any]]:
     visible: list[dict[str, Any]] = []
     for row in rows:
         raw = _dict(row)
+        is_submitter = _same_email(raw["submitted_by"], email)
         has_source_access = (
-            raw["submitted_by"] == email
+            is_submitter
             if raw["job_id"] is None
             else raw["viewer_role"] is not None
         )
@@ -149,7 +150,7 @@ def list_visible_operations(user_email: str) -> list[dict[str, Any]]:
         item["can_cancel"] = (
             raw["state"] in {"queued", "running", "cancelling"}
             and (
-                raw["submitted_by"] == email
+                is_submitter
                 or is_admin
                 or raw["viewer_role"] == "owner"
             )
@@ -346,11 +347,12 @@ def renew_lease(
 
 def request_cancel(operation_id: int, *, by: str) -> dict[str, Any]:
     db.init_schema()
+    email = by.strip().lower()
     now = _iso(_now())
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = _operation_row(conn, operation_id)
-        if row is None or not _can_cancel(conn, row, by):
+        if row is None or not _can_cancel(conn, row, email):
             raise OperationError("operation not found")
         if row["state"] in {"completed", "failed", "cancelled"}:
             raise OperationError("operation is already finished")
@@ -374,7 +376,7 @@ def request_cancel(operation_id: int, *, by: str) -> dict[str, Any]:
             (
                 state,
                 phase,
-                by,
+                email,
                 now,
                 completed_at,
                 operation_id,
@@ -388,7 +390,7 @@ def request_cancel(operation_id: int, *, by: str) -> dict[str, Any]:
             operation_id,
             kind=kind,
             message=message,
-            actor_email=by,
+            actor_email=email,
             created_at=now,
         )
         result = _operation_row(conn, operation_id)
@@ -774,11 +776,12 @@ def list_unread_notifications(user_email: str) -> list[dict[str, Any]]:
     with db.connect() as conn:
         rows = conn.execute(
             "SELECT id,state,error_count,completed_at,cancel_requested_by"
-            " FROM operations WHERE submitted_by=?"
+            " FROM operations WHERE LOWER(TRIM(submitted_by))=?"
             " AND notification_ack_at IS NULL"
             " AND state IN ('completed','failed','cancelled')"
             " AND (state!='cancelled' OR (cancel_requested_by IS NOT NULL"
-            " AND LOWER(cancel_requested_by)!=LOWER(submitted_by)))"
+            " AND LOWER(TRIM(cancel_requested_by))!="
+            " LOWER(TRIM(submitted_by))))"
             " ORDER BY completed_at DESC,id DESC",
             (email,),
         ).fetchall()
@@ -795,7 +798,7 @@ def operation_status_counts(user_email: str) -> dict[str, int]:
             params: tuple[Any, ...] = ()
         else:
             where = (
-                " WHERE (job_id IS NULL AND submitted_by=?)"
+                " WHERE (job_id IS NULL AND LOWER(TRIM(submitted_by))=?)"
                 " OR (job_id IS NOT NULL AND EXISTS (SELECT 1 FROM job_access"
                 " WHERE job_access.job_id=operations.job_id"
                 " AND job_access.user_email=?))"
@@ -821,10 +824,12 @@ def acknowledge_notification(operation_id: int, *, by: str) -> dict[str, Any]:
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT * FROM operations WHERE id=? AND submitted_by=?"
+            "SELECT * FROM operations WHERE id=?"
+            " AND LOWER(TRIM(submitted_by))=?"
             " AND state IN ('completed','failed','cancelled')"
             " AND (state!='cancelled' OR (cancel_requested_by IS NOT NULL"
-            " AND LOWER(cancel_requested_by)!=LOWER(submitted_by)))",
+            " AND LOWER(TRIM(cancel_requested_by))!="
+            " LOWER(TRIM(submitted_by))))",
             (operation_id, email),
         ).fetchone()
         if row is None:
@@ -859,11 +864,12 @@ def acknowledge_all_notifications(*, by: str) -> int:
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
-            "SELECT id FROM operations WHERE submitted_by=?"
+            "SELECT id FROM operations WHERE LOWER(TRIM(submitted_by))=?"
             " AND notification_ack_at IS NULL"
             " AND state IN ('completed','failed','cancelled')"
             " AND (state!='cancelled' OR (cancel_requested_by IS NOT NULL"
-            " AND LOWER(cancel_requested_by)!=LOWER(submitted_by))) ORDER BY id",
+            " AND LOWER(TRIM(cancel_requested_by))!="
+            " LOWER(TRIM(submitted_by)))) ORDER BY id",
             (email,),
         ).fetchall()
         for row in rows:
@@ -990,10 +996,11 @@ def _is_visible(
     user_email: str,
 ) -> bool:
     if row["job_id"] is None:
-        return row["submitted_by"] == user_email
+        return _same_email(row["submitted_by"], user_email)
+    email = user_email.strip().lower()
     access = conn.execute(
         "SELECT 1 FROM job_access WHERE job_id=? AND user_email=?",
-        (row["job_id"], user_email),
+        (row["job_id"], email),
     ).fetchone()
     return access is not None
 
@@ -1014,7 +1021,7 @@ def _can_cancel(
     user_email: str,
 ) -> bool:
     email = user_email.strip().lower()
-    if row["submitted_by"] == email or _is_admin(conn, email):
+    if _same_email(row["submitted_by"], email) or _is_admin(conn, email):
         return True
     if row["job_id"] is None:
         return False
@@ -1022,6 +1029,10 @@ def _can_cancel(
         "SELECT 1 FROM job_access WHERE job_id=? AND user_email=? AND role='owner'",
         (row["job_id"], email),
     ).fetchone() is not None
+
+
+def _same_email(left: str, right: str) -> bool:
+    return left.strip().lower() == right.strip().lower()
 
 
 def _require_visible(
