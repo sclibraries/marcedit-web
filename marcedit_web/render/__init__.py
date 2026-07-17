@@ -19,6 +19,7 @@ import streamlit as st
 from marcedit_web.lib import rules as rules_mod
 from marcedit_web.lib import session
 from marcedit_web.render.batch_status import loaded_batch_status
+from marcedit_web.render import operation_notifications
 
 
 _RULES_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "marc-rules.txt"
@@ -63,3 +64,4 @@ def sidebar_status() -> None:
             st.caption(f"{session.record_count()} records")
         else:
             st.caption("No file loaded yet.")
+    operation_notifications.render_sidebar_summary(user)

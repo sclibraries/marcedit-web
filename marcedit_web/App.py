@@ -24,11 +24,16 @@ exactly as it did pre-OAuth.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import streamlit as st
 
-from marcedit_web.lib import access_gate, db, identity, runmode
+from marcedit_web.lib import access_gate, authz, db, identity, runmode
+from marcedit_web.render import operation_notifications
+
+
+logger = logging.getLogger("marcedit_web.App")
 
 
 @dataclass(frozen=True)
@@ -177,15 +182,18 @@ def _render_auth_header() -> None:
             )
             email = identity.oauth_user()
             if email:
-                with st.popover(
-                    "Account",
-                    icon=":material/account_circle:",
-                ):
-                    st.caption(email)
-                    if st.button(
-                        "Sign out", key="auth_signout", width="stretch"
-                    ):
-                        st.logout()
+                if _should_render_notification_bell(email):
+                    bell_column, account_column = st.columns(
+                        2,
+                        gap="small",
+                        vertical_alignment="center",
+                    )
+                    with bell_column:
+                        _render_notification_bell(email)
+                    with account_column:
+                        _render_account_menu(email)
+                else:
+                    _render_account_menu(email)
             else:
                 if st.button(
                     "Sign in with Google",
@@ -198,6 +206,47 @@ def _render_auth_header() -> None:
         # Pre-1.42 Streamlit (no st.login/st.logout/st.popover) —
         # fall through quietly so the rest of the app still renders.
         return
+
+
+def _render_account_menu(email: str) -> None:
+    with st.popover(
+        "Account",
+        icon=":material/account_circle:",
+    ):
+        st.caption(email)
+        if st.button(
+            "Sign out", key="auth_signout", width="stretch"
+        ):
+            st.logout()
+
+
+def _should_render_notification_bell(email: str) -> bool:
+    if not runmode.is_private():
+        return False
+    try:
+        user = authz.get_user(email)
+    except Exception:  # Header account controls must remain available.
+        logger.exception("could not resolve notification access")
+        return False
+    return user is not None and user.get("status") == "approved"
+
+
+def _render_notification_bell(email: str) -> None:
+    try:
+        operation_notifications.render_header_bell(email)
+    except Exception:  # A broken alert must not hide Account/sign-out.
+        logger.exception("could not render operation notification bell")
+
+
+def _render_first_return_notification() -> None:
+    if not runmode.is_private():
+        return
+    try:
+        operation_notifications.render_first_return_notice(
+            identity.current_user()
+        )
+    except Exception:
+        logger.exception("could not render operation return notification")
 
 
 if __name__ == "__main__":
@@ -214,5 +263,6 @@ if __name__ == "__main__":
 
     _render_auth_header()
     access_gate.enforce_access()   # private-mode gate; no-op in public
+    _render_first_return_notification()
 
     st.navigation(_to_st_pages(build_pages(public=runmode.is_public()))).run()

@@ -3,9 +3,9 @@
 v3 changes:
 * Default users see only the **form builder**. The Code view is gated
   to admins via :func:`task_admin.is_admin` (env: ``MARCEDIT_WEB_ADMINS``).
-* Running tasks against the loaded batch routes through the subprocess
-  sandbox in :mod:`marcedit_web.lib.sandbox`. The Streamlit process
-  never executes user code directly.
+* Saved-task runs are submitted to the durable operation queue. A separate
+  worker executes their immutable snapshots through the subprocess sandbox;
+  the Streamlit process never executes saved-task code directly.
 * Task files keep round-tripping through the existing
   ``editor.parse_user_task_file`` / ``task_builder.parse_ops_from_source``
   / ``task_builder.render_ops_to_python`` plumbing. Form-built tasks
@@ -27,11 +27,9 @@ import shutil
 import tempfile
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-import pymarc
 import streamlit as st
 from streamlit_ace import st_ace
 
@@ -45,9 +43,9 @@ from marcedit_web.lib import (
     job_files,
     marcedit_import,
     note_task_draft,
+    operation_submission,
     quotas,
     quick_batch,
-    run_history,
     sandbox,
     session,
     snapshot_actions,
@@ -61,19 +59,10 @@ from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.batch_replace import BatchReplaceRequest
 from marcedit_web.lib.quick_batch import QuickBatchRequest
 from marcedit_web.lib.record_store import RecordStore
-from marcedit_web.lib.run_history import TaskRunRecord
-from marcedit_web.lib.errors import Issue, transform_issue
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
 from marcedit_web.render.batch_status import loaded_batch_status
 
 logger = logging.getLogger("marcedit_web.render.tasks")
-
-TASK_TIMEOUT_STATUS = "⚠️ Run reached the maximum processing time"
-TASK_TIMEOUT_MESSAGE = (
-    "This run exceeded the maximum processing time of 5 minutes and stopped "
-    "before all records were completed. No partial output was applied or "
-    "made available for download."
-)
 
 
 @contextmanager
@@ -130,7 +119,6 @@ K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
 K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
 K_EDITOR_FROM_AI_DRAFT = "tasks_editor_from_ai_draft"
 K_EDITOR_AI_DRAFT_REVIEW = "tasks_editor_ai_draft_review"
-K_RUN_RESULTS = "tasks_run_results"
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
 K_MATERIALIZED_DIR = "tasks_materialized_dir"
@@ -202,7 +190,6 @@ def render() -> None:
     st.session_state.setdefault(K_EDITOR_VISIBILITY, "private")
     st.session_state.setdefault(K_EDITOR_FROM_AI_DRAFT, False)
     st.session_state.setdefault(K_EDITOR_AI_DRAFT_REVIEW, None)
-    st.session_state.setdefault(K_RUN_RESULTS, None)
 
     # Load the materialized dir so the importer sees the user's tasks.
     tasks.load_user_tasks(tasks_dir, force_reload=False)
@@ -251,7 +238,6 @@ def _render_run_mode(registered, tasks_dir: Path) -> None:
         )
     else:
         _render_run_panel(registered, tasks_dir)
-    _render_run_results()
 
 
 def _render_quick_ops_mode() -> None:
@@ -1264,7 +1250,6 @@ def _cancel_callback() -> None:
 
 def _render_run_panel(registered, tasks_dir: Path) -> None:
     available_names = [t.name for t in registered]
-    processing_minutes = sandbox.DEFAULT_PROCESSING_LIMIT_SECONDS // 60
     selection = st.multiselect(
         "Tasks to run (applied in the listed order)",
         options=available_names,
@@ -1272,16 +1257,13 @@ def _render_run_panel(registered, tasks_dir: Path) -> None:
         help=(
             "Each task gets the same record one at a time; tasks later "
             "in the list see the output of earlier tasks. Execution "
-            "happens in a sandboxed subprocess with CPU / memory / "
-            "time limits."
+            "is processed in order by the durable operation queue."
         ),
         key="tasks_run_selection",
     )
     st.caption(
-        "ℹ️ Runs apply in the sandbox, which has CPU, memory, and maximum "
-        f"processing-time limits. Large batches may take up to "
-        f"{processing_minutes} minutes — **leave this tab open until the "
-        "status below reports Done**."
+        "Saved-task runs are queued for background processing. You can leave "
+        "this page and follow progress, completion, or errors in Operations."
     )
     if st.button(
         "Run selected tasks",
@@ -1289,17 +1271,11 @@ def _render_run_panel(registered, tasks_dir: Path) -> None:
         disabled=not selection,
         key="tasks_run_btn",
     ):
-        _execute_sandboxed_run(selection, tasks_dir)
+        _submit_queued_run(selection, tasks_dir)
 
 
-def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
-    store = session.current_store()
-    if store is None:
-        st.error("No loaded batch — upload one on Home first.")
-        return
-
-    # Build TaskSpecs by reading the saved files (so we get the literal
-    # body + imports the user authored, not the in-process Task fn).
+def _submit_queued_run(selection: list[str], tasks_dir: Path) -> None:
+    """Snapshot selected task definitions and submit one durable operation."""
     specs: list[sandbox.TaskSpec] = []
     for name in selection:
         try:
@@ -1312,466 +1288,45 @@ def _execute_sandboxed_run(selection: list[str], tasks_dir: Path) -> None:
         specs.append(sandbox.TaskSpec(
             name=name,
             body=parsed["body"],
-            imports=[],  # imports already baked into the saved file
+            imports=[],
         ))
 
     user = session.current_user_id()
-    # Stage 20: stream the live records to a temp file instead of
-    # materializing the whole batch as bytes in this process. The
-    # sandbox driver opens it lazily via MARCReader and pages through.
-    sandbox_workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-sandbox-"))
-    sandbox_input = sandbox_workdir / "input.mrc"
-    # Progress UI: a prominent in-page status block instead of the
-    # top-right spinner. We can't show per-record progress (Streamlit
-    # blocks on subprocess.run; no concurrent UI update path), so the
-    # lines we DO emit fire at clearly-defined phase boundaries.
-    with st.status(
-        "Running tasks…",
-        expanded=True,
-    ) as status:
-        st.write(f"📥 Reading **{store.count():,}** records from upload")
-        input_bytes_written = store.write_mrc_to(sandbox_input)
-        st.write(
-            f"⚙️ Running {len(specs)} task(s) in the sandbox: "
-            + ", ".join(f"`{s.name}`" for s in specs)
-        )
-        with _batch_operation(
-            "saved-task", phase="sandbox", store=store
-        ) as measurement:
-            result = sandbox.run_tasks_subprocess(
-                specs,
-                input_path=sandbox_input,
-                tmp_dir=sandbox_workdir,
-            )
-            if result.timed_out:
-                measurement.mark_error("SandboxTimeout")
-            elif result.returncode != 0:
-                measurement.mark_error("SandboxNonzeroExit")
-        if result.timed_out:
-            status.update(
-                label=TASK_TIMEOUT_STATUS,
-                state="error",
-                expanded=False,
-            )
-        elif result.returncode != 0:
-            status.update(
-                label=f"⚠️ Sandbox exited with code {result.returncode}",
-                state="error",
-                expanded=False,
-            )
-        else:
-            st.write("✅ Sandbox finished cleanly")
-            status.update(
-                label="✅ Done — review changes below before downloading",
-                state="complete",
-                expanded=False,
-            )
-    if result.timed_out:
-        audit_event(
-            "sandbox-timeout",
-            user=user,
-            tasks=list(selection),
-            input_bytes=input_bytes_written,
-        )
-    elif result.returncode != 0:
-        audit_event(
-            "sandbox-nonzero-exit",
-            user=user,
-            tasks=list(selection),
-            returncode=result.returncode,
-            stderr_excerpt=(result.stderr or "")[:512],
-        )
-
-    # Re-count what we got back without retaining parsed records.
     try:
-        with result.output_path.open("rb") as output_fh:
-            output_count = sum(
-                record is not None
-                for record in pymarc.MARCReader(
-                    output_fh,
-                    to_unicode=True,
-                    permissive=True,
-                )
-            )
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"Could not parse sandbox output: {exc}")
-        output_count = 0
-
-    issues: list[Issue] = []
-    for err in result.errors:
-        issues.append(transform_issue(
-            err.get("index") or 0,
-            None,
-            err.get("task"),
-            RuntimeError(f"[{err['code']}] {err['message']}"),
-        ))
-
-    # TASK-035: compute the diff eagerly here, instead of lazily in
-    # _render_diff_review. Same streaming cost either way; doing it
-    # at run-completion means the audit row and TaskRunRecord carry
-    # an accurate ``changed_count`` from the moment they're written.
-    sandbox_output_path = result.output_path
-
-    diff_summary = None
-    if result.returncode == 0 and not result.timed_out:
-        try:
-            diff_summary = task_diff.compute_task_diff(
-                sandbox_input, sandbox_output_path,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("could not build task diff summary: %s", exc)
-
-    task_label = ", ".join(selection) or "Task run"
-    summary = {
-        "task_names": list(selection),
-        "input_record_count": store.count(),
-        "output_record_count": output_count,
-        "changed_count": (
-            diff_summary.changed_count if diff_summary is not None else 0
-        ),
-        "error_count": result.error_count,
-        "timed_out": bool(result.timed_out),
-        "sandbox_returncode": int(result.returncode or 0),
-    }
-    validation = {
-        "error_count": result.error_count,
-        "timed_out": bool(result.timed_out),
-        "sandbox_returncode": int(result.returncode or 0),
-    }
-    snapshot = None
-    if not result.timed_out and not _uses_job_file_versions():
-        # Non-job Quick Load compatibility boundary: legacy history only.
-        snapshot = snapshot_actions.record_job_snapshot(
-            job_id=st.session_state.get("current_job_id"),
-            user_email=user,
-            kind="task-run",
-            label=task_label,
-            before_path=sandbox_input,
-            after_path=sandbox_output_path,
-            summary=summary,
-        )
-    if snapshot is not None:
-        audit_event(
-            "job-snapshot-created",
-            user=user,
-            snapshot_id=snapshot["id"],
-            job_id=snapshot["job_id"],
-            snapshot_kind=snapshot["kind"],
-        )
-
-    st.session_state[K_RUN_RESULTS] = {
-        "issues": issues,
-        "out_filename": _export_filename(session.current_filename(), "tasks"),
-        "out_path": str(sandbox_output_path),
-        "input_count": store.count(),
-        "output_count": output_count,
-        "error_count": result.error_count,
-        "ran_tasks": list(selection),
-        "timed_out": result.timed_out,
-        "sandbox_returncode": result.returncode,
-        # Path to the streaming-input file so the diff renderer can
-        # walk it again. The sandbox workdir survives until container
-        # restart; that's good enough for the post-run review window.
-        "sandbox_input_path": str(sandbox_input),
-        # Pre-computed diff summary so _render_diff_review reuses it
-        # instead of rebuilding.
-        "_diff_summary": diff_summary,
-        "snapshot_id": snapshot["id"] if snapshot is not None else None,
-        "task_label": task_label,
-        "summary": summary,
-        "validation": validation,
-        "preview_version_id": (
-            st.session_state.get("job_file_version_id")
-            if _uses_job_file_versions()
-            else None
-        ),
-    }
-
-    # TASK-034 + TASK-035: append to per-session run history with
-    # the real changed_count threaded in from the eager diff above.
-    _record_run_in_history(
-        user=user,
-        store=store,
-        selection=list(selection),
-        result=result,
-        out_records_count=output_count,
-        errors_count=result.error_count,
-        changed_count=(diff_summary.changed_count
-                       if diff_summary is not None else 0),
-        sandbox_workdir=sandbox_workdir,
-        sandbox_input_path=sandbox_input,
-        sandbox_output_path=sandbox_output_path,
-    )
-
-
-def _record_run_in_history(
-    *,
-    user: str,
-    store,
-    selection: list[str],
-    result,
-    out_records_count: int,
-    errors_count: int,
-    changed_count: int,
-    sandbox_workdir: Path,
-    sandbox_input_path: Path,
-    sandbox_output_path: Path,
-) -> None:
-    """Append a TaskRunRecord; evict oldest, clean evicted workdirs."""
-    record = TaskRunRecord(
-        timestamp=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        user=user,
-        input_filename=session.current_filename(),
-        task_names=list(selection),
-        input_record_count=store.count() if store is not None else 0,
-        output_record_count=out_records_count,
-        changed_count=changed_count,
-        error_count=errors_count,
-        timed_out=bool(result.timed_out),
-        sandbox_returncode=int(result.returncode or 0),
-        input_path=str(sandbox_input_path),
-        output_path=str(sandbox_output_path),
-        workdir=str(sandbox_workdir),
-    )
-    history = st.session_state.get("task_run_history") or []
-    new_history, evicted = run_history.append_run(history, record)
-    st.session_state["task_run_history"] = new_history
-    run_history.cleanup_workdirs(evicted)
-
-    audit_event(
-        "task-run-completed",
-        user=user,
-        tasks=record.task_names,
-        input_records=record.input_record_count,
-        output_records=record.output_record_count,
-        changed_count=record.changed_count,
-        error_count=record.error_count,
-        timed_out=record.timed_out,
-        returncode=record.sandbox_returncode,
-    )
-
-
-def _render_run_results() -> None:
-    results = st.session_state.get(K_RUN_RESULTS)
-    if results is None:
-        return
-    st.divider()
-    st.markdown("**Run results**")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Records in", results["input_count"])
-    c2.metric("Records out", results["output_count"])
-    error_count = results.get("error_count", len(results["issues"]))
-    c3.metric("Errors", error_count)
-    st.caption(
-        "Tasks applied: " + ", ".join(f"`{n}`" for n in results["ran_tasks"])
-    )
-
-    if results.get("timed_out"):
-        st.error(TASK_TIMEOUT_MESSAGE)
-    elif results.get("sandbox_returncode", 0) != 0:
-        st.warning(
-            f"Sandbox exited with code {results['sandbox_returncode']}. "
-            "Check the error table below."
-        )
-
-    if results["issues"]:
-        if error_count > len(results["issues"]):
-            st.caption(
-                f"Showing the first {len(results['issues']):,} of "
-                f"{error_count:,} task errors."
-            )
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "record": str(i.record_index) if i.record_index else "—",
-                        "identifier": i.identifier or "—",
-                        "task": i.task or "—",
-                        "code": i.code,
-                        "message": i.message,
-                    }
-                    for i in results["issues"]
-                ]
-            ),
-            hide_index=True,
-            use_container_width=True,
-        )
-
-    # Pre-download diff review — surfaces what actually changed so the
-    # cataloger can verify the task did the expected work before
-    # exporting.
-    _render_diff_review(results)
-
-    if results.get("timed_out"):
-        return
-
-    if (
-        _uses_job_file_versions()
-        and not results.get("timed_out")
-        and results.get("sandbox_returncode", 0) == 0
-        and st.button(
-            "Apply as new version",
-            type="primary",
-            key="task_apply_version",
-        )
-    ):
-        if results.get("preview_version_id") != st.session_state.get(
-            "job_file_version_id"
-        ):
-            st.error(
-                "File changed since this task output was previewed. "
-                "Run the task again."
+        if _uses_job_file_versions():
+            source_version_id = st.session_state.get("job_file_version_id")
+            if source_version_id is None:
+                st.error("Open a Job file version before queuing tasks.")
+                return
+            created = operation_submission.submit_job_task_run(
+                user_email=user,
+                file_id=int(st.session_state["job_file_id"]),
+                source_version_id=int(source_version_id),
+                task_specs=specs,
             )
         else:
-            try:
-                with _owned_candidate(
-                    Path(results["out_path"]),
-                    prefix="marcedit-web-task-apply-",
-                ) as candidate_path:
-                    version = session.adopt_current_candidate(
-                        candidate_path=candidate_path,
-                        source_kind="task",
-                        label=results["task_label"],
-                        summary=results["summary"],
-                        validation=results["validation"],
-                    )
-            except (
-                job_files.JobFileError,
-                collaboration.CollaborationError,
-            ) as exc:
-                st.error(str(exc))
-            else:
-                st.success(f"Applied as version {version['version_number']}.")
-                st.session_state.pop(K_RUN_RESULTS, None)
+            store = session.current_store()
+            if store is None:
+                st.error("No loaded batch — upload one on Home first.")
                 return
+            created = operation_submission.submit_quick_load_task_run(
+                user_email=user,
+                source_path=store.path,
+                filename=session.current_filename() or "quick-load.mrc",
+                record_count=store.count(),
+                task_specs=specs,
+            )
+    except ValueError as exc:
+        st.error(str(exc))
+        return
 
-    st.markdown("**Updated task output is ready as a separate export.**")
-    st.caption(_history_location_caption(results.get("snapshot_id")))
-    _offer_history_download(
-        st,
-        results.get("out_path"),
-        f"Download {results['out_filename']}",
-        results["out_filename"],
-        key="tasks_download",
+    operation_id = int(created["id"])
+    st.success("Operation queued. You can safely leave this page.")
+    st.page_link(
+        "views/D_Operations.py",
+        label=f"View operation {operation_id}",
+        icon=":material/pending_actions:",
     )
-
-
-def _offer_history_download(
-    column,
-    path_str: str | None,
-    label: str,
-    file_name: str,
-    *,
-    key: str,
-) -> None:
-    """Render a two-step prepare → download for a historical file.
-
-    TASK-035 fix: Streamlit's ``download_button`` materializes its
-    ``data`` argument eagerly, and Streamlit re-runs expander
-    contents even when collapsed. Reading every history row's bytes
-    on every Tasks-page render would pin hundreds of MB for a
-    long-running session.
-
-    The fix: the first render shows a "Prepare download" button.
-    Clicking it sets a per-row ready flag in session_state; the next
-    render reads the file's bytes once and renders the actual
-    ``download_button``. If the workdir is gone (container restart,
-    cleanup), the row degrades to a disabled button explaining why.
-    """
-    if not path_str:
-        column.caption("(no file recorded)")
-        return
-    path = Path(path_str)
-    if not path.exists():
-        column.button(
-            label, disabled=True,
-            help="Sandbox workdir is gone — input/output is no longer available.",
-            key=f"{key}_missing",
-        )
-        return
-
-    ready_key = f"{key}_ready"
-    if not st.session_state.get(ready_key):
-        if column.button(
-            f"Prepare {label}",
-            key=f"{key}_prepare",
-            help=(
-                "Loads the file from disk and offers a download "
-                "button. Two-step gate avoids re-reading large "
-                "historical files on every page refresh."
-            ),
-        ):
-            st.session_state[ready_key] = True
-            st.rerun()
-        return
-
-    column.download_button(
-        label,
-        data=path.read_bytes(),
-        file_name=file_name,
-        mime="application/marc",
-        key=key,
-    )
-
-
-def _render_diff_review(results: dict) -> None:
-    """Render the post-run diff review (summary + per-record drill-down).
-
-    The diff is computed when the task completes. Rendering does not
-    rebuild it from output bytes because that would re-read large MARC
-    files on ordinary page refreshes.
-    """
-    input_path_str = results.get("sandbox_input_path")
-    out_path_str = results.get("out_path")
-    if not input_path_str or not out_path_str:
-        return
-    input_path = Path(input_path_str)
-    out_path = Path(out_path_str)
-    if not input_path.exists() or not out_path.exists():
-        # Sandbox workdir was cleaned out (container restart, ops
-        # cleanup). Nothing we can do — the user can re-run.
-        return
-
-    summary = results.get("_diff_summary")
-    if summary is None:
-        return
-
-    st.divider()
-    st.markdown("**Review changes before download**")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Changed records", summary.changed_count)
-    c2.metric("Unchanged records", summary.unchanged_count)
-    c3.metric(
-        "Tags touched",
-        len(
-            set(summary.per_tag_added)
-            | set(summary.per_tag_deleted)
-            | set(summary.per_tag_modified)
-        ),
-    )
-
-    _render_per_tag_summary_table(summary)
-
-    if summary.changed_count == 0:
-        st.info(
-            "The tasks ran without modifying any records — verify the "
-            "task body matches the records you expected to touch."
-        )
-        return
-
-    cap_note = ""
-    if summary.cap_triggered:
-        cap_note = (
-            f" — showing first **{len(summary.per_record_diffs)}** of "
-            f"**{summary.changed_count}** (rest summarized above)"
-        )
-    with st.expander(
-        f"Show per-record diffs ({summary.changed_count} record"
-        f"{'s' if summary.changed_count != 1 else ''}){cap_note}",
-        expanded=False,
-    ):
-        _render_per_record_diffs(summary)
 
 
 def _render_per_tag_summary_table(summary: task_diff.TaskDiffSummary) -> None:

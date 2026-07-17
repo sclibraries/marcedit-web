@@ -61,6 +61,7 @@ class _FakeStreamlit:
         self.infos: list[str] = []
         self.markdowns: list[str] = []
         self.metrics: list[tuple[str, object]] = []
+        self.page_links: list[dict] = []
         self.successes: list[str] = []
 
     def divider(self):
@@ -84,6 +85,9 @@ class _FakeStreamlit:
 
     def success(self, message):
         self.successes.append(str(message))
+
+    def page_link(self, page, **kwargs):
+        self.page_links.append({"page": page, **kwargs})
 
     def button(self, label, **kwargs):
         self.buttons.append({"label": label, **kwargs})
@@ -435,54 +439,8 @@ def test_batch_operation_uses_shared_gate_and_telemetry(monkeypatch, tmp_path):
     ]
 
 
-def test_render_run_results_uses_output_path_without_session_bytes(
-    monkeypatch, tmp_path,
-):
-    fake_st = _FakeStreamlit()
-    tasks_render = _tasks_render()
-    monkeypatch.setattr(tasks_render, "st", fake_st)
-    input_path = tmp_path / "input.mrc"
-    output_path = tmp_path / "output.mrc"
-    input_path.write_bytes(b"input")
-    output_path.write_bytes(b"output")
-    fake_st.session_state[tasks_render.K_RUN_RESULTS] = {
-        "issues": [],
-        "out_filename": "source_tasks_20260709_190000.mrc",
-        "out_path": str(output_path),
-        "input_count": 1,
-        "output_count": 1,
-        "ran_tasks": ["Leader cleanup"],
-        "timed_out": False,
-        "sandbox_returncode": 0,
-        "sandbox_input_path": str(input_path),
-        "_diff_summary": tasks_render.task_diff.TaskDiffSummary(
-            total_in=1,
-            total_out=1,
-            changed_count=0,
-            unchanged_count=1,
-        ),
-        "snapshot_id": None,
-    }
-
-    tasks_render._render_run_results()
-
-    assert "out_bytes" not in fake_st.session_state[tasks_render.K_RUN_RESULTS]
-    assert fake_st.download_buttons == []
-    assert fake_st.buttons == [
-        {
-            "label": "Prepare Download source_tasks_20260709_190000.mrc",
-            "key": "tasks_download_prepare",
-            "help": (
-                "Loads the file from disk and offers a download button. "
-                "Two-step gate avoids re-reading large historical files "
-                "on every page refresh."
-            ),
-        }
-    ]
-
-
-def test_run_panel_explains_the_five_minute_processing_limit(monkeypatch):
-    """Catalogers see the real temporary budget before starting work."""
+def test_run_panel_explains_durable_background_processing(monkeypatch):
+    """Catalogers know queued work survives leaving the Tasks page."""
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render()
     monkeypatch.setattr(tasks_render, "st", fake_st)
@@ -490,228 +448,116 @@ def test_run_panel_explains_the_five_minute_processing_limit(monkeypatch):
     tasks_render._render_run_panel([], Path("/unused"))
 
     rendered = " ".join(fake_st.captions)
-    assert "5 minutes" in rendered
-    assert "wall-clock" not in rendered
+    assert "queued" in rendered.lower()
+    assert "leave this tab open" not in rendered.lower()
 
 
-def test_timed_out_task_output_is_not_publishable(monkeypatch, tmp_path):
-    """An incomplete MARC prefix is diagnostic evidence, not an export."""
-    fake_st = _FakeStreamlit()
-    tasks_render = _tasks_render()
-    monkeypatch.setattr(tasks_render, "st", fake_st)
-    input_path = tmp_path / "input.mrc"
-    output_path = tmp_path / "partial-output.mrc"
-    input_path.write_bytes(b"input")
-    output_path.write_bytes(b"partial")
-    fake_st.session_state[tasks_render.K_RUN_RESULTS] = {
-        "issues": [],
-        "out_filename": "source_tasks_20260709_190000.mrc",
-        "out_path": str(output_path),
-        "input_count": 60_498,
-        "output_count": 43_762,
-        "ran_tasks": ["Leader cleanup"],
-        "timed_out": True,
-        "sandbox_returncode": 124,
-        "sandbox_input_path": str(input_path),
-        "_diff_summary": None,
-        "snapshot_id": None,
-    }
-
-    tasks_render._render_run_results()
-
-    assert tasks_render.TASK_TIMEOUT_STATUS == (
-        "⚠️ Run reached the maximum processing time"
-    )
-    assert fake_st.errors == [tasks_render.TASK_TIMEOUT_MESSAGE]
-    assert "maximum processing time" in fake_st.errors[0]
-    assert "wall-clock" not in fake_st.errors[0]
-    assert fake_st.buttons == []
-    assert fake_st.download_buttons == []
-    assert not any(
-        "output is ready" in message.lower()
-        for message in fake_st.markdowns
-    )
-
-
-def test_signed_in_quick_load_timeout_does_not_create_legacy_snapshot(
-    monkeypatch, tmp_path, record,
+def test_saved_task_submission_preserves_order_and_exact_job_version(
+    monkeypatch, tmp_path,
 ):
-    """Timed-out partial bytes must not enter downloadable legacy history."""
+    """Queued work snapshots the selected order and opened immutable version."""
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render()
     monkeypatch.setattr(tasks_render, "st", fake_st)
-    sandbox_workdir = tmp_path / "sandbox"
-    sandbox_workdir.mkdir()
-    partial_output = sandbox_workdir / "partial-output.mrc"
-    partial_output.write_bytes(record.as_marc())
-    store = SimpleNamespace(
-        count=lambda: 1,
-        write_mrc_to=lambda path: path.write_bytes(record.as_marc()),
-    )
-    result = tasks_render.sandbox.SandboxResult(
-        output_path=partial_output,
-        errors=[],
-        error_count=0,
-        returncode=124,
-        timed_out=True,
-    )
-    errors = []
-
-    @contextmanager
-    def measured_run(*_args, **_kwargs):
-        yield SimpleNamespace(mark_error=errors.append)
-
-    snapshots = []
-    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    fake_st.session_state.update({"job_file_id": 9, "job_file_version_id": 21})
     monkeypatch.setattr(
-        tasks_render.session, "current_user_id", lambda: "cat@example.edu"
-    )
-    monkeypatch.setattr(
-        tasks_render.session, "current_filename", lambda: "quick-load.mrc"
+        tasks_render.session, "current_user_id", lambda: "owner@smith.edu"
     )
     monkeypatch.setattr(
         tasks_render.editor,
         "parse_user_task_file",
-        lambda _path: {"body": "pass"},
+        lambda path: {"body": f"body for {path.stem}"},
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_job_task_run",
+        lambda **kwargs: submitted.append(kwargs) or {"id": 42},
     )
     monkeypatch.setattr(
-        tasks_render.sandbox, "run_tasks_subprocess", lambda *_a, **_k: result
-    )
-    monkeypatch.setattr(tasks_render, "_batch_operation", measured_run)
-    monkeypatch.setattr(tasks_render, "audit_event", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        tasks_render.tempfile,
-        "mkdtemp",
-        lambda **_kwargs: str(sandbox_workdir),
-    )
-    monkeypatch.setattr(
-        tasks_render.snapshot_actions,
-        "record_job_snapshot",
-        lambda **kwargs: snapshots.append(kwargs) or {"id": 9, **kwargs},
-    )
-    fake_st.session_state.update({
-        "current_job_id": 7,
-        "job_file_id": None,
-        "quick_load_mode": True,
-    })
-
-    tasks_render._execute_sandboxed_run(["Leader cleanup"], tmp_path)
-
-    assert errors == ["SandboxTimeout"]
-    assert snapshots == []
-    assert fake_st.session_state["task_run_history"][0].timed_out is True
-    assert fake_st.session_state[tasks_render.K_RUN_RESULTS]["snapshot_id"] is None
-
-
-def test_saved_task_output_requires_explicit_version_adoption(
-    monkeypatch, tmp_path,
-):
-    """A successful run is reviewable output until the cataloger accepts it."""
-    fake_st = _FakeStreamlit()
-    tasks_render = _tasks_render()
-    monkeypatch.setattr(tasks_render, "st", fake_st)
-    output_path = tmp_path / "output.mrc"
-    input_path = tmp_path / "input.mrc"
-    output_path.write_bytes(b"output")
-    input_path.write_bytes(b"input")
-    results = {
-        "issues": [],
-        "out_filename": "source_tasks.mrc",
-        "out_path": str(output_path),
-        "input_count": 1,
-        "output_count": 1,
-        "error_count": 0,
-        "ran_tasks": ["Leader cleanup"],
-        "timed_out": False,
-        "sandbox_returncode": 0,
-        "sandbox_input_path": str(input_path),
-        "_diff_summary": None,
-        "snapshot_id": None,
-        "task_label": "Leader cleanup",
-        "summary": {"changed_count": 1},
-        "validation": {"error_count": 0},
-        "preview_version_id": 21,
-    }
-    fake_st.session_state.update({
-        tasks_render.K_RUN_RESULTS: results,
-        "job_file_id": 9,
-        "job_file_version_id": 21,
-    })
-    adopted = []
-    monkeypatch.setattr(
-        tasks_render.session,
-        "adopt_current_candidate",
-        lambda **kwargs: adopted.append({
-            **kwargs,
-            "candidate_bytes": kwargs["candidate_path"].read_bytes(),
-        }) or {"version_number": 2},
-    )
-
-    tasks_render._render_run_results()
-
-    assert adopted == []
-    assert any(button["label"] == "Apply as new version" for button in fake_st.buttons)
-    assert fake_st.session_state[tasks_render.K_RUN_RESULTS] is results
-
-    stale_history_caption = (
-        "Rollback history is only available for signed-in job files. "
-        "Download the updated MARC file below."
-    )
-    stale_caption_count = fake_st.captions.count(stale_history_caption)
-    fake_st.clicked_keys.add("task_apply_version")
-    tasks_render._render_run_results()
-
-    assert adopted[0]["candidate_path"] != output_path
-    assert adopted[0]["candidate_bytes"] == b"output"
-    assert adopted[0]["source_kind"] == "task"
-    assert adopted[0]["label"] == "Leader cleanup"
-    assert adopted[0]["summary"] == {"changed_count": 1}
-    assert adopted[0]["validation"] == {"error_count": 0}
-    assert tasks_render.K_RUN_RESULTS not in fake_st.session_state
-    assert fake_st.captions.count(stale_history_caption) == stale_caption_count
-
-
-def test_saved_task_output_rejects_a_newer_opened_version(monkeypatch, tmp_path):
-    """An old preview must not overwrite work accepted later in the session."""
-    fake_st = _FakeStreamlit()
-    tasks_render = _tasks_render()
-    monkeypatch.setattr(tasks_render, "st", fake_st)
-    output_path = tmp_path / "output.mrc"
-    output_path.write_bytes(b"preview")
-    fake_st.session_state.update({
-        tasks_render.K_RUN_RESULTS: {
-            "issues": [],
-            "out_filename": "tasks.mrc",
-            "out_path": str(output_path),
-            "input_count": 1,
-            "output_count": 1,
-            "error_count": 0,
-            "ran_tasks": ["Cleanup"],
-            "timed_out": False,
-            "sandbox_returncode": 0,
-            "sandbox_input_path": None,
-            "_diff_summary": None,
-            "snapshot_id": None,
-            "task_label": "Cleanup",
-            "summary": {},
-            "validation": {},
-            "preview_version_id": 20,
-        },
-        "job_file_id": 9,
-        "job_file_version_id": 21,
-    })
-    fake_st.clicked_keys.add("task_apply_version")
-    monkeypatch.setattr(
-        tasks_render.session,
-        "adopt_current_candidate",
-        lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("stale preview must not reach adoption")
+        tasks_render.sandbox,
+        "run_tasks_subprocess",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Streamlit must not execute queued tasks")
         ),
     )
 
-    tasks_render._render_run_results()
+    tasks_render._submit_queued_run(["second", "first"], tmp_path)
 
-    assert fake_st.errors == [
-        "File changed since this task output was previewed. Run the task again."
+    assert submitted[0]["user_email"] == "owner@smith.edu"
+    assert submitted[0]["file_id"] == 9
+    assert submitted[0]["source_version_id"] == 21
+    assert [spec.name for spec in submitted[0]["task_specs"]] == [
+        "second", "first",
     ]
-    assert output_path.exists()
+    assert [spec.body for spec in submitted[0]["task_specs"]] == [
+        "body for second", "body for first",
+    ]
+    assert fake_st.successes == [
+        "Operation queued. You can safely leave this page."
+    ]
+    assert fake_st.page_links == [{
+        "page": "views/D_Operations.py",
+        "label": "View operation 42",
+        "icon": ":material/pending_actions:",
+    }]
+
+
+def test_saved_task_submission_copies_current_quick_load_source(
+    monkeypatch, tmp_path,
+):
+    """Quick Load submissions capture durable bytes and user-facing metadata."""
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    source = tmp_path / "current.mrc"
+    source.write_bytes(b"records")
+    store = SimpleNamespace(path=source, count=lambda: 17)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "owner@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_filename", lambda: "vendor.mrc"
+    )
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": "record.remove_fields('9XX')"},
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs) or {"id": 43},
+    )
+
+    tasks_render._submit_queued_run(["cleanup"], tmp_path)
+
+    assert submitted[0]["source_path"] == source
+    assert submitted[0]["filename"] == "vendor.mrc"
+    assert submitted[0]["record_count"] == 17
+    assert [spec.name for spec in submitted[0]["task_specs"]] == ["cleanup"]
+
+
+def test_saved_task_run_panel_queues_without_keep_tab_open_warning(
+    monkeypatch, tmp_path,
+):
+    fake_st = _FakeStreamlit()
+    fake_st.clicked_keys.add("tasks_run_btn")
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    queued = []
+    monkeypatch.setattr(
+        tasks_render,
+        "_submit_queued_run",
+        lambda selection, tasks_dir: queued.append((selection, tasks_dir)),
+    )
+    registered = [SimpleNamespace(name="cleanup")]
+
+    tasks_render._render_run_panel(registered, tmp_path)
+
+    assert queued == [(["cleanup"], tmp_path)]
+    copy = " ".join(fake_st.captions)
+    assert "leave this tab open" not in copy.lower()
+    assert "queue" in copy.lower()

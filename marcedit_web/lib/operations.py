@@ -767,30 +767,121 @@ def cleanup_expired_artifacts(now: datetime | None = None) -> int:
     return deleted
 
 
+def list_unread_notifications(user_email: str) -> list[dict[str, Any]]:
+    """Return the submitter's source-safe, actionable terminal alerts."""
+    db.init_schema()
+    email = user_email.strip().lower()
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT id,state,error_count,completed_at,cancel_requested_by"
+            " FROM operations WHERE submitted_by=?"
+            " AND notification_ack_at IS NULL"
+            " AND state IN ('completed','failed','cancelled')"
+            " AND (state!='cancelled' OR (cancel_requested_by IS NOT NULL"
+            " AND LOWER(cancel_requested_by)!=LOWER(submitted_by)))"
+            " ORDER BY completed_at DESC,id DESC",
+            (email,),
+        ).fetchall()
+    return [_dict(row) for row in rows]
+
+
+def operation_status_counts(user_email: str) -> dict[str, int]:
+    """Return source-visible queue counts without operation metadata."""
+    db.init_schema()
+    email = user_email.strip().lower()
+    with db.connect() as conn:
+        if _is_admin(conn, email):
+            where = ""
+            params: tuple[Any, ...] = ()
+        else:
+            where = (
+                " WHERE (job_id IS NULL AND submitted_by=?)"
+                " OR (job_id IS NOT NULL AND EXISTS (SELECT 1 FROM job_access"
+                " WHERE job_access.job_id=operations.job_id"
+                " AND job_access.user_email=?))"
+            )
+            params = (email, email)
+        row = conn.execute(
+            "SELECT"
+            " COALESCE(SUM(state='queued'),0) AS queued,"
+            " COALESCE(SUM(state IN ('running','cancelling')),0) AS running,"
+            " COALESCE(SUM(state='failed' OR"
+            " (state='completed' AND error_count>0)),0) AS attention"
+            " FROM operations" + where,
+            params,
+        ).fetchone()
+    assert row is not None
+    return {key: int(row[key]) for key in ("queued", "running", "attention")}
+
+
 def acknowledge_notification(operation_id: int, *, by: str) -> dict[str, Any]:
     db.init_schema()
+    email = by.strip().lower()
     now = _iso(_now())
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM operations WHERE id=? AND submitted_by=?"
+            " AND state IN ('completed','failed','cancelled')"
+            " AND (state!='cancelled' OR (cancel_requested_by IS NOT NULL"
+            " AND LOWER(cancel_requested_by)!=LOWER(submitted_by)))",
+            (operation_id, email),
+        ).fetchone()
+        if row is None:
+            raise OperationError("operation not found")
+        if row["notification_ack_at"] is not None:
+            return _dict(row)
         updated = conn.execute(
             "UPDATE operations SET notification_ack_at=?"
-            " WHERE id=? AND submitted_by=?"
-            " AND state IN ('completed','failed','cancelled')",
-            (now, operation_id, by),
+            " WHERE id=? AND notification_ack_at IS NULL",
+            (now, operation_id),
         )
         if updated.rowcount != 1:
-            raise OperationError("operation not found")
+            raise OperationError("operation notification changed")
         _append_event(
             conn,
             operation_id,
             kind="acknowledged",
             message="Operation notification acknowledged",
-            actor_email=by,
+            actor_email=email,
             created_at=now,
         )
         row = _operation_row(conn, operation_id)
     assert row is not None
     return _dict(row)
+
+
+def acknowledge_all_notifications(*, by: str) -> int:
+    """Acknowledge every currently unread alert owned by ``by`` once."""
+    db.init_schema()
+    email = by.strip().lower()
+    now = _iso(_now())
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT id FROM operations WHERE submitted_by=?"
+            " AND notification_ack_at IS NULL"
+            " AND state IN ('completed','failed','cancelled')"
+            " AND (state!='cancelled' OR (cancel_requested_by IS NOT NULL"
+            " AND LOWER(cancel_requested_by)!=LOWER(submitted_by))) ORDER BY id",
+            (email,),
+        ).fetchall()
+        for row in rows:
+            operation_id = int(row["id"])
+            conn.execute(
+                "UPDATE operations SET notification_ack_at=? WHERE id=?"
+                " AND notification_ack_at IS NULL",
+                (now, operation_id),
+            )
+            _append_event(
+                conn,
+                operation_id,
+                kind="acknowledged",
+                message="Operation notification acknowledged",
+                actor_email=email,
+                created_at=now,
+            )
+    return len(rows)
 
 
 def _record_result_applied(

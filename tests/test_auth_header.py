@@ -22,6 +22,7 @@ class _FakeStreamlit:
         self.popovers: list[dict] = []
         self.buttons: list[dict] = []
         self.captions: list[str] = []
+        self.column_calls: list[dict] = []
 
     @contextmanager
     def container(self, key=None, **kwargs):
@@ -42,6 +43,21 @@ class _FakeStreamlit:
 
     def caption(self, message):
         self.captions.append(str(message))
+
+    def columns(self, spec, **kwargs):
+        self.column_calls.append({"spec": spec, **kwargs})
+        return [_FakeColumn(self) for _ in range(spec)]
+
+
+class _FakeColumn:
+    def __init__(self, st):
+        self._st = st
+
+    def __enter__(self):
+        return self._st
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 def _app(monkeypatch, fake_st, email):
@@ -89,3 +105,56 @@ def test_signed_out_header_uses_same_guard(monkeypatch):
     assert fake_st.container_keys == ["auth_header"]
     assert "white-space: nowrap" in _style_blocks(fake_st)
     assert [b["label"] for b in fake_st.buttons] == ["Sign in with Google"]
+
+
+def test_approved_header_aligns_material_bell_immediately_before_account(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    app = _app(monkeypatch, fake_st, "cat@smith.edu")
+    order = []
+    monkeypatch.setattr(
+        app.authz, "get_user", lambda _email: {"status": "approved"}
+    )
+    monkeypatch.setattr(
+        app.operation_notifications,
+        "render_header_bell",
+        lambda _email: order.append("notifications"),
+    )
+    original_popover = fake_st.popover
+
+    @contextmanager
+    def ordered_popover(label, **kwargs):
+        order.append(label)
+        with original_popover(label, **kwargs):
+            yield fake_st
+
+    fake_st.popover = ordered_popover
+
+    app._render_auth_header()
+
+    assert order == ["notifications", "Account"]
+    assert fake_st.column_calls == [{
+        "spec": 2, "gap": "small", "vertical_alignment": "center",
+    }]
+    assert fake_st.popovers == [{
+        "label": "Account", "icon": ":material/account_circle:",
+    }]
+
+
+def test_pending_header_keeps_account_and_does_not_query_notifications(monkeypatch):
+    fake_st = _FakeStreamlit()
+    app = _app(monkeypatch, fake_st, "pending@smith.edu")
+    monkeypatch.setattr(
+        app.authz, "get_user", lambda _email: {"status": "pending"}
+    )
+    monkeypatch.setattr(
+        app.operation_notifications,
+        "render_header_bell",
+        lambda _email: (_ for _ in ()).throw(AssertionError("bell rendered")),
+    )
+
+    app._render_auth_header()
+
+    assert [popover["label"] for popover in fake_st.popovers] == ["Account"]
+    assert [button["label"] for button in fake_st.buttons] == ["Sign out"]
