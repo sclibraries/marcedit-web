@@ -34,6 +34,9 @@ _ADMIN_DIAGNOSTIC_FIELDS = (
 _PENDING_READY_GRACE_SECONDS = 15 * 60
 _PENDING_COPYING_GRACE_SECONDS = 24 * 60 * 60
 _QUARANTINE_DIRECTORY = ".quarantine"
+# Bound filesystem mutation while SQLite serializes claims and publications.
+# Later hourly/startup passes continue from the remaining eligible debris.
+_RECONCILE_RENAME_BATCH = 100
 
 
 class OperationError(ValueError):
@@ -894,38 +897,53 @@ def _quarantine_storage_paths(
     referenced: set[Path],
     active_ids: set[int],
     operation_ids: set[int],
-) -> None:
+) -> int:
     root = operations_root()
     try:
         root_fd = _open_queue_directory(root, ())
     except FileNotFoundError:
-        return
+        return 0
+    quarantined = 0
     try:
         quarantine_fd = _open_queue_directory(root, (_QUARANTINE_DIRECTORY,))
         try:
-            for entry in os.listdir(root_fd):
-                if entry == "pending":
-                    _quarantine_pending(root_fd, quarantine_fd, root, referenced)
-                    continue
-                try:
-                    operation_id = int(entry)
-                except ValueError:
-                    continue
-                if operation_id not in operation_ids:
-                    _quarantine_entry(root_fd, entry, quarantine_fd)
-                    continue
-                _quarantine_operation_children(
-                    root_fd,
-                    quarantine_fd,
-                    root,
-                    entry,
-                    active=operation_id in active_ids,
-                    referenced=referenced,
-                )
+            with os.scandir(root_fd) as entries:
+                for directory_entry in entries:
+                    entry = directory_entry.name
+                    if quarantined >= _RECONCILE_RENAME_BATCH:
+                        break
+                    if entry == "pending":
+                        quarantined += _quarantine_pending(
+                            root_fd,
+                            quarantine_fd,
+                            root,
+                            referenced,
+                            limit=_RECONCILE_RENAME_BATCH - quarantined,
+                        )
+                        continue
+                    try:
+                        operation_id = int(entry)
+                    except ValueError:
+                        continue
+                    if operation_id not in operation_ids:
+                        quarantined += int(
+                            _quarantine_entry(root_fd, entry, quarantine_fd)
+                        )
+                        continue
+                    quarantined += _quarantine_operation_children(
+                        root_fd,
+                        quarantine_fd,
+                        root,
+                        entry,
+                        active=operation_id in active_ids,
+                        referenced=referenced,
+                        limit=_RECONCILE_RENAME_BATCH - quarantined,
+                    )
         finally:
             os.close(quarantine_fd)
     finally:
         os.close(root_fd)
+    return quarantined
 
 
 def list_unread_notifications(user_email: str) -> list[dict[str, Any]]:
@@ -1441,7 +1459,9 @@ def _quarantine_pending(
     quarantine_fd: int,
     root: Path,
     referenced: set[Path],
-) -> None:
+    *,
+    limit: int,
+) -> int:
     try:
         pending_fd = os.open(
             "pending",
@@ -1451,37 +1471,48 @@ def _quarantine_pending(
             dir_fd=root_fd,
         )
     except OSError:
-        return
+        return 0
+    quarantined = 0
     try:
-        for name in os.listdir(pending_fd):
-            path = _absolute_queue_path(root / "pending" / name)
-            if path in referenced:
-                continue
-            grace_seconds = None
-            if name.startswith("copying-"):
-                # Copy plus MARC validation can be lengthy for the maximum
-                # supported input. A full day protects a live submitter while
-                # still allowing hard-kill debris to be reclaimed.
-                grace_seconds = _PENDING_COPYING_GRACE_SECONDS
-            elif name.startswith("ready-"):
-                grace_seconds = _PENDING_READY_GRACE_SECONDS
-            if grace_seconds is not None:
+        with os.scandir(pending_fd) as entries:
+            for directory_entry in entries:
+                name = directory_entry.name
+                if quarantined >= limit:
+                    break
+                path = _absolute_queue_path(root / "pending" / name)
+                if path in referenced:
+                    continue
+                grace_seconds = None
+                if name.startswith("copying-"):
+                    # Copy plus MARC validation can be lengthy for the maximum
+                    # supported input. A full day protects a live submitter while
+                    # still allowing hard-kill debris to be reclaimed.
+                    grace_seconds = _PENDING_COPYING_GRACE_SECONDS
+                elif name.startswith("ready-"):
+                    grace_seconds = _PENDING_READY_GRACE_SECONDS
+                if grace_seconds is not None:
+                    try:
+                        age = _now().timestamp() - os.stat(
+                            name,
+                            dir_fd=pending_fd,
+                            follow_symlinks=False,
+                        ).st_mtime
+                    except OSError:
+                        continue
+                    # A future mtime is treated as live. Queue storage and its
+                    # clock are trusted-host inputs; later passes reclaim it once
+                    # wall time advances beyond the applicable grace period.
+                    if age < grace_seconds:
+                        continue
                 try:
-                    age = _now().timestamp() - os.stat(
-                        name,
-                        dir_fd=pending_fd,
-                        follow_symlinks=False,
-                    ).st_mtime
+                    quarantined += int(
+                        _quarantine_entry(pending_fd, name, quarantine_fd)
+                    )
                 except OSError:
                     continue
-                if age < grace_seconds:
-                    continue
-            try:
-                _quarantine_entry(pending_fd, name, quarantine_fd)
-            except OSError:
-                continue
     finally:
         os.close(pending_fd)
+    return quarantined
 
 
 def _quarantine_operation_children(
@@ -1492,7 +1523,8 @@ def _quarantine_operation_children(
     *,
     active: bool,
     referenced: set[Path],
-) -> None:
+    limit: int,
+) -> int:
     try:
         operation_fd = os.open(
             entry,
@@ -1502,23 +1534,31 @@ def _quarantine_operation_children(
             dir_fd=root_fd,
         )
     except OSError:
-        return
+        return 0
+    quarantined = 0
     try:
-        for name in os.listdir(operation_fd):
-            is_attempt = name.startswith("attempt-")
-            is_publication = name.startswith("result-attempt-")
-            path = _absolute_queue_path(root / entry / name)
-            eligible = (
-                (is_attempt and not active)
-                or (is_publication and path not in referenced)
-            )
-            if eligible:
-                try:
-                    _quarantine_entry(operation_fd, name, quarantine_fd)
-                except OSError:
-                    continue
+        with os.scandir(operation_fd) as entries:
+            for directory_entry in entries:
+                if quarantined >= limit:
+                    break
+                name = directory_entry.name
+                is_attempt = name.startswith("attempt-")
+                is_publication = name.startswith("result-attempt-")
+                path = _absolute_queue_path(root / entry / name)
+                eligible = (
+                    (is_attempt and not active)
+                    or (is_publication and path not in referenced)
+                )
+                if eligible:
+                    try:
+                        quarantined += int(
+                            _quarantine_entry(operation_fd, name, quarantine_fd)
+                        )
+                    except OSError:
+                        continue
     finally:
         os.close(operation_fd)
+    return quarantined
 
 
 def _open_queue_directory(root: Path, parts: tuple[str, ...]) -> int:

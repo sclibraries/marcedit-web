@@ -775,6 +775,20 @@ def test_huge_stderr_is_read_as_a_bounded_diagnostic(one_record_bytes):
     assert "stderr bytes omitted" in result.stderr
 
 
+@pytest.mark.parametrize("multiplier", [1, 4])
+def test_invalid_utf8_stderr_remains_inside_encoded_byte_cap(
+    tmp_path, multiplier
+):
+    stderr = tmp_path / "stderr.bin"
+    stderr.write_bytes(b"\xff" * (sandbox.MAX_STDERR_BYTES * multiplier))
+
+    bounded = sandbox._read_bounded_stderr(stderr)
+
+    if multiplier > 1:
+        assert "stderr bytes omitted" in bounded
+    assert len(bounded.encode("utf-8")) <= sandbox.MAX_STDERR_BYTES
+
+
 def test_filesystem_side_effect_lands_in_sandbox_workdir(
     one_record_bytes, tmp_path,
 ):

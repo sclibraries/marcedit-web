@@ -16,11 +16,14 @@ from .record_store import RecordStore
 
 def _request_payload(
     task_specs: Sequence[sandbox.TaskSpec],
+    *,
+    submission_token: str,
 ) -> dict[str, Any]:
     if not task_specs:
         raise operations.OperationError("select at least one task")
     return {
         "version": 1,
+        "submission_token": submission_token,
         "tasks": [
             {
                 "name": spec.name,
@@ -40,7 +43,10 @@ def submit_job_task_run(
     task_specs: Sequence[sandbox.TaskSpec],
 ) -> dict[str, Any]:
     email = user_email.strip().lower()
-    request_json = json.dumps(_request_payload(task_specs))
+    submission_token = uuid.uuid4().hex
+    request_json = json.dumps(
+        _request_payload(task_specs, submission_token=submission_token)
+    )
     file_row = job_files.get_file(file_id, email)
     jobs.require_role(
         int(file_row["job_id"]),
@@ -53,40 +59,58 @@ def submit_job_task_run(
 
     now, expires_at = _retention_times()
     db.init_schema()
-    with db.connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        _require_job_submission_source(
-            conn,
-            user_email=email,
-            file_id=file_id,
-            source_version_id=source_version_id,
-        )
-        operation_id = _insert_operation(
-            conn,
-            submitted_by=email,
-            request_json=request_json,
-            total_records=int(version["record_count"]),
-            submitted_at=now,
-            artifacts_expire_at=expires_at,
-            job_id=int(file_row["job_id"]),
-            job_file_id=file_id,
-            source_version_id=source_version_id,
-        )
-        _insert_input_artifact(
-            conn,
-            operation_id=operation_id,
-            filename=str(file_row["display_name"]),
-            file_path=Path(version["file_path"]),
-            record_count=int(version["record_count"]),
-            file_bytes=int(version["file_bytes"]),
-            queue_owned=False,
-            source_version_id=source_version_id,
-            created_at=now,
-            expires_at=None,
-        )
-        _record_submitted(conn, operation_id, email, now)
-        created = _created_operation(conn, operation_id)
-    return created
+    operation_id: int | None = None
+    try:
+        with db.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            _require_job_submission_source(
+                conn,
+                user_email=email,
+                file_id=file_id,
+                source_version_id=source_version_id,
+            )
+            operation_id = _insert_operation(
+                conn,
+                submitted_by=email,
+                request_json=request_json,
+                total_records=int(version["record_count"]),
+                submitted_at=now,
+                artifacts_expire_at=expires_at,
+                job_id=int(file_row["job_id"]),
+                job_file_id=file_id,
+                source_version_id=source_version_id,
+            )
+            _insert_input_artifact(
+                conn,
+                operation_id=operation_id,
+                filename=str(file_row["display_name"]),
+                file_path=Path(version["file_path"]),
+                record_count=int(version["record_count"]),
+                file_bytes=int(version["file_bytes"]),
+                queue_owned=False,
+                source_version_id=source_version_id,
+                created_at=now,
+                expires_at=None,
+            )
+            _record_submitted(conn, operation_id, email, now)
+            created = _created_operation(conn, operation_id)
+        return created
+    except Exception as failure:
+        if operation_id is None:
+            raise
+        try:
+            committed = _committed_job_submission(
+                operation_id=operation_id,
+                submitted_by=email,
+                request_json=request_json,
+                file_row=file_row,
+                version=version,
+            )
+        except Exception:
+            raise failure
+        if committed is not None:
+            return committed
+        raise
 
 
 def submit_quick_load_task_run(
@@ -98,7 +122,10 @@ def submit_quick_load_task_run(
     task_specs: Sequence[sandbox.TaskSpec],
 ) -> dict[str, Any]:
     email = user_email.strip().lower()
-    request_json = json.dumps(_request_payload(task_specs))
+    submission_token = uuid.uuid4().hex
+    request_json = json.dumps(
+        _request_payload(task_specs, submission_token=submission_token)
+    )
     clean_filename = filename.strip()
     if not clean_filename or not source_path.is_file():
         raise operations.OperationError(
@@ -106,9 +133,8 @@ def submit_quick_load_task_run(
         )
 
     pending = operations.operations_root() / "pending"
-    token = uuid.uuid4().hex
-    copying = pending / f"copying-{token}.mrc"
-    candidate = pending / f"ready-{token}.mrc"
+    copying = pending / f"copying-{submission_token}.mrc"
+    candidate = pending / f"ready-{submission_token}.mrc"
     target: Path | None = None
     operation_dir: Path | None = None
     operation_id: int | None = None
@@ -154,7 +180,7 @@ def submit_quick_load_task_run(
                 artifacts_expire_at=expires_at,
             )
             operation_dir = operations.operations_root() / str(operation_id)
-            target = operation_dir / "input.mrc"
+            target = operation_dir / f"input-{submission_token}.mrc"
             try:
                 operation_dir.mkdir()
             except FileExistsError:
@@ -190,6 +216,7 @@ def submit_quick_load_task_run(
                 submitted_by=email,
                 request_json=request_json,
                 target=target,
+                filename=clean_filename,
                 record_count=record_count,
                 file_bytes=copied_size,
             )
@@ -201,14 +228,7 @@ def submit_quick_load_task_run(
             return committed
         candidate.unlink(missing_ok=True)
         copying.unlink(missing_ok=True)
-        if operation_dir is not None:
-            try:
-                operations._remove_queue_tree(  # noqa: SLF001
-                    operation_dir,
-                    operations.operations_root(),
-                )
-            except OSError:
-                pass
+        _cleanup_quick_load_rollback(target)
         raise
 
 
@@ -218,6 +238,7 @@ def _committed_quick_load_submission(
     submitted_by: str,
     request_json: str,
     target: Path,
+    filename: str,
     record_count: int,
     file_bytes: int,
 ) -> dict[str, Any] | None:
@@ -225,19 +246,72 @@ def _committed_quick_load_submission(
     with db.connect() as conn:
         row = conn.execute(
             "SELECT * FROM operations WHERE id=? AND kind='saved-task-run'"
-            " AND state='queued' AND phase='queued' AND submitted_by=?"
-            " AND request_json=? AND total_records=?",
+            " AND submitted_by=? AND request_json=? AND total_records=?"
+            " AND job_id IS NULL AND job_file_id IS NULL"
+            " AND source_version_id IS NULL",
             (operation_id, submitted_by, request_json, record_count),
         ).fetchone()
         artifact = conn.execute(
             "SELECT 1 FROM operation_artifacts WHERE operation_id=?"
-            " AND role='input' AND file_path=? AND record_count=?"
+            " AND role='input' AND filename=? AND file_path=? AND record_count=?"
             " AND file_bytes=? AND queue_owned=1",
-            (operation_id, str(target), record_count, file_bytes),
+            (operation_id, filename, str(target), record_count, file_bytes),
         ).fetchone()
-    if row is None or artifact is None or not target.is_file():
+    if row is None or artifact is None:
         return None
     return {key: row[key] for key in row.keys()}
+
+
+def _committed_job_submission(
+    *,
+    operation_id: int,
+    submitted_by: str,
+    request_json: str,
+    file_row: dict[str, Any],
+    version: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve a Job submission's lost commit acknowledgement exactly."""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM operations WHERE id=? AND kind='saved-task-run'"
+            " AND submitted_by=? AND request_json=? AND total_records=?"
+            " AND job_id=? AND job_file_id=? AND source_version_id=?",
+            (
+                operation_id,
+                submitted_by,
+                request_json,
+                int(version["record_count"]),
+                int(file_row["job_id"]),
+                int(file_row["id"]),
+                int(version["id"]),
+            ),
+        ).fetchone()
+        artifact = conn.execute(
+            "SELECT 1 FROM operation_artifacts WHERE operation_id=?"
+            " AND role='input' AND filename=? AND file_path=?"
+            " AND record_count=? AND file_bytes=? AND queue_owned=0"
+            " AND source_version_id=?",
+            (
+                operation_id,
+                str(file_row["display_name"]),
+                str(version["file_path"]),
+                int(version["record_count"]),
+                int(version["file_bytes"]),
+                int(version["id"]),
+            ),
+        ).fetchone()
+    if row is None or artifact is None:
+        return None
+    return {key: row[key] for key in row.keys()}
+
+
+def _cleanup_quick_load_rollback(target: Path) -> None:
+    """Delete only this submission token's confirmed-rollback publication."""
+    target.unlink(missing_ok=True)
+    try:
+        target.parent.rmdir()
+    except OSError:
+        pass
 
 
 def _require_job_submission_source(

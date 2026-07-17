@@ -623,13 +623,27 @@ def _read_bounded_file(path: Path, max_bytes: int) -> str:
 def _read_bounded_stderr(path: Path) -> str:
     size = path.stat().st_size
     if size <= MAX_STDERR_BYTES:
-        return _read_bounded_file(path, MAX_STDERR_BYTES)
-    marker = b"\n...[stderr bytes omitted]...\n"
-    remaining = MAX_STDERR_BYTES - len(marker)
+        with path.open("rb") as source:
+            return _decode_with_byte_cap(
+                source.read(MAX_STDERR_BYTES),
+                MAX_STDERR_BYTES,
+            )
+    marker = "\n...[stderr bytes omitted]...\n"
+    marker_bytes = marker.encode("utf-8")
+    remaining = MAX_STDERR_BYTES - len(marker_bytes)
     head_size = remaining // 2
     tail_size = remaining - head_size
     with path.open("rb") as source:
         head = source.read(head_size)
         source.seek(-tail_size, os.SEEK_END)
         tail = source.read(tail_size)
-    return (head + marker + tail).decode("utf-8", "replace")
+    return (
+        _decode_with_byte_cap(head, head_size)
+        + marker
+        + _decode_with_byte_cap(tail, tail_size)
+    )
+
+
+def _decode_with_byte_cap(value: bytes, max_bytes: int) -> str:
+    decoded = value.decode("utf-8", "replace")
+    return decoded.encode("utf-8")[:max_bytes].decode("utf-8", "ignore")

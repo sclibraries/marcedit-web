@@ -327,7 +327,7 @@ def test_quick_load_submission_recovers_death_after_input_publication(
 
     def die_after_publishing(path):
         real_fsync(path)
-        if path.name == "input.mrc":
+        if path.name.startswith("input-"):
             raise SimulatedProcessDeath()
 
     monkeypatch.setattr(operations, "_fsync_file_and_parent", die_after_publishing)
@@ -343,7 +343,7 @@ def test_quick_load_submission_recovers_death_after_input_publication(
 
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
-    assert (operations.operations_root() / "1" / "input.mrc").exists()
+    assert list((operations.operations_root() / "1").glob("input-*.mrc"))
 
     monkeypatch.setattr(operations, "_fsync_file_and_parent", real_fsync)
     assert operations.reconcile_operation_storage() == 1
@@ -413,8 +413,12 @@ def test_quick_load_submission_cleans_created_files_when_artifact_insert_fails(
         assert conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
 
 
-def test_quick_load_commit_ack_failure_returns_persisted_submission(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "lifecycle_state",
+    ["running", "cancelling", "completed", "failed"],
+)
+def test_quick_load_commit_ack_failure_returns_persisted_submission_in_any_state(
+    tmp_path, monkeypatch, lifecycle_state
 ):
     db.init_schema()
     source = tmp_path / "vendor.mrc"
@@ -430,6 +434,11 @@ def test_quick_load_commit_ack_failure_returns_persisted_submission(
             yield conn
             if calls == 1:
                 conn.commit()
+                conn.execute(
+                    "UPDATE operations SET state=?,phase=? WHERE id=1",
+                    (lifecycle_state, lifecycle_state),
+                )
+                conn.commit()
                 raise sqlite3.OperationalError("commit acknowledgement lost")
 
     monkeypatch.setattr(operation_submission.db, "connect", commit_then_raise)
@@ -443,8 +452,117 @@ def test_quick_load_commit_ack_failure_returns_persisted_submission(
     )
 
     artifact = operations.input_artifact(created["id"])
-    assert created["state"] == "queued"
+    assert created["state"] == lifecycle_state
     assert Path(artifact["file_path"]).read_bytes() == sample_mrc_bytes()
+    assert Path(artifact["file_path"]).name.startswith("input-")
+
+
+def test_job_commit_ack_failure_returns_exact_persisted_submission(
+    tmp_path, monkeypatch
+):
+    _, attached, version = _attached_file(tmp_path)
+    db.init_schema()
+    real_connect = db.connect
+    raised = False
+
+    @contextmanager
+    def commit_then_raise():
+        nonlocal raised
+        with real_connect() as conn:
+            yield conn
+            has_operation = conn.execute(
+                "SELECT 1 FROM operations LIMIT 1"
+            ).fetchone()
+            if has_operation is not None and not raised:
+                raised = True
+                conn.commit()
+                raise sqlite3.OperationalError("commit acknowledgement lost")
+
+    monkeypatch.setattr(operation_submission.db, "connect", commit_then_raise)
+
+    created = operation_submission.submit_job_task_run(
+        user_email="owner@smith.edu",
+        file_id=attached["id"],
+        source_version_id=version["id"],
+        task_specs=[_task()],
+    )
+
+    assert created["state"] == "queued"
+    assert json.loads(created["request_json"])["submission_token"]
+
+
+def test_job_commit_resolution_rejects_reused_id_with_distinct_nonce(tmp_path):
+    _, attached, version = _attached_file(tmp_path)
+    created = operation_submission.submit_job_task_run(
+        user_email="owner@smith.edu",
+        file_id=attached["id"],
+        source_version_id=version["id"],
+        task_specs=[_task()],
+    )
+    first_request = json.loads(created["request_json"])
+    first_request["submission_token"] = "first-submission"
+
+    assert operation_submission._committed_job_submission(
+        operation_id=created["id"],
+        submitted_by="owner@smith.edu",
+        request_json=json.dumps(first_request),
+        file_row=job_files.get_file(attached["id"], "owner@smith.edu"),
+        version=job_files.get_version(version["id"], "owner@smith.edu"),
+    ) is None
+
+
+def test_quick_load_rollback_cleanup_does_not_delete_reused_id_artifact(
+    tmp_path
+):
+    operation_dir = operations.operations_root() / "1"
+    operation_dir.mkdir(parents=True)
+    first = operation_dir / "input-first.mrc"
+    second = operation_dir / "input-second.mrc"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    db.init_schema()
+    request_json = json.dumps(
+        {
+            "version": 1,
+            "submission_token": "second",
+            "tasks": [{"name": "first", "body": "pass", "imports": []}],
+        }
+    )
+    with db.connect() as conn:
+        operation_submission._insert_operation(
+            conn,
+            submitted_by="owner@smith.edu",
+            request_json=request_json,
+            total_records=2,
+            submitted_at="2026-01-01T00:00:00Z",
+            artifacts_expire_at="2026-02-01T00:00:00Z",
+        )
+        operation_submission._insert_input_artifact(
+            conn,
+            operation_id=1,
+            filename="second.mrc",
+            file_path=second,
+            record_count=2,
+            file_bytes=6,
+            queue_owned=True,
+            source_version_id=None,
+            created_at="2026-01-01T00:00:00Z",
+            expires_at="2026-02-01T00:00:00Z",
+        )
+
+    assert operation_submission._committed_quick_load_submission(
+        operation_id=1,
+        submitted_by="owner@smith.edu",
+        request_json=request_json.replace("second", "first"),
+        target=first,
+        filename="first.mrc",
+        record_count=2,
+        file_bytes=5,
+    ) is None
+    operation_submission._cleanup_quick_load_rollback(first)
+
+    assert not first.exists()
+    assert second.read_bytes() == b"second"
 
 
 def test_quick_load_unreadable_fresh_state_retains_published_input(
@@ -481,7 +599,7 @@ def test_quick_load_unreadable_fresh_state_retains_published_input(
             task_specs=[_task()],
         )
 
-    assert list(operations.operations_root().glob("*/input.mrc"))
+    assert list(operations.operations_root().glob("*/input-*.mrc"))
 
 
 def test_maintenance_does_not_remove_live_quick_load_copy(

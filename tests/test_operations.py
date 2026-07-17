@@ -1027,6 +1027,32 @@ def test_storage_reconciliation_closes_root_fd_if_quarantine_open_fails(
     assert root_fd in closed
 
 
+def test_storage_reconciliation_batches_large_debris_sets(
+    queued_operation, tmp_path
+):
+    input_path = _attach_input(queued_operation["id"], tmp_path)
+    pending = operations.operations_root() / "pending"
+    pending.mkdir(parents=True)
+    debris_count = operations._RECONCILE_RENAME_BATCH + 7
+    for number in range(debris_count):
+        (pending / f"abandoned-{number}.mrc").write_bytes(b"partial")
+
+    lease = operations.claim_next("worker-a")
+    assert lease is not None
+
+    first_removed = operations.reconcile_operation_storage()
+
+    assert first_removed == operations._RECONCILE_RENAME_BATCH
+    assert input_path.exists()
+    assert operations.renew_lease(lease)["state"] == "running"
+    removed = first_removed
+    while removed < debris_count:
+        removed += operations.reconcile_operation_storage()
+
+    assert removed == debris_count
+    assert not list(pending.glob("abandoned-*"))
+
+
 def test_fail_operation_requires_current_running_lease(queued_operation, tmp_path):
     _attach_input(queued_operation["id"], tmp_path)
     lease = operations.claim_next("worker-a")
