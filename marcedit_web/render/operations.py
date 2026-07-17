@@ -14,10 +14,20 @@ from marcedit_web.lib import job_files, operation_results, operations, session
 _ACTIVE_STATES = {"queued", "running", "cancelling"}
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
 _STATUS_SIGNATURE_KEY = "operations_status_signature"
-_WORKER_UNAVAILABLE = (
-    "Processing service unavailable. Your operation is safely queued and "
-    "will start when the worker returns."
-)
+_WORKER_UNAVAILABLE = {
+    "queued": (
+        "Processing service unavailable. Your operation is safely queued and "
+        "will start when the worker returns."
+    ),
+    "running": (
+        "Processing service unavailable. This operation will restart safely "
+        "from its original input when the worker returns."
+    ),
+    "cancelling": (
+        "Processing service unavailable. Cancellation will finish safely "
+        "when worker recovery runs."
+    ),
+}
 
 
 def render() -> None:
@@ -107,8 +117,8 @@ def _render_active_rows(
                 ),
             )
             st.caption(f"Elapsed: {_elapsed(row)}")
-            if row["state"] == "queued" and not health["available"]:
-                st.warning(_WORKER_UNAVAILABLE)
+            if not health["available"]:
+                st.warning(_WORKER_UNAVAILABLE[row["state"]])
             if row.get("can_cancel") and st.button(
                 "Cancel",
                 key=f"operation_cancel_{operation_id}",
@@ -211,13 +221,30 @@ def _render_result_actions(row: dict[str, Any], user: str) -> None:
     result = next((item for item in reversed(artifacts) if item["role"] == "result"), None)
     result_available = result is not None and _artifact_available(result, row)
     if result_available:
-        if st.button(
+        result_path = Path(result["file_path"])
+        try:
+            result_bytes = result_path.stat().st_size
+            download_limit = operations.result_download_limit_bytes()
+        except OSError:
+            result_available = False
+            st.error("The retained result is no longer available.")
+        except operations.OperationError as exc:
+            result_available = False
+            st.error(str(exc))
+        if result_available and result_bytes > download_limit:
+            st.warning(
+                f"This result exceeds the {_byte_limit_label(download_limit)} "
+                "in-app download limit. You can still apply it to the Job or "
+                "open it in Quick Load. Ask an administrator for the retained "
+                "file if you need a direct download."
+            )
+        elif result_available and st.button(
             "Prepare result download",
             key=f"operation_prepare_download_{operation_id}",
             icon=":material/download:",
         ):
             try:
-                data = Path(result["file_path"]).read_bytes()
+                data = result_path.read_bytes()
             except OSError:
                 st.error("The retained result is no longer available.")
             else:
@@ -389,3 +416,9 @@ def _artifact_available(
     if expires is not None and expires <= datetime.now(timezone.utc):
         return False
     return Path(artifact["file_path"]).is_file()
+
+
+def _byte_limit_label(limit: int) -> str:
+    if limit % (1024 * 1024) == 0:
+        return f"{limit // (1024 * 1024):,} MB"
+    return f"{limit:,}-byte"

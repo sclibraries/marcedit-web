@@ -23,6 +23,7 @@ services:
       - MARCEDIT_WEB_JOB_FILES_ROOT=/app/data/job-files
       - MARCEDIT_WEB_TASKS_ROOT=/app/data/tasks
       - MARCEDIT_WEB_UPLOADS_ROOT=/app/data/uploads
+      - MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES=${MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES:-209715200}
       - MARCEDIT_WEB_PROXY_SECRET=${MARCEDIT_WEB_PROXY_SECRET:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     restart: unless-stopped
@@ -47,6 +48,7 @@ services:
       - MARCEDIT_WEB_JOB_FILES_ROOT=/app/data/job-files
       - MARCEDIT_WEB_TASKS_ROOT=/app/data/tasks
       - MARCEDIT_WEB_UPLOADS_ROOT=/app/data/uploads
+      - MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES=${MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES:-209715200}
       - MARCEDIT_WEB_PROXY_SECRET=${MARCEDIT_WEB_PROXY_SECRET:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     command: python -m marcedit_web.ops.worker

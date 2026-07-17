@@ -189,6 +189,7 @@ fi
 if [ -f "$ENV_FILE" ]; then
     check_positive_setting MARCEDIT_WEB_QUEUE_CHUNK_RECORDS 5000
     check_positive_setting MARCEDIT_WEB_OPERATION_RETENTION_DAYS 30
+    check_positive_setting MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES 209715200
 else
     info "$ENV_FILE not found; queue integer settings cannot be verified"
 fi

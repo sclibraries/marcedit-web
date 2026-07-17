@@ -207,6 +207,12 @@ The mutable state lives in `/var/www/html/marcedit-web/data/`:
 - `uploads/<user>/jobs/<job-id>/<upload-id>/upload.mrc` — persisted per-upload MARC files
 - `operations/` — immutable queued inputs and retained result artifacts
 
+The Operations page materializes direct downloads only up to
+`MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES` (200 MB by default). Larger
+retained results remain usable through Job apply or Quick Load reopen. Saved
+tasks execute Python and must be authored only by trusted staff; the subprocess
+resource limits are not a hostile-code security boundary.
+
 Stop the worker before the private app, then back up the complete `data/` tree
 as one recovery generation. Start the private app before the worker after the
 snapshot:

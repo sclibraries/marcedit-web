@@ -179,7 +179,10 @@ def test_stale_worker_cannot_publish_after_recovery(tmp_path):
 
 
 def test_competing_workers_claim_one_attempt(tmp_path):
-    operation_id = _submit_quick(tmp_path, count=2)["id"]
+    operation_ids = {
+        _submit_quick(tmp_path, count=2)["id"],
+        _submit_quick(tmp_path, count=2)["id"],
+    }
     barrier = threading.Barrier(2)
     claims: list[Optional[operations.Lease]] = []
 
@@ -198,7 +201,12 @@ def test_competing_workers_claim_one_attempt(tmp_path):
 
     assert all(not thread.is_alive() for thread in threads)
     assert sum(claim is not None for claim in claims) == 1
-    assert operations.get_operation(operation_id)["attempt"] == 1
+    claimed = next(claim for claim in claims if claim is not None)
+    assert operations.get_operation(claimed.operation_id)["attempt"] == 1
+    operations.fail_operation(claimed, code="test", message="terminal")
+    following = operations.claim_next("worker-c")
+    assert following is not None
+    assert {claimed.operation_id, following.operation_id} == operation_ids
 
 
 def test_running_cancellation_stops_real_sandbox_without_partial_result(

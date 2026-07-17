@@ -70,6 +70,9 @@ def run_once(worker_id: str) -> bool:
     recovered = operations.recover_expired()
     if recovered:
         logger.info("recovered expired operation leases count=%s", recovered)
+        reconciled = operations.reconcile_operation_storage()
+        if reconciled:
+            logger.info("abandoned operation paths removed count=%s", reconciled)
     lease = operations.claim_next(worker_id)
     if lease is None:
         return False
@@ -99,9 +102,10 @@ def run_once(worker_id: str) -> bool:
         log = logger.warning if outcome.error_count else logger.info
         log(
             "queued operation completed operation_id=%s attempt=%s"
-            " output_records=%s changed_records=%s error_count=%s",
+            " worker_id=%s output_records=%s changed_records=%s error_count=%s",
             lease.operation_id,
             lease.attempt,
+            worker_id,
             outcome.output_records,
             outcome.changed_records,
             outcome.error_count,
@@ -112,9 +116,10 @@ def run_once(worker_id: str) -> bool:
         except operations.OperationError:
             raise exc
         logger.info(
-            "queued operation cancelled operation_id=%s attempt=%s",
+            "queued operation cancelled operation_id=%s attempt=%s worker_id=%s",
             lease.operation_id,
             lease.attempt,
+            worker_id,
         )
     except operation_runner.OperationRunError as exc:
         if _fail_or_finish_cancelled(
@@ -124,13 +129,15 @@ def run_once(worker_id: str) -> bool:
             failure=exc,
         ):
             logger.warning(
-                "queued operation failed operation_id=%s attempt=%s code=%s",
+                "queued operation failed operation_id=%s attempt=%s"
+                " worker_id=%s code=%s",
                 lease.operation_id,
                 lease.attempt,
+                worker_id,
                 exc.code,
             )
     except Exception as exc:
-        _log_internal_failure(lease, exc)
+        _log_internal_failure(lease, exc, worker_id=worker_id)
         _fail_or_finish_cancelled(
             lease,
             code="worker-internal-error",
@@ -139,6 +146,19 @@ def run_once(worker_id: str) -> bool:
         )
     finally:
         try:
+            try:
+                operations.cleanup_attempt_workspace(lease)
+            except Exception as exc:
+                logger.error(
+                    "operation attempt cleanup failed operation_id=%s attempt=%s",
+                    lease.operation_id,
+                    lease.attempt,
+                    exc_info=(
+                        RuntimeError,
+                        RuntimeError("operation attempt cleanup error"),
+                        exc.__traceback__,
+                    ),
+                )
             active_heartbeat.stop_and_check()
         finally:
             operations.heartbeat_worker(worker_id, current_operation_id=None)
@@ -153,6 +173,8 @@ def run_forever(
     if poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive")
     identity = worker_id or f"{os.getpid()}-{uuid.uuid4().hex}"
+    _configure_logging()
+    logger.info("operation worker started worker_id=%s", identity)
     stopping = threading.Event()
 
     def stop(_signum, _frame) -> None:
@@ -180,6 +202,7 @@ def run_forever(
                 _cleanup_safely()
                 last_cleanup = now
             stopping.wait(poll_seconds)
+        logger.info("operation worker stopped worker_id=%s", identity)
         return 0
     finally:
         if sigint_installed:
@@ -213,12 +236,15 @@ def main(argv: list[str] | None = None) -> int:
 def _log_internal_failure(
     lease: operations.Lease,
     exc: BaseException,
+    *,
+    worker_id: str,
 ) -> None:
     safe_exception = RuntimeError("internal worker error")
     logger.error(
-        "queued operation failed operation_id=%s attempt=%s",
+        "queued operation failed operation_id=%s attempt=%s worker_id=%s",
         lease.operation_id,
         lease.attempt,
+        worker_id,
         exc_info=(RuntimeError, safe_exception, exc.__traceback__),
     )
 
@@ -244,6 +270,7 @@ def _fail_or_finish_cancelled(
 def _cleanup_safely() -> None:
     try:
         deleted = operations.cleanup_expired_artifacts()
+        reconciled = operations.reconcile_operation_storage()
     except Exception as exc:
         logger.error(
             "operation artifact cleanup pass failed",
@@ -256,6 +283,19 @@ def _cleanup_safely() -> None:
         return
     if deleted:
         logger.info("expired operation artifacts removed count=%s", deleted)
+    if reconciled:
+        logger.info("abandoned operation paths removed count=%s", reconciled)
+
+
+def _configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "timestamp=%(asctime)s level=%(levelname)s logger=%(name)s "
+            "message=%(message)s"
+        ),
+    )
+    logger.setLevel(logging.INFO)
 
 
 if __name__ == "__main__":

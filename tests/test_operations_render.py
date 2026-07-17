@@ -285,6 +285,36 @@ def test_queued_card_warns_when_worker_is_unavailable(monkeypatch):
     assert any(button["label"] == "Refresh" for button in fake_st.buttons)
 
 
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (
+            "running",
+            "Processing service unavailable. This operation will restart "
+            "safely from its original input when the worker returns.",
+        ),
+        (
+            "cancelling",
+            "Processing service unavailable. Cancellation will finish safely "
+            "when worker recovery runs.",
+        ),
+    ],
+)
+def test_active_card_tailors_stale_worker_recovery_warning(
+    monkeypatch, state, expected
+):
+    fake_st = _FakeStreamlit(fragments=False)
+    renderer = _wire(
+        monkeypatch,
+        fake_st,
+        [_operation(state=state, phase=state)],
+    )
+
+    renderer.render()
+
+    assert fake_st.warnings == [expected]
+
+
 def test_completed_with_errors_is_attention_and_details_are_bounded(monkeypatch):
     fake_st = _FakeStreamlit()
     row = _operation(
@@ -354,6 +384,47 @@ def test_result_bytes_are_read_only_after_prepare_download(monkeypatch, tmp_path
     renderer.render()
     assert reads == [result]
     assert fake_st.downloads[0]["data"] == b"result bytes"
+
+
+def test_large_result_is_never_materialized_for_streamlit_download(
+    monkeypatch, tmp_path
+):
+    result = tmp_path / "large-result.mrc"
+    result.write_bytes(b"small fixture")
+    row = _operation(
+        state="completed",
+        phase="completed",
+        completed_at="now",
+        job_id=4,
+        job_file_id=5,
+        source_version_id=6,
+        can_apply_result=True,
+    )
+    fake_st = _FakeStreamlit(clicked={"operation_prepare_download_1"})
+    renderer = _wire(
+        monkeypatch,
+        fake_st,
+        [row],
+        artifacts=[{
+            "role": "result",
+            "filename": "large-result.mrc",
+            "file_path": str(result),
+        }],
+    )
+    monkeypatch.setattr(renderer.operations, "result_download_limit_bytes", lambda: 10)
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda _path: pytest.fail("oversized result must not be read"),
+    )
+
+    renderer.render()
+
+    assert fake_st.downloads == []
+    assert any("10-byte in-app download limit" in text for text in fake_st.warnings)
+    assert "Apply as new Job version" in [
+        button["label"] for button in fake_st.buttons
+    ]
 
 
 def test_terminal_actions_call_job_and_quick_load_services(monkeypatch, tmp_path):

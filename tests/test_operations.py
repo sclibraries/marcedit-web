@@ -6,6 +6,7 @@ import dataclasses
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -648,6 +649,42 @@ def test_completion_wins_before_later_cancel_and_bounds_errors(
         operations.request_cancel(queued_operation["id"], by="owner@smith.edu")
 
 
+def test_completion_bounds_each_error_again_at_database_boundary(
+    queued_operation, tmp_path
+):
+    _attach_input(queued_operation["id"], tmp_path)
+    candidate = _candidate(tmp_path, queued_operation["id"])
+    lease = operations.claim_next("worker-a")
+    assert lease is not None
+    huge = "x" * (sandbox.MAX_ERROR_MESSAGE_CHARS * 20)
+
+    operations.complete_operation(
+        lease,
+        result_path=candidate,
+        output_records=3,
+        changed_records=0,
+        error_count=10_000,
+        errors=[
+            {
+                "index": 1,
+                "code": huge,
+                "task": huge,
+                "message": huge,
+                "detail": huge,
+            }
+            for _ in range(sandbox.MAX_RETAINED_ERRORS + 10)
+        ],
+        summary={},
+    )
+
+    retained = operations.list_errors(lease.operation_id, "owner@smith.edu")
+    assert len(retained) == sandbox.MAX_RETAINED_ERRORS
+    assert len(retained[0]["code"]) <= sandbox.MAX_ERROR_CODE_CHARS
+    assert len(retained[0]["task_name"]) <= sandbox.MAX_ERROR_TASK_CHARS
+    assert len(retained[0]["message"]) <= sandbox.MAX_ERROR_MESSAGE_CHARS
+    assert operations.get_operation(lease.operation_id)["error_count"] == 10_000
+
+
 def test_completion_restores_candidate_when_database_publication_fails(
     queued_operation, tmp_path,
 ):
@@ -675,6 +712,212 @@ def test_completion_restores_candidate_when_database_publication_fails(
     assert candidate.read_bytes() == b"result"
     assert not (operations.operations_root() / str(lease.operation_id) / "result.mrc").exists()
     assert operations.get_operation(lease.operation_id)["state"] == "running"
+
+
+def test_completion_recognizes_commit_that_persisted_before_acknowledgement_failed(
+    queued_operation, tmp_path, monkeypatch
+):
+    """A lost commit acknowledgement must not roll back published bytes."""
+    _attach_input(queued_operation["id"], tmp_path)
+    candidate = _candidate(tmp_path, queued_operation["id"])
+    lease = operations.claim_next("worker-a")
+    assert lease is not None
+    real_connect = operations.db.connect
+    calls = 0
+
+    @contextmanager
+    def commit_then_raise_once():
+        nonlocal calls
+        calls += 1
+        with real_connect() as conn:
+            yield conn
+            if calls == 1:
+                conn.commit()
+                raise RuntimeError("commit acknowledgement lost")
+
+    monkeypatch.setattr(operations.db, "connect", commit_then_raise_once)
+
+    completed = operations.complete_operation(
+        lease,
+        result_path=candidate,
+        output_records=3,
+        changed_records=2,
+        error_count=0,
+        errors=[],
+        summary={},
+    )
+
+    assert completed["state"] == "completed"
+    results = [
+        row
+        for row in operations.list_artifacts(lease.operation_id, "owner@smith.edu")
+        if row["role"] == "result"
+    ]
+    assert len(results) == 1
+    assert Path(results[0]["file_path"]).read_bytes() == b"result"
+    assert not candidate.exists()
+
+
+def test_publication_path_is_attempt_specific_after_death_between_rename_and_commit(
+    queued_operation, tmp_path, monkeypatch
+):
+    """A replacement attempt can publish without colliding with orphan bytes."""
+    _attach_input(queued_operation["id"], tmp_path)
+    first_candidate = _candidate(tmp_path, queued_operation["id"])
+    first = operations.claim_next("worker-a")
+    assert first is not None
+    real_fsync = operations._fsync_file_and_parent
+
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    def die_after_durable_publication(path):
+        real_fsync(path)
+        raise SimulatedProcessDeath()
+
+    monkeypatch.setattr(
+        operations,
+        "_fsync_file_and_parent",
+        die_after_durable_publication,
+    )
+    with pytest.raises(SimulatedProcessDeath):
+        operations.complete_operation(
+            first,
+            result_path=first_candidate,
+            output_records=3,
+            changed_records=2,
+            error_count=0,
+            errors=[],
+            summary={},
+        )
+
+    monkeypatch.setattr(operations, "_fsync_file_and_parent", real_fsync)
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE operations SET lease_expires_at='2000-01-01T00:00:00Z'"
+            " WHERE id=?",
+            (first.operation_id,),
+        )
+    assert operations.recover_expired() == 1
+    second = operations.claim_next("worker-b")
+    assert second is not None
+    second_candidate = (
+        operations.operations_root()
+        / str(second.operation_id)
+        / f"attempt-{second.attempt}"
+        / "candidate.mrc"
+    )
+    second_candidate.parent.mkdir(parents=True)
+    second_candidate.write_bytes(b"replacement")
+
+    operations.complete_operation(
+        second,
+        result_path=second_candidate,
+        output_records=3,
+        changed_records=2,
+        error_count=0,
+        errors=[],
+        summary={},
+    )
+
+    results = [
+        row
+        for row in operations.list_artifacts(second.operation_id, "owner@smith.edu")
+        if row["role"] == "result"
+    ]
+    assert len(results) == 1
+    assert Path(results[0]["file_path"]).read_bytes() == b"replacement"
+    assert len(list(Path(results[0]["file_path"]).parent.glob("result-attempt-*"))) == 2
+    assert operations.reconcile_operation_storage() == 3
+    assert Path(results[0]["file_path"]).read_bytes() == b"replacement"
+
+
+def test_claim_refuses_second_operation_until_active_lease_is_terminal(tmp_path):
+    first_id, _ = _job_operation(submitter="first@smith.edu")
+    second_id, _ = _job_operation(submitter="second@smith.edu")
+    _attach_input(first_id, tmp_path)
+    _attach_input(second_id, tmp_path)
+
+    first = operations.claim_next("worker-a")
+    assert first is not None
+    assert operations.claim_next("worker-b") is None
+
+    operations.fail_operation(first, code="test", message="finished")
+    second = operations.claim_next("worker-b")
+    assert second is not None
+    assert second.operation_id == second_id
+
+
+def test_storage_reconciliation_removes_only_unreferenced_queue_workspaces(
+    queued_operation, tmp_path
+):
+    input_path = _attach_input(queued_operation["id"], tmp_path)
+    operation_dir = operations.operations_root() / str(queued_operation["id"])
+    stale_attempt = operation_dir / "attempt-9"
+    stale_attempt.mkdir(parents=True)
+    (stale_attempt / "candidate.mrc").write_bytes(b"partial")
+    orphan_publication = operation_dir / "result-attempt-8-deadbeef.mrc"
+    orphan_publication.write_bytes(b"orphan")
+    pending = operations.operations_root() / "pending" / "abandoned.mrc"
+    pending.parent.mkdir(parents=True)
+    pending.write_bytes(b"pending")
+
+    removed = operations.reconcile_operation_storage()
+
+    assert removed == 3
+    assert input_path.exists()
+    assert not stale_attempt.exists()
+    assert not orphan_publication.exists()
+    assert not pending.exists()
+
+
+def test_storage_reconciliation_unlinks_attempt_symlink_without_following_it(
+    queued_operation, tmp_path
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = outside / "protected.mrc"
+    protected.write_bytes(b"keep")
+    operation_dir = operations.operations_root() / str(queued_operation["id"])
+    operation_dir.mkdir(parents=True)
+    attempt_link = operation_dir / "attempt-7"
+    attempt_link.symlink_to(outside, target_is_directory=True)
+
+    assert operations.reconcile_operation_storage() == 1
+
+    assert not attempt_link.exists()
+    assert protected.read_bytes() == b"keep"
+
+
+def test_storage_reconciliation_parent_swap_never_follows_outside_symlink(
+    queued_operation, tmp_path, monkeypatch
+):
+    outside = tmp_path / "outside-race"
+    outside.mkdir()
+    protected = outside / "protected.mrc"
+    protected.write_bytes(b"keep")
+    operation_dir = operations.operations_root() / str(queued_operation["id"])
+    attempt = operation_dir / "attempt-7"
+    attempt.mkdir(parents=True)
+    (attempt / "candidate.mrc").write_bytes(b"partial")
+    displaced = operation_dir / "displaced"
+    real_open = operations.os.open
+    swapped = False
+
+    def swap_before_directory_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == "attempt-7" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            attempt.rename(displaced)
+            attempt.symlink_to(outside, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(operations.os, "open", swap_before_directory_open)
+
+    operations.reconcile_operation_storage()
+
+    assert swapped is True
+    assert protected.read_bytes() == b"keep"
 
 
 def test_fail_operation_requires_current_running_lease(queued_operation, tmp_path):
@@ -763,3 +1006,13 @@ def test_worker_health_uses_persisted_heartbeat_staleness():
     assert health["row"]["worker_id"] == "worker-a"
     with pytest.raises(operations.OperationError, match="max_age_seconds must be positive"):
         operations.worker_health(max_age_seconds=0)
+
+
+def test_result_download_limit_is_positive_and_configurable(monkeypatch):
+    monkeypatch.delenv("MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES", raising=False)
+    assert operations.result_download_limit_bytes() == 200 * 1024 * 1024
+    monkeypatch.setenv("MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES", "1234")
+    assert operations.result_download_limit_bytes() == 1234
+    monkeypatch.setenv("MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES", "0")
+    with pytest.raises(operations.OperationError, match="positive integer"):
+        operations.result_download_limit_bytes()

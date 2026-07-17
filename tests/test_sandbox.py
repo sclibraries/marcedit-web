@@ -729,6 +729,51 @@ def test_repeated_task_errors_are_counted_but_diagnostics_are_capped(
     assert len(_read_output(result)) == record_count
 
 
+def test_huge_task_exception_is_bounded_before_crossing_process_boundary(
+    one_record_bytes,
+):
+    result = run_tasks_subprocess(
+        [
+            TaskSpec(
+                name="n" * (sandbox.MAX_ERROR_TASK_CHARS * 2),
+                body=(
+                    "raise RuntimeError('x' * "
+                    f"{sandbox.MAX_ERROR_MESSAGE_CHARS * 20})"
+                ),
+            )
+        ],
+        one_record_bytes,
+    )
+
+    assert result.error_count == 1
+    assert len(result.errors) == 1
+    assert len(result.errors[0]["task"]) <= sandbox.MAX_ERROR_TASK_CHARS
+    assert len(result.errors[0]["message"]) <= sandbox.MAX_ERROR_MESSAGE_CHARS
+    assert (
+        len(json.dumps(result.errors[0]).encode("utf-8"))
+        <= sandbox.MAX_ERROR_DETAIL_BYTES
+    )
+
+
+def test_huge_stderr_is_read_as_a_bounded_diagnostic(one_record_bytes):
+    result = run_tasks_subprocess(
+        [
+            TaskSpec(
+                name="stderr",
+                imports=["import sys"],
+                body=(
+                    f"sys.stderr.write('s' * {sandbox.MAX_STDERR_BYTES * 20})\n"
+                    "raise RuntimeError('safe failure')"
+                ),
+            )
+        ],
+        one_record_bytes,
+    )
+
+    assert result.error_count == 1
+    assert len(result.stderr.encode("utf-8")) <= sandbox.MAX_STDERR_BYTES
+
+
 def test_filesystem_side_effect_lands_in_sandbox_workdir(
     one_record_bytes, tmp_path,
 ):

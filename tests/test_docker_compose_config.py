@@ -49,6 +49,14 @@ def test_compose_worker_shares_private_configuration_without_a_port():
     assert "restart: unless-stopped" in worker
 
 
+@pytest.mark.parametrize("compose_name", ["docker-compose.yml", "docker-compose.pull.yml"])
+def test_compose_sets_bounded_operation_download_default(compose_name):
+    compose = _build_context_file(compose_name)
+
+    assert "MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES" in compose
+    assert "209715200" in compose
+
+
 def test_pull_compose_worker_uses_published_image_and_shared_private_state():
     """Published-image installs need the queue worker without another port."""
     compose = _build_context_file("docker-compose.pull.yml")

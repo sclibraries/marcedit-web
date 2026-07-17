@@ -61,6 +61,24 @@ def retention_days() -> int:
     return days
 
 
+def result_download_limit_bytes() -> int:
+    raw = os.environ.get(
+        "MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES",
+        str(200 * 1024 * 1024),
+    )
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise OperationError(
+            "MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES must be a positive integer"
+        ) from exc
+    if limit <= 0:
+        raise OperationError(
+            "MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES must be a positive integer"
+        )
+    return limit
+
+
 def operations_root() -> Path:
     return Path(
         os.environ.get("MARCEDIT_WEB_OPERATIONS_ROOT", "data/operations")
@@ -256,6 +274,12 @@ def claim_next(worker_id: str, *, lease_seconds: int = 30) -> Lease | None:
     token = uuid.uuid4().hex
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        active = conn.execute(
+            "SELECT 1 FROM operations"
+            " WHERE state IN ('running','cancelling') LIMIT 1"
+        ).fetchone()
+        if active is not None:
+            return None
         row = conn.execute(
             "SELECT * FROM operations WHERE state='queued'"
             " ORDER BY submitted_at, id LIMIT 1"
@@ -501,8 +525,10 @@ def complete_operation(
         candidate.resolve().relative_to(operation_dir.resolve())
     except ValueError as exc:
         raise OperationError("result path is not owned by operation") from exc
-    published = operation_dir / "result.mrc"
-    if published.exists() or candidate == published:
+    published = operation_dir / (
+        f"result-attempt-{lease.attempt}-{lease.token}.mrc"
+    )
+    if candidate == published:
         raise OperationError("operation result already exists")
     db.init_schema()
     now = _iso(_now())
@@ -518,8 +544,11 @@ def complete_operation(
             ).fetchone()
             if owned is None:
                 raise OperationError("operation is no longer running")
+            if published.exists():
+                raise OperationError("operation result already exists")
             os.replace(candidate, published)
             moved = True
+            _fsync_file_and_parent(published)
             conn.execute(
                 "INSERT INTO operation_artifacts(operation_id, role, filename,"
                 " file_path, record_count, file_bytes, queue_owned, created_at)"
@@ -533,6 +562,7 @@ def complete_operation(
                 ),
             )
             for ordinal, error in enumerate(errors[:sandbox.MAX_RETAINED_ERRORS]):
+                bounded_error = sandbox.bound_error(error)
                 conn.execute(
                     "INSERT INTO operation_errors(operation_id, ordinal,"
                     " record_index, code, task_name, message)"
@@ -540,10 +570,10 @@ def complete_operation(
                     (
                         lease.operation_id,
                         ordinal,
-                        int(error.get("index", 0)),
-                        str(error.get("code", "operation-error")),
-                        error.get("task"),
-                        str(error.get("message", "")),
+                        bounded_error["index"],
+                        bounded_error["code"],
+                        bounded_error["task"],
+                        bounded_error["message"],
                     ),
                 )
             updated = conn.execute(
@@ -575,17 +605,63 @@ def complete_operation(
                 created_at=now,
             )
             row = _operation_row(conn, lease.operation_id)
-    except Exception:
-        if moved:
+    except Exception as publication_error:
+        try:
+            committed = _committed_completion(lease.operation_id, published)
+        except Exception:
+            # Database state is ambiguous. Keep the attempt-specific publication
+            # in place so a later reconciliation pass can decide safely.
+            raise publication_error
+        if committed is not None:
+            return committed
+        if moved and published.exists() and not candidate.exists():
             try:
                 os.replace(published, candidate)
+                _fsync_directory(candidate.parent)
             except OSError as exc:
                 raise OperationError(
                     "result publication failed and candidate could not be restored"
                 ) from exc
-        raise
+        raise publication_error
     assert row is not None
     return _dict(row)
+
+
+def _committed_completion(
+    operation_id: int,
+    published: Path,
+) -> dict[str, Any] | None:
+    """Resolve a lost SQLite commit acknowledgement on a fresh connection."""
+    with db.connect() as conn:
+        row = _operation_row(conn, operation_id)
+        artifact = conn.execute(
+            "SELECT 1 FROM operation_artifacts"
+            " WHERE operation_id=? AND role='result' AND file_path=? LIMIT 1",
+            (operation_id, str(published)),
+        ).fetchone()
+    if (
+        row is not None
+        and row["state"] == "completed"
+        and artifact is not None
+        and published.is_file()
+    ):
+        return _dict(row)
+    return None
+
+
+def _fsync_file_and_parent(path: Path) -> None:
+    with path.open("rb") as published_file:
+        os.fsync(published_file.fileno())
+    _fsync_directory(path.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def recover_expired() -> int:
@@ -767,6 +843,72 @@ def cleanup_expired_artifacts(now: datetime | None = None) -> int:
                 ),
             )
     return deleted
+
+
+def cleanup_attempt_workspace(lease: Lease) -> bool:
+    """Remove only this lease's private attempt directory without following links."""
+    attempt = (
+        operations_root()
+        / str(lease.operation_id)
+        / f"attempt-{lease.attempt}"
+    )
+    return _remove_queue_tree(attempt, operations_root())
+
+
+def reconcile_operation_storage() -> int:
+    """Remove abandoned attempt, pending, and publication paths safely."""
+    db.init_schema()
+    with db.connect() as conn:
+        # Serialize the filesystem snapshot with claim and publication writes.
+        # Without this lock, a queued row could become running after the state
+        # read and have its newly-created attempt directory removed.
+        conn.execute("BEGIN IMMEDIATE")
+        referenced = {
+            _absolute_queue_path(Path(row["file_path"]))
+            for row in conn.execute(
+                "SELECT file_path FROM operation_artifacts"
+                " UNION SELECT file_path FROM job_file_versions"
+            ).fetchall()
+        }
+        active_ids = {
+            int(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM operations"
+                " WHERE state IN ('running','cancelling')"
+            ).fetchall()
+        }
+        return _reconcile_storage_paths(referenced, active_ids)
+
+
+def _reconcile_storage_paths(
+    referenced: set[Path],
+    active_ids: set[int],
+) -> int:
+    root = operations_root()
+    try:
+        root_fd = _open_queue_directory(root, ())
+    except FileNotFoundError:
+        return 0
+    removed = 0
+    try:
+        for entry in os.listdir(root_fd):
+            if entry == "pending":
+                removed += _reconcile_pending(root_fd, root, referenced)
+                continue
+            try:
+                operation_id = int(entry)
+            except ValueError:
+                continue
+            removed += _reconcile_operation_directory(
+                root_fd,
+                root,
+                entry,
+                active=operation_id in active_ids,
+                referenced=referenced,
+            )
+    finally:
+        os.close(root_fd)
+    return removed
 
 
 def list_unread_notifications(user_email: str) -> list[dict[str, Any]]:
@@ -1180,6 +1322,116 @@ def _relative_queue_path(path: Path, root: Path) -> Path:
     if not relative.parts:
         raise ValueError("queue artifact path is the operations root")
     return relative
+
+
+def _absolute_queue_path(path: Path) -> Path:
+    return Path(os.path.abspath(str(path)))
+
+
+def _remove_queue_tree(path: Path, root: Path) -> bool:
+    relative = _relative_queue_path(path, root)
+    try:
+        parent_fd = _open_queue_directory(root, relative.parts[:-1])
+    except FileNotFoundError:
+        return False
+    try:
+        return _remove_tree_entry(parent_fd, relative.parts[-1])
+    finally:
+        os.close(parent_fd)
+
+
+def _remove_tree_entry(parent_fd: int, name: str) -> bool:
+    try:
+        metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.unlink(name, dir_fd=parent_fd)
+        return True
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    child_fd = os.open(name, flags, dir_fd=parent_fd)
+    try:
+        for child in os.listdir(child_fd):
+            _remove_tree_entry(child_fd, child)
+    finally:
+        os.close(child_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+    return True
+
+
+def _reconcile_pending(
+    root_fd: int,
+    root: Path,
+    referenced: set[Path],
+) -> int:
+    try:
+        pending_fd = os.open(
+            "pending",
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_fd,
+        )
+    except OSError:
+        return 0
+    removed = 0
+    try:
+        for name in os.listdir(pending_fd):
+            path = _absolute_queue_path(root / "pending" / name)
+            if path not in referenced:
+                try:
+                    did_remove = _remove_tree_entry(pending_fd, name)
+                except OSError:
+                    continue
+                if did_remove:
+                    removed += 1
+    finally:
+        os.close(pending_fd)
+    return removed
+
+
+def _reconcile_operation_directory(
+    root_fd: int,
+    root: Path,
+    entry: str,
+    *,
+    active: bool,
+    referenced: set[Path],
+) -> int:
+    try:
+        operation_fd = os.open(
+            entry,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=root_fd,
+        )
+    except OSError:
+        return 0
+    removed = 0
+    try:
+        for name in os.listdir(operation_fd):
+            is_attempt = name.startswith("attempt-")
+            is_publication = name.startswith("result-attempt-")
+            path = _absolute_queue_path(root / entry / name)
+            eligible = (
+                (is_attempt and not active)
+                or (is_publication and path not in referenced)
+            )
+            if eligible:
+                try:
+                    did_remove = _remove_tree_entry(operation_fd, name)
+                except OSError:
+                    continue
+                if did_remove:
+                    removed += 1
+    finally:
+        os.close(operation_fd)
+    return removed
 
 
 def _open_queue_directory(root: Path, parts: tuple[str, ...]) -> int:

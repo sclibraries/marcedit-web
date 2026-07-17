@@ -66,6 +66,15 @@ _AS_BYTES = 512 * 1024 * 1024     # 512 MB virtual memory
 _FSIZE_BYTES = 1024 * 1024 * 1024  # 1 GB single-file write cap
 _NPROC = 32                        # subprocess can't fork-bomb
 MAX_RETAINED_ERRORS = 200
+MAX_ERROR_CODE_CHARS = 64
+MAX_ERROR_CODE_BYTES = 128
+MAX_ERROR_TASK_CHARS = 128
+MAX_ERROR_TASK_BYTES = 256
+MAX_ERROR_MESSAGE_CHARS = 1024
+MAX_ERROR_MESSAGE_BYTES = 2048
+MAX_ERROR_DETAIL_BYTES = 4096
+MAX_ERROR_PAYLOAD_BYTES = MAX_RETAINED_ERRORS * MAX_ERROR_DETAIL_BYTES
+MAX_STDERR_BYTES = 8192
 _TERMINATION_GRACE_SECONDS = 2
 
 
@@ -121,6 +130,12 @@ def _parse_args():
     ap.add_argument("--errors", required=True)
     ap.add_argument("--progress")
     ap.add_argument("--max-errors", required=True, type=int)
+    ap.add_argument("--max-code-chars", required=True, type=int)
+    ap.add_argument("--max-code-bytes", required=True, type=int)
+    ap.add_argument("--max-task-chars", required=True, type=int)
+    ap.add_argument("--max-task-bytes", required=True, type=int)
+    ap.add_argument("--max-message-chars", required=True, type=int)
+    ap.add_argument("--max-message-bytes", required=True, type=int)
     ap.add_argument("--cpu-seconds", required=True, type=int)
     return ap.parse_args()
 
@@ -132,6 +147,13 @@ def _write_progress(path, processed_records):
     with open(temporary, "w") as progress_file:
         json.dump({"processed_records": processed_records}, progress_file)
     os.replace(temporary, path)
+
+
+def _bounded_text(value, max_chars, max_bytes):
+    text = str(value).replace("\x00", "")[:max_chars]
+    return text.encode("utf-8", "replace")[:max_bytes].decode(
+        "utf-8", "ignore"
+    )
 
 
 # Defensive re-set of rlimits inside the child. The parent's preexec_fn
@@ -218,8 +240,16 @@ def main():
                         errors.append({
                             "index": idx,
                             "code": "transform-failed",
-                            "task": failed_task,
-                            "message": "%s: %s" % (type(exc).__name__, exc),
+                            "task": _bounded_text(
+                                failed_task,
+                                args.max_task_chars,
+                                args.max_task_bytes,
+                            ),
+                            "message": _bounded_text(
+                                "%s: %s" % (type(exc).__name__, exc),
+                                args.max_message_chars,
+                                args.max_message_bytes,
+                            ),
                         })
                     # Keep original record so the output batch stays the
                     # same cardinality as the input.
@@ -332,6 +362,12 @@ def run_tasks_subprocess(
         "--output", str(output_path),
         "--errors", str(errors_path),
         "--max-errors", str(MAX_RETAINED_ERRORS),
+        "--max-code-chars", str(MAX_ERROR_CODE_CHARS),
+        "--max-code-bytes", str(MAX_ERROR_CODE_BYTES),
+        "--max-task-chars", str(MAX_ERROR_TASK_CHARS),
+        "--max-task-bytes", str(MAX_ERROR_TASK_BYTES),
+        "--max-message-chars", str(MAX_ERROR_MESSAGE_CHARS),
+        "--max-message-bytes", str(MAX_ERROR_MESSAGE_BYTES),
         "--cpu-seconds", str(cpu_seconds),
     ]
     if progress_path is not None:
@@ -423,9 +459,13 @@ def run_tasks_subprocess(
         stderr_file.close()
 
     if communicated_stderr is not None:
-        stderr = communicated_stderr
+        stderr = _bounded_text(
+            communicated_stderr,
+            MAX_STDERR_BYTES,
+            MAX_STDERR_BYTES,
+        )
     elif stderr_path.exists():
-        stderr = stderr_path.read_text(errors="replace")
+        stderr = _read_bounded_stderr(stderr_path)
     returncode = process.returncode
     if returncode == -signal.SIGXCPU and not cancelled:
         timed_out = True
@@ -435,17 +475,27 @@ def run_tasks_subprocess(
         )
 
     try:
-        error_payload = (
-            json.loads(errors_path.read_text()) if errors_path.exists() else []
-        )
+        error_payload = json.loads(
+            _read_bounded_file(errors_path, MAX_ERROR_PAYLOAD_BYTES)
+        ) if errors_path.exists() else []
     except json.JSONDecodeError:
         error_payload = []
 
     if isinstance(error_payload, dict):
-        errors = list(error_payload.get("errors") or [])
+        errors = [
+            bound_error(error)
+            for error in list(error_payload.get("errors") or [])[
+                :MAX_RETAINED_ERRORS
+            ]
+            if isinstance(error, dict)
+        ]
         error_count = int(error_payload.get("error_count", len(errors)))
     else:
-        errors = list(error_payload)
+        errors = [
+            bound_error(error)
+            for error in list(error_payload)[:MAX_RETAINED_ERRORS]
+            if isinstance(error, dict)
+        ]
         error_count = len(errors)
 
     if timed_out:
@@ -524,7 +574,59 @@ def _signal_process_group(process: subprocess.Popen, sig: int) -> bool:
 
 def _retain_terminal_error(errors: list[dict], error: dict) -> None:
     """Keep a launcher error visible without exceeding the diagnostics cap."""
+    error = bound_error(error)
     if len(errors) < MAX_RETAINED_ERRORS:
         errors.append(error)
     elif errors:
         errors[-1] = error
+
+
+def bound_error(error: dict) -> dict:
+    """Return one normalized diagnostic within explicit character/byte caps."""
+    try:
+        index = max(0, int(error.get("index", 0)))
+    except (TypeError, ValueError):
+        index = 0
+    task = error.get("task")
+    return {
+        "index": index,
+        "code": _bounded_text(
+            error.get("code", "operation-error"),
+            MAX_ERROR_CODE_CHARS,
+            MAX_ERROR_CODE_BYTES,
+        ),
+        "task": None if task is None else _bounded_text(
+            task,
+            MAX_ERROR_TASK_CHARS,
+            MAX_ERROR_TASK_BYTES,
+        ),
+        "message": _bounded_text(
+            error.get("message", ""),
+            MAX_ERROR_MESSAGE_CHARS,
+            MAX_ERROR_MESSAGE_BYTES,
+        ),
+    }
+
+
+def _bounded_text(value, max_chars: int, max_bytes: int) -> str:
+    text = str(value).replace("\x00", "")[:max_chars]
+    return text.encode("utf-8", "replace")[:max_bytes].decode(
+        "utf-8", "ignore"
+    )
+
+
+def _read_bounded_file(path: Path, max_bytes: int) -> str:
+    with path.open("rb") as source:
+        return source.read(max_bytes).decode("utf-8", "replace")
+
+
+def _read_bounded_stderr(path: Path) -> str:
+    size = path.stat().st_size
+    if size <= MAX_STDERR_BYTES:
+        return _read_bounded_file(path, MAX_STDERR_BYTES)
+    half = MAX_STDERR_BYTES // 2
+    with path.open("rb") as source:
+        head = source.read(half)
+        source.seek(-half, os.SEEK_END)
+        tail = source.read(half)
+    return (head + tail).decode("utf-8", "replace")

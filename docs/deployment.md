@@ -90,6 +90,7 @@ The most operationally important ones:
 | `MARCEDIT_WEB_OPERATIONS_ROOT` | Durable queued inputs, candidates, and attempt workspaces; defaults to `data/operations` and must stay below the service-writable `data/` root. |
 | `MARCEDIT_WEB_QUEUE_CHUNK_RECORDS` | Positive record count processed per sandbox chunk; defaults to `5000`. |
 | `MARCEDIT_WEB_OPERATION_RETENTION_DAYS` | Positive number of days to retain queue-owned Quick Load files and unapplied Job candidates; defaults to `30`. |
+| `MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES` | Positive maximum retained-result size Streamlit may materialize for an in-app download; defaults to `209715200` (200 MB). Larger results remain available for Job apply or Quick Load reopen. |
 | `MARCEDIT_WEB_TASKS_ROOT` | Where per-user task .py files materialize. |
 | `MARCEDIT_WEB_UPLOADS_ROOT` | Where signed-in users' uploads persist. |
 
@@ -219,6 +220,13 @@ set `MARCEDIT_WEB_OPERATION_RETENTION_DAYS` to another positive integer in
 `.env` when policy requires it. Audit rows, events, bounded errors, and applied
 immutable Job versions are not removed by this cleanup.
 
+Streamlit materializes download-button data in application memory. Retained
+operation results therefore have a separate 200 MB in-app download ceiling by
+default. Set `MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES` to another positive
+byte count only after validating private-service memory headroom. Results above
+the limit remain available for Job apply or Quick Load reopen; the Operations
+page will not read them into memory for a direct download.
+
 The unit replicates the Dockerfile's hardening at the systemd
 layer:
 
@@ -231,6 +239,11 @@ layer:
   is writable; a sandboxed task that escapes its workdir can't
   overwrite the venv or app code.
 
+The subprocess limits bound accidental or defective saved-task code; they are
+not a hostile-code security boundary. Production task-author access must be
+limited to trusted staff. Review task changes, retain audit logs, and do not use
+the private cataloger service as a multi-tenant arbitrary-code platform.
+
 ### Large-batch memory guardrails (TASK-147)
 
 Job-file originals, versions, exports, and large-batch candidates remain
@@ -239,8 +252,10 @@ operations still consume CPU, temporary disk capacity, and worker time, so the
 admission limit and host free-space monitoring remain operational constraints.
 
 The private unit starts cgroup reclaim at `MemoryHigh=1536M` and retains the
-hard `MemoryMax=2G` ceiling. The application admits two saved-task or quick
-batch operations at a time by default. Set
+hard `MemoryMax=2G` ceiling. The browser application admits two synchronous
+quick-batch operations at a time by default. Durable saved-task work is
+different: SQLite permits exactly one globally active queued operation
+(`running` or `cancelling`) across all worker processes. Set
 `MARCEDIT_WEB_MAX_CONCURRENT_BATCHES` in `.env` only after repeating the
 concurrent smoke test below; lowering it to `1` trades throughput for more
 headroom.

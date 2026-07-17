@@ -245,6 +245,7 @@ def test_preflight_absent_queue_settings_use_runtime_defaults(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS is a positive integer" in result.stdout
     assert "MARCEDIT_WEB_OPERATION_RETENTION_DAYS is a positive integer" in result.stdout
+    assert "MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES is a positive integer" in result.stdout
     assert "data/operations writable by marcedit" in result.stdout
 
 
@@ -255,6 +256,7 @@ def test_preflight_absent_queue_settings_use_runtime_defaults(tmp_path):
         ({"MARCEDIT_WEB_QUEUE_CHUNK_RECORDS": "0"}, "QUEUE_CHUNK_RECORDS"),
         ({"MARCEDIT_WEB_QUEUE_CHUNK_RECORDS": "many"}, "QUEUE_CHUNK_RECORDS"),
         ({"MARCEDIT_WEB_OPERATION_RETENTION_DAYS": ""}, "RETENTION_DAYS"),
+        ({"MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES": ""}, "DOWNLOAD_MAX_BYTES"),
         ({"MARCEDIT_WEB_OPERATIONS_ROOT": ""}, "OPERATIONS_ROOT"),
     ],
 )
@@ -297,6 +299,7 @@ def test_native_env_template_declares_queue_storage_and_positive_limits():
     ) in template
     assert "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS=5000" in template
     assert "MARCEDIT_WEB_OPERATION_RETENTION_DAYS=30" in template
+    assert "MARCEDIT_WEB_OPERATION_DOWNLOAD_MAX_BYTES=209715200" in template
     assert "MARCEDIT_WEB_DB_PATH=/app/data" not in template
 
 

@@ -103,6 +103,32 @@ def test_run_once_claims_only_one_operation_and_completes_it(monkeypatch):
     assert operations.get_operation(first)["state"] == "completed"
     assert operations.get_operation(second)["state"] == "queued"
     assert operations.worker_health()["row"]["current_operation_id"] is None
+    assert not (
+        operations.operations_root() / str(first) / "attempt-1"
+    ).exists()
+
+
+def test_cancellation_after_runner_return_removes_private_candidate(monkeypatch):
+    operation_id = _queue_operation()
+    real_complete = operations.complete_operation
+
+    def cancel_before_publication(lease, **kwargs):
+        operations.request_cancel(lease.operation_id, by="owner@smith.edu")
+        return real_complete(lease, **kwargs)
+
+    monkeypatch.setattr(
+        worker.operation_runner,
+        "run_saved_task_operation",
+        lambda lease: _outcome(lease),
+    )
+    monkeypatch.setattr(worker.operations, "complete_operation", cancel_before_publication)
+
+    assert worker.run_once("worker-a") is True
+
+    assert operations.get_operation(operation_id)["state"] == "cancelled"
+    assert not (
+        operations.operations_root() / str(operation_id) / "attempt-1"
+    ).exists()
 
 
 def test_active_operation_refreshes_worker_health_past_stale_limit(monkeypatch):
@@ -368,6 +394,13 @@ def test_worker_restart_recovers_then_restarts_from_zero(monkeypatch):
     old_lease = operations.claim_next("dead-worker")
     assert old_lease is not None
     operations.renew_lease(old_lease, processed_records=1)
+    stale_attempt = (
+        operations.operations_root()
+        / str(operation_id)
+        / f"attempt-{old_lease.attempt}"
+    )
+    stale_attempt.mkdir(parents=True)
+    (stale_attempt / "candidate.mrc").write_bytes(b"partial")
     with db.connect() as conn:
         conn.execute(
             "UPDATE operations SET lease_expires_at=? WHERE id=?",
@@ -387,6 +420,7 @@ def test_worker_restart_recovers_then_restarts_from_zero(monkeypatch):
     events = operations.list_events(operation_id, "owner@smith.edu")
     assert any(event["kind"] == "recovered" for event in events)
     assert observed == [(2, 0)]
+    assert not stale_attempt.exists()
 
 
 def test_idle_worker_heartbeats_and_check_has_exact_output(capsys):
@@ -429,6 +463,37 @@ def test_run_forever_stops_after_current_control_boundary(monkeypatch):
     assert worker.run_forever("worker-a", poll_seconds=0.01) == 0
     assert calls == ["worker-a"]
     assert cleanup_calls == [True]
+
+
+def test_run_forever_configures_parseable_info_logging(monkeypatch, caplog):
+    handlers = {}
+    configured = []
+    monkeypatch.setattr(
+        worker.signal,
+        "signal",
+        lambda signum, handler: handlers.setdefault(signum, handler),
+    )
+    monkeypatch.setattr(worker, "_cleanup_safely", lambda: None)
+    monkeypatch.setattr(
+        worker.logging,
+        "basicConfig",
+        lambda **kwargs: configured.append(kwargs),
+    )
+
+    def stop_after_start(_worker_id):
+        handlers[signal.SIGTERM](signal.SIGTERM, None)
+        return False
+
+    monkeypatch.setattr(worker, "run_once", stop_after_start)
+
+    with caplog.at_level(logging.INFO, logger="marcedit_web.operation_worker"):
+        assert worker.run_forever("worker-a", poll_seconds=0.01) == 0
+
+    assert configured[0]["level"] == logging.INFO
+    assert "timestamp=%(asctime)s" in configured[0]["format"]
+    assert "level=%(levelname)s" in configured[0]["format"]
+    assert "logger=%(name)s" in configured[0]["format"]
+    assert "operation worker started worker_id=worker-a" in caplog.text
 
 
 def test_run_forever_restores_previous_signal_handlers(monkeypatch):
