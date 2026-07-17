@@ -20,6 +20,28 @@ bash scripts/deploy.sh
 
 That's the entire operator contract.
 
+### Published-image Compose deployments
+
+Native systemd remains the libtools2 production model. For an installation that
+uses the published image instead, `docker-compose.pull.yml` starts the private
+app and durable worker from the same required image and shared data directory.
+The worker publishes no port and waits for the image's database-plus-HTTP app
+healthcheck during initial startup.
+
+```bash
+MARCEDIT_WEB_IMAGE=ghcr.io/OWNER/REPO:TAG \
+  docker compose -f docker-compose.pull.yml up -d
+docker compose -f docker-compose.pull.yml ps
+docker compose -f docker-compose.pull.yml exec marcedit-web-worker \
+  python -m marcedit_web.ops.worker --check
+docker compose -f docker-compose.pull.yml logs marcedit-web-worker
+```
+
+Set `MARCEDIT_WEB_DATA_DIR` when the durable `data/` directory is not adjacent
+to the Compose file. Queue chunk and retention settings use the same environment
+variables documented below. Stop the worker before changing images or restoring
+the shared database/artifacts, then bring the app up before the worker.
+
 ## Filesystem layout on libtools2
 
 ```

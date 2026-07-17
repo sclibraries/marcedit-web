@@ -217,6 +217,18 @@ def test_its_setup_installs_and_operates_the_private_app_and_worker():
     assert "restarts the service via" not in docs
 
 
+def test_deployment_docs_cover_published_image_worker_operations():
+    """Alternate Compose operators must start and diagnose both services."""
+    docs = _repo_file("docs/deployment.md")
+
+    assert "docker-compose.pull.yml" in docs
+    assert "MARCEDIT_WEB_IMAGE=" in docs
+    assert "marcedit-web-worker" in docs
+    assert "docker compose -f docker-compose.pull.yml up -d" in docs
+    assert "docker compose -f docker-compose.pull.yml logs marcedit-web-worker" in docs
+    assert "python -m marcedit_web.ops.worker --check" in docs
+
+
 def _deploy_file(path: str) -> str:
     """Like _repo_file, but a missing file is a FAILURE when deploy/
     exists (host checkout) — skip only inside the built image, where

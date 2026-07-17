@@ -45,6 +45,43 @@ def test_compose_worker_shares_private_configuration_without_a_port():
     assert "restart: unless-stopped" in worker
 
 
+def test_pull_compose_worker_uses_published_image_and_shared_private_state():
+    """Published-image installs need the queue worker without another port."""
+    compose = _build_context_file("docker-compose.pull.yml")
+    marker = "  marcedit-web-worker:"
+
+    assert marker in compose
+    worker = compose.split(marker, 1)[1]
+    assert (
+        "image: ${MARCEDIT_WEB_IMAGE:?Set MARCEDIT_WEB_IMAGE to a published image"
+        in worker
+    )
+    assert "pull_policy: always" in worker
+    assert "container_name:" not in worker
+    assert "ports:" not in worker
+    assert "${MARCEDIT_WEB_DATA_DIR:-./data}:/app/data" in worker
+    assert 'PYTHONUNBUFFERED: "1"' in worker
+    assert (
+        'MARCEDIT_WEB_DB_PATH: "${MARCEDIT_WEB_DB_PATH:-/app/data/marcedit.db}"'
+        in worker
+    )
+    assert 'MARCEDIT_WEB_PROXY_SECRET: "${MARCEDIT_WEB_PROXY_SECRET:-}"' in worker
+    assert "python -m marcedit_web.ops.worker" in worker
+    assert "condition: service_healthy" in worker
+    assert "restart: unless-stopped" in worker
+
+
+def test_pull_compose_app_image_supplies_dependency_healthcheck():
+    """Worker startup ordering relies on the published image's real DB probe."""
+    compose = _build_context_file("docker-compose.pull.yml")
+    dockerfile = _build_context_file("Dockerfile")
+
+    assert "condition: service_healthy" in compose
+    assert "HEALTHCHECK" in dockerfile
+    assert "python -m marcedit_web.ops.health" in dockerfile
+    assert "_stcore/health" in dockerfile
+
+
 # --- TASK-069: secrets must never be baked into the image -------------------
 #
 # These read build-context files (Dockerfile/.dockerignore) that exist on the
