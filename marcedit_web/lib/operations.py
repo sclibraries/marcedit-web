@@ -31,6 +31,9 @@ _ADMIN_DIAGNOSTIC_FIELDS = (
     "attempt", "lease_owner", "lease_heartbeat_at", "lease_expires_at",
     "cancel_requested_by", "cancel_requested_at",
 )
+_PENDING_READY_GRACE_SECONDS = 15 * 60
+_PENDING_COPYING_GRACE_SECONDS = 24 * 60 * 60
+_QUARANTINE_DIRECTORY = ".quarantine"
 
 
 class OperationError(ValueError):
@@ -856,12 +859,12 @@ def cleanup_attempt_workspace(lease: Lease) -> bool:
 
 
 def reconcile_operation_storage() -> int:
-    """Remove abandoned attempt, pending, and publication paths safely."""
+    """Quarantine abandoned paths under a short lock, then delete them."""
     db.init_schema()
+    root = operations_root()
+    root.mkdir(parents=True, exist_ok=True)
+    _ensure_quarantine_directory(root)
     with db.connect() as conn:
-        # Serialize the filesystem snapshot with claim and publication writes.
-        # Without this lock, a queued row could become running after the state
-        # read and have its newly-created attempt directory removed.
         conn.execute("BEGIN IMMEDIATE")
         referenced = {
             _absolute_queue_path(Path(row["file_path"]))
@@ -877,38 +880,52 @@ def reconcile_operation_storage() -> int:
                 " WHERE state IN ('running','cancelling')"
             ).fetchall()
         }
-        return _reconcile_storage_paths(referenced, active_ids)
+        operation_ids = {
+            int(row["id"])
+            for row in conn.execute("SELECT id FROM operations").fetchall()
+        }
+        _quarantine_storage_paths(referenced, active_ids, operation_ids)
+    # Recursive work must never hold SQLite's global writer lock. A crash here
+    # is harmless: a later pass retries every entry already in quarantine.
+    return _delete_quarantine_entries(root)
 
 
-def _reconcile_storage_paths(
+def _quarantine_storage_paths(
     referenced: set[Path],
     active_ids: set[int],
-) -> int:
+    operation_ids: set[int],
+) -> None:
     root = operations_root()
     try:
         root_fd = _open_queue_directory(root, ())
     except FileNotFoundError:
-        return 0
-    removed = 0
+        return
     try:
-        for entry in os.listdir(root_fd):
-            if entry == "pending":
-                removed += _reconcile_pending(root_fd, root, referenced)
-                continue
-            try:
-                operation_id = int(entry)
-            except ValueError:
-                continue
-            removed += _reconcile_operation_directory(
-                root_fd,
-                root,
-                entry,
-                active=operation_id in active_ids,
-                referenced=referenced,
-            )
+        quarantine_fd = _open_queue_directory(root, (_QUARANTINE_DIRECTORY,))
+        try:
+            for entry in os.listdir(root_fd):
+                if entry == "pending":
+                    _quarantine_pending(root_fd, quarantine_fd, root, referenced)
+                    continue
+                try:
+                    operation_id = int(entry)
+                except ValueError:
+                    continue
+                if operation_id not in operation_ids:
+                    _quarantine_entry(root_fd, entry, quarantine_fd)
+                    continue
+                _quarantine_operation_children(
+                    root_fd,
+                    quarantine_fd,
+                    root,
+                    entry,
+                    active=operation_id in active_ids,
+                    referenced=referenced,
+                )
+        finally:
+            os.close(quarantine_fd)
     finally:
         os.close(root_fd)
-    return removed
 
 
 def list_unread_notifications(user_email: str) -> list[dict[str, Any]]:
@@ -1363,11 +1380,68 @@ def _remove_tree_entry(parent_fd: int, name: str) -> bool:
     return True
 
 
-def _reconcile_pending(
+def _ensure_quarantine_directory(root: Path) -> None:
+    try:
+        (root / _QUARANTINE_DIRECTORY).mkdir()
+    except FileExistsError:
+        pass
+    descriptor = _open_queue_directory(root, (_QUARANTINE_DIRECTORY,))
+    os.close(descriptor)
+
+
+def _quarantine_operation_directory(operation_id: int) -> bool:
+    """Atomically displace an ID-reuse orphan without recursive deletion."""
+    root = operations_root()
+    _ensure_quarantine_directory(root)
+    root_fd = _open_queue_directory(root, ())
+    try:
+        quarantine_fd = _open_queue_directory(root, (_QUARANTINE_DIRECTORY,))
+        try:
+            return _quarantine_entry(root_fd, str(operation_id), quarantine_fd)
+        finally:
+            os.close(quarantine_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _quarantine_entry(parent_fd: int, name: str, quarantine_fd: int) -> bool:
+    quarantine_name = f"{uuid.uuid4().hex}-{name}"
+    try:
+        os.rename(
+            name,
+            quarantine_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=quarantine_fd,
+        )
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _delete_quarantine_entries(root: Path) -> int:
+    try:
+        quarantine_fd = _open_queue_directory(root, (_QUARANTINE_DIRECTORY,))
+    except OSError:
+        return 0
+    removed = 0
+    try:
+        for name in os.listdir(quarantine_fd):
+            try:
+                if _remove_tree_entry(quarantine_fd, name):
+                    removed += 1
+            except OSError:
+                continue
+    finally:
+        os.close(quarantine_fd)
+    return removed
+
+
+def _quarantine_pending(
     root_fd: int,
+    quarantine_fd: int,
     root: Path,
     referenced: set[Path],
-) -> int:
+) -> None:
     try:
         pending_fd = os.open(
             "pending",
@@ -1377,31 +1451,48 @@ def _reconcile_pending(
             dir_fd=root_fd,
         )
     except OSError:
-        return 0
-    removed = 0
+        return
     try:
         for name in os.listdir(pending_fd):
             path = _absolute_queue_path(root / "pending" / name)
-            if path not in referenced:
+            if path in referenced:
+                continue
+            grace_seconds = None
+            if name.startswith("copying-"):
+                # Copy plus MARC validation can be lengthy for the maximum
+                # supported input. A full day protects a live submitter while
+                # still allowing hard-kill debris to be reclaimed.
+                grace_seconds = _PENDING_COPYING_GRACE_SECONDS
+            elif name.startswith("ready-"):
+                grace_seconds = _PENDING_READY_GRACE_SECONDS
+            if grace_seconds is not None:
                 try:
-                    did_remove = _remove_tree_entry(pending_fd, name)
+                    age = _now().timestamp() - os.stat(
+                        name,
+                        dir_fd=pending_fd,
+                        follow_symlinks=False,
+                    ).st_mtime
                 except OSError:
                     continue
-                if did_remove:
-                    removed += 1
+                if age < grace_seconds:
+                    continue
+            try:
+                _quarantine_entry(pending_fd, name, quarantine_fd)
+            except OSError:
+                continue
     finally:
         os.close(pending_fd)
-    return removed
 
 
-def _reconcile_operation_directory(
+def _quarantine_operation_children(
     root_fd: int,
+    quarantine_fd: int,
     root: Path,
     entry: str,
     *,
     active: bool,
     referenced: set[Path],
-) -> int:
+) -> None:
     try:
         operation_fd = os.open(
             entry,
@@ -1411,8 +1502,7 @@ def _reconcile_operation_directory(
             dir_fd=root_fd,
         )
     except OSError:
-        return 0
-    removed = 0
+        return
     try:
         for name in os.listdir(operation_fd):
             is_attempt = name.startswith("attempt-")
@@ -1424,14 +1514,11 @@ def _reconcile_operation_directory(
             )
             if eligible:
                 try:
-                    did_remove = _remove_tree_entry(operation_fd, name)
+                    _quarantine_entry(operation_fd, name, quarantine_fd)
                 except OSError:
                     continue
-                if did_remove:
-                    removed += 1
     finally:
         os.close(operation_fd)
-    return removed
 
 
 def _open_queue_directory(root: Path, parts: tuple[str, ...]) -> int:

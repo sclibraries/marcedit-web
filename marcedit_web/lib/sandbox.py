@@ -624,9 +624,12 @@ def _read_bounded_stderr(path: Path) -> str:
     size = path.stat().st_size
     if size <= MAX_STDERR_BYTES:
         return _read_bounded_file(path, MAX_STDERR_BYTES)
-    half = MAX_STDERR_BYTES // 2
+    marker = b"\n...[stderr bytes omitted]...\n"
+    remaining = MAX_STDERR_BYTES - len(marker)
+    head_size = remaining // 2
+    tail_size = remaining - head_size
     with path.open("rb") as source:
-        head = source.read(half)
-        source.seek(-half, os.SEEK_END)
-        tail = source.read(half)
-    return (head + tail).decode("utf-8", "replace")
+        head = source.read(head_size)
+        source.seek(-tail_size, os.SEEK_END)
+        tail = source.read(tail_size)
+    return (head + marker + tail).decode("utf-8", "replace")

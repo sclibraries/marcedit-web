@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -871,6 +873,33 @@ def test_storage_reconciliation_removes_only_unreferenced_queue_workspaces(
     assert not pending.exists()
 
 
+def test_storage_reconciliation_removes_stale_copying_stage(tmp_path):
+    copying = operations.operations_root() / "pending" / "copying-dead.mrc"
+    copying.parent.mkdir(parents=True)
+    copying.write_bytes(b"partial")
+    stale = time.time() - operations._PENDING_COPYING_GRACE_SECONDS - 1
+    os.utime(copying, (stale, stale))
+
+    assert operations.reconcile_operation_storage() == 1
+    assert not copying.exists()
+
+
+def test_storage_reconciliation_unlinks_stale_copying_symlink_only(tmp_path):
+    outside = tmp_path / "outside-copy"
+    outside.mkdir()
+    protected = outside / "protected.mrc"
+    protected.write_bytes(b"keep")
+    copying = operations.operations_root() / "pending" / "copying-dead.mrc"
+    copying.parent.mkdir(parents=True)
+    copying.symlink_to(outside, target_is_directory=True)
+    stale = time.time() - operations._PENDING_COPYING_GRACE_SECONDS - 1
+    os.utime(copying, (stale, stale), follow_symlinks=False)
+
+    assert operations.reconcile_operation_storage() == 1
+    assert not copying.exists()
+    assert protected.read_bytes() == b"keep"
+
+
 def test_storage_reconciliation_unlinks_attempt_symlink_without_following_it(
     queued_operation, tmp_path
 ):
@@ -901,23 +930,101 @@ def test_storage_reconciliation_parent_swap_never_follows_outside_symlink(
     attempt.mkdir(parents=True)
     (attempt / "candidate.mrc").write_bytes(b"partial")
     displaced = operation_dir / "displaced"
-    real_open = operations.os.open
+    real_rename = operations.os.rename
     swapped = False
 
-    def swap_before_directory_open(path, flags, *args, **kwargs):
+    def swap_before_quarantine(path, target, *args, **kwargs):
         nonlocal swapped
-        if path == "attempt-7" and kwargs.get("dir_fd") is not None and not swapped:
+        if path == "attempt-7" and kwargs.get("src_dir_fd") is not None and not swapped:
             swapped = True
             attempt.rename(displaced)
             attempt.symlink_to(outside, target_is_directory=True)
-        return real_open(path, flags, *args, **kwargs)
+        return real_rename(path, target, *args, **kwargs)
 
-    monkeypatch.setattr(operations.os, "open", swap_before_directory_open)
+    monkeypatch.setattr(operations.os, "rename", swap_before_quarantine)
 
     operations.reconcile_operation_storage()
 
     assert swapped is True
     assert protected.read_bytes() == b"keep"
+
+
+def test_storage_reconciliation_deletes_quarantine_outside_database_lock(
+    queued_operation, tmp_path, monkeypatch
+):
+    pending = operations.operations_root() / "pending" / "abandoned.mrc"
+    pending.parent.mkdir(parents=True)
+    pending.write_bytes(b"stale")
+    deletion_started = threading.Event()
+    continue_deletion = threading.Event()
+    real_remove = operations._remove_tree_entry
+
+    def slow_remove(parent_fd, name):
+        deletion_started.set()
+        assert continue_deletion.wait(5)
+        return real_remove(parent_fd, name)
+
+    monkeypatch.setattr(operations, "_remove_tree_entry", slow_remove)
+    reconcile_result = []
+    reconcile_thread = threading.Thread(
+        target=lambda: reconcile_result.append(
+            operations.reconcile_operation_storage()
+        )
+    )
+    reconcile_thread.start()
+    assert deletion_started.wait(5)
+
+    cancel_result = []
+    cancel_thread = threading.Thread(
+        target=lambda: cancel_result.append(
+            operations.request_cancel(
+                queued_operation["id"],
+                by="owner@smith.edu",
+            )
+        )
+    )
+    cancel_thread.start()
+    cancel_thread.join(1)
+
+    assert not cancel_thread.is_alive()
+    assert cancel_result[0]["state"] == "cancelled"
+    continue_deletion.set()
+    reconcile_thread.join(5)
+    assert reconcile_result == [1]
+
+
+def test_storage_reconciliation_closes_root_fd_if_quarantine_open_fails(
+    queued_operation, monkeypatch
+):
+    real_open_queue_directory = operations._open_queue_directory
+    real_close = operations.os.close
+    root_fd = None
+    closed = []
+
+    def fail_after_root_open(root, parts):
+        nonlocal root_fd
+        if parts == ():
+            root_fd = real_open_queue_directory(root, parts)
+            return root_fd
+        if root_fd is not None:
+            raise OSError("quarantine changed")
+        return real_open_queue_directory(root, parts)
+
+    def track_close(descriptor):
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(
+        operations,
+        "_open_queue_directory",
+        fail_after_root_open,
+    )
+    monkeypatch.setattr(operations.os, "close", track_close)
+
+    with pytest.raises(OSError, match="quarantine changed"):
+        operations.reconcile_operation_storage()
+
+    assert root_fd in closed
 
 
 def test_fail_operation_requires_current_running_lease(queued_operation, tmp_path):

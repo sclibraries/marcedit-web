@@ -465,7 +465,7 @@ def test_run_forever_stops_after_current_control_boundary(monkeypatch):
     assert cleanup_calls == [True]
 
 
-def test_run_forever_configures_parseable_info_logging(monkeypatch, caplog):
+def test_run_forever_configures_json_line_info_logging(monkeypatch, caplog):
     handlers = {}
     configured = []
     monkeypatch.setattr(
@@ -490,10 +490,24 @@ def test_run_forever_configures_parseable_info_logging(monkeypatch, caplog):
         assert worker.run_forever("worker-a", poll_seconds=0.01) == 0
 
     assert configured[0]["level"] == logging.INFO
-    assert "timestamp=%(asctime)s" in configured[0]["format"]
-    assert "level=%(levelname)s" in configured[0]["format"]
-    assert "logger=%(name)s" in configured[0]["format"]
-    assert "operation worker started worker_id=worker-a" in caplog.text
+    formatter = configured[0]["handlers"][0].formatter
+    record = logging.makeLogRecord(
+        {
+            "name": "marcedit_web.operation_worker",
+            "levelno": logging.INFO,
+            "levelname": "INFO",
+            "msg": "operation worker started",
+            "worker_id": "worker a",
+        }
+    )
+    payload = json.loads(formatter.format(record))
+    assert payload["level"] == "INFO"
+    assert payload["logger"] == "marcedit_web.operation_worker"
+    assert payload["message"] == "operation worker started"
+    assert payload["context"] == {"worker_id": "worker a"}
+    assert payload["timestamp"].endswith("Z")
+    assert "operation worker started" in caplog.text
+    assert caplog.records[0].worker_id == "worker-a"
 
 
 def test_run_forever_restores_previous_signal_handlers(monkeypatch):

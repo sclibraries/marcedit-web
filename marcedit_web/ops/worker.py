@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import json
 import logging
 import os
 import signal
@@ -19,6 +21,43 @@ logger = logging.getLogger("marcedit_web.operation_worker")
 _CLEANUP_INTERVAL_SECONDS = 60 * 60
 _WORKER_HEARTBEAT_SECONDS = 5.0
 _WORKER_HEARTBEAT_STOP_SECONDS = 6.0
+_LOG_CONTEXT_FIELDS = (
+    "operation_id",
+    "attempt",
+    "worker_id",
+    "code",
+    "output_records",
+    "changed_records",
+    "error_count",
+    "count",
+)
+
+
+class _JsonLineFormatter(logging.Formatter):
+    """Emit allow-listed worker diagnostics as one parseable JSON object."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        timestamp = dt.datetime.fromtimestamp(
+            record.created,
+            dt.timezone.utc,
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        context = {
+            key: getattr(record, key)
+            for key in _LOG_CONTEXT_FIELDS
+            if hasattr(record, key)
+        }
+        payload = {
+            "timestamp": timestamp,
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "context": context,
+        }
+        if record.exc_info:
+            # Exception values and user paths are deliberately excluded; call
+            # sites supply a safe message and only the exception type is kept.
+            payload["exception"] = record.exc_info[0].__name__
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 class _ActiveWorkerHeartbeat:
@@ -69,10 +108,16 @@ def run_once(worker_id: str) -> bool:
     operations.heartbeat_worker(worker_id, current_operation_id=None)
     recovered = operations.recover_expired()
     if recovered:
-        logger.info("recovered expired operation leases count=%s", recovered)
+        logger.info(
+            "recovered expired operation leases",
+            extra={"count": recovered},
+        )
         reconciled = operations.reconcile_operation_storage()
         if reconciled:
-            logger.info("abandoned operation paths removed count=%s", reconciled)
+            logger.info(
+                "abandoned operation paths removed",
+                extra={"count": reconciled},
+            )
     lease = operations.claim_next(worker_id)
     if lease is None:
         return False
@@ -83,10 +128,12 @@ def run_once(worker_id: str) -> bool:
     active_heartbeat = _ActiveWorkerHeartbeat(worker_id, lease.operation_id)
     active_heartbeat.start()
     logger.info(
-        "queued operation started operation_id=%s attempt=%s worker_id=%s",
-        lease.operation_id,
-        lease.attempt,
-        worker_id,
+        "queued operation started",
+        extra={
+            "operation_id": lease.operation_id,
+            "attempt": lease.attempt,
+            "worker_id": worker_id,
+        },
     )
     try:
         outcome = operation_runner.run_saved_task_operation(lease)
@@ -101,14 +148,15 @@ def run_once(worker_id: str) -> bool:
         )
         log = logger.warning if outcome.error_count else logger.info
         log(
-            "queued operation completed operation_id=%s attempt=%s"
-            " worker_id=%s output_records=%s changed_records=%s error_count=%s",
-            lease.operation_id,
-            lease.attempt,
-            worker_id,
-            outcome.output_records,
-            outcome.changed_records,
-            outcome.error_count,
+            "queued operation completed",
+            extra={
+                "operation_id": lease.operation_id,
+                "attempt": lease.attempt,
+                "worker_id": worker_id,
+                "output_records": outcome.output_records,
+                "changed_records": outcome.changed_records,
+                "error_count": outcome.error_count,
+            },
         )
     except operation_runner.OperationCancelled as exc:
         try:
@@ -116,10 +164,12 @@ def run_once(worker_id: str) -> bool:
         except operations.OperationError:
             raise exc
         logger.info(
-            "queued operation cancelled operation_id=%s attempt=%s worker_id=%s",
-            lease.operation_id,
-            lease.attempt,
-            worker_id,
+            "queued operation cancelled",
+            extra={
+                "operation_id": lease.operation_id,
+                "attempt": lease.attempt,
+                "worker_id": worker_id,
+            },
         )
     except operation_runner.OperationRunError as exc:
         if _fail_or_finish_cancelled(
@@ -129,12 +179,13 @@ def run_once(worker_id: str) -> bool:
             failure=exc,
         ):
             logger.warning(
-                "queued operation failed operation_id=%s attempt=%s"
-                " worker_id=%s code=%s",
-                lease.operation_id,
-                lease.attempt,
-                worker_id,
-                exc.code,
+                "queued operation failed",
+                extra={
+                    "operation_id": lease.operation_id,
+                    "attempt": lease.attempt,
+                    "worker_id": worker_id,
+                    "code": exc.code,
+                },
             )
     except Exception as exc:
         _log_internal_failure(lease, exc, worker_id=worker_id)
@@ -150,9 +201,11 @@ def run_once(worker_id: str) -> bool:
                 operations.cleanup_attempt_workspace(lease)
             except Exception as exc:
                 logger.error(
-                    "operation attempt cleanup failed operation_id=%s attempt=%s",
-                    lease.operation_id,
-                    lease.attempt,
+                    "operation attempt cleanup failed",
+                    extra={
+                        "operation_id": lease.operation_id,
+                        "attempt": lease.attempt,
+                    },
                     exc_info=(
                         RuntimeError,
                         RuntimeError("operation attempt cleanup error"),
@@ -174,7 +227,10 @@ def run_forever(
         raise ValueError("poll_seconds must be positive")
     identity = worker_id or f"{os.getpid()}-{uuid.uuid4().hex}"
     _configure_logging()
-    logger.info("operation worker started worker_id=%s", identity)
+    logger.info(
+        "operation worker started",
+        extra={"worker_id": identity},
+    )
     stopping = threading.Event()
 
     def stop(_signum, _frame) -> None:
@@ -202,7 +258,10 @@ def run_forever(
                 _cleanup_safely()
                 last_cleanup = now
             stopping.wait(poll_seconds)
-        logger.info("operation worker stopped worker_id=%s", identity)
+        logger.info(
+            "operation worker stopped",
+            extra={"worker_id": identity},
+        )
         return 0
     finally:
         if sigint_installed:
@@ -241,10 +300,12 @@ def _log_internal_failure(
 ) -> None:
     safe_exception = RuntimeError("internal worker error")
     logger.error(
-        "queued operation failed operation_id=%s attempt=%s worker_id=%s",
-        lease.operation_id,
-        lease.attempt,
-        worker_id,
+        "queued operation failed",
+        extra={
+            "operation_id": lease.operation_id,
+            "attempt": lease.attempt,
+            "worker_id": worker_id,
+        },
         exc_info=(RuntimeError, safe_exception, exc.__traceback__),
     )
 
@@ -282,18 +343,23 @@ def _cleanup_safely() -> None:
         )
         return
     if deleted:
-        logger.info("expired operation artifacts removed count=%s", deleted)
+        logger.info(
+            "expired operation artifacts removed",
+            extra={"count": deleted},
+        )
     if reconciled:
-        logger.info("abandoned operation paths removed count=%s", reconciled)
+        logger.info(
+            "abandoned operation paths removed",
+            extra={"count": reconciled},
+        )
 
 
 def _configure_logging() -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(_JsonLineFormatter())
     logging.basicConfig(
         level=logging.INFO,
-        format=(
-            "timestamp=%(asctime)s level=%(levelname)s logger=%(name)s "
-            "message=%(message)s"
-        ),
+        handlers=[handler],
     )
     logger.setLevel(logging.INFO)
 

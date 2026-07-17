@@ -5,6 +5,9 @@ from __future__ import annotations
 import datetime as dt
 import io
 import json
+import sqlite3
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import pymarc
@@ -312,18 +315,24 @@ def test_quick_load_submission_validates_record_count(tmp_path):
         )
 
 
-def test_quick_load_submission_preserves_seeded_target_collision(tmp_path):
-    db.init_schema()
-    collision = operations.operations_root() / "1" / "input.mrc"
-    collision.parent.mkdir(parents=True)
-    collision.write_bytes(b"unrelated existing bytes")
+def test_quick_load_submission_recovers_death_after_input_publication(
+    tmp_path, monkeypatch
+):
     source = tmp_path / "vendor.mrc"
     source.write_bytes(sample_mrc_bytes())
+    real_fsync = operations._fsync_file_and_parent
 
-    with pytest.raises(
-        operations.OperationError,
-        match="artifact directory already exists",
-    ):
+    class SimulatedProcessDeath(BaseException):
+        pass
+
+    def die_after_publishing(path):
+        real_fsync(path)
+        if path.name == "input.mrc":
+            raise SimulatedProcessDeath()
+
+    monkeypatch.setattr(operations, "_fsync_file_and_parent", die_after_publishing)
+
+    with pytest.raises(SimulatedProcessDeath):
         operation_submission.submit_quick_load_task_run(
             user_email="owner@smith.edu",
             source_path=source,
@@ -332,9 +341,22 @@ def test_quick_load_submission_preserves_seeded_target_collision(tmp_path):
             task_specs=[_task()],
         )
 
-    assert collision.read_bytes() == b"unrelated existing bytes"
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+    assert (operations.operations_root() / "1" / "input.mrc").exists()
+
+    monkeypatch.setattr(operations, "_fsync_file_and_parent", real_fsync)
+    assert operations.reconcile_operation_storage() == 1
+    created = operation_submission.submit_quick_load_task_run(
+        user_email="owner@smith.edu",
+        source_path=source,
+        filename="vendor.mrc",
+        record_count=2,
+        task_specs=[_task()],
+    )
+
+    assert created["id"] == 1
+    assert Path(operations.input_artifact(1)["file_path"]).is_file()
 
 
 def test_quick_load_expiry_uses_configured_retention_interval(tmp_path, monkeypatch):
@@ -389,3 +411,116 @@ def test_quick_load_submission_cleans_created_files_when_artifact_insert_fails(
     assert list(operations.operations_root().rglob("*.mrc")) == [unrelated]
     with db.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM operations").fetchone()[0] == 0
+
+
+def test_quick_load_commit_ack_failure_returns_persisted_submission(
+    tmp_path, monkeypatch
+):
+    db.init_schema()
+    source = tmp_path / "vendor.mrc"
+    source.write_bytes(sample_mrc_bytes())
+    real_connect = db.connect
+    calls = 0
+
+    @contextmanager
+    def commit_then_raise():
+        nonlocal calls
+        calls += 1
+        with real_connect() as conn:
+            yield conn
+            if calls == 1:
+                conn.commit()
+                raise sqlite3.OperationalError("commit acknowledgement lost")
+
+    monkeypatch.setattr(operation_submission.db, "connect", commit_then_raise)
+
+    created = operation_submission.submit_quick_load_task_run(
+        user_email="owner@smith.edu",
+        source_path=source,
+        filename="vendor.mrc",
+        record_count=2,
+        task_specs=[_task()],
+    )
+
+    artifact = operations.input_artifact(created["id"])
+    assert created["state"] == "queued"
+    assert Path(artifact["file_path"]).read_bytes() == sample_mrc_bytes()
+
+
+def test_quick_load_unreadable_fresh_state_retains_published_input(
+    tmp_path, monkeypatch
+):
+    db.init_schema()
+    source = tmp_path / "vendor.mrc"
+    source.write_bytes(sample_mrc_bytes())
+    real_connect = db.connect
+    calls = 0
+
+    @contextmanager
+    def fail_commit_and_verification():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise sqlite3.OperationalError("database unavailable")
+        with real_connect() as conn:
+            yield conn
+            raise sqlite3.OperationalError("commit state unknown")
+
+    monkeypatch.setattr(
+        operation_submission.db,
+        "connect",
+        fail_commit_and_verification,
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="commit state unknown"):
+        operation_submission.submit_quick_load_task_run(
+            user_email="owner@smith.edu",
+            source_path=source,
+            filename="vendor.mrc",
+            record_count=2,
+            task_specs=[_task()],
+        )
+
+    assert list(operations.operations_root().glob("*/input.mrc"))
+
+
+def test_maintenance_does_not_remove_live_quick_load_copy(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "vendor.mrc"
+    source.write_bytes(sample_mrc_bytes())
+    validation_started = threading.Event()
+    continue_validation = threading.Event()
+    real_from_path = operation_submission.RecordStore.from_path
+
+    def block_validation(path):
+        validation_started.set()
+        assert continue_validation.wait(5)
+        return real_from_path(path)
+
+    monkeypatch.setattr(
+        operation_submission.RecordStore,
+        "from_path",
+        block_validation,
+    )
+    result = []
+    thread = threading.Thread(
+        target=lambda: result.append(
+            operation_submission.submit_quick_load_task_run(
+                user_email="owner@smith.edu",
+                source_path=source,
+                filename="vendor.mrc",
+                record_count=2,
+                task_specs=[_task()],
+            )
+        )
+    )
+    thread.start()
+    assert validation_started.wait(5)
+
+    operations.reconcile_operation_storage()
+    continue_validation.set()
+    thread.join(5)
+
+    assert not thread.is_alive()
+    assert result[0]["state"] == "queued"

@@ -105,34 +105,44 @@ def submit_quick_load_task_run(
             "a readable MARC file and filename are required"
         )
 
-    candidate = (
-        operations.operations_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
-    )
+    pending = operations.operations_root() / "pending"
+    token = uuid.uuid4().hex
+    copying = pending / f"copying-{token}.mrc"
+    candidate = pending / f"ready-{token}.mrc"
     target: Path | None = None
     operation_dir: Path | None = None
-    operation_dir_owned = False
-    target_owned = False
+    operation_id: int | None = None
+    source_size = 0
+    copied_size = 0
     try:
         source_size = source_path.stat().st_size
-        candidate.parent.mkdir(parents=True, exist_ok=True)
+        pending.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copyfile(source_path, candidate)
+            shutil.copyfile(source_path, copying)
         except OSError as exc:
             raise operations.OperationError(
                 "a readable MARC file and filename are required"
             ) from exc
-        copied_size = candidate.stat().st_size
+        operations._fsync_file_and_parent(copying)  # noqa: SLF001
+        copied_size = copying.stat().st_size
         if copied_size != source_size:
             raise operations.OperationError(
                 "file size does not match the submitted MARC file"
             )
-        if RecordStore.from_path(candidate).count() != record_count:
+        if RecordStore.from_path(copying).count() != record_count:
             raise operations.OperationError(
                 "record count does not match the submitted MARC file"
             )
+        os.replace(copying, candidate)
+        operations._fsync_directory(pending)  # noqa: SLF001
+    except Exception:
+        copying.unlink(missing_ok=True)
+        candidate.unlink(missing_ok=True)
+        raise
 
-        now, expires_at = _retention_times()
-        db.init_schema()
+    now, expires_at = _retention_times()
+    db.init_schema()
+    try:
         with db.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             operation_id = _insert_operation(
@@ -144,16 +154,16 @@ def submit_quick_load_task_run(
                 artifacts_expire_at=expires_at,
             )
             operation_dir = operations.operations_root() / str(operation_id)
+            target = operation_dir / "input.mrc"
             try:
                 operation_dir.mkdir()
-            except FileExistsError as exc:
-                raise operations.OperationError(
-                    "operation artifact directory already exists"
-                ) from exc
-            operation_dir_owned = True
-            target = operation_dir / "input.mrc"
+            except FileExistsError:
+                operations._quarantine_operation_directory(  # noqa: SLF001
+                    operation_id
+                )
+                operation_dir.mkdir()
             os.replace(candidate, target)
-            target_owned = True
+            operations._fsync_file_and_parent(target)  # noqa: SLF001
             _insert_input_artifact(
                 conn,
                 operation_id=operation_id,
@@ -169,16 +179,65 @@ def submit_quick_load_task_run(
             _record_submitted(conn, operation_id, email, now)
             created = _created_operation(conn, operation_id)
         return created
-    except Exception:
+    except Exception as failure:
+        if operation_id is None or target is None:
+            # No exact durable identity exists with which to prove rollback.
+            # Retain the ready stage for age-protected reconciliation.
+            raise
+        try:
+            committed = _committed_quick_load_submission(
+                operation_id=operation_id,
+                submitted_by=email,
+                request_json=request_json,
+                target=target,
+                record_count=record_count,
+                file_bytes=copied_size,
+            )
+        except Exception:
+            # The commit state is unknowable. Retain every byte so a later
+            # reconciliation pass can resolve it against durable DB state.
+            raise failure
+        if committed is not None:
+            return committed
         candidate.unlink(missing_ok=True)
-        if target_owned and target is not None:
-            target.unlink(missing_ok=True)
-        if operation_dir_owned and operation_dir is not None:
+        copying.unlink(missing_ok=True)
+        if operation_dir is not None:
             try:
-                operation_dir.rmdir()
+                operations._remove_queue_tree(  # noqa: SLF001
+                    operation_dir,
+                    operations.operations_root(),
+                )
             except OSError:
                 pass
         raise
+
+
+def _committed_quick_load_submission(
+    *,
+    operation_id: int,
+    submitted_by: str,
+    request_json: str,
+    target: Path,
+    record_count: int,
+    file_bytes: int,
+) -> dict[str, Any] | None:
+    """Resolve a lost commit acknowledgement using a fresh connection."""
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM operations WHERE id=? AND kind='saved-task-run'"
+            " AND state='queued' AND phase='queued' AND submitted_by=?"
+            " AND request_json=? AND total_records=?",
+            (operation_id, submitted_by, request_json, record_count),
+        ).fetchone()
+        artifact = conn.execute(
+            "SELECT 1 FROM operation_artifacts WHERE operation_id=?"
+            " AND role='input' AND file_path=? AND record_count=?"
+            " AND file_bytes=? AND queue_owned=1",
+            (operation_id, str(target), record_count, file_bytes),
+        ).fetchone()
+    if row is None or artifact is None or not target.is_file():
+        return None
+    return {key: row[key] for key in row.keys()}
 
 
 def _require_job_submission_source(

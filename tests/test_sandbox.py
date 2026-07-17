@@ -772,6 +772,7 @@ def test_huge_stderr_is_read_as_a_bounded_diagnostic(one_record_bytes):
 
     assert result.error_count == 1
     assert len(result.stderr.encode("utf-8")) <= sandbox.MAX_STDERR_BYTES
+    assert "stderr bytes omitted" in result.stderr
 
 
 def test_filesystem_side_effect_lands_in_sandbox_workdir(
