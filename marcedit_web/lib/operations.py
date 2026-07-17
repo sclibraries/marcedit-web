@@ -60,6 +60,7 @@ class _ReconciliationCandidate:
     kind: str
     operation_id: int | None
     name: str
+    parent_name: str | None = None
 
 
 def retention_days() -> int:
@@ -880,7 +881,10 @@ def reconcile_operation_storage() -> int:
     candidates = _scan_reconciliation_candidates(root)
     with db.connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        selected = _reconciliation_window(candidates, _read_reconcile_cursor(root))
+        cursor = _read_reconcile_cursor(root)
+        if cursor is None:
+            return 0
+        selected = _reconciliation_window(candidates, cursor)
         for candidate in selected:
             if _reconciliation_candidate_is_eligible(conn, candidate):
                 _quarantine_reconciliation_candidate(root, candidate)
@@ -913,12 +917,18 @@ def _scan_reconciliation_candidates(
                 continue
             candidates.append(
                 _ReconciliationCandidate(
-                    key=f"1/{operation_id:020d}",
-                    kind="operation",
+                    key=f"1/{operation_id:020d}/{entry}",
+                    kind=(
+                        "operation"
+                        if entry == str(operation_id)
+                        else "noncanonical-operation"
+                    ),
                     operation_id=operation_id,
                     name=entry,
                 )
             )
+            if entry != str(operation_id):
+                continue
             candidates.extend(
                 _scan_operation_candidates(root_fd, operation_id, entry)
             )
@@ -1490,10 +1500,11 @@ def _scan_operation_candidates(
         os.close(operation_fd)
     return [
         _ReconciliationCandidate(
-            key=f"2/{operation_id:020d}/{name}",
+            key=f"2/{operation_id:020d}/{entry}/{name}",
             kind=("attempt" if name.startswith("attempt-") else "publication"),
             operation_id=operation_id,
             name=name,
+            parent_name=entry,
         )
         for name in names
     ]
@@ -1520,11 +1531,13 @@ def _reconciliation_candidate_is_eligible(
         path = _absolute_queue_path(
             operations_root() / "pending" / candidate.name
         )
-        if _reconciliation_path_is_referenced(conn, path):
+        if _reconciliation_path_is_referenced(conn, path, operation_id=None):
             return False
         return _pending_candidate_is_old_enough(candidate.name)
 
     assert candidate.operation_id is not None
+    if candidate.kind == "noncanonical-operation":
+        return False
     row = conn.execute(
         "SELECT state FROM operations WHERE id=?",
         (candidate.operation_id,),
@@ -1538,20 +1551,42 @@ def _reconciliation_candidate_is_eligible(
     path = _absolute_queue_path(
         operations_root() / str(candidate.operation_id) / candidate.name
     )
-    return not _reconciliation_path_is_referenced(conn, path)
+    return not _reconciliation_path_is_referenced(
+        conn,
+        path,
+        operation_id=candidate.operation_id,
+    )
 
 
 def _reconciliation_path_is_referenced(
     conn: sqlite3.Connection,
     path: Path,
+    *,
+    operation_id: int | None,
 ) -> bool:
-    row = conn.execute(
-        "SELECT EXISTS(SELECT 1 FROM operation_artifacts WHERE file_path=?)"
-        " OR EXISTS(SELECT 1 FROM job_file_versions WHERE file_path=?)",
-        (str(path), str(path)),
-    ).fetchone()
-    assert row is not None
-    return bool(row[0])
+    absolute = _absolute_queue_path(path)
+    if operation_id is None:
+        relative = os.path.relpath(str(absolute), os.getcwd())
+        rows = conn.execute(
+            "SELECT file_path FROM operation_artifacts WHERE file_path IN (?,?)"
+            " UNION SELECT file_path FROM job_file_versions"
+            " WHERE file_path IN (?,?)",
+            (str(absolute), relative, str(absolute), relative),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT file_path FROM operation_artifacts WHERE operation_id=?"
+            " UNION SELECT job_file_versions.file_path"
+            " FROM job_file_versions JOIN operations"
+            " ON job_file_versions.id IN (operations.source_version_id,"
+            " operations.applied_version_id,operations.rolled_back_version_id)"
+            " WHERE operations.id=?",
+            (operation_id, operation_id),
+        ).fetchall()
+    return any(
+        _absolute_queue_path(Path(str(row["file_path"]))) == absolute
+        for row in rows
+    )
 
 
 def _pending_candidate_is_old_enough(name: str) -> bool:
@@ -1588,10 +1623,12 @@ def _quarantine_reconciliation_candidate(
         quarantine_fd = _open_queue_directory(root, (_QUARANTINE_DIRECTORY,))
         try:
             if candidate.kind in {"pending", "attempt", "publication"}:
+                if candidate.kind != "pending":
+                    assert candidate.parent_name is not None
                 parts = (
                     ("pending",)
                     if candidate.kind == "pending"
-                    else (str(candidate.operation_id),)
+                    else (str(candidate.parent_name),)
                 )
                 try:
                     parent_fd = _open_queue_directory(root, parts)
@@ -1612,7 +1649,7 @@ def _quarantine_reconciliation_candidate(
         os.close(root_fd)
 
 
-def _read_reconcile_cursor(root: Path) -> str:
+def _read_reconcile_cursor(root: Path) -> str | None:
     try:
         root_fd = _open_queue_directory(root, ())
     except OSError:
@@ -1621,7 +1658,7 @@ def _read_reconcile_cursor(root: Path) -> str:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         try:
             cursor_fd = os.open(_RECONCILE_CURSOR, flags, dir_fd=root_fd)
-        except OSError:
+        except (FileNotFoundError, OSError):
             return ""
         try:
             raw = os.read(cursor_fd, 4096)
@@ -1632,9 +1669,11 @@ def _read_reconcile_cursor(root: Path) -> str:
     try:
         payload = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return ""
-    cursor = payload.get("after") if isinstance(payload, dict) else None
-    return cursor if isinstance(cursor, str) and len(cursor) <= 1024 else ""
+        return None
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        return None
+    cursor = payload.get("after")
+    return cursor if isinstance(cursor, str) and len(cursor) <= 1024 else None
 
 
 def _write_reconcile_cursor(root: Path, cursor: str) -> None:

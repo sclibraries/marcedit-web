@@ -1169,6 +1169,134 @@ def test_reconciliation_cursor_replaces_symlink_without_following(tmp_path):
     assert protected.read_text() == "keep"
 
 
+def test_reconciliation_preserves_result_stored_with_relative_queue_path(
+    queued_operation, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MARCEDIT_WEB_OPERATIONS_ROOT", "data/operations")
+    input_path = Path("data/operations") / "source.mrc"
+    input_path.parent.mkdir(parents=True)
+    input_path.write_bytes(b"input")
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO operation_artifacts(operation_id,role,filename,file_path,"
+            "record_count,file_bytes,queue_owned,created_at)"
+            " VALUES (?, 'input', 'input.mrc', ?, 3, 5, 1, ?)",
+            (
+                queued_operation["id"],
+                str(input_path),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+    lease = operations.claim_next("worker-a")
+    assert lease is not None
+    candidate = (
+        operations.operations_root()
+        / str(lease.operation_id)
+        / "attempt-1"
+        / "candidate.mrc"
+    )
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"result")
+    operations.complete_operation(
+        lease,
+        result_path=candidate,
+        output_records=3,
+        changed_records=1,
+        error_count=0,
+        errors=[],
+        summary={},
+    )
+    result = next(
+        artifact
+        for artifact in operations.list_artifacts(
+            lease.operation_id,
+            "owner@smith.edu",
+        )
+        if artifact["role"] == "result"
+    )
+    assert not Path(result["file_path"]).is_absolute()
+    result_path = Path(result["file_path"])
+
+    for _ in range(4):
+        operations.reconcile_operation_storage()
+
+    assert result_path.read_bytes() == b"result"
+    assert operations.list_artifacts(
+        lease.operation_id,
+        "owner@smith.edu",
+    )
+
+
+@pytest.mark.parametrize("store_absolute", [False, True])
+def test_reference_check_treats_relative_and_absolute_paths_as_equivalent(
+    queued_operation, tmp_path, monkeypatch, store_absolute
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MARCEDIT_WEB_OPERATIONS_ROOT", "data/operations")
+    relative = Path("data/operations") / "1" / "result-attempt-test.mrc"
+    absolute = Path(os.path.abspath(str(relative)))
+    relative.parent.mkdir(parents=True)
+    relative.write_bytes(b"result")
+    stored = absolute if store_absolute else relative
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO operation_artifacts(operation_id,role,filename,file_path,"
+            "record_count,file_bytes,queue_owned,created_at)"
+            " VALUES (?, 'result', 'result.mrc', ?, 3, 6, 1, ?)",
+            (
+                queued_operation["id"],
+                str(stored),
+                "2026-01-01T00:00:00Z",
+            ),
+        )
+        assert operations._reconciliation_path_is_referenced(
+            conn,
+            absolute,
+            operation_id=queued_operation["id"],
+        )
+
+
+def test_noncanonical_numeric_directory_never_targets_canonical_directory(
+    queued_operation
+):
+    root = operations.operations_root()
+    canonical = root / str(queued_operation["id"])
+    canonical.mkdir(parents=True)
+    canonical_file = canonical / "input.mrc"
+    canonical_file.write_bytes(b"keep")
+    noncanonical = root / f"0{queued_operation['id']}"
+    noncanonical.mkdir()
+    (noncanonical / "attempt-orphan").mkdir()
+
+    candidates = operations._scan_reconciliation_candidates(root)
+    keys = [candidate.key for candidate in candidates]
+    assert len(keys) == len(set(keys))
+    for _ in range(3):
+        operations.reconcile_operation_storage()
+
+    assert canonical_file.read_bytes() == b"keep"
+    assert noncanonical.exists()
+
+
+@pytest.mark.parametrize(
+    "cursor_payload",
+    ["not json", json.dumps({"version": 2, "after": ""})],
+)
+def test_invalid_reconciliation_cursor_fails_without_deleting_data(
+    tmp_path, cursor_payload
+):
+    root = operations.operations_root()
+    pending = root / "pending"
+    pending.mkdir(parents=True)
+    candidate = pending / "abandoned.mrc"
+    candidate.write_bytes(b"keep")
+    (root / ".reconcile-cursor").write_text(cursor_payload)
+
+    assert operations.reconcile_operation_storage() == 0
+    assert candidate.read_bytes() == b"keep"
+
+
 def test_fail_operation_requires_current_running_lease(queued_operation, tmp_path):
     _attach_input(queued_operation["id"], tmp_path)
     lease = operations.claim_next("worker-a")
