@@ -737,6 +737,21 @@ def test_lease_state_discovered_while_stopping_supersedes_processing_error(
     ).exists()
 
 
+def test_unexpected_attempt_log_redacts_exception_message(lease, caplog):
+    sensitive_value = "private-task-or-input-value"
+    try:
+        raise RuntimeError(sensitive_value)
+    except RuntimeError as exc:
+        with caplog.at_level(
+            "ERROR", logger="marcedit_web.operation_runner"
+        ):
+            operation_runner._log_failed_attempt(lease, exc)
+
+    assert "Traceback" in caplog.text
+    assert "private-task-or-input-value" not in caplog.text
+    assert str(lease.operation_id) in caplog.text
+
+
 def test_input_permission_errors_have_a_stable_run_error(lease, monkeypatch):
     input_path = Path(lease.input_artifact["file_path"])
     real_open = Path.open

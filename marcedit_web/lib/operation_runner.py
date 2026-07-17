@@ -554,4 +554,12 @@ def _log_failed_attempt(lease: operations.Lease, exc: BaseException) -> None:
         details["code"] = exc.code
         logger.warning("queued operation attempt rejected: %s", details)
     else:
-        logger.exception("queued operation attempt failed: %s", details)
+        logger.error(
+            "queued operation attempt failed: %s",
+            details,
+            exc_info=(
+                RuntimeError,
+                RuntimeError("internal operation error"),
+                exc.__traceback__,
+            ),
+        )

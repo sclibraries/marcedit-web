@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import uuid
@@ -14,6 +15,9 @@ from typing import Any
 from marcedit_web import __version__
 
 from . import db, sandbox
+
+
+logger = logging.getLogger("marcedit_web.operations")
 
 
 class OperationError(ValueError):
@@ -579,6 +583,82 @@ def worker_health(*, max_age_seconds: int = 15) -> dict[str, Any]:
     return {"available": available, "row": _dict(row)}
 
 
+def cleanup_expired_artifacts(now: datetime | None = None) -> int:
+    """Delete expired queue-owned bytes while retaining their audit metadata."""
+    cleanup_time = _utc(now)
+    cleanup_iso = _iso(cleanup_time)
+    db.init_schema()
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT operation_artifacts.*,"
+            " COALESCE(operation_artifacts.expires_at,"
+            " operations.artifacts_expire_at) AS effective_expires_at"
+            " FROM operation_artifacts"
+            " JOIN operations ON operations.id=operation_artifacts.operation_id"
+            " WHERE operation_artifacts.queue_owned=1"
+            " AND COALESCE(operation_artifacts.expires_at,"
+            " operations.artifacts_expire_at) IS NOT NULL"
+            " AND COALESCE(operation_artifacts.expires_at,"
+            " operations.artifacts_expire_at) <= ?"
+            " AND NOT EXISTS (SELECT 1 FROM job_file_versions"
+            " WHERE job_file_versions.file_path=operation_artifacts.file_path)"
+            " ORDER BY operation_artifacts.id",
+            (cleanup_iso,),
+        ).fetchall()
+
+    deleted = 0
+    root = operations_root().resolve()
+    for candidate in rows:
+        operation_id = int(candidate["operation_id"])
+        artifact_id = int(candidate["id"])
+        path = Path(str(candidate["file_path"]))
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root)
+            with db.connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                eligible = conn.execute(
+                    "SELECT 1 FROM operation_artifacts"
+                    " JOIN operations"
+                    " ON operations.id=operation_artifacts.operation_id"
+                    " WHERE operation_artifacts.id=?"
+                    " AND operation_artifacts.operation_id=?"
+                    " AND operation_artifacts.queue_owned=1"
+                    " AND COALESCE(operation_artifacts.expires_at,"
+                    " operations.artifacts_expire_at) <= ?"
+                    " AND NOT EXISTS (SELECT 1 FROM job_file_versions"
+                    " WHERE job_file_versions.file_path="
+                    " operation_artifacts.file_path)",
+                    (artifact_id, operation_id, cleanup_iso),
+                ).fetchone()
+                if eligible is None or not resolved.is_file():
+                    continue
+                resolved.unlink()
+                _append_event(
+                    conn,
+                    operation_id,
+                    kind="artifacts-expired",
+                    message="Expired operation artifact bytes removed",
+                    actor_email="__worker__",
+                    created_at=cleanup_iso,
+                    details={"artifact_id": artifact_id},
+                )
+            deleted += 1
+            _remove_empty_attempt_directory(resolved.parent)
+        except (OSError, ValueError) as exc:
+            logger.error(
+                "expired artifact cleanup failed operation_id=%s artifact_id=%s",
+                operation_id,
+                artifact_id,
+                exc_info=(
+                    RuntimeError,
+                    RuntimeError("artifact cleanup error"),
+                    exc.__traceback__,
+                ),
+            )
+    return deleted
+
+
 def acknowledge_notification(operation_id: int, *, by: str) -> dict[str, Any]:
     db.init_schema()
     now = _iso(_now())
@@ -717,3 +797,20 @@ def _iso(value: datetime) -> str:
 
 def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _utc(value: datetime | None) -> datetime:
+    if value is None:
+        return _now()
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _remove_empty_attempt_directory(path: Path) -> None:
+    if not path.name.startswith("attempt-"):
+        return
+    try:
+        path.rmdir()
+    except OSError:
+        return
