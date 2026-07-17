@@ -4,7 +4,8 @@ Ticket: [TASK-156](../../.tickets/TASK-156-durable-operation-queue.md)
 
 ## Status
 
-Implemented, verified, and committed as `224ff095a1adcba77e13d541af6acd670b109828`.
+Implemented as `224ff095a1adcba77e13d541af6acd670b109828` and hardened
+after independent review as `d4ed4ff2a02fa24c124b223aff5f9d0986455f5b`.
 TASK-156 remains In-Progress because Tasks 9–11 remain outside this slice.
 
 ## Implemented
@@ -77,3 +78,34 @@ TASK-156 remains In-Progress because Tasks 9–11 remain outside this slice.
   keeping the Material icon on its Prepare action for compatibility with the
   application's supported Streamlit range.
 - No blockers or unresolved UI/API contract conflicts remain in this slice.
+
+## Independent review fixes
+
+- Review RED was reproduced in Docker as `7 failed, 44 passed`: active state
+  transitions did not refresh full-page counts/history, viewers saw Apply,
+  user-controlled task names followed a Markdown render path, ordinary rows
+  exposed raw operation internals, and safe action metadata was absent.
+- Full-render operation id/state signatures are now retained in session state.
+  The active fragment requests one full app rerun when that signature changes,
+  covering queued/running/cancelling transitions, active-to-terminal movement,
+  and visible operation additions/removals. Progress-only changes remain inside
+  the fragment and do not create rerun loops. The established manual Refresh
+  fallback remains unchanged.
+- `list_visible_operations` now uses explicit SQL and output allowlists. Every
+  viewer receives service-derived ordered task names and count-only summaries,
+  never task bodies, request JSON, lease tokens, internal paths, or lease
+  diagnostics. Approved admins receive only six named operational diagnostic
+  fields and still receive no token, body, or path.
+- Apply and rollback visibility now requires owner/editor access, completed
+  state, required source relationships, and the appropriate current immutable
+  Job version. Viewers retain authorized result downloads but receive no Job
+  mutation controls; action services continue to recheck every permission and
+  checkout at execution time.
+- Task names, source labels, and submitter values now use Streamlit plain-text
+  rendering so user-controlled text cannot become Markdown or HTML.
+- Review-fix focused Docker gate passed: `103 passed in 2.08s`, no skips.
+- Fresh review-fix full Docker gate passed: `1438 passed, 12 skipped in 42.05s`.
+  The same 12 documented runtime-image build-context skips apply; no Task 8,
+  queue, History, or Jobs test was skipped.
+- Final `git diff --check` passed and the scoped simplify pass retained exact
+  behavior while naming the security allowlists explicitly.
