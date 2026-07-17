@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -172,13 +173,128 @@ def test_preflight_validates_worker_unit_storage_and_queue_settings():
     """A bad queue deployment must fail before it accepts durable work."""
     script = _repo_file("scripts/preflight-check.sh")
 
-    assert "/etc/systemd/system/marcedit-web-worker.service" in script
+    assert "MARCEDIT_PREFLIGHT_SYSTEMD_DIR:-/etc/systemd/system" in script
+    assert 'WORKER_UNIT="$SYSTEMD_DIR/marcedit-web-worker.service"' in script
     assert "MARCEDIT_WEB_OPERATIONS_ROOT" in script
     assert "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS" in script
     assert "MARCEDIT_WEB_OPERATION_RETENTION_DAYS" in script
     assert "positive integer" in script
     assert "must be within $DATA_DIR" in script
     assert "mkdir" not in script
+
+
+def _preflight_result(tmp_path, settings, extra_lines=()):
+    script = Path("scripts/preflight-check.sh")
+    if not script.exists():
+        pytest.skip(
+            "scripts/preflight-check.sh not in build context "
+            "(running inside the built image)"
+        )
+    install_root = tmp_path / "install"
+    data_root = install_root / "data"
+    operations_root = data_root / "operations"
+    operations_root.mkdir(parents=True)
+    unit_root = tmp_path / "systemd"
+    unit_root.mkdir()
+    (unit_root / "marcedit-web-worker.service").write_text("[Service]\n")
+    env_lines = ["MARCEDIT_WEB_PROXY_SECRET=test-only-secret"]
+    env_lines.extend(f"{key}={value}" for key, value in settings.items())
+    env_lines.extend(extra_lines)
+    (install_root / ".env").write_text("\n".join(env_lines) + "\n")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    commands = {
+        "python3.9": "printf 'Python 3.9.0\\n'\n",
+        "httpd": (
+            "printf '%s\\n' proxy_module proxy_http_module "
+            "proxy_wstunnel_module headers_module rewrite_module ssl_module shib_module\n"
+        ),
+        "id": (
+            "if [ \"$1\" = \"-un\" ]; then printf 'marcedit\\n'; "
+            "else printf 'uid=1(marcedit) gid=1(marcedit)\\n'; fi\n"
+        ),
+        "ss": "exit 0\n",
+        "curl": "printf 'ok\\n'\n",
+    }
+    for name, body in commands.items():
+        path = fake_bin / name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+            "MARCEDIT_PREFLIGHT_INSTALL_ROOT": str(install_root),
+            "MARCEDIT_PREFLIGHT_SYSTEMD_DIR": str(unit_root),
+        }
+    )
+    return subprocess.run(
+        ["bash", str(script)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_preflight_absent_queue_settings_use_runtime_defaults(tmp_path):
+    """Only an absent setting may select the safe queue runtime default."""
+    result = _preflight_result(tmp_path, {})
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS is a positive integer" in result.stdout
+    assert "MARCEDIT_WEB_OPERATION_RETENTION_DAYS is a positive integer" in result.stdout
+    assert "data/operations writable by marcedit" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("settings", "message"),
+    [
+        ({"MARCEDIT_WEB_QUEUE_CHUNK_RECORDS": ""}, "QUEUE_CHUNK_RECORDS"),
+        ({"MARCEDIT_WEB_QUEUE_CHUNK_RECORDS": "0"}, "QUEUE_CHUNK_RECORDS"),
+        ({"MARCEDIT_WEB_QUEUE_CHUNK_RECORDS": "many"}, "QUEUE_CHUNK_RECORDS"),
+        ({"MARCEDIT_WEB_OPERATION_RETENTION_DAYS": ""}, "RETENTION_DAYS"),
+        ({"MARCEDIT_WEB_OPERATIONS_ROOT": ""}, "OPERATIONS_ROOT"),
+    ],
+)
+def test_preflight_rejects_explicit_invalid_queue_settings(
+    tmp_path, settings, message
+):
+    """Explicit blanks are operator errors, not requests for defaults."""
+    result = _preflight_result(tmp_path, settings)
+
+    assert result.returncode == 1
+    assert message in result.stdout
+
+
+def test_native_env_template_declares_queue_storage_and_positive_limits():
+    """Systemd operators need explicit native paths, never container paths."""
+    template = _repo_file(".env.example")
+
+    assert (
+        "MARCEDIT_WEB_JOB_FILES_ROOT="
+        "/var/www/html/marcedit-web/data/job-files"
+    ) in template
+    assert (
+        "MARCEDIT_WEB_OPERATIONS_ROOT="
+        "/var/www/html/marcedit-web/data/operations"
+    ) in template
+    assert "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS=5000" in template
+    assert "MARCEDIT_WEB_OPERATION_RETENTION_DAYS=30" in template
+    assert "MARCEDIT_WEB_DB_PATH=/app/data" not in template
+
+
+def test_preflight_validates_last_duplicate_setting_like_systemd(tmp_path):
+    """Preflight must validate the same final assignment systemd will use."""
+    result = _preflight_result(
+        tmp_path,
+        {"MARCEDIT_WEB_QUEUE_CHUNK_RECORDS": "5000"},
+        extra_lines=("MARCEDIT_WEB_QUEUE_CHUNK_RECORDS=",),
+    )
+
+    assert result.returncode == 1
+    assert "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS must be a positive integer" in result.stdout
 
 
 def test_deployment_docs_cover_queue_operations_and_recovery():

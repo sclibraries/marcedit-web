@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -61,10 +65,8 @@ def test_pull_compose_worker_uses_published_image_and_shared_private_state():
     assert "ports:" not in worker
     assert "${MARCEDIT_WEB_DATA_DIR:-./data}:/app/data" in worker
     assert 'PYTHONUNBUFFERED: "1"' in worker
-    assert (
-        'MARCEDIT_WEB_DB_PATH: "${MARCEDIT_WEB_DB_PATH:-/app/data/marcedit.db}"'
-        in worker
-    )
+    assert 'MARCEDIT_WEB_DB_PATH: "/app/data/marcedit.db"' in worker
+    assert "${MARCEDIT_WEB_DB_PATH" not in worker
     assert 'MARCEDIT_WEB_PROXY_SECRET: "${MARCEDIT_WEB_PROXY_SECRET:-}"' in worker
     assert "python -m marcedit_web.ops.worker" in worker
     assert "condition: service_healthy" in worker
@@ -80,6 +82,66 @@ def test_pull_compose_app_image_supplies_dependency_healthcheck():
     assert "HEALTHCHECK" in dockerfile
     assert "python -m marcedit_web.ops.health" in dockerfile
     assert "_stcore/health" in dockerfile
+
+
+@pytest.mark.parametrize("compose_name", ["docker-compose.yml", "docker-compose.pull.yml"])
+def test_compose_rendering_isolates_container_paths_from_native_env(
+    compose_name, tmp_path
+):
+    """A native .env must never point containers at unmounted host paths."""
+    if shutil.which("docker") is None:
+        pytest.skip("docker CLI is required to render Compose configuration")
+    source = _build_context_file(compose_name)
+    (tmp_path / compose_name).write_text(source)
+    (tmp_path / ".env").write_text(
+        "MARCEDIT_WEB_IMAGE=example.invalid/marcedit-web:test\n"
+        "MARCEDIT_WEB_DB_PATH=/var/www/html/marcedit-web/data/native.db\n"
+        "MARCEDIT_WEB_OPERATIONS_ROOT=/var/www/html/marcedit-web/data/native-ops\n"
+        "MARCEDIT_WEB_AUDIT_DIR=/var/www/html/marcedit-web/data/native-audit\n"
+        "MARCEDIT_WEB_JOB_FILES_ROOT=/var/www/html/marcedit-web/data/native-jobs\n"
+        "MARCEDIT_WEB_TASKS_ROOT=/var/www/html/marcedit-web/data/native-tasks\n"
+        "MARCEDIT_WEB_UPLOADS_ROOT=/var/www/html/marcedit-web/data/native-uploads\n"
+    )
+    env = os.environ.copy()
+    env["MARCEDIT_WEB_IMAGE"] = "example.invalid/marcedit-web:test"
+    env.update(
+        {
+            key: f"/var/www/html/marcedit-web/data/native-{key.lower()}"
+            for key in (
+                "MARCEDIT_WEB_DB_PATH",
+                "MARCEDIT_WEB_OPERATIONS_ROOT",
+                "MARCEDIT_WEB_AUDIT_DIR",
+                "MARCEDIT_WEB_JOB_FILES_ROOT",
+                "MARCEDIT_WEB_TASKS_ROOT",
+                "MARCEDIT_WEB_UPLOADS_ROOT",
+            )
+        }
+    )
+    result = subprocess.run(
+        ["docker", "compose", "-f", compose_name, "config", "--format", "json"],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    services = json.loads(result.stdout)["services"]
+    expected = {
+        "MARCEDIT_WEB_DB_PATH": "/app/data/marcedit.db",
+        "MARCEDIT_WEB_OPERATIONS_ROOT": "/app/data/operations",
+        "MARCEDIT_WEB_AUDIT_DIR": "/app/data/audit",
+        "MARCEDIT_WEB_JOB_FILES_ROOT": "/app/data/job-files",
+        "MARCEDIT_WEB_TASKS_ROOT": "/app/data/tasks",
+        "MARCEDIT_WEB_UPLOADS_ROOT": "/app/data/uploads",
+    }
+    for service_name in ("marcedit-web", "marcedit-web-worker"):
+        service = services[service_name]
+        assert {
+            key: service["environment"][key] for key in expected
+        } == expected
+        assert any(
+            volume["target"] == "/app/data" for volume in service["volumes"]
+        )
 
 
 # --- TASK-069: secrets must never be baked into the image -------------------

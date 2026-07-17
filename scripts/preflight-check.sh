@@ -21,18 +21,30 @@ info() { echo "  ℹ $*";    SUMMARY_INFO=$((SUMMARY_INFO+1)); }
 
 env_value() {
     key="$1"
-    awk -F= -v key="$key" '$1 == key {sub(/^[^=]*=/, ""); print; exit}' "$ENV_FILE"
+    awk -F= -v key="$key" '
+        $1 == key { sub(/^[^=]*=/, ""); value=$0; found=1 }
+        END { if (found) print value }
+    ' "$ENV_FILE"
+}
+
+env_has_key() {
+    key="$1"
+    awk -F= -v key="$key" '
+        $1 == key { found=1; exit }
+        END { exit(found ? 0 : 1) }
+    ' "$ENV_FILE"
 }
 
 check_positive_setting() {
     key="$1"
     default="$2"
-    value="$(env_value "$key")"
-    if [ -z "$value" ]; then
+    if env_has_key "$key"; then
+        value="$(env_value "$key")"
+    else
         value="$default"
     fi
     case "$value" in
-        0|*[!0-9]*) fail "$key must be a positive integer" ;;
+        ""|0|*[!0-9]*) fail "$key must be a positive integer" ;;
         *) pass "$key is a positive integer" ;;
     esac
 }
@@ -88,7 +100,8 @@ fi
 echo
 
 echo "[Data directory]"
-DATA_DIR=/var/www/html/marcedit-web/data
+INSTALL_ROOT="${MARCEDIT_PREFLIGHT_INSTALL_ROOT:-/var/www/html/marcedit-web}"
+DATA_DIR="$INSTALL_ROOT/data"
 if [ -d "$DATA_DIR" ]; then
     if [ "$(id -un)" = "marcedit" ]; then
         if [ -w "$DATA_DIR" ]; then pass "$DATA_DIR writable by current user (marcedit)"
@@ -105,7 +118,7 @@ fi
 echo
 
 echo "[Attestation secret]"
-ENV_FILE=/var/www/html/marcedit-web/.env
+ENV_FILE="$INSTALL_ROOT/.env"
 if [ -f "$ENV_FILE" ]; then
     secret="$(grep -E '^MARCEDIT_WEB_PROXY_SECRET=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
     if [ -z "$secret" ] || [ "$secret" = "REPLACE_WITH_SECRET" ]; then
@@ -119,24 +132,29 @@ fi
 echo
 
 echo "[Durable operation worker]"
-WORKER_UNIT=/etc/systemd/system/marcedit-web-worker.service
+SYSTEMD_DIR="${MARCEDIT_PREFLIGHT_SYSTEMD_DIR:-/etc/systemd/system}"
+WORKER_UNIT="$SYSTEMD_DIR/marcedit-web-worker.service"
 if [ -f "$WORKER_UNIT" ]; then
     pass "$WORKER_UNIT is installed"
 else
     fail "$WORKER_UNIT is missing"
 fi
 
-if [ -f "$ENV_FILE" ]; then
+OPERATIONS_ROOT_EXPLICIT=0
+if [ -f "$ENV_FILE" ] && env_has_key MARCEDIT_WEB_OPERATIONS_ROOT; then
+    OPERATIONS_ROOT_EXPLICIT=1
     OPERATIONS_ROOT="$(env_value MARCEDIT_WEB_OPERATIONS_ROOT)"
 else
-    OPERATIONS_ROOT=""
-fi
-if [ -z "$OPERATIONS_ROOT" ]; then
     OPERATIONS_ROOT="$DATA_DIR/operations"
 fi
 OPERATIONS_ROOT_ALLOWED=1
-case "$OPERATIONS_ROOT" in
-    "$DATA_DIR"|"$DATA_DIR"/*) ;;
+if [ "$OPERATIONS_ROOT_EXPLICIT" -eq 1 ] && [ -z "$OPERATIONS_ROOT" ]; then
+    fail "MARCEDIT_WEB_OPERATIONS_ROOT must not be empty"
+    OPERATIONS_ROOT_ALLOWED=0
+fi
+case "$OPERATIONS_ROOT_ALLOWED:$OPERATIONS_ROOT" in
+    0:*) ;;
+    1:"$DATA_DIR"|1:"$DATA_DIR"/*) ;;
     *)
         fail "$OPERATIONS_ROOT must be within $DATA_DIR for systemd/Compose write access"
         OPERATIONS_ROOT_ALLOWED=0

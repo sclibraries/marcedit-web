@@ -38,9 +38,13 @@ docker compose -f docker-compose.pull.yml logs marcedit-web-worker
 ```
 
 Set `MARCEDIT_WEB_DATA_DIR` when the durable `data/` directory is not adjacent
-to the Compose file. Queue chunk and retention settings use the same environment
-variables documented below. Stop the worker before changing images or restoring
-the shared database/artifacts, then bring the app up before the worker.
+to the Compose file. Both Compose files deliberately hardcode every in-container
+persistent path below `/app/data`; native `/var/www/...` storage values from an
+auto-loaded `.env` never enter a container. `MARCEDIT_WEB_DATA_DIR` controls only
+the host side of the shared mount. Queue chunk and retention settings use the
+same positive-integer environment variables documented below. Stop the worker
+before changing images or restoring the shared database/artifacts, then bring
+the app up before the worker.
 
 ## Filesystem layout on libtools2
 
@@ -90,6 +94,10 @@ The most operationally important ones:
 | `MARCEDIT_WEB_UPLOADS_ROOT` | Where signed-in users' uploads persist. |
 
 Upload caps and Streamlit limits are also in `.env.example`.
+For the queue integers and operations root, omission selects the application
+default; an explicitly blank value is invalid and fails preflight. The checked-in
+template uses native systemd paths. Compose overrides persistent paths with its
+canonical `/app/data/...` values as described above.
 
 ## Trust model and identity
 

@@ -17,6 +17,12 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=2048
+      - MARCEDIT_WEB_DB_PATH=/app/data/marcedit.db
+      - MARCEDIT_WEB_OPERATIONS_ROOT=/app/data/operations
+      - MARCEDIT_WEB_AUDIT_DIR=/app/data/audit
+      - MARCEDIT_WEB_JOB_FILES_ROOT=/app/data/job-files
+      - MARCEDIT_WEB_TASKS_ROOT=/app/data/tasks
+      - MARCEDIT_WEB_UPLOADS_ROOT=/app/data/uploads
       - MARCEDIT_WEB_PROXY_SECRET=${MARCEDIT_WEB_PROXY_SECRET:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     restart: unless-stopped
@@ -35,6 +41,12 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=2048
+      - MARCEDIT_WEB_DB_PATH=/app/data/marcedit.db
+      - MARCEDIT_WEB_OPERATIONS_ROOT=/app/data/operations
+      - MARCEDIT_WEB_AUDIT_DIR=/app/data/audit
+      - MARCEDIT_WEB_JOB_FILES_ROOT=/app/data/job-files
+      - MARCEDIT_WEB_TASKS_ROOT=/app/data/tasks
+      - MARCEDIT_WEB_UPLOADS_ROOT=/app/data/uploads
       - MARCEDIT_WEB_PROXY_SECRET=${MARCEDIT_WEB_PROXY_SECRET:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     command: python -m marcedit_web.ops.worker
