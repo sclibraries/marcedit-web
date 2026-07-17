@@ -771,6 +771,7 @@ def adopt_candidate(
     staged_candidate = versions_root() / "pending" / f"{uuid.uuid4().hex}.mrc"
     target: Path | None = None
     version_id: int | None = None
+    created_version: dict[str, Any] | None = None
     renamed = False
     try:
         try:
@@ -878,6 +879,15 @@ def adopt_candidate(
                         conn,
                         {key: created_row[key] for key in created_row.keys()},
                     )
+                returned_row = conn.execute(
+                    _VERSION_SELECT
+                    + " WHERE job_file_versions.id=?"
+                    " AND job_access.user_email=?",
+                    (version_id, user_email.strip().lower()),
+                ).fetchone()
+                if returned_row is None:
+                    raise JobFileError("adopted version could not be read")
+                created_version = _dict(returned_row)
             except Exception:
                 if renamed and target is not None and target.exists():
                     os.replace(target, staged_candidate)
@@ -912,7 +922,8 @@ def adopt_candidate(
         if target is not None:
             target.unlink(missing_ok=True)
         raise
-    return get_version(version_id, user_email)
+    assert created_version is not None
+    return created_version
 
 
 def archive_file(

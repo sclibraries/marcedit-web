@@ -136,6 +136,27 @@ def test_adopt_candidate_rolls_back_version_when_transaction_hook_fails(
     assert not candidate.exists()
 
 
+def test_adopt_candidate_returns_committed_version_without_postcommit_lookup(
+    checked_out_file, candidate, monkeypatch,
+):
+    """A successful commit must not be reported failed after access changes."""
+    original_get_version = job_files.get_version
+
+    def reject_postcommit_lookup(*_args, **_kwargs):
+        raise job_files.JobFileError("access revoked after commit")
+
+    monkeypatch.setattr(job_files, "get_version", reject_postcommit_lookup)
+
+    created = _adopt(checked_out_file, candidate)
+    expected = original_get_version(created["id"], OWNER)
+
+    assert created == expected
+    assert type(created["id"]) is int
+    assert type(created["version_number"]) is int
+    assert type(created["file_path"]) is str
+    assert created["access_role"] == "owner"
+
+
 def test_same_user_stale_tab_cannot_return_newer_adopted_version(
     checked_out_file,
     candidate,

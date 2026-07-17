@@ -339,6 +339,132 @@ def test_rollback_creates_child_from_source_without_erasing_applied_version(
         )
 
 
+def test_racing_rollback_publishes_exactly_one_version(
+    completed_job_operation, monkeypatch,
+):
+    """Concurrent rollback requests cannot publish duplicate restore versions."""
+    item = completed_job_operation
+    collaboration.acquire_file_checkout(item["file"]["id"], OWNER)
+    applied = operation_results.apply_job_result(
+        item["id"],
+        user_email=OWNER,
+        opened_version_id=item["file"]["current_version_id"],
+    )
+    barrier = threading.Barrier(2)
+    original_copy = operation_results._copy_available
+
+    def synchronized_copy(source, target, label):
+        original_copy(source, target, label)
+        barrier.wait(timeout=2)
+
+    monkeypatch.setattr(operation_results, "_copy_available", synchronized_copy)
+    results: list[dict] = []
+    errors: list[Exception] = []
+
+    def rollback():
+        try:
+            results.append(
+                operation_results.rollback_job_result(
+                    item["id"],
+                    user_email=OWNER,
+                    opened_version_id=applied["id"],
+                )
+            )
+        except Exception as exc:  # captured from the losing contender
+            errors.append(exc)
+
+    threads = [threading.Thread(target=rollback) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], operations.OperationError)
+    assert len(job_files.list_versions(item["file"]["id"], OWNER)) == 3
+    operation = operations.get_operation(item["id"])
+    assert operation["rolled_back_version_id"] == results[0]["id"]
+    events = operations.list_events(item["id"], OWNER)
+    assert [event["kind"] for event in events].count("result-rolled-back") == 1
+    action_dir = operations.operations_root() / str(item["id"]) / "actions"
+    assert not list(action_dir.glob("*.mrc"))
+
+
+def test_rollback_event_failure_leaves_applied_version_current(
+    completed_job_operation, monkeypatch,
+):
+    """Rollback audit failure rolls back v3, fields, event, and temp bytes."""
+    item = completed_job_operation
+    collaboration.acquire_file_checkout(item["file"]["id"], OWNER)
+    applied = operation_results.apply_job_result(
+        item["id"],
+        user_email=OWNER,
+        opened_version_id=item["file"]["current_version_id"],
+    )
+    original_append = operations._append_event
+
+    def fail_rollback_event(conn, operation_id, **kwargs):
+        if kwargs["kind"] == "result-rolled-back":
+            raise RuntimeError("rollback audit unavailable")
+        return original_append(conn, operation_id, **kwargs)
+
+    monkeypatch.setattr(operations, "_append_event", fail_rollback_event)
+
+    with pytest.raises(RuntimeError, match="rollback audit unavailable"):
+        operation_results.rollback_job_result(
+            item["id"], user_email=OWNER, opened_version_id=applied["id"]
+        )
+
+    operation = operations.get_operation(item["id"])
+    assert operation["rolled_back_version_id"] is None
+    assert operation["rolled_back_by"] is None
+    assert operation["rolled_back_at"] is None
+    current = job_files.get_current_version(item["file"]["id"], OWNER)
+    assert current["id"] == applied["id"]
+    assert len(job_files.list_versions(item["file"]["id"], OWNER)) == 2
+    events = operations.list_events(item["id"], OWNER)
+    assert "result-rolled-back" not in [event["kind"] for event in events]
+    action_dir = operations.operations_root() / str(item["id"]) / "actions"
+    assert not list(action_dir.glob("*.mrc"))
+
+
+def test_editor_can_roll_back_applied_result(completed_job_operation):
+    item = completed_job_operation
+    collaboration.acquire_file_checkout(item["file"]["id"], OWNER)
+    applied = operation_results.apply_job_result(
+        item["id"],
+        user_email=OWNER,
+        opened_version_id=item["file"]["current_version_id"],
+    )
+    collaboration.release_file_checkout(item["file"]["id"], OWNER)
+    collaboration.acquire_file_checkout(item["file"]["id"], EDITOR)
+
+    rolled_back = operation_results.rollback_job_result(
+        item["id"], user_email=EDITOR, opened_version_id=applied["id"]
+    )
+
+    assert rolled_back["created_by"] == EDITOR
+    assert operations.get_operation(item["id"])["rolled_back_by"] == EDITOR
+
+
+@pytest.mark.parametrize("user", [VIEWER, "outsider@example.edu"])
+def test_rollback_denies_viewer_and_outsider(completed_job_operation, user):
+    item = completed_job_operation
+    collaboration.acquire_file_checkout(item["file"]["id"], OWNER)
+    applied = operation_results.apply_job_result(
+        item["id"],
+        user_email=OWNER,
+        opened_version_id=item["file"]["current_version_id"],
+    )
+
+    with pytest.raises(operations.OperationError, match="owner or editor"):
+        operation_results.rollback_job_result(
+            item["id"], user_email=user, opened_version_id=applied["id"]
+        )
+
+
 @pytest.fixture
 def completed_quick_operation(tmp_path, record):
     original = tmp_path / "vendor-original.mrc"
