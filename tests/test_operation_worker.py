@@ -5,7 +5,10 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import signal
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -100,6 +103,49 @@ def test_run_once_claims_only_one_operation_and_completes_it(monkeypatch):
     assert operations.get_operation(first)["state"] == "completed"
     assert operations.get_operation(second)["state"] == "queued"
     assert operations.worker_health()["row"]["current_operation_id"] is None
+
+
+def test_active_operation_refreshes_worker_health_past_stale_limit(monkeypatch):
+    _queue_operation()
+    entered = threading.Event()
+    release = threading.Event()
+    failures = []
+    monkeypatch.setattr(worker, "_WORKER_HEARTBEAT_SECONDS", 0.01)
+
+    def block(lease):
+        entered.set()
+        assert release.wait(2)
+        return _outcome(lease)
+
+    monkeypatch.setattr(worker.operation_runner, "run_saved_task_operation", block)
+
+    def run():
+        try:
+            worker.run_once("worker-a")
+        except BaseException as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert entered.wait(1)
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE queue_worker_status SET heartbeat_at=? WHERE singleton=1",
+            ("2000-01-01T00:00:00Z",),
+        )
+    deadline = time.monotonic() + 1
+    while not operations.worker_health()["available"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+    release.set()
+    thread.join(2)
+    assert not thread.is_alive()
+    assert failures == []
+    assert not any(
+        current.name == "operation-worker-heartbeat"
+        for current in threading.enumerate()
+    )
 
 
 def test_run_once_logs_warning_completion_without_leaking_request(caplog, monkeypatch):
@@ -253,6 +299,70 @@ def test_cancel_winning_failure_transition_finishes_cancelled(monkeypatch):
     assert operations.get_operation(operation_id)["state"] == "cancelled"
 
 
+@pytest.mark.parametrize("unexpected", [False, True], ids=["expected", "internal"])
+def test_cancellation_between_failure_and_transition_wins(
+    monkeypatch, unexpected
+):
+    operation_id = _queue_operation()
+    failure = (
+        RuntimeError("internal")
+        if unexpected
+        else operation_runner.OperationRunError("chunk-timeout", "Too long.")
+    )
+
+    def fail(_lease):
+        raise failure
+
+    real_fail = operations.fail_operation
+
+    def cancel_at_guard(lease, **kwargs):
+        operations.request_cancel(lease.operation_id, by="owner@smith.edu")
+        return real_fail(lease, **kwargs)
+
+    monkeypatch.setattr(worker.operation_runner, "run_saved_task_operation", fail)
+    monkeypatch.setattr(worker.operations, "fail_operation", cancel_at_guard)
+
+    assert worker.run_once("worker-a") is True
+    assert operations.get_operation(operation_id)["state"] == "cancelled"
+
+
+@pytest.mark.parametrize("unexpected", [False, True], ids=["expected", "internal"])
+def test_lease_loss_at_failure_guard_propagates_original_without_overwrite(
+    monkeypatch, unexpected
+):
+    operation_id = _queue_operation()
+    failure = (
+        RuntimeError("internal")
+        if unexpected
+        else operation_runner.OperationRunError("chunk-timeout", "Too long.")
+    )
+
+    def fail(_lease):
+        raise failure
+
+    real_fail = operations.fail_operation
+
+    def lose_at_guard(lease, **kwargs):
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE operations SET state='queued', phase='queued',"
+                " lease_owner=NULL, lease_token=NULL, lease_heartbeat_at=NULL,"
+                " lease_expires_at=NULL WHERE id=?",
+                (lease.operation_id,),
+            )
+        return real_fail(lease, **kwargs)
+
+    monkeypatch.setattr(worker.operation_runner, "run_saved_task_operation", fail)
+    monkeypatch.setattr(worker.operations, "fail_operation", lose_at_guard)
+
+    with pytest.raises(type(failure)) as raised:
+        worker.run_once("worker-a")
+    assert raised.value is failure
+    row = operations.get_operation(operation_id)
+    assert row["state"] == "queued"
+    assert row["terminal_message"] == ""
+
+
 def test_worker_restart_recovers_then_restarts_from_zero(monkeypatch):
     operation_id = _queue_operation()
     old_lease = operations.claim_next("dead-worker")
@@ -319,6 +429,70 @@ def test_run_forever_stops_after_current_control_boundary(monkeypatch):
     assert worker.run_forever("worker-a", poll_seconds=0.01) == 0
     assert calls == ["worker-a"]
     assert cleanup_calls == [True]
+
+
+def test_run_forever_restores_previous_signal_handlers(monkeypatch):
+    previous = {
+        signal.SIGTERM: object(),
+        signal.SIGINT: object(),
+    }
+    installed = []
+    current = dict(previous)
+
+    def install(signum, handler):
+        installed.append((signum, handler))
+        old = current[signum]
+        current[signum] = handler
+        return old
+
+    monkeypatch.setattr(worker.signal, "getsignal", current.__getitem__)
+    monkeypatch.setattr(worker.signal, "signal", install)
+    monkeypatch.setattr(worker.operations, "cleanup_expired_artifacts", lambda: 0)
+
+    def stop_during_poll(_worker_id):
+        current[signal.SIGINT](signal.SIGINT, None)
+        return False
+
+    monkeypatch.setattr(worker, "run_once", stop_during_poll)
+
+    assert worker.run_forever("worker-a", poll_seconds=0.01) == 0
+    assert current == previous
+    assert [signum for signum, _handler in installed] == [
+        signal.SIGTERM,
+        signal.SIGINT,
+        signal.SIGINT,
+        signal.SIGTERM,
+    ]
+
+
+def test_run_forever_restores_sigterm_when_sigint_install_fails(monkeypatch):
+    previous_term = object()
+    previous_int = object()
+    current_term = previous_term
+
+    monkeypatch.setattr(
+        worker.signal,
+        "getsignal",
+        lambda signum: (
+            previous_term if signum == signal.SIGTERM else previous_int
+        ),
+    )
+
+    def install(signum, handler):
+        nonlocal current_term
+        if signum == signal.SIGINT and handler not in {
+            previous_term,
+            previous_int,
+        }:
+            raise RuntimeError("cannot install SIGINT")
+        if signum == signal.SIGTERM:
+            current_term = handler
+
+    monkeypatch.setattr(worker.signal, "signal", install)
+
+    with pytest.raises(RuntimeError, match="cannot install SIGINT"):
+        worker.run_forever("worker-a")
+    assert current_term is previous_term
 
 
 def _add_expiring_artifact(
@@ -423,18 +597,18 @@ def test_cleanup_failure_logs_ids_and_retries_later(tmp_path, monkeypatch, caplo
     operation_id, artifact_id = _add_expiring_artifact(
         path=path, expires_at="2026-06-15T00:00:00Z"
     )
-    real_unlink = Path.unlink
+    real_unlink = os.unlink
     attempts = 0
     sensitive_failure = "disk busy"
 
-    def flaky_unlink(self, *args, **kwargs):
+    def flaky_unlink(target, *args, **kwargs):
         nonlocal attempts
-        if self == path and attempts == 0:
+        if target == path.name and attempts == 0:
             attempts += 1
             raise OSError(sensitive_failure)
-        return real_unlink(self, *args, **kwargs)
+        return real_unlink(target, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(operations.os, "unlink", flaky_unlink)
     now = datetime(2026, 7, 16, tzinfo=timezone.utc)
     with caplog.at_level(logging.ERROR, logger="marcedit_web.operations"):
         assert operations.cleanup_expired_artifacts(now) == 0
@@ -445,6 +619,121 @@ def test_cleanup_failure_logs_ids_and_retries_later(tmp_path, monkeypatch, caplo
 
     assert operations.cleanup_expired_artifacts(now) == 1
     assert not path.exists()
+
+
+def test_cleanup_missing_bytes_converges_after_post_unlink_db_failure(
+    monkeypatch,
+):
+    path = operations.operations_root() / "expired" / "result.mrc"
+    operation_id, artifact_id = _add_expiring_artifact(
+        path=path, expires_at="2026-06-15T00:00:00Z"
+    )
+    real_append = operations._append_event
+    fail_once = True
+
+    def fail_after_unlink(conn, target_operation_id, **kwargs):
+        nonlocal fail_once
+        if kwargs["kind"] == "artifacts-expired" and fail_once:
+            fail_once = False
+            raise RuntimeError("database commit path failed")
+        return real_append(conn, target_operation_id, **kwargs)
+
+    monkeypatch.setattr(operations, "_append_event", fail_after_unlink)
+    now = datetime(2026, 7, 16, tzinfo=timezone.utc)
+
+    assert operations.cleanup_expired_artifacts(now) == 0
+    assert not path.exists()
+    assert operations.cleanup_expired_artifacts(now) == 1
+    assert operations.cleanup_expired_artifacts(now) == 0
+    with db.connect() as conn:
+        events = conn.execute(
+            "SELECT details_json FROM operation_events"
+            " WHERE operation_id=? AND kind='artifacts-expired'",
+            (operation_id,),
+        ).fetchall()
+        artifact = conn.execute(
+            "SELECT id FROM operation_artifacts WHERE id=?", (artifact_id,)
+        ).fetchone()
+    assert len(events) == 1
+    assert json.loads(events[0]["details_json"])["artifact_id"] == artifact_id
+    assert artifact is not None
+
+
+def test_cleanup_refuses_parent_symlink_escape(tmp_path):
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("directory no-follow is unavailable")
+    root = operations.operations_root()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "result.mrc"
+    victim.write_bytes(b"do not delete")
+    escaped_parent = root / "escaped"
+    escaped_parent.parent.mkdir(parents=True, exist_ok=True)
+    escaped_parent.symlink_to(outside, target_is_directory=True)
+    _add_expiring_artifact(
+        path=escaped_parent / "result.mrc",
+        expires_at="2026-06-15T00:00:00Z",
+    )
+
+    assert operations.cleanup_expired_artifacts(
+        datetime(2026, 7, 16, tzinfo=timezone.utc)
+    ) == 0
+    assert victim.read_bytes() == b"artifact"
+
+
+def test_cleanup_parent_swap_cannot_redirect_directory_relative_unlink(
+    tmp_path, monkeypatch
+):
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("directory no-follow is unavailable")
+    root = operations.operations_root()
+    artifact = root / "swap" / "result.mrc"
+    _add_expiring_artifact(
+        path=artifact,
+        expires_at="2026-06-15T00:00:00Z",
+    )
+    outside = tmp_path / "outside-swap"
+    outside.mkdir()
+    victim = outside / "result.mrc"
+    victim.write_bytes(b"outside victim")
+    moved_parent = root / "swap-original"
+    real_relative = operations._relative_queue_path
+    swapped = False
+
+    def swap_after_boundary_check(path, operations_root):
+        nonlocal swapped
+        relative = real_relative(path, operations_root)
+        if not swapped:
+            swapped = True
+            artifact.parent.rename(moved_parent)
+            artifact.parent.symlink_to(outside, target_is_directory=True)
+        return relative
+
+    monkeypatch.setattr(
+        operations, "_relative_queue_path", swap_after_boundary_check
+    )
+
+    assert operations.cleanup_expired_artifacts(
+        datetime(2026, 7, 16, tzinfo=timezone.utc)
+    ) == 0
+    assert victim.read_bytes() == b"outside victim"
+    assert (moved_parent / "result.mrc").read_bytes() == b"artifact"
+
+
+def test_top_level_cleanup_log_redacts_exception_value(caplog, monkeypatch):
+    sensitive_value = "/private/queue/input-secret.mrc"
+
+    def fail_cleanup():
+        raise RuntimeError(sensitive_value)
+
+    monkeypatch.setattr(
+        worker.operations, "cleanup_expired_artifacts", fail_cleanup
+    )
+    with caplog.at_level(logging.ERROR, logger="marcedit_web.operation_worker"):
+        worker._cleanup_safely()
+
+    assert "Traceback" in caplog.text
+    assert sensitive_value not in caplog.text
 
 
 def test_cleanup_removes_empty_attempt_parent_directory(tmp_path):

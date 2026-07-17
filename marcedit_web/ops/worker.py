@@ -17,6 +17,51 @@ from marcedit_web.lib import operation_runner, operations
 logger = logging.getLogger("marcedit_web.operation_worker")
 
 _CLEANUP_INTERVAL_SECONDS = 60 * 60
+_WORKER_HEARTBEAT_SECONDS = 5.0
+_WORKER_HEARTBEAT_STOP_SECONDS = 6.0
+
+
+class _ActiveWorkerHeartbeat:
+    """Keep worker health fresh independently of the operation lease."""
+
+    def __init__(self, worker_id: str, operation_id: int) -> None:
+        self._worker_id = worker_id
+        self._operation_id = operation_id
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._failure: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="operation-worker-heartbeat",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop_and_check(self) -> None:
+        self._stop.set()
+        self._thread.join(_WORKER_HEARTBEAT_STOP_SECONDS)
+        if self._thread.is_alive():
+            raise RuntimeError(
+                "operation worker heartbeat did not stop within the safety limit"
+            )
+        with self._lock:
+            failure = self._failure
+        if failure is not None:
+            raise failure
+
+    def _run(self) -> None:
+        while not self._stop.wait(_WORKER_HEARTBEAT_SECONDS):
+            try:
+                operations.heartbeat_worker(
+                    self._worker_id,
+                    current_operation_id=self._operation_id,
+                )
+            except BaseException as exc:
+                with self._lock:
+                    self._failure = exc
+                return
 
 
 def run_once(worker_id: str) -> bool:
@@ -32,6 +77,8 @@ def run_once(worker_id: str) -> bool:
         worker_id,
         current_operation_id=lease.operation_id,
     )
+    active_heartbeat = _ActiveWorkerHeartbeat(worker_id, lease.operation_id)
+    active_heartbeat.start()
     logger.info(
         "queued operation started operation_id=%s attempt=%s worker_id=%s",
         lease.operation_id,
@@ -59,48 +106,42 @@ def run_once(worker_id: str) -> bool:
             outcome.changed_records,
             outcome.error_count,
         )
-    except operation_runner.OperationCancelled:
-        if not operations.is_lease_cancelling(lease):
-            raise
-        operations.finish_cancelled(lease)
+    except operation_runner.OperationCancelled as exc:
+        try:
+            operations.finish_cancelled(lease)
+        except operations.OperationError:
+            raise exc
         logger.info(
             "queued operation cancelled operation_id=%s attempt=%s",
             lease.operation_id,
             lease.attempt,
         )
     except operation_runner.OperationRunError as exc:
-        if operations.is_lease_cancelling(lease):
-            operations.finish_cancelled(lease)
-        elif _lease_is_current(lease):
-            if _fail_or_finish_cancelled(
-                lease,
-                code=exc.code,
-                message=str(exc),
-            ):
-                logger.warning(
-                    "queued operation failed operation_id=%s attempt=%s code=%s",
-                    lease.operation_id,
-                    lease.attempt,
-                    exc.code,
-                )
-        else:
-            raise operations.OperationError(
-                "operation lease is no longer current"
-            ) from exc
-    except Exception as exc:
-        if operations.is_lease_cancelling(lease):
-            operations.finish_cancelled(lease)
-        elif not _lease_is_current(lease):
-            raise
-        else:
-            _log_internal_failure(lease, exc)
-            _fail_or_finish_cancelled(
-                lease,
-                code="worker-internal-error",
-                message="Processing failed because of an internal worker error.",
+        if _fail_or_finish_cancelled(
+            lease,
+            code=exc.code,
+            message=str(exc),
+            failure=exc,
+        ):
+            logger.warning(
+                "queued operation failed operation_id=%s attempt=%s code=%s",
+                lease.operation_id,
+                lease.attempt,
+                exc.code,
             )
+    except Exception as exc:
+        _log_internal_failure(lease, exc)
+        _fail_or_finish_cancelled(
+            lease,
+            code="worker-internal-error",
+            message="Processing failed because of an internal worker error.",
+            failure=exc,
+        )
     finally:
-        operations.heartbeat_worker(worker_id, current_operation_id=None)
+        try:
+            active_heartbeat.stop_and_check()
+        finally:
+            operations.heartbeat_worker(worker_id, current_operation_id=None)
     return True
 
 
@@ -117,22 +158,34 @@ def run_forever(
     def stop(_signum, _frame) -> None:
         stopping.set()
 
-    signal.signal(signal.SIGTERM, stop)
-    signal.signal(signal.SIGINT, stop)
-    _cleanup_safely()
-    last_cleanup = time.monotonic()
-    while not stopping.is_set():
-        worked = run_once(identity)
-        if stopping.is_set():
-            break
-        if worked:
-            continue
-        now = time.monotonic()
-        if now - last_cleanup >= _CLEANUP_INTERVAL_SECONDS:
-            _cleanup_safely()
-            last_cleanup = now
-        stopping.wait(poll_seconds)
-    return 0
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    sigterm_installed = False
+    sigint_installed = False
+    try:
+        signal.signal(signal.SIGTERM, stop)
+        sigterm_installed = True
+        signal.signal(signal.SIGINT, stop)
+        sigint_installed = True
+        _cleanup_safely()
+        last_cleanup = time.monotonic()
+        while not stopping.is_set():
+            worked = run_once(identity)
+            if stopping.is_set():
+                break
+            if worked:
+                continue
+            now = time.monotonic()
+            if now - last_cleanup >= _CLEANUP_INTERVAL_SECONDS:
+                _cleanup_safely()
+                last_cleanup = now
+            stopping.wait(poll_seconds)
+        return 0
+    finally:
+        if sigint_installed:
+            signal.signal(signal.SIGINT, previous_sigint)
+        if sigterm_installed:
+            signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -157,14 +210,6 @@ def main(argv: list[str] | None = None) -> int:
     return run_forever()
 
 
-def _lease_is_current(lease: operations.Lease) -> bool:
-    current = operations.get_operation(lease.operation_id)
-    return (
-        current["state"] == "running"
-        and current["lease_token"] == lease.token
-    )
-
-
 def _log_internal_failure(
     lease: operations.Lease,
     exc: BaseException,
@@ -183,14 +228,15 @@ def _fail_or_finish_cancelled(
     *,
     code: str,
     message: str,
+    failure: BaseException,
 ) -> bool:
     """Fail the current lease unless a concurrent cancellation won."""
     try:
         operations.fail_operation(lease, code=code, message=message)
         return True
-    except operations.OperationError:
+    except operations.OperationError as transition_error:
         if not operations.is_lease_cancelling(lease):
-            raise
+            raise failure from transition_error
         operations.finish_cancelled(lease)
         return False
 
@@ -198,8 +244,15 @@ def _fail_or_finish_cancelled(
 def _cleanup_safely() -> None:
     try:
         deleted = operations.cleanup_expired_artifacts()
-    except Exception:
-        logger.exception("operation artifact cleanup pass failed")
+    except Exception as exc:
+        logger.error(
+            "operation artifact cleanup pass failed",
+            exc_info=(
+                RuntimeError,
+                RuntimeError("operation artifact cleanup error"),
+                exc.__traceback__,
+            ),
+        )
         return
     if deleted:
         logger.info("expired operation artifacts removed count=%s", deleted)

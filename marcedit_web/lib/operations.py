@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sqlite3
+import stat
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -607,14 +608,14 @@ def cleanup_expired_artifacts(now: datetime | None = None) -> int:
         ).fetchall()
 
     deleted = 0
-    root = operations_root().resolve()
+    root = operations_root()
     for candidate in rows:
         operation_id = int(candidate["operation_id"])
         artifact_id = int(candidate["id"])
         path = Path(str(candidate["file_path"]))
+        removed = False
+        recorded = False
         try:
-            resolved = path.resolve()
-            resolved.relative_to(root)
             with db.connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 eligible = conn.execute(
@@ -631,21 +632,33 @@ def cleanup_expired_artifacts(now: datetime | None = None) -> int:
                     " operation_artifacts.file_path)",
                     (artifact_id, operation_id, cleanup_iso),
                 ).fetchone()
-                if eligible is None or not resolved.is_file():
+                if eligible is None:
                     continue
-                resolved.unlink()
-                _append_event(
-                    conn,
-                    operation_id,
-                    kind="artifacts-expired",
-                    message="Expired operation artifact bytes removed",
-                    actor_email="__worker__",
-                    created_at=cleanup_iso,
-                    details={"artifact_id": artifact_id},
+                details_json = json.dumps(
+                    {"artifact_id": artifact_id}, sort_keys=True
                 )
-            deleted += 1
-            _remove_empty_attempt_directory(resolved.parent)
-        except (OSError, ValueError) as exc:
+                event_exists = conn.execute(
+                    "SELECT 1 FROM operation_events WHERE operation_id=?"
+                    " AND kind='artifacts-expired' AND details_json=? LIMIT 1",
+                    (operation_id, details_json),
+                ).fetchone()
+                removed = _unlink_queue_artifact(path, root)
+                if event_exists is None:
+                    _append_event(
+                        conn,
+                        operation_id,
+                        kind="artifacts-expired",
+                        message="Operation artifact bytes expired",
+                        actor_email="__worker__",
+                        created_at=cleanup_iso,
+                        details={"artifact_id": artifact_id},
+                    )
+                    recorded = True
+            if removed or recorded:
+                deleted += 1
+            if removed:
+                _remove_empty_attempt_directory(path.parent, root)
+        except Exception as exc:
             logger.error(
                 "expired artifact cleanup failed operation_id=%s artifact_id=%s",
                 operation_id,
@@ -807,10 +820,64 @@ def _utc(value: datetime | None) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _remove_empty_attempt_directory(path: Path) -> None:
+def _unlink_queue_artifact(path: Path, root: Path) -> bool:
+    relative = _relative_queue_path(path, root)
+    try:
+        parent_fd = _open_queue_directory(root, relative.parts[:-1])
+    except FileNotFoundError:
+        return False
+    try:
+        name = relative.parts[-1]
+        try:
+            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        if stat.S_ISDIR(metadata.st_mode):
+            raise OSError("queue artifact path is a directory")
+        os.unlink(name, dir_fd=parent_fd)
+        return True
+    finally:
+        os.close(parent_fd)
+
+
+def _remove_empty_attempt_directory(path: Path, root: Path) -> None:
     if not path.name.startswith("attempt-"):
         return
+    relative = _relative_queue_path(path, root)
     try:
-        path.rmdir()
+        parent_fd = _open_queue_directory(root, relative.parts[:-1])
     except OSError:
         return
+    try:
+        os.rmdir(relative.parts[-1], dir_fd=parent_fd)
+    except OSError:
+        return
+    finally:
+        os.close(parent_fd)
+
+
+def _relative_queue_path(path: Path, root: Path) -> Path:
+    absolute_root = Path(os.path.abspath(str(root)))
+    absolute_path = Path(os.path.abspath(str(path)))
+    relative = absolute_path.relative_to(absolute_root)
+    if not relative.parts:
+        raise ValueError("queue artifact path is the operations root")
+    return relative
+
+
+def _open_queue_directory(root: Path, parts: tuple[str, ...]) -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if no_follow is None or directory is None:
+        raise OSError("safe directory-relative cleanup is unavailable")
+    flags = os.O_RDONLY | directory | no_follow
+    current_fd = os.open(Path(os.path.abspath(str(root))), flags)
+    try:
+        for part in parts:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
