@@ -5,17 +5,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional
 
 import pymarc
 
-from marcedit_web.lib import batch_runtime, quick_batch
+from marcedit_web.lib import (
+    batch_runtime,
+    db,
+    operation_runner,
+    operation_submission,
+    operations,
+    quick_batch,
+    sandbox,
+)
 from marcedit_web.lib.quick_batch import QuickBatchRequest
 from marcedit_web.lib.record_store import RecordStore
+from marcedit_web.ops import worker
 
 
 def _record(index: int) -> pymarc.Record:
@@ -45,7 +56,7 @@ def _write_fixture(path: Path, record_count: int) -> int:
 def run_benchmark(
     record_count: int,
     *,
-    workdir: Path | None = None,
+    workdir: Optional[Path] = None,
 ) -> dict[str, int | float | str]:
     """Run one position lookup and one full quick operation."""
     if record_count < 1:
@@ -104,6 +115,131 @@ def run_benchmark(
             shutil.rmtree(root, ignore_errors=True)
 
 
+def run_queued_benchmark(
+    record_count: int,
+    *,
+    chunk_records: int,
+    workdir: Optional[Path] = None,
+    per_chunk_limit_seconds: float = 2.0,
+    chunk_delay_seconds: float = 0.2,
+) -> dict[str, int | float | str]:
+    """Run a durable saved-task operation through the real queue worker."""
+    if record_count < 1:
+        raise ValueError("record_count must be at least 1")
+    if chunk_records < 1:
+        raise ValueError("chunk_records must be at least 1")
+    if per_chunk_limit_seconds <= 0:
+        raise ValueError("per_chunk_limit_seconds must be positive")
+    if chunk_delay_seconds < 0:
+        raise ValueError("chunk_delay_seconds must be nonnegative")
+
+    owns_workdir = workdir is None
+    root = (
+        Path(tempfile.mkdtemp(prefix="marcedit-web-queue-benchmark-"))
+        if workdir is None
+        else Path(workdir)
+    )
+    root.mkdir(parents=True, exist_ok=True)
+    environment = {
+        "MARCEDIT_WEB_DB_PATH": str(root / "queue.db"),
+        "MARCEDIT_WEB_OPERATIONS_ROOT": str(root / "operations"),
+        "MARCEDIT_WEB_TASKS_ROOT": str(root / "tasks"),
+        "MARCEDIT_WEB_QUEUE_CHUNK_RECORDS": str(chunk_records),
+    }
+    previous = {name: os.environ.get(name) for name in environment}
+    initial_peak = batch_runtime.peak_rss_bytes()
+    real_sandbox = operation_runner.sandbox.run_tasks_subprocess
+    chunk_durations: list[float] = []
+
+    def measured_sandbox(*args, **kwargs):
+        kwargs["timeout"] = per_chunk_limit_seconds
+        started = time.perf_counter()
+        try:
+            return real_sandbox(*args, **kwargs)
+        finally:
+            chunk_durations.append(time.perf_counter() - started)
+
+    try:
+        os.environ.update(environment)
+        db.reset_for_tests()
+        input_path = root / "queued-synthetic.mrc"
+        _write_fixture(input_path, record_count)
+        task = sandbox.TaskSpec(
+            name="queued benchmark transform",
+            imports=["import time"],
+            body=(
+                f"if (int(record['001'].data) - 1) % {chunk_records} == 0:\n"
+                f"    time.sleep({chunk_delay_seconds!r})\n"
+                "record['001'].data += 'x'"
+            ),
+        )
+        operation_runner.sandbox.run_tasks_subprocess = measured_sandbox
+        started = time.perf_counter()
+        submitted = operation_submission.submit_quick_load_task_run(
+            user_email="benchmark@localhost",
+            source_path=input_path,
+            filename=input_path.name,
+            record_count=record_count,
+            task_specs=[task],
+        )
+        if not worker.run_once("benchmark-worker"):
+            raise RuntimeError("queued benchmark worker did not claim the operation")
+        elapsed = time.perf_counter() - started
+
+        operation = operations.get_operation(int(submitted["id"]))
+        results = [
+            artifact
+            for artifact in operations.list_artifacts(
+                int(submitted["id"]), "benchmark@localhost"
+            )
+            if artifact["role"] == "result"
+        ]
+        result_records = (
+            RecordStore.from_path(Path(results[0]["file_path"])).count()
+            if len(results) == 1
+            else -1
+        )
+        if operation["state"] != "completed":
+            raise RuntimeError(
+                f"queued benchmark ended in {operation['state']} state"
+            )
+        if len(results) != 1 or result_records != record_count:
+            raise RuntimeError("queued benchmark output cardinality mismatch")
+        if elapsed <= per_chunk_limit_seconds:
+            raise RuntimeError(
+                "queued benchmark did not exceed the injected per-chunk limit"
+            )
+
+        peak_rss = batch_runtime.peak_rss_bytes()
+        return {
+            "state": str(operation["state"]),
+            "operation_id": int(operation["id"]),
+            "attempts": int(operation["attempt"]),
+            "records": record_count,
+            "processed_records": int(operation["processed_records"]),
+            "output_records": int(operation["output_records"]),
+            "result_records": result_records,
+            "error_count": int(operation["error_count"]),
+            "result_artifacts": len(results),
+            "completed_chunks": len(chunk_durations),
+            "elapsed_seconds": round(elapsed, 3),
+            "per_chunk_limit_seconds": per_chunk_limit_seconds,
+            "max_chunk_seconds": round(max(chunk_durations), 3),
+            "peak_rss_bytes": peak_rss,
+            "peak_rss_delta_bytes": max(0, peak_rss - initial_peak),
+        }
+    finally:
+        operation_runner.sandbox.run_tasks_subprocess = real_sandbox
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        db.reset_for_tests()
+        if owns_workdir:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 def _threshold_failures(
     result: dict[str, int | float | str],
     *,
@@ -125,12 +261,22 @@ def _threshold_failures(
     return failures
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--queued", action="store_true")
     parser.add_argument("--records", type=int, default=100_000)
+    parser.add_argument("--chunk-records", type=int, default=5_000)
     parser.add_argument("--max-lookup-ms", type=float, default=250.0)
     parser.add_argument("--max-operation-seconds", type=float, default=30.0)
     args = parser.parse_args(argv)
+
+    if args.queued:
+        result = run_queued_benchmark(
+            args.records,
+            chunk_records=args.chunk_records,
+        )
+        print(json.dumps(result, sort_keys=True))
+        return 0
 
     result = run_benchmark(args.records)
     print(json.dumps(result, sort_keys=True))

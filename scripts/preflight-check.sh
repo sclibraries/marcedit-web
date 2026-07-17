@@ -49,6 +49,10 @@ check_positive_setting() {
     esac
 }
 
+canonical_path() {
+    realpath "$1" 2>/dev/null
+}
+
 echo "=== marcedit-web preflight check ==="
 echo
 
@@ -152,9 +156,15 @@ if [ "$OPERATIONS_ROOT_EXPLICIT" -eq 1 ] && [ -z "$OPERATIONS_ROOT" ]; then
     fail "MARCEDIT_WEB_OPERATIONS_ROOT must not be empty"
     OPERATIONS_ROOT_ALLOWED=0
 fi
-case "$OPERATIONS_ROOT_ALLOWED:$OPERATIONS_ROOT" in
+CANONICAL_DATA_DIR="$(canonical_path "$DATA_DIR")"
+CANONICAL_OPERATIONS_ROOT="$(canonical_path "$OPERATIONS_ROOT")"
+if [ -z "$CANONICAL_DATA_DIR" ] || [ -z "$CANONICAL_OPERATIONS_ROOT" ]; then
+    fail "MARCEDIT_WEB_OPERATIONS_ROOT could not be resolved"
+    OPERATIONS_ROOT_ALLOWED=0
+fi
+case "$OPERATIONS_ROOT_ALLOWED:$CANONICAL_OPERATIONS_ROOT" in
     0:*) ;;
-    1:"$DATA_DIR"|1:"$DATA_DIR"/*) ;;
+    1:"$CANONICAL_DATA_DIR"|1:"$CANONICAL_DATA_DIR"/*) ;;
     *)
         fail "$OPERATIONS_ROOT must be within $DATA_DIR for systemd/Compose write access"
         OPERATIONS_ROOT_ALLOWED=0

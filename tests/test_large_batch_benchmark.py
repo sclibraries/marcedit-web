@@ -57,3 +57,59 @@ def test_benchmark_cli_fails_when_threshold_is_exceeded(
 
     assert exit_code == 1
     assert "lookup exceeded 250 ms" in capsys.readouterr().err
+
+
+def test_queued_benchmark_reports_durable_chunked_result(tmp_path):
+    benchmark = _benchmark_module()
+
+    result = benchmark.run_queued_benchmark(
+        12,
+        chunk_records=5,
+        workdir=tmp_path / "queued-benchmark",
+        per_chunk_limit_seconds=0.75,
+        chunk_delay_seconds=0.3,
+    )
+
+    assert result["state"] == "completed"
+    assert result["operation_id"] > 0
+    assert result["attempts"] == 1
+    assert result["records"] == 12
+    assert result["processed_records"] == 12
+    assert result["output_records"] == 12
+    assert result["result_records"] == 12
+    assert result["error_count"] == 0
+    assert result["result_artifacts"] == 1
+    assert result["completed_chunks"] == 3
+    assert result["elapsed_seconds"] > result["per_chunk_limit_seconds"]
+    assert result["peak_rss_bytes"] > 0
+
+
+def test_benchmark_cli_routes_queued_mode(monkeypatch, capsys):
+    benchmark = _benchmark_module()
+    monkeypatch.setattr(
+        benchmark,
+        "run_queued_benchmark",
+        lambda records, *, chunk_records: {
+            "state": "completed",
+            "operation_id": 7,
+            "attempts": 1,
+            "records": records,
+            "processed_records": records,
+            "output_records": records,
+            "result_records": records,
+            "error_count": 0,
+            "result_artifacts": 1,
+            "completed_chunks": 2,
+            "elapsed_seconds": 1.1,
+            "per_chunk_limit_seconds": 1.0,
+            "peak_rss_bytes": 1,
+            "peak_rss_delta_bytes": 0,
+        },
+    )
+
+    exit_code = benchmark.main(
+        ["--queued", "--records", "10", "--chunk-records", "5"]
+    )
+
+    assert exit_code == 0
+    assert '"operation_id": 7' in capsys.readouterr().out

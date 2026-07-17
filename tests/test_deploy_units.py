@@ -268,6 +268,21 @@ def test_preflight_rejects_explicit_invalid_queue_settings(
     assert message in result.stdout
 
 
+def test_preflight_rejects_operations_root_that_traverses_outside_data(tmp_path):
+    """A lexical data/ prefix must not disguise an escaped storage root."""
+    escaped_root = tmp_path / "install" / "outside"
+    escaped_root.mkdir(parents=True)
+    disguised_root = escaped_root.parent / "data" / ".." / escaped_root.name
+
+    result = _preflight_result(
+        tmp_path,
+        {"MARCEDIT_WEB_OPERATIONS_ROOT": str(disguised_root)},
+    )
+
+    assert result.returncode == 1
+    assert "must be within" in result.stdout
+
+
 def test_native_env_template_declares_queue_storage_and_positive_limits():
     """Systemd operators need explicit native paths, never container paths."""
     template = _repo_file(".env.example")

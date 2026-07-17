@@ -95,9 +95,6 @@ class _LeaseHeartbeat:
         if failure is not None:
             raise failure
 
-    def is_alive(self) -> bool:
-        return self._started and self._thread.is_alive()
-
     def _run(self) -> None:
         while not self._stop.wait(_LEASE_HEARTBEAT_SECONDS):
             try:
@@ -354,7 +351,7 @@ def run_saved_task_operation(
             isinstance(exc, OperationRunError)
             and exc.code == "lease-heartbeat-shutdown-timeout"
         )
-        if heartbeat.is_alive() and not shutdown_timed_out:
+        if not shutdown_timed_out:
             try:
                 heartbeat.stop_and_check()
             except (OperationCancelled, operations.OperationError) as lease_exc:

@@ -737,6 +737,68 @@ def test_lease_state_discovered_while_stopping_supersedes_processing_error(
     ).exists()
 
 
+@pytest.mark.parametrize("cancel", [False, True], ids=["lease-loss", "cancel"])
+def test_lease_state_stored_before_failure_cleanup_supersedes_processing_error(
+    lease, monkeypatch, cancel
+):
+    """A heartbeat result remains authoritative after its thread has exited."""
+    processing_failed = threading.Event()
+    heartbeat_entered = threading.Event()
+    real_renew = operations.renew_lease
+
+    def fail_heartbeat_after_processing(current_lease, **kwargs):
+        if (
+            threading.current_thread().name == "operation-lease-heartbeat"
+            and processing_failed.is_set()
+        ):
+            heartbeat_entered.set()
+            if cancel:
+                operations.request_cancel(
+                    lease.operation_id, by="owner@smith.edu"
+                )
+                return real_renew(current_lease, **kwargs)
+            raise operations.OperationError("operation is no longer running")
+        return real_renew(current_lease, **kwargs)
+
+    def processing_error(tasks, *, tmp_dir, **kwargs):
+        processing_failed.set()
+        assert heartbeat_entered.wait(1)
+        deadline = time.monotonic() + 1
+        while any(
+            thread.name == "operation-lease-heartbeat"
+            for thread in threading.enumerate()
+        ):
+            assert time.monotonic() < deadline
+            time.sleep(0.001)
+        output = tmp_dir / "output.mrc"
+        output.write_bytes(b"")
+        return sandbox.SandboxResult(
+            output_path=output,
+            errors=[],
+            timed_out=True,
+        )
+
+    monkeypatch.setattr(operation_runner, "_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        operation_runner.operations,
+        "renew_lease",
+        fail_heartbeat_after_processing,
+    )
+    monkeypatch.setattr(
+        operation_runner.sandbox,
+        "run_tasks_subprocess",
+        processing_error,
+    )
+
+    expected = (
+        operation_runner.OperationCancelled
+        if cancel
+        else operations.OperationError
+    )
+    with pytest.raises(expected):
+        operation_runner.run_saved_task_operation(lease, chunk_size=5)
+
+
 def test_unexpected_attempt_log_redacts_exception_message(lease, caplog):
     sensitive_value = "private-task-or-input-value"
     try:
