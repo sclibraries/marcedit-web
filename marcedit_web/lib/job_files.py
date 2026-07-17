@@ -8,9 +8,10 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import db, jobs
 from .record_store import RecordStore
@@ -754,8 +755,16 @@ def adopt_candidate(
     label: str,
     summary: dict[str, Any] | None = None,
     validation: dict[str, Any] | None = None,
+    transaction_hook: Callable[
+        [sqlite3.Connection, dict[str, Any]], None
+    ]
+    | None = None,
 ) -> dict[str, Any]:
-    """Atomically adopt owned MARC bytes as a new immutable current version."""
+    """Atomically adopt owned MARC bytes as a new immutable current version.
+
+    ``transaction_hook`` lets a caller publish tightly coupled metadata in the
+    same transaction. Raising from the hook rolls back the version adoption.
+    """
     from . import collaboration
 
     owned_candidate = Path(candidate_path)
@@ -859,6 +868,16 @@ def adopt_candidate(
                     now,
                     job_file_id=file_id,
                 )
+                if transaction_hook is not None:
+                    created_row = conn.execute(
+                        "SELECT * FROM job_file_versions WHERE id=?",
+                        (version_id,),
+                    ).fetchone()
+                    assert created_row is not None
+                    transaction_hook(
+                        conn,
+                        {key: created_row[key] for key in created_row.keys()},
+                    )
             except Exception:
                 if renamed and target is not None and target.exists():
                     os.replace(target, staged_candidate)

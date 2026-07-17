@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tempfile
 import warnings
 from datetime import datetime
@@ -641,33 +642,48 @@ def replace_current_store_from_path(
     *,
     filename: str,
     job_id: int | None = None,
+    quick_load: bool = False,
 ) -> RecordStore:
     """Replace the live store by streaming a trusted on-disk MRC source."""
     import streamlit as st
 
     user = current_user_id()
     if is_anonymous(user):
-        store_dir = _session_records_dir()
+        store_dir = Path(
+            tempfile.mkdtemp(
+                prefix="reopen-",
+                dir=_session_records_dir(),
+            )
+        )
     else:
         store_dir = upload_persistence.persisted_job_upload_dir(user, job_id)
 
-    with Path(source_path).open("rb") as source:
-        store = RecordStore.from_file(
-            source,
-            tmp_dir=store_dir,
-            filename=filename,
-        )
-    if not is_anonymous(user):
-        upload_persistence.record_upload(
-            user=user,
-            filename=filename,
-            file_path=store.path,
-            record_count=store.count(),
-            file_bytes=store.path.stat().st_size,
-            job_id=job_id,
-        )
+    try:
+        with Path(source_path).open("rb") as source:
+            store = RecordStore.from_file(
+                source,
+                tmp_dir=store_dir,
+                filename=filename,
+            )
+        if not is_anonymous(user):
+            upload_persistence.record_upload(
+                user=user,
+                filename=filename,
+                file_path=store.path,
+                record_count=store.count(),
+                file_bytes=store.path.stat().st_size,
+                job_id=job_id,
+            )
+    except Exception:
+        shutil.rmtree(store_dir, ignore_errors=True)
+        raise
 
     st.session_state["store"] = store
+    if quick_load:
+        st.session_state["job_file_id"] = None
+        st.session_state["job_file_version_id"] = None
+        st.session_state["quick_load_mode"] = True
+        _set_job_file_query(None)
     _clear_mutation_previews(st.session_state)
     st.session_state["issues_cache"] = {}
     st.session_state["editor_text"] = None

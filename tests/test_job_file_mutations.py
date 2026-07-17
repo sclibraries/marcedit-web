@@ -108,6 +108,34 @@ def test_adopt_candidate_creates_version_and_swaps_current(
     assert "Set leader status to deleted" in activity[-1]["message"]
 
 
+def test_adopt_candidate_rolls_back_version_when_transaction_hook_fails(
+    checked_out_file, candidate,
+):
+    """Queue metadata and immutable version publication are one commit."""
+    before_id = checked_out_file["current_version_id"]
+
+    def reject_publication(_conn, created):
+        assert created["parent_version_id"] == before_id
+        raise RuntimeError("operation CAS lost")
+
+    with pytest.raises(RuntimeError, match="operation CAS lost"):
+        job_files.adopt_candidate(
+            file_id=checked_out_file["id"],
+            opened_version_id=before_id,
+            user_email=OWNER,
+            candidate_path=candidate,
+            source_kind="queued-task",
+            label="Queued result",
+            transaction_hook=reject_publication,
+        )
+
+    assert job_files.get_current_version(
+        checked_out_file["id"], OWNER
+    )["id"] == before_id
+    assert len(job_files.list_versions(checked_out_file["id"], OWNER)) == 1
+    assert not candidate.exists()
+
+
 def test_same_user_stale_tab_cannot_return_newer_adopted_version(
     checked_out_file,
     candidate,

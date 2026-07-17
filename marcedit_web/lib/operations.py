@@ -698,6 +698,96 @@ def acknowledge_notification(operation_id: int, *, by: str) -> dict[str, Any]:
     return _dict(row)
 
 
+def _record_result_applied(
+    conn: sqlite3.Connection,
+    operation_id: int,
+    *,
+    user_email: str,
+    version_id: int,
+    job_file_id: int,
+    source_version_id: int,
+    result_artifact_id: int,
+    result_path: Path,
+) -> None:
+    """Record version publication inside ``adopt_candidate``'s transaction."""
+    now = _iso(_now())
+    if not result_path.is_file():
+        raise OperationError("queued result is no longer available")
+    updated = conn.execute(
+        "UPDATE operations SET applied_version_id=?,applied_by=?,applied_at=?"
+        " WHERE id=? AND state='completed' AND applied_version_id IS NULL"
+        " AND job_file_id=? AND source_version_id=?"
+        " AND EXISTS (SELECT 1 FROM operation_artifacts"
+        " WHERE id=? AND operation_id=operations.id AND role='result'"
+        " AND file_path=? AND COALESCE(expires_at,operations.artifacts_expire_at)>?)",
+        (
+            version_id,
+            user_email,
+            now,
+            operation_id,
+            job_file_id,
+            source_version_id,
+            result_artifact_id,
+            str(result_path),
+            now,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise OperationError("queued result cannot be applied")
+    _append_event(
+        conn,
+        operation_id,
+        kind="result-applied",
+        message="Queued result applied as a new Job file version",
+        actor_email=user_email,
+        created_at=now,
+        details={"version_id": version_id},
+    )
+
+
+def _record_result_rolled_back(
+    conn: sqlite3.Connection,
+    operation_id: int,
+    *,
+    user_email: str,
+    applied_version_id: int,
+    version_id: int,
+    job_file_id: int,
+    source_version_id: int,
+) -> None:
+    """Record rollback publication inside ``adopt_candidate``'s transaction."""
+    now = _iso(_now())
+    updated = conn.execute(
+        "UPDATE operations SET rolled_back_version_id=?,rolled_back_by=?,"
+        " rolled_back_at=? WHERE id=? AND state='completed'"
+        " AND applied_version_id=? AND job_file_id=? AND source_version_id=?"
+        " AND rolled_back_version_id IS NULL",
+        (
+            version_id,
+            user_email,
+            now,
+            operation_id,
+            applied_version_id,
+            job_file_id,
+            source_version_id,
+        ),
+    )
+    if updated.rowcount != 1:
+        raise OperationError("queued result cannot be rolled back")
+    _append_event(
+        conn,
+        operation_id,
+        kind="result-rolled-back",
+        message="Queued result rolled back as a new Job file version",
+        actor_email=user_email,
+        created_at=now,
+        details={
+            "applied_version_id": applied_version_id,
+            "version_id": version_id,
+        },
+    )
+
+
 def _operation_row(
     conn: sqlite3.Connection,
     operation_id: int,

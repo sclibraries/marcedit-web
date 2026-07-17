@@ -170,6 +170,33 @@ def test_handle_upload_replacement_cleans_stale_preview_artifacts(
     assert not replace_dir.exists()
 
 
+def test_replace_store_from_path_keeps_current_store_when_persistence_fails(
+    fake_st, record, tmp_path, monkeypatch,
+):
+    """A reopen failure must not half-switch the live Quick Load batch."""
+    uploads_root = tmp_path / "uploads"
+    monkeypatch.setenv("MARCEDIT_WEB_UPLOADS_ROOT", str(uploads_root))
+    source = tmp_path / "retained-result.mrc"
+    source.write_bytes(_serialize([record]))
+    previous = object()
+    st = fake_st()
+    st.session_state.update({"user": "alice@example.edu", "store": previous})
+    monkeypatch.setattr(
+        session.upload_persistence,
+        "record_upload",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("database unavailable")),
+    )
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        session.replace_current_store_from_path(
+            source,
+            filename="queued-result.mrc",
+        )
+
+    assert st.session_state["store"] is previous
+    assert not list(uploads_root.rglob("*.mrc"))
+
+
 def test_handle_upload_keeps_each_signed_in_upload_on_disk(
     fake_st, record, tmp_path, monkeypatch,
 ):
