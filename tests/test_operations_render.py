@@ -33,6 +33,7 @@ class _FakeStreamlit:
         self.session_state = {}
         self.clicked = set(clicked)
         self.rendered_text = []
+        self.markdown_text = []
         self.metrics = []
         self.progress_values = []
         self.buttons = []
@@ -55,6 +56,10 @@ class _FakeStreamlit:
         self._text(value)
 
     def markdown(self, value, **kwargs):
+        self.markdown_text.append(str(value))
+        self._text(value)
+
+    def text(self, value):
         self._text(value)
 
     def caption(self, value):
@@ -134,8 +139,8 @@ def _operation(operation_id=1, **changes):
         "changed_records": None,
         "error_count": 0,
         "terminal_message": "",
-        "summary_json": "{}",
-        "request_json": '{"tasks":[{"name":"Normalize 856"}]}',
+        "summary": {},
+        "task_names": ["Normalize 856"],
         "job_id": None,
         "job_file_id": None,
         "source_version_id": None,
@@ -145,6 +150,8 @@ def _operation(operation_id=1, **changes):
         "source_label": "vendor.mrc",
         "can_cancel": True,
         "can_access_artifacts": True,
+        "can_apply_result": False,
+        "can_rollback_result": False,
     }
     row.update(changes)
     return row
@@ -166,6 +173,15 @@ def _wire(monkeypatch, fake_st, rows, *, artifacts=None, events=None, errors=Non
     )
     monkeypatch.setattr(renderer.operations, "list_events", lambda *_: list(events or []))
     monkeypatch.setattr(renderer.operations, "list_errors", lambda *_: list(errors or []))
+    return renderer
+
+
+def _wire_sequence(monkeypatch, fake_st, row_sets):
+    renderer = _wire(monkeypatch, fake_st, [])
+    pending = iter(row_sets)
+    monkeypatch.setattr(
+        renderer.operations, "list_visible_operations", lambda _: next(pending)
+    )
     return renderer
 
 
@@ -193,6 +209,69 @@ def test_running_card_shows_record_progress_and_uses_active_fragment(monkeypatch
     assert "Processing chunk 3" in rendered
     assert fake_st.progress_values == [pytest.approx(12400 / 60498)]
     assert fake_st.fragment_intervals == ["2s"]
+    assert fake_st.rerun_called is False
+
+
+def test_fragment_requests_full_rerun_when_active_state_changes(monkeypatch):
+    fake_st = _FakeStreamlit()
+    queued = _operation(state="queued")
+    running = _operation(state="running", phase="processing")
+    renderer = _wire_sequence(monkeypatch, fake_st, [[queued], [running]])
+
+    renderer.render()
+
+    assert fake_st.rerun_called is True
+
+
+def test_fragment_keeps_progress_only_updates_scoped(monkeypatch):
+    fake_st = _FakeStreamlit()
+    before = _operation(state="running", processed_records=100)
+    after = _operation(state="running", processed_records=200)
+    renderer = _wire_sequence(monkeypatch, fake_st, [[before], [after]])
+
+    renderer.render()
+
+    assert fake_st.rerun_called is False
+    assert fake_st.progress_values == [pytest.approx(200 / 60498)]
+
+
+def test_fragment_requests_full_rerun_when_operation_becomes_terminal(monkeypatch):
+    fake_st = _FakeStreamlit()
+    running = _operation(state="running", processed_records=100)
+    completed = _operation(
+        state="completed", phase="completed", processed_records=60498,
+        completed_at="2026-07-17T12:10:00Z",
+    )
+    renderer = _wire_sequence(monkeypatch, fake_st, [[running], [completed]])
+
+    renderer.render()
+
+    assert fake_st.rerun_called is True
+
+
+def test_fragment_requests_full_rerun_when_visible_operation_is_added(monkeypatch):
+    fake_st = _FakeStreamlit()
+    first = _operation(1, state="running")
+    added = _operation(2, state="queued")
+    renderer = _wire_sequence(monkeypatch, fake_st, [[first], [first, added]])
+
+    renderer.render()
+
+    assert fake_st.rerun_called is True
+
+
+def test_fragment_supports_legacy_rerun_name_in_test_doubles(monkeypatch):
+    fake_st = _FakeStreamlit()
+    fake_st.rerun = None
+    legacy_calls = []
+    fake_st.experimental_rerun = lambda: legacy_calls.append(True)
+    queued = _operation(state="queued")
+    running = _operation(state="running")
+    renderer = _wire_sequence(monkeypatch, fake_st, [[queued], [running]])
+
+    renderer.render()
+
+    assert legacy_calls == [True]
 
 
 def test_queued_card_warns_when_worker_is_unavailable(monkeypatch):
@@ -212,7 +291,7 @@ def test_completed_with_errors_is_attention_and_details_are_bounded(monkeypatch)
         state="completed", phase="completed", processed_records=60498,
         output_records=60498, changed_records=43762, error_count=19,
         completed_at="2026-07-17T12:20:00Z",
-        summary_json='{"changed_records":43762}',
+        summary={"changed_records": 43762},
     )
     retained = [
         {"record_index": 41, "task_name": "Normalize 856", "message": "Bad field"}
@@ -281,6 +360,7 @@ def test_terminal_actions_call_job_and_quick_load_services(monkeypatch, tmp_path
     job_row = _operation(
         1, state="completed", phase="completed", completed_at="now",
         job_id=4, job_file_id=5, source_version_id=6,
+        can_apply_result=True,
     )
     quick_row = _operation(2, state="completed", phase="completed", completed_at="now")
     fake_st = _FakeStreamlit(clicked={
@@ -315,6 +395,7 @@ def test_applied_job_result_offers_immutable_rollback(monkeypatch):
     row = _operation(
         state="completed", phase="completed", completed_at="now",
         job_id=4, job_file_id=5, source_version_id=6, applied_version_id=9,
+        can_rollback_result=True,
     )
     fake_st = _FakeStreamlit(clicked={"operation_rollback_1"})
     fake_st.session_state["job_file_version_id"] = 9
@@ -376,6 +457,7 @@ def test_action_errors_are_shown_without_mutating_row(monkeypatch, tmp_path):
     row = _operation(
         state="completed", phase="completed", completed_at="now",
         job_id=4, job_file_id=5, source_version_id=8,
+        can_apply_result=True,
     )
     result = tmp_path / "result.mrc"
     result.write_bytes(b"result")
@@ -391,3 +473,43 @@ def test_action_errors_are_shown_without_mutating_row(monkeypatch, tmp_path):
     renderer.render()
     assert fake_st.errors == ["file changed since the run"]
     assert row["applied_version_id"] is None
+
+
+def test_job_viewer_can_download_but_never_sees_mutation_controls(
+    monkeypatch, tmp_path,
+):
+    result = tmp_path / "result.mrc"
+    result.write_bytes(b"result")
+    fake_st = _FakeStreamlit()
+    row = _operation(
+        state="completed", phase="completed", completed_at="now",
+        job_id=4, job_file_id=5, source_version_id=8,
+        can_access_artifacts=True, can_apply_result=False,
+        can_rollback_result=False,
+    )
+    renderer = _wire(
+        monkeypatch, fake_st, [row],
+        artifacts=[{
+            "role": "result", "filename": "result.mrc",
+            "file_path": str(result),
+        }],
+    )
+
+    renderer.render()
+
+    labels = [button["label"] for button in fake_st.buttons]
+    assert "Prepare result download" in labels
+    assert "Apply as new Job version" not in labels
+    assert "Roll back as a new Job version" not in labels
+
+
+def test_user_controlled_task_name_is_never_rendered_as_markdown(monkeypatch):
+    fake_st = _FakeStreamlit()
+    task_name = "<script>alert('x')</script> **unsafe**"
+    row = _operation(task_names=[task_name])
+    renderer = _wire(monkeypatch, fake_st, [row])
+
+    renderer.render()
+
+    assert any(task_name in text for text in fake_st.rendered_text)
+    assert not any("<script>" in text for text in fake_st.markdown_text)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,7 @@ from marcedit_web.lib import job_files, operation_results, operations, session
 
 _ACTIVE_STATES = {"queued", "running", "cancelling"}
 _TERMINAL_STATES = {"completed", "failed", "cancelled"}
+_STATUS_SIGNATURE_KEY = "operations_status_signature"
 _WORKER_UNAVAILABLE = (
     "Processing service unavailable. Your operation is safely queued and "
     "will start when the worker returns."
@@ -24,6 +24,7 @@ def render() -> None:
     """Render counts, live status, and retained operation history."""
     user = session.current_user_id().strip().lower()
     rows = operations.list_visible_operations(user)
+    st.session_state[_STATUS_SIGNATURE_KEY] = _status_signature(rows)
     _render_counts(rows)
     if not rows:
         st.info(
@@ -54,6 +55,9 @@ def render() -> None:
 
 def _render_active_for_user(user: str) -> None:
     rows = operations.list_visible_operations(user)
+    if _status_signature(rows) != st.session_state.get(_STATUS_SIGNATURE_KEY):
+        _request_full_rerun()
+        return
     active = [row for row in rows if row["state"] in _ACTIVE_STATES]
     _render_active_rows(active, user, operations.worker_health())
 
@@ -84,13 +88,13 @@ def _render_active_rows(
     for row in rows:
         operation_id = int(row["id"])
         with st.container(border=True):
-            st.markdown(
-                f"**{_operation_name(row)}**  \n"
+            st.text(
+                f"{_operation_name(row)}\n"
                 f"{_status_label(row)} · Operation {operation_id}"
             )
-            st.caption(
+            st.text(
                 f"{row['source_label']} · Submitted by {row['submitted_by']} · "
-                f"{_task_names(row)}"
+                f"{_task_names_label(row)}"
             )
             processed = int(row["processed_records"])
             total = int(row["total_records"])
@@ -119,14 +123,12 @@ def _render_active_rows(
 
 def _render_terminal(row: dict[str, Any], user: str) -> None:
     operation_id = int(row["id"])
-    label = (
-        f"{_status_label(row)} · {_operation_name(row)} · "
-        f"Operation {operation_id}"
-    )
+    label = f"{_status_label(row)} · Operation {operation_id}"
     with st.expander(label):
-        st.caption(
+        st.text(_operation_name(row))
+        st.text(
             f"{row['source_label']} · Submitted by {row['submitted_by']} · "
-            f"{_task_names(row)}"
+            f"{_task_names_label(row)}"
         )
         st.caption(
             f"Submitted {row['submitted_at']} · Completed "
@@ -150,7 +152,7 @@ def _render_terminal_summary(row: dict[str, Any]) -> None:
             f"{int(row['changed_records'] or 0):,} changed · "
             f"{int(row['error_count']):,} record errors"
         )
-    summary = _json_object(row.get("summary_json"))
+    summary = row.get("summary", {})
     if summary:
         safe_summary = {
             key: value
@@ -240,7 +242,7 @@ def _render_job_actions(
 ) -> None:
     operation_id = int(row["id"])
     opened_version = st.session_state.get("job_file_version_id")
-    if row.get("applied_version_id") is None:
+    if row.get("can_apply_result"):
         if result_available and st.button(
             "Apply as new Job version",
             key=f"operation_apply_{operation_id}",
@@ -255,7 +257,7 @@ def _render_job_actions(
                     user_email=user,
                     opened_version_id=int(opened_version),
                 )
-    elif row.get("rolled_back_version_id") is None:
+    elif row.get("can_rollback_result"):
         st.success(f"Applied as Job version {row['applied_version_id']}.")
         if st.button(
             "Roll back as a new Job version",
@@ -271,8 +273,10 @@ def _render_job_actions(
                     user_email=user,
                     opened_version_id=int(opened_version),
                 )
-    else:
+    elif row.get("rolled_back_version_id") is not None:
         st.caption(f"Rolled back as Job version {row['rolled_back_version_id']}.")
+    elif row.get("applied_version_id") is not None:
+        st.caption(f"Applied as Job version {row['applied_version_id']}.")
 
 
 def _render_quick_load_actions(
@@ -317,33 +321,25 @@ def _run_action(function, operation_id: int, **kwargs: Any) -> None:
 
 
 def _operation_name(row: dict[str, Any]) -> str:
-    tasks = _tasks(row)
+    tasks = row.get("task_names", [])
     return tasks[0] if len(tasks) == 1 else "Saved-task run"
 
 
-def _task_names(row: dict[str, Any]) -> str:
-    tasks = _tasks(row)
+def _task_names_label(row: dict[str, Any]) -> str:
+    tasks = row.get("task_names", [])
     return "Tasks: " + " → ".join(tasks) if tasks else "Saved tasks"
 
 
-def _tasks(row: dict[str, Any]) -> list[str]:
-    request = _json_object(row.get("request_json"))
-    tasks = request.get("tasks", [])
-    if not isinstance(tasks, list):
-        return []
-    return [
-        str(task.get("name", "")).strip()
-        for task in tasks
-        if isinstance(task, dict) and str(task.get("name", "")).strip()
-    ]
+def _status_signature(rows: list[dict[str, Any]]) -> tuple[tuple[int, str], ...]:
+    return tuple(sorted((int(row["id"]), str(row["state"])) for row in rows))
 
 
-def _json_object(raw: Any) -> dict[str, Any]:
-    try:
-        value = json.loads(raw or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
+def _request_full_rerun() -> None:
+    rerun = getattr(st, "rerun", None)
+    if not callable(rerun):
+        rerun = getattr(st, "experimental_rerun", None)
+    if callable(rerun):
+        rerun()
 
 
 def _status_label(row: dict[str, Any]) -> str:

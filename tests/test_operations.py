@@ -13,6 +13,21 @@ import pytest
 from marcedit_web.lib import db, operations, sandbox
 
 
+SAFE_VISIBLE_KEYS = {
+    "id", "kind", "submitted_by", "job_id", "job_file_id",
+    "source_version_id", "state", "phase", "processed_records",
+    "total_records", "output_records", "changed_records", "error_count",
+    "terminal_message", "submitted_at", "started_at", "completed_at",
+    "artifacts_expire_at", "applied_version_id", "rolled_back_version_id",
+    "source_label", "task_names", "summary", "can_cancel",
+    "can_access_artifacts", "can_apply_result", "can_rollback_result",
+}
+ADMIN_DIAGNOSTIC_KEYS = {
+    "attempt", "lease_owner", "lease_heartbeat_at", "lease_expires_at",
+    "cancel_requested_by", "cancel_requested_at",
+}
+
+
 @pytest.fixture
 def queued_operation():
     db.init_schema()
@@ -49,6 +64,55 @@ def _job_operation(*, submitter="owner@smith.edu"):
         )
         operation_id = int(operation.lastrowid)
     return operation_id, job_id
+
+
+def _completed_job_operation():
+    db.init_schema()
+    now = "2026-07-16T12:00:00Z"
+    with db.connect() as conn:
+        job_id = int(conn.execute(
+            "INSERT INTO jobs(owner_email,name,created_at,updated_at)"
+            " VALUES('owner@smith.edu','Safe view',?,?) RETURNING id",
+            (now, now),
+        ).fetchone()["id"])
+        for email, role in (
+            ("owner@smith.edu", "owner"),
+            ("editor@smith.edu", "editor"),
+            ("viewer@smith.edu", "viewer"),
+        ):
+            conn.execute(
+                "INSERT INTO job_access(job_id,user_email,role,created_at)"
+                " VALUES(?,?,?,?)", (job_id, email, role, now),
+            )
+        file_id = int(conn.execute(
+            "INSERT INTO job_files(job_id,display_name,created_by,created_at,"
+            "updated_by,updated_at) VALUES(?,'vendor.mrc','owner@smith.edu',?,"
+            "'owner@smith.edu',?) RETURNING id", (job_id, now, now),
+        ).fetchone()["id"])
+        version_id = int(conn.execute(
+            "INSERT INTO job_file_versions(job_file_id,version_number,file_path,"
+            "record_count,file_bytes,source_kind,created_by,created_at)"
+            " VALUES(?,1,?,10,100,'upload','owner@smith.edu',?) RETURNING id",
+            (file_id, f"/safe-test/{file_id}.mrc", now),
+        ).fetchone()["id"])
+        conn.execute(
+            "UPDATE job_files SET current_version_id=? WHERE id=?",
+            (version_id, file_id),
+        )
+        operation_id = int(conn.execute(
+            "INSERT INTO operations(kind,submitted_by,job_id,job_file_id,"
+            "source_version_id,state,phase,request_json,total_records,"
+            "output_records,changed_records,summary_json,submitted_at,completed_at)"
+            " VALUES('saved-task-run','other@smith.edu',?,?,?,'completed',"
+            "'completed',?,10,10,2,?, ?, ?) RETURNING id",
+            (
+                job_id, file_id, version_id,
+                json.dumps({"tasks": [{"name": "Safe task", "body": "secret"}]}),
+                json.dumps({"changed_records": 2, "internal": "hide"}),
+                now, now,
+            ),
+        ).fetchone()["id"])
+    return operation_id
 
 
 def _attach_input(operation_id: int, tmp_path: Path) -> Path:
@@ -118,6 +182,108 @@ def test_visible_read_model_includes_safe_source_and_action_metadata(
     assert row["can_cancel"] is True
     assert row["can_access_artifacts"] is True
     assert "file_path" not in row
+
+
+def test_visible_read_model_is_an_exact_safe_allowlist(queued_operation, tmp_path):
+    _attach_input(queued_operation["id"], tmp_path)
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE operations SET request_json=?,lease_owner='worker-secret',"
+            "lease_token='never-return-this',attempt=3 WHERE id=?",
+            (
+                json.dumps({"tasks": [{"name": "Visible", "body": "secret body"}]}),
+                queued_operation["id"],
+            ),
+        )
+
+    row = operations.list_visible_operations("owner@smith.edu")[0]
+
+    assert set(row) == SAFE_VISIBLE_KEYS
+    assert row["task_names"] == ["Visible"]
+    assert row["summary"] == {}
+    serialized = json.dumps(row)
+    assert "secret body" not in serialized
+    assert "never-return-this" not in serialized
+    assert "worker-secret" not in serialized
+
+
+def test_job_action_metadata_matches_current_role_and_state():
+    operation_id = _completed_job_operation()
+
+    owner = operations.list_visible_operations("owner@smith.edu")[0]
+    editor = operations.list_visible_operations("editor@smith.edu")[0]
+    viewer = operations.list_visible_operations("viewer@smith.edu")[0]
+
+    assert owner["id"] == editor["id"] == viewer["id"] == operation_id
+    assert owner["can_apply_result"] is True
+    assert editor["can_apply_result"] is True
+    assert owner["can_cancel"] is False
+    assert viewer["can_apply_result"] is False
+    assert viewer["can_rollback_result"] is False
+    assert viewer["can_access_artifacts"] is True
+    assert set(owner) == set(editor) == set(viewer) == SAFE_VISIBLE_KEYS
+
+    with db.connect() as conn:
+        operation = conn.execute(
+            "SELECT job_file_id,source_version_id FROM operations WHERE id=?",
+            (operation_id,),
+        ).fetchone()
+        applied_version_id = int(conn.execute(
+            "INSERT INTO job_file_versions(job_file_id,version_number,"
+            "parent_version_id,file_path,record_count,file_bytes,source_kind,"
+            "created_by,created_at) VALUES(?,2,?,?,10,100,'queued-task',"
+            "'editor@smith.edu','2026-07-16T12:10:00Z') RETURNING id",
+            (
+                operation["job_file_id"], operation["source_version_id"],
+                f"/safe-test/applied-{operation_id}.mrc",
+            ),
+        ).fetchone()["id"])
+        conn.execute(
+            "UPDATE job_files SET current_version_id=? WHERE id=?",
+            (applied_version_id, operation["job_file_id"]),
+        )
+        conn.execute(
+            "UPDATE operations SET applied_version_id=? WHERE id=?",
+            (applied_version_id, operation_id),
+        )
+
+    owner = operations.list_visible_operations("owner@smith.edu")[0]
+    editor = operations.list_visible_operations("editor@smith.edu")[0]
+    viewer = operations.list_visible_operations("viewer@smith.edu")[0]
+    assert owner["can_apply_result"] is False
+    assert editor["can_apply_result"] is False
+    assert owner["can_rollback_result"] is True
+    assert editor["can_rollback_result"] is True
+    assert viewer["can_rollback_result"] is False
+
+
+def test_admin_read_model_gets_only_explicit_diagnostics(queued_operation, tmp_path):
+    _attach_input(queued_operation["id"], tmp_path)
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO users(email,role,status,created_at) VALUES"
+            "('admin-view@smith.edu','admin','approved',?)",
+            ("2026-07-16T12:00:00Z",),
+        )
+        conn.execute(
+            "UPDATE operations SET request_json=?,lease_owner='worker-a',"
+            "lease_token='hidden-token',attempt=2 WHERE id=?",
+            (
+                json.dumps({"tasks": [{"name": "Visible", "body": "hidden body"}]}),
+                queued_operation["id"],
+            ),
+        )
+
+    row = operations.list_visible_operations("admin-view@smith.edu")[0]
+
+    assert set(row) == SAFE_VISIBLE_KEYS | ADMIN_DIAGNOSTIC_KEYS
+    assert row["lease_owner"] == "worker-a"
+    assert row["can_cancel"] is True
+    assert row["can_access_artifacts"] is False
+    assert row["can_apply_result"] is False
+    serialized = json.dumps(row)
+    assert "hidden-token" not in serialized
+    assert "hidden body" not in serialized
 
 
 def test_job_operation_visibility_follows_current_job_access():

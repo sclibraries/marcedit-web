@@ -20,6 +20,18 @@ from . import db, sandbox
 
 logger = logging.getLogger("marcedit_web.operations")
 
+_VISIBLE_OPERATION_FIELDS = (
+    "id", "kind", "submitted_by", "job_id", "job_file_id",
+    "source_version_id", "state", "phase", "processed_records",
+    "total_records", "output_records", "changed_records", "error_count",
+    "terminal_message", "submitted_at", "started_at", "completed_at",
+    "artifacts_expire_at", "applied_version_id", "rolled_back_version_id",
+)
+_ADMIN_DIAGNOSTIC_FIELDS = (
+    "attempt", "lease_owner", "lease_heartbeat_at", "lease_expires_at",
+    "cancel_requested_by", "cancel_requested_at",
+)
+
 
 class OperationError(ValueError):
     """Raised when an operation action is missing or unauthorized."""
@@ -67,14 +79,29 @@ def get_operation(operation_id: int) -> dict[str, Any]:
 
 
 def list_visible_operations(user_email: str) -> list[dict[str, Any]]:
-    """Return operations whose current source access includes the user."""
+    """Return a safe page read model for operations visible to the user."""
     db.init_schema()
     email = user_email.strip().lower()
     with db.connect() as conn:
         is_admin = _is_admin(conn, email)
         select = (
-            "SELECT operations.*,jobs.name AS source_job_name,"
+            "SELECT operations.id,operations.kind,operations.submitted_by,"
+            " operations.job_id,operations.job_file_id,"
+            " operations.source_version_id,operations.state,operations.phase,"
+            " operations.processed_records,operations.total_records,"
+            " operations.output_records,operations.changed_records,"
+            " operations.error_count,operations.terminal_message,"
+            " operations.submitted_at,operations.started_at,"
+            " operations.completed_at,operations.artifacts_expire_at,"
+            " operations.applied_version_id,operations.rolled_back_version_id,"
+            " operations.request_json AS internal_request_json,"
+            " operations.summary_json AS internal_summary_json,"
+            " operations.attempt,operations.lease_owner,"
+            " operations.lease_heartbeat_at,operations.lease_expires_at,"
+            " operations.cancel_requested_by,operations.cancel_requested_at,"
+            " jobs.name AS source_job_name,"
             " job_files.display_name AS source_file_name,"
+            " job_files.current_version_id AS source_current_version_id,"
             " job_file_versions.version_number AS source_version_number,"
             " job_access.role AS viewer_role,"
             " (SELECT filename FROM operation_artifacts"
@@ -103,36 +130,58 @@ def list_visible_operations(user_email: str) -> list[dict[str, Any]]:
                 " ORDER BY operations.submitted_at DESC, operations.id DESC",
                 (email, email),
             ).fetchall()
-    visible = []
+    visible: list[dict[str, Any]] = []
     for row in rows:
-        item = _dict(row)
+        raw = _dict(row)
         has_source_access = (
-            item["submitted_by"] == email
-            if item["job_id"] is None
-            else item["viewer_role"] is not None
+            raw["submitted_by"] == email
+            if raw["job_id"] is None
+            else raw["viewer_role"] is not None
         )
+        can_mutate_job = (
+            raw["job_id"] is not None
+            and raw["viewer_role"] in {"owner", "editor"}
+        )
+        item = {key: raw[key] for key in _VISIBLE_OPERATION_FIELDS}
+        item["task_names"] = _safe_task_names(raw["internal_request_json"])
+        item["summary"] = _safe_operation_summary(raw["internal_summary_json"])
         item["can_access_artifacts"] = has_source_access
         item["can_cancel"] = (
-            item["submitted_by"] == email
-            or is_admin
-            or item["viewer_role"] == "owner"
+            raw["state"] in {"queued", "running", "cancelling"}
+            and (
+                raw["submitted_by"] == email
+                or is_admin
+                or raw["viewer_role"] == "owner"
+            )
         )
-        if item["job_id"] is None:
-            item["source_label"] = item["source_input_name"] or "Quick Load file"
+        item["can_apply_result"] = (
+            can_mutate_job
+            and raw["state"] == "completed"
+            and raw["job_file_id"] is not None
+            and raw["source_version_id"] is not None
+            and raw["source_current_version_id"] == raw["source_version_id"]
+            and raw["applied_version_id"] is None
+        )
+        item["can_rollback_result"] = (
+            can_mutate_job
+            and raw["state"] == "completed"
+            and raw["job_file_id"] is not None
+            and raw["source_version_id"] is not None
+            and raw["applied_version_id"] is not None
+            and raw["source_current_version_id"] == raw["applied_version_id"]
+            and raw["rolled_back_version_id"] is None
+        )
+        if raw["job_id"] is None:
+            item["source_label"] = raw["source_input_name"] or "Quick Load file"
         else:
-            file_name = item["source_file_name"] or "Job file"
-            version = item["source_version_number"]
+            file_name = raw["source_file_name"] or "Job file"
+            version = raw["source_version_number"]
             version_label = f" · v{version}" if version is not None else ""
-            job_name = item["source_job_name"] or "Job"
+            job_name = raw["source_job_name"] or "Job"
             item["source_label"] = f"{job_name} · {file_name}{version_label}"
-        for internal_name in (
-            "source_job_name",
-            "source_file_name",
-            "source_version_number",
-            "source_input_name",
-            "viewer_role",
-        ):
-            item.pop(internal_name, None)
+        if is_admin:
+            for key in _ADMIN_DIAGNOSTIC_FIELDS:
+                item[key] = raw[key]
         visible.append(item)
     return visible
 
@@ -930,6 +979,36 @@ def _append_event(
             created_at,
         ),
     )
+
+
+def _safe_task_names(raw: str) -> list[str]:
+    try:
+        request = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    tasks = request.get("tasks", []) if isinstance(request, dict) else []
+    if not isinstance(tasks, list):
+        return []
+    return [
+        str(task.get("name", "")).strip()
+        for task in tasks
+        if isinstance(task, dict) and str(task.get("name", "")).strip()
+    ]
+
+
+def _safe_operation_summary(raw: str) -> dict[str, int]:
+    try:
+        summary = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(summary, dict):
+        return {}
+    keys = {"input_records", "output_records", "changed_records", "error_count"}
+    return {
+        key: value
+        for key, value in summary.items()
+        if key in keys and isinstance(value, int) and value >= 0
+    }
 
 
 def _dict(row: sqlite3.Row) -> dict[str, Any]:
