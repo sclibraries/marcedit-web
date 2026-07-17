@@ -1,87 +1,79 @@
-# Task 8 Report — Immutable labeled exports and manual load audit
+# Task 8 Report — Private Operations page
 
-Ticket: [TASK-151](../../.tickets/TASK-151-job-file-work-items-implementation.md)
+Ticket: [TASK-156](../../.tickets/TASK-156-durable-operation-queue.md)
 
 ## Status
 
-Implemented and verified. TASK-151 remains In-Progress because later plan tasks
-are outside this Task 8 slice.
+Implemented, verified, and committed as `224ff095a1adcba77e13d541af6acd670b109828`.
+TASK-156 remains In-Progress because Tasks 9–11 remain outside this slice.
 
 ## Implemented
 
-- Added transactional `create_export`, `get_export`, `list_exports`, and
-  `mark_export_loaded` services.
-- Export creation rechecks owner/editor access, archive state, active checkout,
-  and the exact opened current version under `BEGIN IMMEDIATE`.
-- Export bytes stream to unique retained per-file `exports/` paths and are
-  checked against the immutable version's byte and record counts before the row
-  is inserted.
-- Exact approved current versions create `ready` exports and set the file to
-  `exported`; unapproved versions create visibly distinct `draft` exports.
-- Later version adoption continues to supersede only draft/ready exports;
-  loaded audit evidence and all retained bytes remain untouched.
-- Manual load confirmation requires owner/editor access and a destination, does
-  not require checkout, records external id/note/actor/timestamp, and does not
-  complete the file.
-- History & review now renders the file's export form/list, explicit lifecycle
-  labels, two-step downloads from each retained export path, and manual load
-  controls. Completion remains a separate existing workflow action.
+- Registered `Operations` only in private navigation under Start, using the
+  existing `:material/pending_actions:` icon convention, plus a thin page shim
+  that initializes the session and shared sidebar.
+- Added safe display and action metadata to the existing visible-operation
+  read model: source label, artifact-access flag, and current cancel permission.
+  Internal artifact paths and task bodies are not exposed by the renderer.
+- Added running, queued, needs-attention, and completed metrics; active status
+  cards with phase, exact progress, percentage, elapsed time, source,
+  submitter, ordered task names, cancellation, and exact worker-unavailable
+  messaging.
+- Limited the two-second Streamlit fragment to active status. Older Streamlit
+  releases retain a manual Material-icon Refresh control.
+- Added compact terminal expanders with completion counts, bounded retained
+  errors, ordered audit events, timestamps, expiration, and safe summary data.
+- Added authorization-preserving Job download/apply/rollback and Quick Load
+  download/reopen actions. Artifact bytes are read only after explicit Prepare
+  download, and expired bytes are never exposed even before cleanup runs.
+- Action errors from operation and Job-file services remain visible without
+  speculative local state mutation; successful idempotent actions rerun from
+  the durable source of truth.
 
-## TDD Evidence
+## Design and accessibility
 
-- Service RED: `tests/test_job_file_workflow.py` failed because the four export
-  service APIs did not exist.
-- Service GREEN: `11 passed`.
-- UI RED: two renderer tests failed because `render_file_exports` did not exist.
-- UI GREEN: both renderer tests and the History integration test passed.
-- Review-fix RED: the first focused run produced three intended failures for
-  missing post-validation checkout recheck, destructive UUID collision, and
-  over-broad Create export controls (`3 failed, 3 passed`). A separate cleanup
-  ownership regression then failed because a missing source could delete a
-  colliding retained path (`1 failed`).
-- Review-fix GREEN: post-validation authority, collision retry, partial-copy
-  cleanup, pre-persist rollback, persisted-then-raised reconciliation,
-  holder-only UI, and collision cleanup-ownership regressions all passed
-  (`7 passed` plus the final ownership regression `1 passed`).
+- Followed a restrained industrial/utilitarian operations-console direction
+  within the existing Streamlit design rather than introducing a new theme,
+  font, asset, or CSS system.
+- Used a predictable hierarchy: counts, live work, then historical detail.
+  Bordered active cards and terminal expanders keep dense operational detail
+  scannable on wide and narrow layouts.
+- Status is always expressed in text, not color alone. Buttons retain explicit
+  labels and aligned Material icons. Native Streamlit metrics, progress,
+  warnings, expanders, and controls preserve keyboard and contrast behavior.
+
+## TDD evidence
+
+- Initial Docker RED: `11 failed, 4 passed`; failures were the missing private
+  route/renderer. A separate read-model RED failed with `KeyError:
+  'source_label'`.
+- First integrated GREEN: `16 passed` for renderer, navigation, and safe
+  read-model metadata.
+- Retention-safety RED: a retained-but-expired result was downloadable before
+  asynchronous cleanup removed it (`1 failed`).
+- Retention-safety GREEN and final focused suite: `93 passed`.
 
 ## Verification
 
-- Focused Task 8 suite:
-  `PYTHONPATH=. pytest -q tests/test_job_files.py tests/test_tasks_export.py tests/test_job_file_workflow.py tests/test_history_render.py`
-  — `53 passed`.
-- Full zero-skip suite in the declared Python 3.9 container with the complete
-  worktree mounted read-only:
-  `docker compose run --rm -v /Users/roconnell/Projects/work/marcedit-web/.worktrees/task-151-job-file-work-items:/app:ro marcedit-web pytest -q`
-  — `1199 passed in 17.57s`.
+- Authoritative focused Docker suite:
+  `pytest tests/test_operations_render.py tests/test_app_pages.py
+  tests/test_operations.py tests/test_history_render.py tests/test_jobs_page.py -q`
+  — `93 passed in 1.66s`, no skips.
+- Fresh authoritative full Docker suite after final changes:
+  `pytest -q` — `1428 passed, 12 skipped in 33.68s`.
+- All 12 skips were explicitly reported existing build-context limitations for
+  deployment/docs/Docker source files omitted from the runtime image; no Task 8
+  UI, queue, History, or Jobs tests were skipped.
 - `git diff --check` passed.
+- Post-commit `git status --short` was clean.
 
-## Review Fix Verification
+## Scoped simplify and self-review
 
-- Focused Task 8/export/history/adoption suite in the Python 3.9 container:
-  `pytest -q tests/test_job_files.py tests/test_tasks_export.py tests/test_job_file_workflow.py tests/test_history_render.py tests/test_job_file_mutations.py`
-  — `81 passed in 2.37s`.
-- Fresh full zero-skip suite after all review fixes:
-  `docker compose run --rm -v /Users/roconnell/Projects/work/marcedit-web/.worktrees/task-151-job-file-work-items:/app:ro marcedit-web pytest -q`
-  — `1205 passed in 16.81s`.
-- Export creation now rechecks role, archive state, exact current version, and
-  the unexpired holder checkout after copy/MARC validation and immediately
-  before insertion/status/activity changes.
-- Export copy uses exclusive `xb` target creation with collision retry. Cleanup
-  removes only a path exclusively created by the attempt and reconciles any
-  surviving path against SQLite before deletion.
-- Create export controls now require a non-archived owner/editor who actively
-  holds the file checkout with the exact current opened-version token. Other
-  users retain list/download visibility.
-
-## Concerns
-
-- Host Python lacked `streamlit_ace`, so a direct host full-suite collection was
-  invalid. The standard container image also omits repository-only benchmark,
-  deploy, and documentation files, producing two failures and nine skips. The
-  final complete-worktree container run resolved both environment limitations
-  and had zero skips.
-- Task 8 review findings were reproduced with regression tests and resolved.
-- Pre-existing Task 7 Minor findings remain intentionally out of scope.
-- My Task 8 commands did **not** create the untracked `uv.lock`; no command in
-  either implementation pass invoked `uv`. The file remains untouched and is
-  not staged.
+- Reviewed only the Task 8 diff for redundant rendering branches, action
+  leakage, unbounded details, path/body exposure, and Python 3.9 compatibility.
+- Kept service authorization and deterministic formatting in existing Python
+  boundaries; no speculative UI abstraction or theme layer was added.
+- Removed a non-established icon argument from the final download control while
+  keeping the Material icon on its Prepare action for compatibility with the
+  application's supported Streamlit range.
+- No blockers or unresolved UI/API contract conflicts remain in this slice.
