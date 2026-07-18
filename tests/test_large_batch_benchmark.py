@@ -66,8 +66,11 @@ def test_queued_benchmark_reports_durable_chunked_result(tmp_path):
         12,
         chunk_records=5,
         workdir=tmp_path / "queued-benchmark",
-        per_chunk_limit_seconds=0.75,
-        chunk_delay_seconds=0.3,
+        # Three deliberate 0.75-second chunk delays make the total run exceed
+        # the two-second per-chunk limit without leaving a load-sensitive
+        # sub-second margin for sandbox startup and MARC I/O in any one chunk.
+        per_chunk_limit_seconds=2.0,
+        chunk_delay_seconds=0.75,
     )
 
     assert result["state"] == "completed"
