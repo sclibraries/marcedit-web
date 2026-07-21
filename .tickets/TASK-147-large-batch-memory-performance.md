@@ -8,8 +8,10 @@ Scope:
   streaming artifacts and compact session metadata.
 - Add bounded batch concurrency, performance telemetry, and Red Hat
   systemd guardrails for a 2 GB private-service ceiling.
-- Preserve synchronous workflows, MARC ordering, rollback snapshots,
-  existing task sandboxing, and current user-visible behavior.
+- Preserve non-Diff synchronous workflows, MARC ordering, rollback snapshots,
+  existing task sandboxing, and their current user-visible behavior. TASK-165
+  intentionally moves Diff execution, status, results, and downloads to the
+  durable queue contract.
 
 Success Criteria:
 - Record 100,000 lookup is position-independent and completes in under
@@ -37,7 +39,19 @@ Implementation Evidence:
   No unresolved Critical or Important code findings remain.
 
 Production Acceptance Remaining:
+- Deploy and record the candidate SHA containing TASK-130, the installed and
+  verified TASK-133 watchdog/memory controls, and completed TASK-162 children
+  before measuring acceptance.
+- Complete TASK-162 so the acceptance run measures browser-to-durable ingress
+  rather than Streamlit's current whole-upload memory buffer.
 - Run the documented three-session authenticated smoke test on the RHEL host
-  and verify cgroup `MemoryCurrent` stays below 1.5 GB with zero `oom` and
-  `oom_kill` events. This cannot be established from the local Linux
-  container, so the ticket remains In-Progress until that evidence is added.
+  through the supported browser upload control and queued processing. Include a
+  checked-in fixed-seed fixture manifest with exact byte sizes, record counts,
+  checksums, expected Diff overlap/output counts, and a synchronized concurrency
+  start. Record the deployed Git SHA, all app/ingress/worker cgroup memory,
+  aggregate host memory and disk, watchdog restart counters, and watch-log RSS.
+- Verify `MemoryCurrent` stays below the approved cgroup limits with zero `oom`,
+  `oom_kill`, watchdog restart, skipped record, checksum mismatch, integrity
+  failure, or silent test skip.
+- This cannot be established from the local Linux container, so the ticket
+  remains In-Progress until that evidence is added.

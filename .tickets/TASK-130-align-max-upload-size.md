@@ -9,9 +9,9 @@ Scope (REVISED during implementation — original premise was wrong):
   the Diff workflow. Dropped that change.
 - What lands here instead: fix the Home uploader help text that claimed
   a 2 GB limit (the Home path rejects >200 MB). Done alongside TASK-131.
-- The RAM exposure the lower cap would have addressed is closed
-  structurally instead: TASK-131/132 (Home widget release + streaming
-  ingest) and TASK-134 (Diff widget release).
+- TASK-131/132 reduce Home retention and extra copies, and TASK-134 reduces
+  Diff retention. They do not remove Streamlit's whole-request upload peak;
+  TASK-162 owns bounded-memory large-file ingress outside Streamlit.
 - OPEN QUESTION for production (needs ITS/user): does
   /home/www/html/marcedit-web/.env set MARCEDIT_WEB_MAX_UPLOAD_BYTES?
   docker-compose.pull.yml historically defaulted it to 2147483648 (2 GiB),
@@ -22,8 +22,21 @@ Scope (REVISED during implementation — original premise was wrong):
 
 Success Criteria:
 - Help text no longer claims 2 GB. (done)
-- Server .env checked for MARCEDIT_WEB_MAX_UPLOAD_BYTES; decision
-  recorded on the effective production Home cap.
+- `session.max_upload_bytes()` and `quotas.max_upload_bytes()` no longer carry
+  conflicting private defaults. `quotas.max_home_upload_bytes()` becomes the
+  authority, uses `MARCEDIT_WEB_MAX_HOME_UPLOAD_BYTES`, defaults to 200 MiB in
+  private mode and 5 MiB in public mode, and fails loud on an invalid or
+  nonpositive configured value. Session code delegates to that resolver.
+- Compose, systemd, `.env.example`, preflight checks, and help text use the Home
+  variable above. The legacy `MARCEDIT_WEB_MAX_UPLOAD_BYTES` is removed rather
+  than serving as a second fallback authority.
+- Server `.env` checked for `MARCEDIT_WEB_MAX_UPLOAD_BYTES`; the production
+  legacy value is migrated or removed, and the replacement
+  `MARCEDIT_WEB_MAX_HOME_UPLOAD_BYTES` value is verified rather than inferred
+  from Compose defaults.
+- The Home cap decision is independent of TASK-162's 2 GiB durable-ingress
+  target, which uses `MARCEDIT_WEB_DURABLE_MAX_FILE_BYTES` with an absolute
+  maximum of 2,147,483,648 bytes.
 
-Status: In-Progress (2026-07-08: help text fixed; blocked on server .env
-check for the production cap question)
+Status: In-Progress (help text fixed; remaining work is the single-authority
+code change plus the production `.env` verification)
