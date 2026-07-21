@@ -14,9 +14,11 @@ marc-diff.zip
 marc-processing.zip
 README.md
 .tickets
-data/audit
-data/tasks/users
-data/tasks/shared
+# Runtime state is mounted at /app/data. Only immutable bootstrap files belong
+# in an image; local catalog records and SQLite state must never enter context.
+data/*
+!data/.gitkeep
+!data/marc-rules.txt
 *.png
 *.jpg
 *.jpeg

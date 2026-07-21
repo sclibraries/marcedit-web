@@ -438,6 +438,61 @@ def test_stale_worker_check_has_exact_error(capsys):
     assert captured.err == "operation worker heartbeat is stale or missing\n"
 
 
+def test_worker_check_does_not_create_or_migrate_database(capsys):
+    """A recurring container probe must inspect state without mutating it."""
+    database = db.db_path()
+    assert not database.exists()
+
+    assert worker.main(["--check"]) == 1
+
+    assert not database.exists()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "operation worker heartbeat is stale or missing\n"
+
+
+def test_worker_check_reports_database_failure_without_leaking_detail(capsys):
+    """Operators need a distinct safe signal when heartbeat storage is damaged."""
+    db.db_path().write_bytes(b"not a sqlite database")
+
+    assert worker.main(["--check"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "operation worker health database check failed\n"
+
+
+def test_worker_check_sanitizes_malformed_heartbeat_timestamp(capsys):
+    """Damaged heartbeat data must not leak a traceback from the health probe."""
+    operations.heartbeat_worker("worker-a", current_operation_id=None)
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE queue_worker_status SET heartbeat_at='not-a-timestamp'"
+            " WHERE singleton=1"
+        )
+
+    assert worker.main(["--check"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "operation worker health database check failed\n"
+
+
+def test_worker_check_sanitizes_malformed_heartbeat_schema(capsys):
+    """A damaged heartbeat table must produce the same bounded diagnostic."""
+    with db.connect() as conn:
+        conn.execute(
+            "CREATE TABLE queue_worker_status(singleton INTEGER PRIMARY KEY)"
+        )
+        conn.execute("INSERT INTO queue_worker_status(singleton) VALUES (1)")
+
+    assert worker.main(["--check"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "operation worker health database check failed\n"
+
+
 def test_run_forever_stops_after_current_control_boundary(monkeypatch):
     handlers = {}
     calls = []

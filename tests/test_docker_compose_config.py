@@ -81,6 +81,35 @@ def test_pull_compose_worker_uses_published_image_and_shared_private_state():
     assert "restart: unless-stopped" in worker
 
 
+@pytest.mark.parametrize("compose_name", ["docker-compose.yml", "docker-compose.pull.yml"])
+def test_compose_worker_overrides_web_http_healthcheck(compose_name, tmp_path):
+    """A non-HTTP worker must not inherit the web container's HTTP probe."""
+    if shutil.which("docker") is None:
+        pytest.skip("docker CLI is required to render Compose configuration")
+    (tmp_path / compose_name).write_text(_build_context_file(compose_name))
+    env = os.environ.copy()
+    env["MARCEDIT_WEB_IMAGE"] = "example.invalid/marcedit-web:test"
+    result = subprocess.run(
+        ["docker", "compose", "-f", compose_name, "config", "--format", "json"],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    worker = json.loads(result.stdout)["services"]["marcedit-web-worker"]
+
+    assert worker["healthcheck"] == {
+        "test": ["CMD-SHELL", "python -m marcedit_web.ops.worker --check"],
+        "timeout": "3s",
+        "interval": "15s",
+        "retries": 3,
+        "start_period": "10s",
+    }
+    assert "ports" not in worker
+    assert worker["depends_on"]["marcedit-web"]["condition"] == "service_healthy"
+
+
 def test_pull_compose_app_image_supplies_dependency_healthcheck():
     """Worker startup ordering relies on the published image's real DB probe."""
     compose = _build_context_file("docker-compose.pull.yml")
@@ -171,6 +200,22 @@ def test_dockerignore_excludes_streamlit_secrets():
     never be copied into an image even by a broad COPY. (TASK-069)"""
     content = _build_context_file(".dockerignore")
     assert ".streamlit/secrets.toml" in content
+
+
+def test_docker_build_context_allowlists_only_static_data_files():
+    """Catalog records and runtime state must never enter a release image."""
+    patterns = _build_context_file(".dockerignore").splitlines()
+    data_patterns = [
+        pattern
+        for pattern in patterns
+        if pattern.startswith("data/") or pattern.startswith("!data/")
+    ]
+
+    assert data_patterns == [
+        "data/*",
+        "!data/.gitkeep",
+        "!data/marc-rules.txt",
+    ]
 
 
 def test_dockerfile_does_not_bake_streamlit_secrets():

@@ -758,19 +758,56 @@ def heartbeat_worker(
     return _dict(row)
 
 
-def worker_health(*, max_age_seconds: int = 15) -> dict[str, Any]:
+def worker_health(
+    *,
+    max_age_seconds: int = 15,
+    initialize_schema: bool = True,
+) -> dict[str, Any]:
     if max_age_seconds <= 0:
         raise OperationError("max_age_seconds must be positive")
-    db.init_schema()
-    with db.connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM queue_worker_status WHERE singleton=1"
-        ).fetchone()
+    if initialize_schema:
+        db.init_schema()
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM queue_worker_status WHERE singleton=1"
+            ).fetchone()
+    else:
+        database = db.db_path().resolve()
+        if not database.is_file():
+            return {"available": False, "row": None}
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                f"{database.as_uri()}?mode=ro",
+                uri=True,
+            )
+            conn.row_factory = sqlite3.Row
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table'"
+                " AND name='queue_worker_status'"
+            ).fetchone()
+            row = (
+                conn.execute(
+                    "SELECT * FROM queue_worker_status WHERE singleton=1"
+                ).fetchone()
+                if has_table is not None
+                else None
+            )
+        except sqlite3.Error:
+            raise OperationError(
+                "worker health database check failed"
+            ) from None
+        finally:
+            if conn is not None:
+                conn.close()
     if row is None:
         return {"available": False, "row": None}
-    available = _parse_iso(row["heartbeat_at"]) >= _now() - timedelta(
-        seconds=max_age_seconds
-    )
+    try:
+        available = _parse_iso(row["heartbeat_at"]) >= _now() - timedelta(
+            seconds=max_age_seconds
+        )
+    except (IndexError, TypeError, ValueError):
+        raise OperationError("worker health database check failed") from None
     return {"available": available, "row": _dict(row)}
 
 

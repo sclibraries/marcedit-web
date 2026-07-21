@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1383,6 +1384,43 @@ def test_worker_health_uses_persisted_heartbeat_staleness():
     assert health["row"]["worker_id"] == "worker-a"
     with pytest.raises(operations.OperationError, match="max_age_seconds must be positive"):
         operations.worker_health(max_age_seconds=0)
+
+
+def test_read_only_worker_health_handles_database_without_queue_schema():
+    """A probe before schema creation is unavailable, not a migration trigger."""
+    with sqlite3.connect(db.db_path()) as conn:
+        conn.execute("CREATE TABLE unrelated(value TEXT)")
+
+    assert operations.worker_health(initialize_schema=False) == {
+        "available": False,
+        "row": None,
+    }
+    with sqlite3.connect(db.db_path()) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert tables == {"unrelated"}
+
+
+def test_read_only_worker_health_observes_fresh_and_stale_wal_heartbeat(monkeypatch):
+    """The non-mutating probe must still observe live committed worker state."""
+    operations.heartbeat_worker("worker-a", current_operation_id=None)
+    monkeypatch.setattr(
+        operations.db,
+        "init_schema",
+        lambda: pytest.fail("read-only worker health initialized schema"),
+    )
+
+    assert operations.worker_health(initialize_schema=False)["available"] is True
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE queue_worker_status SET heartbeat_at='2000-01-01T00:00:00Z'"
+            " WHERE singleton=1"
+        )
+    health = operations.worker_health(initialize_schema=False)
+    assert health["available"] is False
+    assert health["row"]["worker_id"] == "worker-a"
 
 
 def test_result_download_limit_is_positive_and_configurable(monkeypatch):

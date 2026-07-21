@@ -281,7 +281,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     if args.check:
-        if operations.worker_health(max_age_seconds=15)["available"]:
+        try:
+            available = operations.worker_health(
+                max_age_seconds=15,
+                initialize_schema=False,
+            )["available"]
+        except operations.OperationError:
+            print(
+                "operation worker health database check failed",
+                file=sys.stderr,
+            )
+            return 1
+        if available:
             print("ok")
             return 0
         print(
