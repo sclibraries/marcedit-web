@@ -18,16 +18,22 @@
 - Each Diff source file remains capped at 2 GiB by `MARCEDIT_WEB_MAX_DIFF_BYTES`.
 - Total staged bytes across old and new sides default to 8 GiB through `MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES=8589934592`.
 - Physical admission requires the complete new candidate plus `MARCEDIT_WEB_DIFF_MIN_FREE_BYTES=1073741824`, even for replacement.
-- At most 1,000 logical staged files exist across both sides.
+- At most 200 logical staged files exist across both sides. The unchanged
+  render path opens roughly two descriptors per file (a handle and mmap), so
+  200 leaves operating headroom under the expected 1,024-descriptor service
+  limit without changing production units for containment code.
 - A successful candidate is written and closed at a generated path before state changes; failed replacement preserves the prior entry and derived results.
 - The last successfully written duplicate display name in upload order wins.
 - Accepted add/replacement/removal invalidates all derived Diff review/output state; rejected-only rounds do not.
 - Every nonempty side rotates its uploader key, including rejected-only and mixed rounds, then reruns once after both sides are processed.
-- Persist at most 20 rejection entries with 255-character filenames and 512-character reasons for one post-ingest render; audit every rejection even when the UI summary is truncated.
+- Persist at most 20 rejection entries with 255-character filenames and 512-character reasons for one post-ingest render; audit every rejection even when the UI summary is truncated. This acknowledgement is intentionally one-shot and is not repeated by the next pagination or form interaction.
 - “Start over” removes the whole active Diff work tree before forgetting state. Do not add an abandoned-tree sweeper.
 - Keep synchronous `diff_output_blobs` behavior unchanged; TASK-162 removes it later.
 - Preserve unrelated workspace changes and untracked runtime data.
 - Follow strict red-green-refactor: no production edit before its failing test is observed.
+- Create every implementation commit on `task-134-diff-uploader`. Immediately
+  after each `git commit`, verify `git branch --show-current`; if it reports
+  `main`, stop and use the recovery procedure in Task 1 before continuing.
 - Mark TASK-134 `In-Progress` only after the implementation worktree exists; mark it `Completed` only after all tests and independent code review pass.
 
 ## File Structure
@@ -61,13 +67,45 @@ No queue, durable artifact, worker, ingress, download, merge, split, or TASK-163
 
 - [ ] **Step 1: Create the isolated worktree and mark the ticket In-Progress**
 
-Use `superpowers:using-git-worktrees`. In that worktree, change only the ticket status line:
+Use `superpowers:using-git-worktrees`. Create the branch from the current local
+`HEAD`, not `origin/main`, because the remote branch does not yet contain this
+ticket, design, plan, or their required Diff-page baseline:
+
+```bash
+git worktree add -b task-134-diff-uploader ../marcedit-web-task-134 HEAD
+cd ../marcedit-web-task-134
+test "$(git branch --show-current)" = "task-134-diff-uploader"
+test -f docs/superpowers/plans/2026-07-21-task-134-diff-uploader-containment.md
+test -f docs/superpowers/specs/2026-07-21-diff-ingress-safety-design.md
+```
+
+In that worktree, change only the ticket status line:
 
 ```markdown
 Status: In-Progress
 ```
 
-Confirm the worktree contains the approved design and this plan before editing production files.
+The commands above confirm the worktree contains the approved design and this
+plan before production edits begin.
+
+After every commit in this plan, run the branch assertion shown in that task.
+If it reports `main`, do not make another edit or commit. From the accidental
+main checkout, first verify both tracked worktree and index are clean, then
+move that one commit to the feature branch and restore main:
+
+```bash
+task_accidental_sha="$(git rev-parse HEAD)"
+git diff --quiet
+git diff --cached --quiet
+git -C ../marcedit-web-task-134 cherry-pick "$task_accidental_sha"
+git reset --keep "$task_accidental_sha^"
+cd ../marcedit-web-task-134
+test "$(git branch --show-current)" = "task-134-diff-uploader"
+```
+
+If either clean-tree assertion fails, stop and inspect the changes instead of
+resetting. This recovery is only for the immediately preceding accidental
+commit.
 
 - [ ] **Step 2: Write failing exact-default and override tests**
 
@@ -148,6 +186,7 @@ Expected: all tests pass with no skips.
 ```bash
 git add .tickets/TASK-134-diff-uploader-widget-memory.md marcedit_web/lib/quotas.py tests/test_quotas.py
 git commit -m "feat: add Diff staging containment limits"
+test "$(git branch --show-current)" = "task-134-diff-uploader"
 ```
 
 ---
@@ -418,7 +457,7 @@ def test_last_successful_duplicate_wins_and_superseded_candidate_is_removed(
 
 
 def test_total_file_count_admission_spans_both_sides(state, monkeypatch):
-    """The 1,000-file containment count spans old and new sides."""
+    """The configured file-count containment spans old and new sides."""
     monkeypatch.setattr(diff_uploads, "MAX_STAGED_FILES", 2)
     monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_BYTES", "100")
     monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES", "1000")
@@ -538,7 +577,7 @@ from . import quotas
 
 
 CHUNK_BYTES = 1024 * 1024
-MAX_STAGED_FILES = 1000
+MAX_STAGED_FILES = 200
 MAX_REJECTIONS = 20
 MAX_REJECTION_FILENAME_CHARS = 255
 MAX_REJECTION_REASON_CHARS = 512
@@ -885,6 +924,7 @@ Expected: all thirteen tests pass with no skips.
 ```bash
 git add marcedit_web/lib/diff_uploads.py tests/test_diff_uploads.py
 git commit -m "feat: stage Diff upload rounds atomically"
+test "$(git branch --show-current)" = "task-134-diff-uploader"
 ```
 
 ---
@@ -1100,7 +1140,7 @@ Run:
 pytest tests/test_diff_uploads.py -q
 ```
 
-Expected: the four new tests fail because the lifecycle APIs/public key tuple are missing or incomplete.
+Expected: the nine new tests fail because the lifecycle APIs/public key tuple are missing or incomplete.
 
 - [ ] **Step 3: Implement exact lifecycle behavior**
 
@@ -1151,7 +1191,6 @@ def remove_staged_file(
     path.relative_to(root)
     path.unlink()
     state[_BUFFER_KEYS[side]] = [item for item in entries if item != match]
-    state.pop(f"diff_{side}_remove_choice", None)
     invalidate_derived(state)
 
 
@@ -1180,6 +1219,7 @@ Expected: all tests pass with no skips.
 ```bash
 git add marcedit_web/lib/diff_uploads.py tests/test_diff_uploads.py
 git commit -m "feat: manage Diff staged-file lifecycle"
+test "$(git branch --show-current)" = "task-134-diff-uploader"
 ```
 
 ---
@@ -1240,7 +1280,7 @@ Expected: failure because the page still defines `_read_uploaded`, calls `getbuf
 
 In `6_Diff.py`:
 
-1. Remove unused `logging`, `re`, `tempfile`, `_FILENAME_SAFE_RE`,
+1. Remove unused `io`, `logging`, `re`, `tempfile`, `_FILENAME_SAFE_RE`,
    `_safe_filename`, `_diff_workdir`, `_read_uploaded`, and `logger`. Keep the
    direct `audit_event` import for the completion helper call below.
 2. Replace the current library import with:
@@ -1341,6 +1381,7 @@ def _render_file_removal(side: str, entries: list[tuple[str, str]]) -> None:
         except (KeyError, OSError, ValueError) as exc:
             st.error(f"Could not remove `{choice}`: {exc}")
         else:
+            st.session_state.pop(f"diff_{side}_remove_choice", None)
             st.rerun()
 ```
 
@@ -1371,6 +1412,7 @@ Expected: exit 0 with no output.
 ```bash
 git add marcedit_web/views/6_Diff.py tests/test_diff_page_upload_contract.py
 git commit -m "feat: rotate Diff upload widgets after ingest"
+test "$(git branch --show-current)" = "task-134-diff-uploader"
 ```
 
 ---
@@ -1476,6 +1518,7 @@ Expected: all pass; report any Docker-dependent skips explicitly.
 ```bash
 git add .env.example docker-compose.pull.yml tests/test_docker_compose_config.py tests/test_deploy_units.py docs/deployment.md
 git commit -m "docs: configure Diff staging containment"
+test "$(git branch --show-current)" = "task-134-diff-uploader"
 ```
 
 ---
@@ -1554,6 +1597,7 @@ only after all criteria pass.
 ```bash
 git add .tickets/TASK-134-diff-uploader-widget-memory.md
 git commit -m "docs: complete TASK-134 evidence"
+test "$(git branch --show-current)" = "task-134-diff-uploader"
 ```
 
 Do not push or deploy without a separate explicit production-safety check and user authorization.

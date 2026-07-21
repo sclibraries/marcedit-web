@@ -29,10 +29,13 @@ Scope:
   and release every upload object. Retain at most 20 rejection entries with
   filenames bounded to 255 characters and reasons bounded to 512 characters;
   present that summary for one post-ingest acknowledgement cycle.
-- Reject admission beyond 1,000 staged files total or
+- Reject admission beyond 200 staged files total or
   `MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES` across both sides (default 8 GiB /
   8,589,934,592 bytes). This deliberately adds a containment-only total
   staged-disk ceiling; it does not restore the removed per-side aggregate cap.
+  The 200-file bound leaves descriptor headroom for the existing render path,
+  which opens a file handle and mmap for every staged file, under the service's
+  expected 1,024-descriptor limit.
   The 8 GiB default leaves 4 GiB of headroom above the canonical 2 GiB old plus
   2 GiB new full-dump workflow. Each uploaded file remains subject to the
   existing 2 GiB `MARCEDIT_WEB_MAX_DIFF_BYTES` limit. Replacement logical quota

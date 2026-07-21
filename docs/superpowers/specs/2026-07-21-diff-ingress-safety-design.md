@@ -76,10 +76,13 @@ previews, indices, diff results, generated blobs, and pagination. A rejected-onl
 round does not. Rejection state retains at most 20 entries with a 255-character
 filename and 512-character reason for one post-ingest acknowledgement cycle.
 
-Containment admits at most 1,000 staged files and 8 GiB across both sides via
+Containment admits at most 200 staged files and 8 GiB across both sides via
 `MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES`, using replacement deltas. This explicitly
 reintroduces a containment-only total staged-disk ceiling, not the removed
-per-side aggregate cap. The 8 GiB default leaves 4 GiB headroom above the
+per-side aggregate cap. The 200-file bound leaves descriptor headroom for the
+existing render path, which opens a handle and mmap for every staged file,
+under the expected 1,024-descriptor service limit. The 8 GiB default leaves
+4 GiB headroom above the
 canonical 2 GiB old plus 2 GiB new full-dump workflow. Each source remains
 subject to the existing 2 GiB `MARCEDIT_WEB_MAX_DIFF_BYTES` limit. Physical
 admission still requires the complete replacement candidate plus a 1 GiB
