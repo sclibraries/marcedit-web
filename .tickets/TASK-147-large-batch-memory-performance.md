@@ -4,8 +4,9 @@ Scope:
 - Make RecordStore random access independent of record position and avoid
   rebuilding full navigation structures on Streamlit reruns.
 - Replace whole-batch bytes and parsed-record collections in View/Edit,
-  quick operations, saved tasks, diffs, and snapshots with path-backed,
-  streaming artifacts and compact session metadata.
+  quick operations, saved tasks, and snapshots with path-backed, streaming
+  artifacts and compact session metadata. Diff ownership moved to
+  TASK-162/TASK-165 and is not part of this ticket's closeout.
 - Add bounded batch concurrency, performance telemetry, and Red Hat
   systemd guardrails for a 2 GB private-service ceiling.
 - Preserve non-Diff synchronous workflows, MARC ordering, rollback snapshots,
@@ -40,16 +41,16 @@ Implementation Evidence:
 
 Production Acceptance Remaining:
 - Deploy and record the candidate SHA containing TASK-130, the installed and
-  verified TASK-133 watchdog/memory controls, and completed TASK-162 children
-  before measuring acceptance.
-- Complete TASK-162 so the acceptance run measures browser-to-durable ingress
-  rather than Streamlit's current whole-upload memory buffer.
+  verified TASK-133 watchdog/memory controls before measuring acceptance.
 - Run the documented three-session authenticated smoke test on the RHEL host
-  through the supported browser upload control and queued processing. Include a
-  checked-in fixed-seed fixture manifest with exact byte sizes, record counts,
-  checksums, expected Diff overlap/output counts, and a synchronized concurrency
-  start. Record the deployed Git SHA, all app/ingress/worker cgroup memory,
-  aggregate host memory and disk, watchdog restart counters, and watch-log RSS.
+  for the current Home/View-Edit, quick-operation, and saved-task browser paths.
+  Diff is explicitly excluded from TASK-147 production acceptance because its
+  current uploader still buffers whole bodies in Streamlit; TASK-162 owns the
+  final browser-to-durable Diff evidence. Include a checked-in fixed-seed
+  fixture manifest with exact byte sizes, record counts, checksums, and a
+  synchronized concurrency start. Record the deployed Git SHA, app/worker
+  cgroup memory, aggregate host memory and disk, watchdog restart counters, and
+  watch-log RSS.
 - Verify `MemoryCurrent` stays below the approved cgroup limits with zero `oom`,
   `oom_kill`, watchdog restart, skipped record, checksum mismatch, integrity
   failure, or silent test skip.

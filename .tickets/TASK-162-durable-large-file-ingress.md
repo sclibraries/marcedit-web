@@ -5,7 +5,7 @@ Related: TASK-117, TASK-130, TASK-133, TASK-134, TASK-147, TASK-156, TASK-157
 Children:
 - TASK-163: durable artifact registry, admission, references, and leases
 - TASK-164: authenticated streaming ingress service and deployment
-- TASK-165: queued Diff with ordered inputs and atomic multiple results
+- TASK-165: queued Diff profile/review with ordered inputs and atomic results
 - TASK-166: direct artifact download, retention, and reconciliation
 
 Scope:
@@ -32,6 +32,11 @@ Success Criteria:
   publication. If production capacity cannot support that run, this parent
   remains open and records the measured supported ceiling without lowering the
   2 GiB product target.
+- A queued Diff preserves the current match-field suggestions, missing- and
+  duplicate-key review, changed-record side-by-side review, and the decision to
+  include changed records before output generation. Review state is durable,
+  bounded or paginated, and never places complete artifact bodies in Streamlit
+  state.
 - A queued Diff survives UI, ingress, and worker restarts; it atomically exposes
   all validated outputs or none on failure/cancellation.
 - Cleanup cannot race submission, worker reads, Job adoption, or active
@@ -48,7 +53,8 @@ Dependencies:
 - TASK-130 establishes the separate Home limit authority.
 - TASK-133 watchdog and selected memory controls are installed before maximum
   production acceptance.
-- TASK-147 production acceptance consumes this ticket's final browser path.
+- TASK-147 may close on its non-Diff production evidence. This ticket owns the
+  final authenticated browser-to-durable Diff acceptance.
 - TASK-157 consumes the completed ordered-input/multi-result primitives.
 
 Status: Todo

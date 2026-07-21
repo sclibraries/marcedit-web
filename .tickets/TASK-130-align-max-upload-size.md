@@ -35,7 +35,7 @@ Success Criteria:
   `MARCEDIT_WEB_MAX_HOME_UPLOAD_BYTES` value is verified rather than inferred
   from Compose defaults.
 - The Home cap decision is independent of TASK-162's 2 GiB durable-ingress
-  target, which uses `MARCEDIT_WEB_DURABLE_MAX_FILE_BYTES` with an absolute
+  target, which uses `MARCEDIT_WEB_DURABLE_MAX_UPLOAD_BYTES` with an absolute
   maximum of 2,147,483,648 bytes.
 
 Status: In-Progress (help text fixed; remaining work is the single-authority

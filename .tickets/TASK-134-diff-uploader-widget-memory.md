@@ -29,22 +29,27 @@ Scope:
   and release every upload object. Retain at most 20 rejection entries with
   filenames bounded to 255 characters and reasons bounded to 512 characters;
   present that summary for one post-ingest acknowledgement cycle.
-- Reject admission beyond 1,000 staged files total or the existing
-  `MARCEDIT_WEB_MAX_SESSION_BYTES` aggregate across both sides. Replacement
-  logical quota charges only the positive byte delta, but physical admission
-  requires free space for the complete new candidate plus
+- Reject admission beyond 1,000 staged files total or
+  `MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES` across both sides (default 8 GiB /
+  8,589,934,592 bytes). This deliberately adds a containment-only total
+  staged-disk ceiling; it does not restore the removed per-side aggregate cap.
+  The 8 GiB default leaves 4 GiB of headroom above the canonical 2 GiB old plus
+  2 GiB new full-dump workflow. Each uploaded file remains subject to the
+  existing 2 GiB `MARCEDIT_WEB_MAX_DIFF_BYTES` limit. Replacement logical quota
+  charges only the positive byte delta, but physical admission requires free
+  space for the complete new candidate plus
   `MARCEDIT_WEB_DIFF_MIN_FREE_BYTES` (default 1 GiB). Never delete the old file
   until the new candidate is accepted.
 - Add per-file removal from the staged list. "Start over" closes active
   mappings, recursively deletes the complete Diff work directory, and resets
   only Diff state.
-- Reconcile at most 10 abandoned `marcedit-web-diff-*` work trees per page
-  render when their activity marker is older than 24 hours. Each active render
-  holds a shared advisory lock. A sweeper must acquire a nonblocking exclusive
-  lock, recheck staleness, and atomically rename the directory into a
-  root-confined quarantine before symlink-safe deletion. If a returning
-  session's directory was reclaimed, reset its Diff state with a bounded
-  user-facing notice.
+- Do not add an in-app abandoned-tree sweeper. Safely distinguishing an active
+  Streamlit session from an abandoned one requires synchronization machinery
+  that TASK-164/165 will promptly remove. For this containment window,
+  abandoned work trees may remain until the private temporary namespace or
+  service is restarted; "Start over" remains the explicit in-session cleanup.
+  Record this temporary disk-leak tradeoff in deployment notes and remove the
+  staging path entirely at durable-ingress cutover.
 - Keep generated adds/deletes byte blobs unchanged in this containment ticket;
   TASK-162 moves those outputs to retained disk artifacts.
 
@@ -72,7 +77,8 @@ Success Criteria:
 - Intent-focused tests fail before and pass after for rotation, accumulation,
   equal-size and failed replacement, duplicate names, collisions, invalidation,
   mixed and rejected-only rounds, admission limits, per-file removal, recursive
-  reset cleanup, and concurrent active-render/abandoned-workdir reconciliation.
+  reset cleanup, and the documented absence of implicit abandoned-tree
+  deletion.
 - Focused and complete test suites pass with every skip reported, and code
   review has no unresolved Critical or Important findings.
 
