@@ -349,6 +349,16 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
     elif not show_leader:
         tag_filter = {f.tag for f in record.fields}
 
+    inversions = viewer.field_order_inversions(record)
+    if inversions:
+        transitions = ", ".join(
+            f"{previous} before {current}" for previous, current in inversions
+        )
+        st.warning(
+            "Fields are displayed in source order, but tag order decreases at: "
+            + transitions
+        )
+
     text = viewer.render_record_human(record, fields=tag_filter)
     st.code(text, language="text")
 

@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from marcedit_web.lib import search
 from marcedit_web.render import view
+
+
+def test_view_warns_about_order_without_sorting_the_record():
+    source = Path("marcedit_web/render/view.py").read_text()
+
+    assert "viewer.field_order_inversions(record)" in source
+    assert "st.warning(" in source
+    assert "viewer.render_record_human(record, fields=tag_filter)" in source
+    assert "sorted(record.fields" not in source
+    assert "sort_fields(record" not in source
 
 
 def test_unfiltered_navigation_uses_arithmetic_for_large_batches():
