@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from marcedit_web.lib import task_builder
 from marcedit_web.lib.task_builder import Operation
 
@@ -268,6 +270,95 @@ def test_render_replace_field_subfield_and_indicators():
         "replace_field_subfield_and_indicators" in i
         for i in rendered["imports"]
     )
+
+
+def test_replace_field_subfield_and_indicators_palette_has_regex_options():
+    entry = next(
+        item
+        for item in task_builder.OPERATIONS_PALETTE
+        if item["kind"] == "replace-field-subfield-and-indicators"
+    )
+    params = entry["params"]
+    match_value_index = next(
+        index
+        for index, param in enumerate(params)
+        if param["name"] == "match_value"
+    )
+
+    assert params[match_value_index + 1:match_value_index + 3] == [
+        {
+            "name": "regex",
+            "label": "Treat match value as regex",
+            "type": "bool",
+            "default": False,
+        },
+        {
+            "name": "ignore_case",
+            "label": "Case-insensitive",
+            "type": "bool",
+            "default": False,
+        },
+    ]
+
+
+def test_replace_field_subfield_and_indicators_emits_regex_flags():
+    op = Operation(
+        kind="replace-field-subfield-and-indicators",
+        params={
+            "tag": "035",
+            "match_ind1": " ",
+            "match_ind2": " ",
+            "match_code": "a",
+            "match_value": r"TFeba\d+",
+            "regex": True,
+            "ignore_case": True,
+            "new_ind1": " ",
+            "new_ind2": "9",
+            "new_code": "a",
+            "new_value": "(SCTFEBA)",
+        },
+    )
+
+    rendered = task_builder.render_ops_to_python([op])
+
+    assert "regex=True, ignore_case=True)" in rendered["body"]
+
+
+def test_replace_field_subfield_and_indicators_new_marker_round_trips_regex_flags():
+    op = Operation(
+        kind="replace-field-subfield-and-indicators",
+        params={"match_value": r"TFeba\d+", "regex": True, "ignore_case": True},
+    )
+
+    rendered = task_builder.render_ops_to_python([op])
+    parsed = task_builder.parse_ops_from_source(rendered["body"])
+
+    assert parsed["ops"][0].params["regex"] is True
+    assert parsed["ops"][0].params["ignore_case"] is True
+
+
+def test_replace_field_subfield_and_indicators_old_marker_uses_false_defaults():
+    source = (
+        '# OP: replace-field-subfield-and-indicators {"match_value": "TFeba"}'
+    )
+
+    parsed = task_builder.parse_ops_from_source(source)
+    rendered = task_builder.render_ops_to_python(parsed["ops"])
+
+    marker = rendered["body"].splitlines()[0]
+    assert '"regex"' not in marker
+    assert '"ignore_case"' not in marker
+    assert "regex=False, ignore_case=False)" in rendered["body"]
+
+
+def test_replace_field_subfield_and_indicators_rejects_invalid_enabled_regex():
+    op = Operation(
+        kind="replace-field-subfield-and-indicators",
+        params={"match_value": "(", "regex": True},
+    )
+
+    with pytest.raises(ValueError, match="invalid match regex"):
+        task_builder.render_ops_to_python([op])
 
 
 def test_replace_field_subfield_and_indicators_round_trips_from_markers():

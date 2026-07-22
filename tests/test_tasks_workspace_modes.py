@@ -135,3 +135,61 @@ def test_open_editor_for_new_forces_build_mode(monkeypatch):
     assert fake_st.session_state[tasks_render.K_FORCE_MODE] == (
         tasks_render.MODE_BUILD
     )
+
+
+def test_save_callback_reports_invalid_form_regex_without_persisting(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved: list[dict] = []
+    fake_st.session_state.update(
+        {
+            tasks_render.K_EDITOR_NAME: "invalid-regex",
+            tasks_render.K_EDITOR_DESCRIPTION: "Invalid regex test",
+            tasks_render.K_EDITOR_MODE: "form",
+            tasks_render.K_EDITOR_VISIBILITY: "private",
+            tasks_render.K_EDITOR_OPS: [
+                {
+                    "kind": "replace-field-subfield-and-indicators",
+                    "params": {
+                        "tag": "035",
+                        "match_ind1": " ",
+                        "match_ind2": " ",
+                        "match_code": "a",
+                        "match_value": "(",
+                        "regex": True,
+                        "ignore_case": False,
+                        "new_ind1": " ",
+                        "new_ind2": "9",
+                        "new_code": "a",
+                        "new_value": "replacement",
+                    },
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "serialize_user_task",
+        lambda *args, **kwargs: "def run(record):\n    pass\n",
+    )
+    monkeypatch.setattr(
+        tasks_render.task_db,
+        "save_task",
+        lambda **kwargs: saved.append(kwargs),
+    )
+    monkeypatch.setattr(
+        tasks_render.task_db, "materialize_to_dir", lambda *args: None
+    )
+    monkeypatch.setattr(
+        tasks_render.tasks, "load_user_tasks", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(tasks_render.task_admin, "is_admin", lambda user: False)
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *args, **kwargs: None)
+
+    tasks_render._save_callback(Path("/tmp/tasks"))
+
+    assert saved == []
+    assert "invalid match regex" in fake_st.session_state[tasks_render.K_SAVE_ERROR]

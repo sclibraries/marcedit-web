@@ -1172,21 +1172,21 @@ def _save_callback(tasks_dir: Path) -> None:
         )
         return
 
-    if mode == "form":
-        ops = [
-            Operation.from_dict(op)
-            for op in st.session_state.get(K_EDITOR_OPS, [])
-        ]
-        rendered = task_builder.render_ops_to_python(ops)
-        body = rendered["body"]
-        extra_imports = rendered["imports"]
-    else:
-        body = st.session_state.get(K_EDITOR_BODY, "")
-        extra_imports = None
-
     # Pre-flight: compile the to-be-saved file before we hit SQL, so
     # a syntax error keeps the existing row intact.
     try:
+        if mode == "form":
+            ops = [
+                Operation.from_dict(op)
+                for op in st.session_state.get(K_EDITOR_OPS, [])
+            ]
+            rendered = task_builder.render_ops_to_python(ops)
+            body = rendered["body"]
+            extra_imports = rendered["imports"]
+        else:
+            body = st.session_state.get(K_EDITOR_BODY, "")
+            extra_imports = None
+
         preview = editor.serialize_user_task(
             name, description, body, extra_imports=extra_imports,
         )
