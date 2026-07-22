@@ -358,8 +358,8 @@ OPERATIONS_PALETTE: list[dict] = [
         "kind": "replace-field-subfield-and-indicators",
         "label": "Replace matched subfield and indicators",
         "summary": (
-            "For fields matching tag, indicators, subfield code, and exact "
-            "subfield value, update the indicators and that subfield value."
+            "For fields matching tag, indicators, subfield code, and subfield "
+            "value (exact or regex), update the indicators and that subfield value."
         ),
         "params": [
             {"name": "tag", "label": "Tag", "type": "text", "required": True},
@@ -367,6 +367,8 @@ OPERATIONS_PALETTE: list[dict] = [
             {"name": "match_ind2", "label": "Match indicator 2", "type": "indicator", "default": " "},
             {"name": "match_code", "label": "Match subfield code", "type": "subfield_code", "required": True},
             {"name": "match_value", "label": "Match subfield value", "type": "text", "required": True},
+            {"name": "regex", "label": "Treat match value as regex", "type": "bool", "default": False},
+            {"name": "ignore_case", "label": "Case-insensitive", "type": "bool", "default": False},
             {"name": "new_ind1", "label": "New indicator 1", "type": "indicator", "default": " "},
             {"name": "new_ind2", "label": "New indicator 2", "type": "indicator", "default": " "},
             {"name": "new_code", "label": "New subfield code", "type": "subfield_code", "required": True},
@@ -772,6 +774,16 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         match_ind2 = (p.get("match_ind2") or " ")[:1] or " "
         match_code = str(p.get("match_code", "")).strip()[:1]
         match_value = str(p.get("match_value", ""))
+        use_regex = bool(p.get("regex", False))
+        ignore_case = bool(p.get("ignore_case", False))
+        if use_regex:
+            try:
+                re.compile(
+                    match_value,
+                    re.IGNORECASE if ignore_case else 0,
+                )
+            except re.error as exc:
+                raise ValueError(f"invalid match regex: {exc}") from exc
         new_ind1 = (p.get("new_ind1") or " ")[:1] or " "
         new_ind2 = (p.get("new_ind2") or " ")[:1] or " "
         new_code = str(p.get("new_code", "")).strip()[:1]
@@ -781,7 +793,8 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
                 "replace_field_subfield_and_indicators("
                 f"record, {lit(tag)}, {lit(match_ind1)}, {lit(match_ind2)}, "
                 f"{lit(match_code)}, {lit(match_value)}, {lit(new_ind1)}, "
-                f"{lit(new_ind2)}, {lit(new_code)}, {lit(new_value)})"
+                f"{lit(new_ind2)}, {lit(new_code)}, {lit(new_value)}, "
+                f"regex={lit(use_regex)}, ignore_case={lit(ignore_case)})"
             ],
             {"replace_field_subfield_and_indicators"},
             False,

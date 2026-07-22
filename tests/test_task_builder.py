@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from marcedit_web.lib import task_builder
 from marcedit_web.lib.task_builder import Operation
 
@@ -100,6 +104,33 @@ def test_palette_includes_new_typed_ops():
         "delete-subfield-if-value",
     ):
         assert new in kinds, f"{new} missing from OPERATIONS_PALETTE"
+
+
+def test_replace_field_subfield_and_indicators_palette_exposes_regex_options():
+    entry = next(
+        op for op in task_builder.OPERATIONS_PALETTE
+        if op["kind"] == "replace-field-subfield-and-indicators"
+    )
+    params = entry["params"]
+    match_value_index = next(
+        index for index, param in enumerate(params)
+        if param["name"] == "match_value"
+    )
+
+    assert params[match_value_index + 1:match_value_index + 3] == [
+        {
+            "name": "regex",
+            "label": "Treat match value as regex",
+            "type": "bool",
+            "default": False,
+        },
+        {
+            "name": "ignore_case",
+            "label": "Case-insensitive",
+            "type": "bool",
+            "default": False,
+        },
+    ]
 
 
 def test_render_copy_field():
@@ -250,7 +281,9 @@ def test_render_replace_field_subfield_and_indicators():
             "match_ind1": " ",
             "match_ind2": " ",
             "match_code": "a",
-            "match_value": "TFeba",
+            "match_value": r"TFeba\d+",
+            "regex": True,
+            "ignore_case": True,
             "new_ind1": " ",
             "new_ind2": "9",
             "new_code": "a",
@@ -262,8 +295,9 @@ def test_render_replace_field_subfield_and_indicators():
 
     assert "replace_field_subfield_and_indicators(" in rendered["body"]
     assert "'035'" in rendered["body"]
-    assert "'TFeba'" in rendered["body"]
+    assert "'TFeba\\\\d+'" in rendered["body"]
     assert "'(SCTFEBA)'" in rendered["body"]
+    assert "regex=True, ignore_case=True" in rendered["body"]
     assert any(
         "replace_field_subfield_and_indicators" in i
         for i in rendered["imports"]
@@ -278,7 +312,9 @@ def test_replace_field_subfield_and_indicators_round_trips_from_markers():
             "match_ind1": " ",
             "match_ind2": " ",
             "match_code": "a",
-            "match_value": "TFeba",
+            "match_value": r"TFeba\d+",
+            "regex": True,
+            "ignore_case": True,
             "new_ind1": " ",
             "new_ind2": "9",
             "new_code": "a",
@@ -294,6 +330,54 @@ def test_replace_field_subfield_and_indicators_round_trips_from_markers():
         "replace-field-subfield-and-indicators"
     ]
     assert parsed["ops"][0].params == op.params
+
+
+def test_replace_field_subfield_and_indicators_old_marker_uses_exact_defaults():
+    legacy_params = {
+        "tag": "035",
+        "match_ind1": " ",
+        "match_ind2": " ",
+        "match_code": "a",
+        "match_value": "TFeba",
+        "new_ind1": " ",
+        "new_ind2": "9",
+        "new_code": "a",
+        "new_value": "(SCTFEBA)",
+    }
+    source = (
+        "# OP: replace-field-subfield-and-indicators "
+        + json.dumps(legacy_params, sort_keys=True)
+    )
+
+    parsed = task_builder.parse_ops_from_source(source)
+    rendered = task_builder.render_ops_to_python(parsed["ops"])
+    reparsed = task_builder.parse_ops_from_source(rendered["body"])
+
+    assert parsed["form_editable"] is True
+    assert parsed["ops"][0].params == legacy_params
+    assert "regex=False, ignore_case=False" in rendered["body"]
+    assert reparsed["ops"][0].params == legacy_params
+
+
+def test_replace_field_subfield_and_indicators_rejects_invalid_regex():
+    op = Operation(
+        kind="replace-field-subfield-and-indicators",
+        params={
+            "tag": "035",
+            "match_ind1": " ",
+            "match_ind2": " ",
+            "match_code": "a",
+            "match_value": "(",
+            "regex": True,
+            "new_ind1": " ",
+            "new_ind2": "9",
+            "new_code": "a",
+            "new_value": "replacement",
+        },
+    )
+
+    with pytest.raises(ValueError, match="invalid match regex"):
+        task_builder.render_ops_to_python([op])
 
 
 def test_subfield_replace_regex_toggle_emits_re_sub():
