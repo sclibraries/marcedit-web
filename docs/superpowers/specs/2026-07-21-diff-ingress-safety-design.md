@@ -84,13 +84,19 @@ concurrent maximum-size sessions under the expected process-wide
 1,024-descriptor service limit: the existing render path consumes roughly two
 descriptors per staged file, and acceptance includes the measured non-Diff
 process baseline rather than treating the limit as session-local. The 8 GiB
-default leaves
-4 GiB headroom above the
-canonical 2 GiB old plus 2 GiB new full-dump workflow. Each source remains
-subject to the existing 2 GiB `MARCEDIT_WEB_MAX_DIFF_BYTES` limit. Physical
-admission still requires the complete replacement candidate plus a 1 GiB
-configured free-disk reserve. It adds per-file removal and recursively removes
-the work tree on Start over.
+default leaves 4 GiB headroom above the canonical 2 GiB old plus 2 GiB new
+full-dump workflow. Each uploaded file remains subject to the existing 2 GiB
+`MARCEDIT_WEB_MAX_DIFF_BYTES` limit. Physical admission still requires the
+complete replacement candidate plus `MARCEDIT_WEB_DIFF_MIN_FREE_BYTES`, which
+defaults to a 1 GiB free-disk reserve. It adds per-file removal and recursively
+removes the work tree on Start over.
+
+The 50-file and 8 GiB ceilings are deliberately per-session containment, not a
+service-wide disk reservation. Concurrent sessions can therefore stage a
+multiple of 8 GiB plus in-flight replacement candidates; the free-disk check is
+the remaining physical guard and is not transactional across sessions. During
+this temporary window, operators monitor temporary-disk use. TASK-162 replaces
+this tradeoff with transactional per-user and service-wide admission.
 
 Every staged path is storage-generated beneath a token-owned temporary root.
 Replacement and removal validate the owned root, open the expected side
