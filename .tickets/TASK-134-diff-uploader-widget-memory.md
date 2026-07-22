@@ -29,13 +29,14 @@ Scope:
   and release every upload object. Retain at most 20 rejection entries with
   filenames bounded to 255 characters and reasons bounded to 512 characters;
   present that summary for one post-ingest acknowledgement cycle.
-- Reject admission beyond 200 staged files total or
+- Reject admission beyond 50 staged files total per session or
   `MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES` across both sides (default 8 GiB /
   8,589,934,592 bytes). This deliberately adds a containment-only total
   staged-disk ceiling; it does not restore the removed per-side aggregate cap.
-  The 200-file bound leaves descriptor headroom for the existing render path,
-  which opens a file handle and mmap for every staged file, under the service's
-  expected 1,024-descriptor limit.
+  The 50-file bound leaves descriptor headroom for the existing render path,
+  which consumes roughly two descriptors per staged file. Verify three
+  concurrent maximum-size sessions, including the process baseline, remain
+  safely below the service's expected 1,024-descriptor limit.
   The 8 GiB default leaves 4 GiB of headroom above the canonical 2 GiB old plus
   2 GiB new full-dump workflow. Each uploaded file remains subject to the
   existing 2 GiB `MARCEDIT_WEB_MAX_DIFF_BYTES` limit. Replacement logical quota
@@ -46,6 +47,12 @@ Scope:
 - Add per-file removal from the staged list. "Start over" closes active
   mappings, recursively deletes the complete Diff work directory, and resets
   only Diff state.
+- Confine replacement, removal, and reset deletion to generated regular files
+  beneath the token-owned Diff work directory. Refuse symlinks, forged absolute
+  paths, substituted side directories, unexpected file types, paths outside
+  the owned root, and ownership-marker mismatches. Corrupt or stale metadata
+  fails closed with a bounded error and leaves state intact for operator
+  cleanup rather than guessing or deleting broadly.
 - Do not add an in-app abandoned-tree sweeper. Safely distinguishing an active
   Streamlit session from an abandoned one requires synchronization machinery
   that TASK-164/165 will promptly remove. For this containment window,
@@ -73,8 +80,14 @@ Success Criteria:
 - File-count and staged-byte admission is deterministic under replacement,
   rejection, and disk-full failures, including same-size replacement without
   enough physical candidate headroom.
+- Three concurrent sessions at the 50-file maximum, including measured process
+  baseline descriptors, retain explicit headroom below the supported
+  1,024-descriptor service limit.
 - Users can remove one staged file; its path is deleted and dependent Diff
   state is invalidated without removing unrelated files.
+- Forged paths, staged-file symlinks, side-directory substitution, wrong
+  ownership markers, and cleanup race boundaries cannot delete outside the
+  owned Diff tree and fail without forgetting recoverable session state.
 - "Start over" removes the session work tree rather than only forgetting its
   path.
 - Intent-focused tests fail before and pass after for rotation, accumulation,

@@ -76,18 +76,33 @@ previews, indices, diff results, generated blobs, and pagination. A rejected-onl
 round does not. Rejection state retains at most 20 entries with a 255-character
 filename and 512-character reason for one post-ingest acknowledgement cycle.
 
-Containment admits at most 200 staged files and 8 GiB across both sides via
-`MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES`, using replacement deltas. This explicitly
-reintroduces a containment-only total staged-disk ceiling, not the removed
-per-side aggregate cap. The 200-file bound leaves descriptor headroom for the
-existing render path, which opens a handle and mmap for every staged file,
-under the expected 1,024-descriptor service limit. The 8 GiB default leaves
+Containment admits at most 50 staged files per session and 8 GiB across both
+sides via `MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES`, using replacement deltas. This
+explicitly reintroduces a containment-only total staged-disk ceiling, not the
+removed per-side aggregate cap. The 50-file bound leaves headroom for three
+concurrent maximum-size sessions under the expected process-wide
+1,024-descriptor service limit: the existing render path consumes roughly two
+descriptors per staged file, and acceptance includes the measured non-Diff
+process baseline rather than treating the limit as session-local. The 8 GiB
+default leaves
 4 GiB headroom above the
 canonical 2 GiB old plus 2 GiB new full-dump workflow. Each source remains
 subject to the existing 2 GiB `MARCEDIT_WEB_MAX_DIFF_BYTES` limit. Physical
 admission still requires the complete replacement candidate plus a 1 GiB
 configured free-disk reserve. It adds per-file removal and recursively removes
 the work tree on Start over.
+
+Every staged path is storage-generated beneath a token-owned temporary root.
+Replacement and removal validate the owned root, open the expected side
+directory without following symlinks, reduce stored metadata to its generated
+basename, verify the entry with a no-follow stat, and unlink relative to the
+opened directory descriptor. Reset requires the platform's symlink-safe
+recursive-removal implementation after root ownership validation. Forged
+absolute paths, staged-file symlinks, substituted side directories, unexpected
+file types, paths outside the root, ownership-marker mismatches, unsupported
+safe-removal primitives, and failed cleanup all fail closed with a bounded user
+error. Session metadata is not forgotten when safe deletion cannot be proven;
+operator cleanup is safer than guessing at corrupted state.
 
 TASK-134 does not add an abandoned-tree sweeper. Correctly distinguishing an
 active Streamlit session would require advisory-lock and quarantine machinery
@@ -368,8 +383,12 @@ rejected, expired, and reconciled outcomes without secrets.
 
 TASK-134 tests rotation, rejected-only/mixed rounds, accumulation, equal-size
 and failed replacement, duplicate names, sanitization collisions, invalidation,
-admission deltas, removal, reset cleanup, and the documented absence of implicit
-abandoned-tree deletion.
+admission deltas, removal, reset cleanup, forged paths, staged-file symlinks,
+side-directory substitution, ownership-marker mismatch, cleanup race
+boundaries, and the documented absence of implicit abandoned-tree deletion. A
+three-session acceptance test opens 50 staged files per session, includes the
+measured process baseline, and proves explicit headroom below the supported
+1,024-descriptor limit.
 
 TASK-163 through TASK-166 add scaled tests for concurrent reservation,
 low-disk/capacity loss, idempotency, reference/cleanup races, proxy bypass and

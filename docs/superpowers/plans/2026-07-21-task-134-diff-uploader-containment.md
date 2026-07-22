@@ -1,5 +1,9 @@
 # TASK-134 Diff Uploader Containment Implementation Plan
 
+> **Do not execute this revision.** The approved 2026-07-22 TASK-134 design
+> reduces the per-session file cap to 50 and strengthens deletion confinement.
+> This plan must be rewritten and re-approved before implementation begins.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Release both Diff uploader widgets after every nonempty ingest round while preserving staged files safely on disk, invalidating stale review/output state, and giving users deterministic replacement, rejection, removal, and reset behavior.
