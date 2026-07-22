@@ -18,7 +18,7 @@ Success Criteria:
 - Intent-focused tests, applicable suites, and review pass without unresolved
   Critical or Important findings.
 
-Status: In-Progress
+Status: Completed
 
 Evidence:
 - Transform RED: after correcting an initial test-only missing `re` import
@@ -43,3 +43,17 @@ Evidence:
   (`test: preserve exact field match case sensitivity`).
 - Final independent re-review: Approved and spec compliant, with no Critical,
   Important, or Minor findings.
+- Final-review callback RED reproduced the integration issue as one uncaught
+  `ValueError: invalid match regex` before the Save callback's established
+  inline error handler (`1 failed`).
+- Callback focused GREEN: `1 passed`. The invalid form regex now returns through
+  `K_SAVE_ERROR` with a cataloger-readable `invalid match regex` message and
+  does not call `task_db.save_task`.
+- Final scoped network-disabled Docker GREEN:
+  `135 passed, 0 failed, 0 skipped, 0 warnings`.
+- Final-fix static checks passed: `python3 -m py_compile` for
+  `render/tasks.py`, `task_builder.py`, and `transforms.py`; `git diff --check`
+  clean.
+- Final-fix commit: `93316d4` (`fix: report invalid task regex inline`).
+- Final clean re-review: no Critical, Important, or Minor findings; whole branch
+  verdict Ready to merge.
