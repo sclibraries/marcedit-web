@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import pytest
 
-from marcedit_web.lib import db, jobs, upload_persistence
+from marcedit_web.lib import db, job_files, jobs, upload_persistence
 
 
 @pytest.fixture(autouse=True)
-def _schema():
+def _schema(tmp_path, monkeypatch):
+    monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files"))
     db.init_schema()
+
+
+def attach_job_file(job, tmp_path, filename):
+    source = tmp_path / filename
+    source.write_bytes(b"x")
+    return job_files.attach_file(
+        job_id=job["id"],
+        user_email="owner@example.edu",
+        source_path=source,
+        filename=filename,
+        record_count=1,
+        file_bytes=1,
+    )
 
 
 def test_ensure_default_job_is_idempotent():
@@ -374,17 +388,10 @@ def test_restore_job_is_owner_only_and_records_activity():
     assert activity[-1]["actor_email"] == "owner@example.edu"
 
 
-def test_list_job_summaries_includes_file_and_open_note_counts():
+def test_list_job_summaries_includes_file_and_open_note_counts(tmp_path):
     """Jobs page needs scannable workspace metadata without page-level SQL."""
     job = jobs.create_job("owner@example.edu", "Vendor load July")
-    upload_persistence.record_upload(
-        user="owner@example.edu",
-        filename="vendor.mrc",
-        file_path="/tmp/vendor.mrc",
-        record_count=12,
-        file_bytes=345,
-        job_id=job["id"],
-    )
+    attach_job_file(job, tmp_path, "vendor.mrc")
     jobs.add_review_note(
         job["id"],
         anchor_kind="record",
@@ -407,6 +414,41 @@ def test_list_job_summaries_includes_file_and_open_note_counts():
     assert rows[0]["open_note_count"] == 1
     assert rows[0]["updated_at"] == current["updated_at"]
     assert rows[0]["updated_at"]
+
+
+def test_job_summary_does_not_count_unmaterialized_legacy_upload(tmp_path):
+    """A card cannot claim a file that detail cannot render."""
+    job = jobs.create_job("owner@example.edu", "Routledge load")
+    upload_persistence.record_upload(
+        user="owner@example.edu",
+        filename="legacy.mrc",
+        file_path=str(tmp_path / "legacy.mrc"),
+        record_count=1,
+        file_bytes=1,
+        job_id=job["id"],
+    )
+
+    summary = jobs.list_job_summaries("owner@example.edu")[0]
+
+    assert summary["file_count"] == 0
+
+
+def test_job_summary_count_matches_visible_non_archived_files(tmp_path):
+    """Archived files stay hidden from both the card and detail list."""
+    job = jobs.create_job("owner@example.edu", "Routledge load")
+    visible = attach_job_file(job, tmp_path, "visible.mrc")
+    archived = attach_job_file(job, tmp_path, "archived.mrc")
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE job_files SET archived_at=?,archived_by=? WHERE id=?",
+            ("2026-07-22T12:00:00Z", "owner@example.edu", archived["id"]),
+        )
+
+    summary = jobs.list_job_summaries("owner@example.edu")[0]
+    detail = job_files.list_files(job["id"], "owner@example.edu")
+
+    assert [row["id"] for row in detail] == [visible["id"]]
+    assert summary["file_count"] == len(detail) == 1
 
 
 def test_review_notes_are_record_or_issue_anchored_and_resolvable():
