@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pymarc
 import pytest
 
@@ -385,6 +387,83 @@ def test_replace_field_subfield_and_indicators_can_change_subfield_code():
     assert list(field.indicators) == [" ", "9"]
     assert field.get_subfields("a") == []
     assert field.get_subfields("z") == ["(SCTFEBA)"]
+
+
+def _record_with_035a(value: str) -> pymarc.Record:
+    record = pymarc.Record()
+    record.add_ordered_field(
+        pymarc.Field(
+            tag="035",
+            indicators=[" ", " "],
+            subfields=[pymarc.Subfield("a", value)],
+        )
+    )
+    return record
+
+
+def test_replace_field_subfield_and_indicators_regex_searches_full_value():
+    record = _record_with_035a("prefix-TFeba123-suffix")
+
+    transforms.replace_field_subfield_and_indicators(
+        record, "035", " ", " ", "a", r"TFeba\d+",
+        " ", "9", "a", "(SCTFEBA)", regex=True,
+    )
+
+    field = record.get_fields("035")[0]
+    assert list(field.indicators) == [" ", "9"]
+    assert field.get_subfields("a") == ["(SCTFEBA)"]
+
+
+def test_replace_field_subfield_and_indicators_regex_is_case_sensitive_by_default():
+    record = _record_with_035a("prefix-tfeba123-suffix")
+
+    transforms.replace_field_subfield_and_indicators(
+        record, "035", " ", " ", "a", r"TFeba\d+",
+        " ", "9", "a", "(SCTFEBA)", regex=True,
+    )
+
+    field = record.get_fields("035")[0]
+    assert list(field.indicators) == [" ", " "]
+    assert field.get_subfields("a") == ["prefix-tfeba123-suffix"]
+
+
+def test_replace_field_subfield_and_indicators_regex_can_ignore_case():
+    record = _record_with_035a("prefix-tfeba123-suffix")
+
+    transforms.replace_field_subfield_and_indicators(
+        record, "035", " ", " ", "a", r"TFeba\d+",
+        " ", "9", "a", "(SCTFEBA)", regex=True, ignore_case=True,
+    )
+
+    field = record.get_fields("035")[0]
+    assert list(field.indicators) == [" ", "9"]
+    assert field.get_subfields("a") == ["(SCTFEBA)"]
+
+
+def test_replace_field_subfield_and_indicators_exact_default_does_not_search():
+    record = _record_with_035a("prefix-TFeba-suffix")
+
+    transforms.replace_field_subfield_and_indicators(
+        record, "035", " ", " ", "a", "TFeba",
+        " ", "9", "a", "(SCTFEBA)",
+    )
+
+    field = record.get_fields("035")[0]
+    assert list(field.indicators) == [" ", " "]
+    assert field.get_subfields("a") == ["prefix-TFeba-suffix"]
+
+
+def test_replace_field_subfield_and_indicators_invalid_regex_does_not_mutate():
+    record = _record_with_035a("TFeba")
+    before = record.as_marc()
+
+    with pytest.raises(re.error):
+        transforms.replace_field_subfield_and_indicators(
+            record, "035", " ", " ", "a", "(",
+            " ", "9", "a", "replacement", regex=True,
+        )
+
+    assert record.as_marc() == before
 
 
 def test_regex_replace_field_data_variable_field(record):
