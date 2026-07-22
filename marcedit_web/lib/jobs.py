@@ -107,12 +107,14 @@ def list_job_summaries(
         rows = conn.execute(
             "SELECT jobs.id, jobs.name, jobs.owner_email, jobs.status,"
             " jobs.updated_at, jobs.active, job_access.role AS access_role,"
-            " COUNT(DISTINCT uploads.id) AS file_count,"
+            " COUNT(DISTINCT job_files.id) AS file_count,"
             " COUNT(DISTINCT CASE WHEN job_review_notes.resolved = 0"
             " THEN job_review_notes.id END) AS open_note_count"
             " FROM jobs"
             " JOIN job_access ON job_access.job_id = jobs.id"
-            " LEFT JOIN uploads ON uploads.job_id = jobs.id"
+            " LEFT JOIN job_files"
+            " ON job_files.job_id = jobs.id"
+            " AND job_files.archived_at IS NULL"
             " LEFT JOIN job_review_notes ON job_review_notes.job_id = jobs.id"
             " WHERE job_access.user_email = ?"
             + active_clause
