@@ -453,6 +453,19 @@ def test_replace_field_subfield_and_indicators_exact_default_does_not_search():
     assert field.get_subfields("a") == ["prefix-TFeba-suffix"]
 
 
+def test_replace_field_subfield_and_indicators_exact_ignores_ignore_case():
+    record = _record_with_035a("tfeba")
+
+    transforms.replace_field_subfield_and_indicators(
+        record, "035", " ", " ", "a", "TFeba",
+        " ", "9", "a", "(SCTFEBA)", regex=False, ignore_case=True,
+    )
+
+    field = record.get_fields("035")[0]
+    assert list(field.indicators) == [" ", " "]
+    assert field.get_subfields("a") == ["tfeba"]
+
+
 def test_replace_field_subfield_and_indicators_invalid_regex_does_not_mutate():
     record = _record_with_035a("TFeba")
     before = record.as_marc()
