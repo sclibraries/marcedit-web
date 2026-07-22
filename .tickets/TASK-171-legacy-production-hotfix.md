@@ -28,4 +28,44 @@ Success Criteria:
 - Production deployment preserves `data/snapshots/` and all other untracked or
   ignored production data.
 
-Status: In-Progress
+Verification Evidence:
+- TASK-167 compatibility RED: the legacy-SQLite proxy produced the production
+  `near "RETURNING": syntax error` failure (`2 failed, 12 passed`). GREEN:
+  shared-file, migration, workflow, mutation, and collaboration coverage passed
+  (`104 passed`) after all four runtime identity reads moved to same-cursor
+  `lastrowid`.
+- TASK-168 consistency RED: durable-file undercount, legacy-upload overcount,
+  and archived/detail mismatch were reproduced (`3 failed, 26 passed`). GREEN:
+  job, shared-file, and collaboration coverage passed (`74 passed`).
+- TASK-169 regex RED/GREEN: transform coverage first failed on the missing
+  flags (`5 failed, 57 passed`); builder/save coverage then failed on the
+  missing options and validation (`5 failed, 28 passed`). The focused saved-task
+  stack passed after implementation (`136 passed`).
+- TASK-170 order RED/GREEN: the missing pure helper failed four tests
+  (`4 failed, 20 passed`), and the absent View warning failed two behavioral
+  tests (`2 failed, 6 passed`). Viewer/View/edit coverage passed after the
+  non-mutating diagnostic was added (`41 passed`).
+- Final combined production regressions passed under the Python 3.9 image:
+  `310 passed in 5.03s`, with no skips or warning summary.
+- The complete Python 3.9 suite passed: `1287 passed in 18.27s`, with no skips
+  or warning summary. `compileall`, `git diff --check 134bc16...HEAD`, and the
+  clean-worktree check passed.
+- The fixed-base path audit contains only this ticket/design/plan, the seven
+  scoped application modules, and their regression tests. It contains no
+  deployment, environment-template, systemd, sudoers, Apache, worker, queue, or
+  durable-operation path. The branch has no merge commits and its merge base is
+  exactly `134bc16`.
+- Independent task reviews found no unresolved Critical or Important issue.
+  Final review of `134bc16..854c409` returned **Ready**, with three non-blocking
+  future test-hardening notes: exercise editor-as-uploader explicitly, use a
+  multi-file/multi-note aggregation fixture, and rerun migration after legacy
+  source deletion.
+
+Implementation Commits:
+- `a8c5268` — production SQLite/shared-file compatibility.
+- `f2dc356` — job-card/detail count consistency.
+- `b98ceca`, `b8cc713`, `22dc2ee` — regex matching, form validation, and
+  documentation compatibility.
+- `11d00c9`, `854c409` — pure MARC inversion detection and View warning.
+
+Status: Completed
