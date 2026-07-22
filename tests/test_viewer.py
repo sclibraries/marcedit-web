@@ -3,8 +3,25 @@
 from __future__ import annotations
 
 import pytest
+from pymarc import Field, Record, Subfield
 
 from marcedit_web.lib import viewer
+
+
+def _record_with_tags(*tags: str) -> Record:
+    record = Record()
+    for tag in tags:
+        if tag < "010":
+            record.add_field(Field(tag=tag, data=f"value-{tag}"))
+        else:
+            record.add_field(
+                Field(
+                    tag=tag,
+                    indicators=[" ", " "],
+                    subfields=[Subfield("a", f"value-{tag}")],
+                )
+            )
+    return record
 
 
 def test_parse_indices_simple():
@@ -28,6 +45,46 @@ def test_parse_fields_accepts_commas_and_spaces():
 def test_parse_fields_rejects_non_tag():
     with pytest.raises(ValueError):
         viewer.parse_fields("abcd")
+
+
+def test_field_order_inversions_is_silent_for_ascending_and_repeated_tags():
+    record = _record_with_tags("001", "035", "035", "040", "245")
+
+    assert viewer.field_order_inversions(record) == []
+
+
+def test_field_order_inversions_reports_adjacent_descending_tags():
+    record = _record_with_tags("001", "040", "035", "245")
+
+    assert viewer.field_order_inversions(record) == [("040", "035")]
+
+
+def test_field_order_inversions_respects_limit():
+    record = _record_with_tags("009", "008", "007", "006", "005")
+
+    assert viewer.field_order_inversions(record, limit=3) == [
+        ("009", "008"),
+        ("008", "007"),
+        ("007", "006"),
+    ]
+
+
+def test_field_order_inversions_does_not_mutate_record_bytes():
+    record = _record_with_tags("001", "040", "035", "245")
+    before = record.as_marc()
+
+    viewer.field_order_inversions(record)
+
+    assert record.as_marc() == before
+
+
+def test_render_record_human_preserves_source_field_order():
+    record = _record_with_tags("001", "040", "035", "245")
+
+    text = viewer.render_record_human(record)
+
+    offsets = [text.index(f"={tag}") for tag in ("001", "040", "035", "245")]
+    assert offsets == sorted(offsets)
 
 
 def test_render_record_full(record):

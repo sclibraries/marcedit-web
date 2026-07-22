@@ -69,6 +69,21 @@ def parse_fields(spec: str) -> set[str]:
     return tags
 
 
+def field_order_inversions(
+    record: Record, *, limit: int = 20,
+) -> list[tuple[str, str]]:
+    """Return bounded adjacent descending tags without changing the record."""
+    if limit <= 0:
+        return []
+    inversions = []
+    for previous, current in zip(record.fields, record.fields[1:]):
+        if current.tag < previous.tag:
+            inversions.append((previous.tag, current.tag))
+            if len(inversions) >= limit:
+                break
+    return inversions
+
+
 # --- .mrk rendering ----------------------------------------------------------
 
 
