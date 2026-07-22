@@ -12,6 +12,21 @@ import pytest
 from marcedit_web.lib import collaboration, db, job_files, jobs
 
 
+class LegacySqliteConnection:
+    """Model production SQLite by rejecting post-3.34 RETURNING syntax."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, parameters=()):
+        if "RETURNING" in sql.upper():
+            raise sqlite3.OperationalError('near "RETURNING": syntax error')
+        return self._connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_job_files_root(tmp_path, monkeypatch):
     monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files"))
@@ -28,6 +43,24 @@ def attach_fixture(job_id: int, tmp_path: Path, filename: str, data: bytes):
         record_count=1,
         file_bytes=len(data),
     )
+
+
+def test_attach_file_works_without_sqlite_returning(tmp_path, monkeypatch):
+    """RHEL production SQLite must attach a visible immutable version."""
+    original_connect = db.connect
+
+    @contextmanager
+    def legacy_connect():
+        with original_connect() as connection:
+            yield LegacySqliteConnection(connection)
+
+    monkeypatch.setattr(db, "connect", legacy_connect)
+    job = jobs.create_job("owner@example.edu", "Routledge load")
+    attached = attach_fixture(job["id"], tmp_path, "routledge.mrc", b"record")
+
+    assert attached["display_name"] == "routledge.mrc"
+    assert attached["current_version_id"] is not None
+    assert len(job_files.list_files(job["id"], "owner@example.edu")) == 1
 
 
 def test_attach_file_copies_original_and_creates_version_one(tmp_path):

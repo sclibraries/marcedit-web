@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from marcedit_web.lib import db, job_files, provenance
 
 
 OWNER = "owner@example.edu"
+
+
+class LegacySqliteConnection:
+    """Model production SQLite by rejecting post-3.34 RETURNING syntax."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, parameters=()):
+        if "RETURNING" in sql.upper():
+            raise sqlite3.OperationalError('near "RETURNING": syntax error')
+        return self._connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
 
 
 def _seed_v11_job(tmp_path: Path) -> int:
@@ -180,8 +196,11 @@ def test_existing_upload_migrates_once_to_immutable_version(tmp_path, monkeypatc
             (job_id,),
         )]
 
-    db.reset_for_tests()
-    db.init_schema()
+    _create_empty_v12_tables()
+    with db.connect() as conn:
+        legacy = LegacySqliteConnection(conn)
+        job_files._migrate_uploads_to_job_files(legacy)  # noqa: SLF001
+        job_files._migrate_uploads_to_job_files(legacy)  # noqa: SLF001
     first = _migrated_file(upload_id)
 
     assert first is not None
@@ -198,8 +217,6 @@ def test_existing_upload_migrates_once_to_immutable_version(tmp_path, monkeypatc
     assert first["current_version_id"] == first["id"]
 
     original.unlink()
-    with db.connect() as conn:
-        job_files._migrate_uploads_to_job_files(conn)  # noqa: SLF001
     with db.connect() as conn:
         ids = conn.execute(
             "SELECT id FROM job_files WHERE original_upload_id=?",
