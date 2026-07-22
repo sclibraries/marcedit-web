@@ -1,9 +1,5 @@
 # TASK-134 Diff Uploader Containment Implementation Plan
 
-> **Do not execute this revision.** The approved 2026-07-22 TASK-134 design
-> reduces the per-session file cap to 50 and strengthens deletion confinement.
-> This plan must be rewritten and re-approved before implementation begins.
-
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Release both Diff uploader widgets after every nonempty ingest round while preserving staged files safely on disk, invalidating stale review/output state, and giving users deterministic replacement, rejection, removal, and reset behavior.
@@ -22,22 +18,34 @@
 - Each Diff source file remains capped at 2 GiB by `MARCEDIT_WEB_MAX_DIFF_BYTES`.
 - Total staged bytes across old and new sides default to 8 GiB through `MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES=8589934592`.
 - Physical admission requires the complete new candidate plus `MARCEDIT_WEB_DIFF_MIN_FREE_BYTES=1073741824`, even for replacement.
-- At most 200 logical staged files exist across both sides. The unchanged
+- At most 50 logical staged files exist per session across both sides. The unchanged
   render path opens roughly two descriptors per file (a handle and mmap), so
-  200 leaves operating headroom under the expected 1,024-descriptor service
-  limit without changing production units for containment code.
+  three concurrent maximum-size sessions consume roughly 300 descriptors plus
+  the measured process baseline. Acceptance must retain explicit headroom under
+  the expected 1,024-descriptor service limit without changing production units
+  for containment code.
 - A successful candidate is written and closed at a generated path before state changes; failed replacement preserves the prior entry and derived results.
 - The last successfully written duplicate display name in upload order wins.
 - Accepted add/replacement/removal invalidates all derived Diff review/output state; rejected-only rounds do not.
 - Every nonempty side rotates its uploader key, including rejected-only and mixed rounds, then reruns once after both sides are processed.
 - Persist at most 20 rejection entries with 255-character filenames and 512-character reasons for one post-ingest render; audit every rejection even when the UI summary is truncated. This acknowledgement is intentionally one-shot and is not repeated by the next pagination or form interaction.
 - “Start over” removes the whole active Diff work tree before forgetting state. Do not add an abandoned-tree sweeper.
+- Replacement and removal open the token-owned root and side directory with
+  no-follow semantics, validate a generated regular-file basename, and unlink
+  relative to the opened side descriptor. Reset requires
+  `shutil.rmtree.avoids_symlink_attacks` after ownership validation. Corrupt or
+  stale metadata fails closed and remains available for operator cleanup.
+- The file-count and 8 GiB staged-byte ceilings remain per-session. Concurrent
+  sessions may stage a multiple of 8 GiB plus replacement candidates; the
+  1 GiB free-disk reserve is the temporary non-transactional physical guard.
 - Keep synchronous `diff_output_blobs` behavior unchanged; TASK-162 removes it later.
 - Preserve unrelated workspace changes and untracked runtime data.
 - Follow strict red-green-refactor: no production edit before its failing test is observed.
-- Create every implementation commit on `task-134-diff-uploader`. Immediately
-  after each `git commit`, verify `git branch --show-current`; if it reports
-  `main`, stop and use the recovery procedure in Task 1 before continuing.
+- Create every implementation commit in the isolated non-`main` workspace.
+  The manual fallback branch is `task-134-diff-uploader`; a native worktree may
+  choose another non-`main` branch. Immediately after each commit, assert the
+  branch is nonempty and not `main`; stop rather than rewriting history if that
+  assertion fails.
 - Mark TASK-134 `In-Progress` only after the implementation worktree exists; mark it `Completed` only after all tests and independent code review pass.
 
 ## File Structure
@@ -57,7 +65,7 @@ No queue, durable artifact, worker, ingress, download, merge, split, or TASK-163
 
 ---
 
-### Task 1: Add the containment quota settings
+### Task 1: Isolate the work, verify the baseline, and add quota settings
 
 **Files:**
 - Modify: `.tickets/TASK-134-diff-uploader-widget-memory.md`
@@ -69,49 +77,63 @@ No queue, durable artifact, worker, ingress, download, merge, split, or TASK-163
 - Produces: `quotas.diff_min_free_bytes() -> int`
 - Preserves: `quotas.max_diff_bytes() -> int` and the removed per-side aggregate behavior
 
-- [ ] **Step 1: Create the isolated worktree and mark the ticket In-Progress**
+- [ ] **Step 1: Create or enter isolation through the required worktree skill**
 
-Use `superpowers:using-git-worktrees`. Create the branch from the current local
-`HEAD`, not `origin/main`, because the remote branch does not yet contain this
-ticket, design, plan, or their required Diff-page baseline:
+Invoke `superpowers:using-git-worktrees`. Follow its isolation detection,
+submodule guard, native-tool preference, ignored-directory check, and sandbox
+fallback exactly. The fallback branch name is `task-134-diff-uploader`, created
+from current local `HEAD`, not `origin/main`, because local `HEAD` contains the
+approved ticket, design, and executable plan.
+
+After the skill enters the isolated workspace, run:
 
 ```bash
-git worktree add -b task-134-diff-uploader ../marcedit-web-task-134 HEAD
-cd ../marcedit-web-task-134
-test "$(git branch --show-current)" = "task-134-diff-uploader"
+test -n "$(git branch --show-current)"
+test "$(git branch --show-current)" != "main"
 test -f docs/superpowers/plans/2026-07-21-task-134-diff-uploader-containment.md
 test -f docs/superpowers/specs/2026-07-21-diff-ingress-safety-design.md
 ```
 
-In that worktree, change only the ticket status line:
+Expected: all commands exit 0. Record the full worktree path and branch. If the
+sandbox blocks isolation, stop and report it; do not implement TASK-134 on
+`main`.
+
+- [ ] **Step 2: Establish Python 3.9 and verify the complete clean baseline**
+
+Use an existing Python 3.9 virtual environment if present. Otherwise follow
+`README.md`:
+
+```bash
+python3.9 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+.venv/bin/python -m pip install -e ".[dev]"
+.venv/bin/python -m pytest -q
+```
+
+Expected: Python is 3.9.x and the complete suite has zero failures. Record exact
+passed/skipped counts and every skip reason. If Python 3.9 or dependency
+installation is unavailable, stop and request the supported environment rather
+than substituting Python 3.14.
+
+- [ ] **Step 3: Mark the ticket In-Progress**
+
+Change only the ticket status line after isolation and the baseline pass:
 
 ```markdown
 Status: In-Progress
 ```
 
-The commands above confirm the worktree contains the approved design and this
-plan before production edits begin.
-
-After every commit in this plan, run the branch assertion shown in that task.
-If it reports `main`, do not make another edit or commit. From the accidental
-main checkout, first verify both tracked worktree and index are clean, then
-move that one commit to the feature branch and restore main:
+After every commit in this plan, run:
 
 ```bash
-task_accidental_sha="$(git rev-parse HEAD)"
-git diff --quiet
-git diff --cached --quiet
-git -C ../marcedit-web-task-134 cherry-pick "$task_accidental_sha"
-git reset --keep "$task_accidental_sha^"
-cd ../marcedit-web-task-134
-test "$(git branch --show-current)" = "task-134-diff-uploader"
+test "$(git branch --show-current)" != "main"
 ```
 
-If either clean-tree assertion fails, stop and inspect the changes instead of
-resetting. This recovery is only for the immediately preceding accidental
-commit.
+If it reports `main`, stop immediately and report the accidental checkout. Do
+not attempt automated reset or history repair while unrelated saved state
+exists.
 
-- [ ] **Step 2: Write failing exact-default and override tests**
+- [ ] **Step 4: Write failing exact-default and override tests**
 
 Append to `tests/test_quotas.py`:
 
@@ -135,17 +157,17 @@ def test_diff_containment_settings_are_independently_overridable(monkeypatch):
     assert quotas.diff_min_free_bytes() == 700
 ```
 
-- [ ] **Step 3: Run the tests and verify RED**
+- [ ] **Step 5: Run the tests and verify RED**
 
 Run:
 
 ```bash
-pytest tests/test_quotas.py::test_diff_containment_defaults_leave_full_dump_headroom tests/test_quotas.py::test_diff_containment_settings_are_independently_overridable -q
+python -m pytest tests/test_quotas.py::test_diff_containment_defaults_leave_full_dump_headroom tests/test_quotas.py::test_diff_containment_settings_are_independently_overridable -q
 ```
 
 Expected: both fail with `AttributeError` because the two resolvers do not exist.
 
-- [ ] **Step 4: Add only the two quota resolvers**
+- [ ] **Step 6: Add only the two quota resolvers**
 
 In `marcedit_web/lib/quotas.py`, add these defaults beside `_DEFAULT_DIFF_BYTES`:
 
@@ -175,22 +197,23 @@ def diff_min_free_bytes() -> int:
 
 Do not call `check_session_aggregate()` from Diff.
 
-- [ ] **Step 5: Run focused and existing quota tests**
+- [ ] **Step 7: Run focused and existing quota tests**
 
 Run:
 
 ```bash
-pytest tests/test_quotas.py -q
+python -m pytest tests/test_quotas.py -q
 ```
 
 Expected: all tests pass with no skips.
 
-- [ ] **Step 6: Commit the quota unit**
+- [ ] **Step 8: Commit the quota unit**
 
 ```bash
 git add .tickets/TASK-134-diff-uploader-widget-memory.md marcedit_web/lib/quotas.py tests/test_quotas.py
 git commit -m "feat: add Diff staging containment limits"
-test "$(git branch --show-current)" = "task-134-diff-uploader"
+test -n "$(git branch --show-current)"
+test "$(git branch --show-current)" != "main"
 ```
 
 ---
@@ -215,6 +238,8 @@ Create `tests/test_diff_uploads.py` with these helpers and tests:
 from __future__ import annotations
 
 import io
+import mmap
+import resource
 from pathlib import Path
 
 import pytest
@@ -549,6 +574,40 @@ def test_ordinary_reader_failure_is_bounded_and_both_sides_rotate(
     assert state["diff_result"] == {"valid": True}
     assert diff_uploads.uploader_key(state, "old") == "diff_old_uploader_2"
     assert diff_uploads.uploader_key(state, "new") == "diff_new_uploader_1"
+
+
+def _descriptor_count() -> int:
+    for directory in (Path("/proc/self/fd"), Path("/dev/fd")):
+        if directory.is_dir():
+            return len(list(directory.iterdir()))
+    raise AssertionError("supported Unix runtime must expose process descriptors")
+
+
+def test_three_maximum_sessions_retain_process_descriptor_headroom(tmp_path):
+    """The per-session cap leaves at least 25% of 1,024 FDs unused."""
+    assert diff_uploads.MAX_STAGED_FILES == 50
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard < 1024:
+        raise AssertionError("supported service requires RLIMIT_NOFILE >= 1024")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, 1024), hard))
+    opened = []
+    try:
+        baseline = _descriptor_count()
+        for index in range(3 * diff_uploads.MAX_STAGED_FILES):
+            path = tmp_path / f"source-{index}.mrc"
+            path.write_bytes(b"x")
+            handle = path.open("rb")
+            mapping = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+            opened.append((handle, mapping))
+        peak = _descriptor_count()
+
+        assert peak - baseline <= 2 * 3 * diff_uploads.MAX_STAGED_FILES
+        assert peak <= 768
+    finally:
+        for handle, mapping in opened:
+            mapping.close()
+            handle.close()
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 ```
 
 - [ ] **Step 2: Run core staging tests and verify RED**
@@ -556,7 +615,7 @@ def test_ordinary_reader_failure_is_bounded_and_both_sides_rotate(
 Run:
 
 ```bash
-pytest tests/test_diff_uploads.py -q
+python -m pytest tests/test_diff_uploads.py -q
 ```
 
 Expected: collection fails because `marcedit_web.lib.diff_uploads` does not exist.
@@ -572,16 +631,18 @@ import hmac
 import os
 import secrets
 import shutil
+import stat
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, MutableMapping, Optional, Sequence
+from typing import Callable, Iterator, MutableMapping, Optional, Sequence
 
 from . import quotas
 
 
 CHUNK_BYTES = 1024 * 1024
-MAX_STAGED_FILES = 200
+MAX_STAGED_FILES = 50
 MAX_REJECTIONS = 20
 MAX_REJECTION_FILENAME_CHARS = 255
 MAX_REJECTION_REASON_CHARS = 512
@@ -883,9 +944,9 @@ def ingest_round(
                     UploadEvent(
                         accepted=False,
                         side=side,
-                        filename=filename,
+                        filename=filename[:MAX_REJECTION_FILENAME_CHARS],
                         size=size,
-                        reason=str(exc),
+                        reason=str(exc)[:MAX_REJECTION_REASON_CHARS],
                         limit=(
                             exc.limit
                             if isinstance(exc, quotas.QuotaExceeded)
@@ -899,7 +960,7 @@ def ingest_round(
                     UploadEvent(
                         accepted=True,
                         side=side,
-                        filename=filename,
+                        filename=filename[:MAX_REJECTION_FILENAME_CHARS],
                         size=size,
                     )
                 )
@@ -918,17 +979,19 @@ def ingest_round(
 Run:
 
 ```bash
-pytest tests/test_diff_uploads.py -q
+python -m pytest tests/test_diff_uploads.py -q
 ```
 
-Expected: all thirteen tests pass with no skips.
+Expected: all fourteen tests pass with no skips, including the measured
+three-session descriptor budget.
 
 - [ ] **Step 5: Commit failure-atomic staging**
 
 ```bash
 git add marcedit_web/lib/diff_uploads.py tests/test_diff_uploads.py
 git commit -m "feat: stage Diff upload rounds atomically"
-test "$(git branch --show-current)" = "task-134-diff-uploader"
+test -n "$(git branch --show-current)"
+test "$(git branch --show-current)" != "main"
 ```
 
 ---
@@ -945,6 +1008,10 @@ test "$(git branch --show-current)" = "task-134-diff-uploader"
 - Produces: `cleanup_workdir(state) -> None`
 - Produces: `invalidate_derived(state) -> None`
 - Produces: `complete_round(outcome, *, user, audit, rerun) -> None`
+- Produces internally: `_owned_side(state, side)`,
+  `_unlink_owned_file(state, side, raw_path)`, and
+  `_owned_file_size(state, side, raw_path)` plus
+  `_entry_stat(side_fd, basename)` for root-confined no-follow validation
 
 - [ ] **Step 1: Add failing lifecycle tests**
 
@@ -974,6 +1041,12 @@ def test_mixed_round_invalidates_all_derived_state_and_bounds_feedback(
 
     assert outcome.changed is True
     assert len([event for event in outcome.events if not event.accepted]) == 25
+    assert all(len(event.filename) <= 255 for event in outcome.events)
+    assert all(
+        len(event.reason or "") <= 512
+        for event in outcome.events
+        if not event.accepted
+    )
     assert all(state[key] is None for key in diff_uploads.DERIVED_STATE_KEYS)
     assert "diff_page_changed" not in state
     assert len(summary["entries"]) == 20
@@ -1097,6 +1170,139 @@ def test_cleanup_refuses_symlink_substitution(state, monkeypatch):
     root.unlink()
 
 
+def test_remove_refuses_forged_absolute_path(state, tmp_path):
+    """Corrupt metadata cannot authorize deletion outside the owned side."""
+    outside = tmp_path / "outside.mrc"
+    outside.write_bytes(b"keep")
+    state["diff_old_buffers"] = [("old.mrc", str(outside))]
+
+    with pytest.raises(OSError, match="owned side"):
+        diff_uploads.remove_staged_file(state, "old", "old.mrc")
+
+    assert outside.read_bytes() == b"keep"
+    assert state["diff_old_buffers"] == [("old.mrc", str(outside))]
+
+
+def test_replacement_refuses_forged_prior_before_candidate_write(
+    state, monkeypatch, tmp_path,
+):
+    """Prior metadata is confined before replacement allocates new bytes."""
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_BYTES", "100")
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES", "1000")
+    monkeypatch.setenv("MARCEDIT_WEB_DIFF_MIN_FREE_BYTES", "0")
+    diff_uploads.ingest_round(
+        state, [StreamOnlyUpload("old.mrc", b"old")], [], free_bytes=_room,
+    )
+    root = Path(state["diff_workdir_root"])
+    staged_before = set(root.rglob("*.mrc"))
+    outside = tmp_path / "outside-prior.mrc"
+    outside.write_bytes(b"keep")
+    state["diff_old_buffers"] = [("old.mrc", str(outside))]
+    state["diff_result"] = {"kept": True}
+
+    outcome = diff_uploads.ingest_round(
+        state, [StreamOnlyUpload("old.mrc", b"new")], [], free_bytes=_room,
+    )
+
+    assert outcome.events[0].accepted is False
+    assert set(root.rglob("*.mrc")) == staged_before
+    assert outside.read_bytes() == b"keep"
+    assert state["diff_result"] == {"kept": True}
+
+
+def test_remove_refuses_staged_file_symlink(state, monkeypatch, tmp_path):
+    """A staged symlink is never followed to its external target."""
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_BYTES", "100")
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES", "1000")
+    monkeypatch.setenv("MARCEDIT_WEB_DIFF_MIN_FREE_BYTES", "0")
+    diff_uploads.ingest_round(
+        state, [StreamOnlyUpload("old.mrc", b"old")], [], free_bytes=_room,
+    )
+    staged = Path(state["diff_old_buffers"][0][1])
+    outside = tmp_path / "outside-target.mrc"
+    outside.write_bytes(b"keep")
+    staged.unlink()
+    staged.symlink_to(outside)
+
+    with pytest.raises(OSError, match="regular file"):
+        diff_uploads.remove_staged_file(state, "old", "old.mrc")
+
+    assert outside.read_bytes() == b"keep"
+    assert staged.is_symlink()
+    assert state["diff_old_buffers"][0][1] == str(staged)
+
+
+def test_remove_refuses_substituted_side_directory(state, monkeypatch):
+    """Opening the side directory never follows a replacement symlink."""
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_BYTES", "100")
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES", "1000")
+    monkeypatch.setenv("MARCEDIT_WEB_DIFF_MIN_FREE_BYTES", "0")
+    diff_uploads.ingest_round(
+        state, [StreamOnlyUpload("old.mrc", b"old")], [], free_bytes=_room,
+    )
+    root = Path(state["diff_workdir_root"])
+    side = root / "old"
+    real = root / "old-real"
+    side.rename(real)
+    side.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        diff_uploads.remove_staged_file(state, "old", "old.mrc")
+
+    assert next(real.glob("upload-*.mrc")).read_bytes() == b"old"
+    assert side.is_symlink()
+
+
+def test_unlink_race_can_remove_only_the_owned_entry(state, monkeypatch, tmp_path):
+    """A post-stat symlink swap cannot redirect dirfd-relative unlink."""
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_BYTES", "100")
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES", "1000")
+    monkeypatch.setenv("MARCEDIT_WEB_DIFF_MIN_FREE_BYTES", "0")
+    diff_uploads.ingest_round(
+        state, [StreamOnlyUpload("old.mrc", b"old")], [], free_bytes=_room,
+    )
+    staged = Path(state["diff_old_buffers"][0][1])
+    outside = tmp_path / "race-target.mrc"
+    outside.write_bytes(b"keep")
+    original_stat = diff_uploads._entry_stat
+
+    def swap_after_stat(side_fd, basename):
+        result = original_stat(side_fd, basename)
+        staged.unlink()
+        staged.symlink_to(outside)
+        return result
+
+    monkeypatch.setattr(diff_uploads, "_entry_stat", swap_after_stat)
+
+    diff_uploads.remove_staged_file(state, "old", "old.mrc")
+
+    assert outside.read_bytes() == b"keep"
+    assert not staged.exists()
+    assert state["diff_old_buffers"] == []
+
+
+def test_cleanup_requires_symlink_safe_rmtree(state, monkeypatch):
+    """Reset fails closed when the platform cannot prevent symlink attacks."""
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_BYTES", "100")
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES", "1000")
+    monkeypatch.setenv("MARCEDIT_WEB_DIFF_MIN_FREE_BYTES", "0")
+    diff_uploads.ingest_round(
+        state, [StreamOnlyUpload("old.mrc", b"old")], [], free_bytes=_room,
+    )
+    root = Path(state["diff_workdir_root"])
+    monkeypatch.setattr(
+        diff_uploads.shutil.rmtree,
+        "avoids_symlink_attacks",
+        False,
+    )
+
+    with pytest.raises(OSError, match="symlink-safe"):
+        diff_uploads.cleanup_workdir(state)
+
+    assert root.exists()
+    assert state["diff_workdir_root"] == str(root)
+
+
 def test_complete_round_audits_every_event_and_reruns_once(
     state, monkeypatch,
 ):
@@ -1141,10 +1347,11 @@ def test_complete_round_audits_every_event_and_reruns_once(
 Run:
 
 ```bash
-pytest tests/test_diff_uploads.py -q
+python -m pytest tests/test_diff_uploads.py -q
 ```
 
-Expected: the nine new tests fail because the lifecycle APIs/public key tuple are missing or incomplete.
+Expected: the fifteen new tests fail because the lifecycle and safe-deletion
+APIs are missing or incomplete.
 
 - [ ] **Step 3: Implement exact lifecycle behavior**
 
@@ -1181,6 +1388,96 @@ def complete_round(
         rerun()
 
 
+def _require_safe_delete_primitives() -> None:
+    required_dir_fd = (os.open, os.stat, os.unlink)
+    if not all(function in os.supports_dir_fd for function in required_dir_fd):
+        raise OSError("platform lacks required dirfd deletion support")
+    if os.stat not in os.supports_follow_symlinks:
+        raise OSError("platform lacks no-follow stat support")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("platform lacks no-follow directory support")
+
+
+@contextmanager
+def _owned_side(
+    state: MutableMapping,
+    side: str,
+) -> Iterator[tuple[Path, int]]:
+    if side not in _BUFFER_KEYS:
+        raise ValueError(f"unknown Diff side: {side!r}")
+    _require_safe_delete_primitives()
+    root = _owned_root(state)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = os.open(root, directory_flags)
+    side_fd = None
+    try:
+        marker_fd = os.open(
+            _ROOT_MARKER,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=root_fd,
+        )
+        try:
+            marker_stat = os.fstat(marker_fd)
+            if not stat.S_ISREG(marker_stat.st_mode):
+                raise OSError("Diff ownership marker is not a regular file")
+            actual = os.read(marker_fd, 129).decode("ascii")
+        finally:
+            os.close(marker_fd)
+        expected = str(state.get(_ROOT_TOKEN_KEY) or "")
+        if not expected or not hmac.compare_digest(actual, expected):
+            raise OSError("Diff work directory ownership marker does not match")
+        side_fd = os.open(side, directory_flags, dir_fd=root_fd)
+        yield root / side, side_fd
+    finally:
+        if side_fd is not None:
+            os.close(side_fd)
+        os.close(root_fd)
+
+
+def _entry_stat(side_fd: int, basename: str):
+    return os.stat(basename, dir_fd=side_fd, follow_symlinks=False)
+
+
+def _owned_basename(raw_path: str, expected_directory: Path) -> str:
+    path = Path(raw_path)
+    if (
+        not path.is_absolute()
+        or path.parent != expected_directory
+        or not path.name.startswith("upload-")
+        or path.suffix != ".mrc"
+    ):
+        raise OSError("staged path is outside the owned side directory")
+    return path.name
+
+
+def _regular_entry(side_fd: int, basename: str):
+    entry = _entry_stat(side_fd, basename)
+    if not stat.S_ISREG(entry.st_mode):
+        raise OSError("staged path is not a regular file")
+    return entry
+
+
+def _owned_file_size(
+    state: MutableMapping,
+    side: str,
+    raw_path: str,
+) -> int:
+    with _owned_side(state, side) as (expected_directory, side_fd):
+        basename = _owned_basename(raw_path, expected_directory)
+        return int(_regular_entry(side_fd, basename).st_size)
+
+
+def _unlink_owned_file(
+    state: MutableMapping,
+    side: str,
+    raw_path: str,
+) -> None:
+    with _owned_side(state, side) as (expected_directory, side_fd):
+        basename = _owned_basename(raw_path, expected_directory)
+        _regular_entry(side_fd, basename)
+        os.unlink(basename, dir_fd=side_fd)
+
+
 def remove_staged_file(
     state: MutableMapping,
     side: str,
@@ -1190,10 +1487,7 @@ def remove_staged_file(
     match = next((item for item in entries if item[0] == filename), None)
     if match is None:
         raise KeyError(filename)
-    root = _owned_root(state)
-    path = Path(match[1]).resolve()
-    path.relative_to(root)
-    path.unlink()
+    _unlink_owned_file(state, side, match[1])
     state[_BUFFER_KEYS[side]] = [item for item in entries if item != match]
     invalidate_derived(state)
 
@@ -1203,17 +1497,44 @@ def cleanup_workdir(state: MutableMapping) -> None:
     if not raw_root:
         return
     root = _owned_root(state)
+    if not getattr(shutil.rmtree, "avoids_symlink_attacks", False):
+        raise OSError("platform lacks symlink-safe recursive removal")
     shutil.rmtree(root)
     state.pop("diff_workdir_root", None)
     state.pop(_ROOT_TOKEN_KEY, None)
 ```
+
+Also replace the superseded-file unlink block in `_replace()` with:
+
+```python
+    try:
+        _unlink_owned_file(state, side, prior[1])
+    except OSError:
+        state[key] = before
+        candidate.unlink(missing_ok=True)
+        raise
+```
+
+The candidate path is locally generated by `_write_candidate`; only the prior
+path comes from mutable session metadata and therefore requires the confined
+unlink contract.
+
+Finally, replace `_admit()`'s direct prior-size lookup:
+
+```python
+    prior_size = _owned_file_size(state, side, prior[1]) if prior else 0
+```
+
+This validates the prior entry before `_write_candidate()` allocates replacement
+bytes. `_unlink_owned_file()` validates it again immediately before deletion so
+a later substitution still fails closed.
 
 - [ ] **Step 4: Run all staging lifecycle tests**
 
 Run:
 
 ```bash
-pytest tests/test_diff_uploads.py -q
+python -m pytest tests/test_diff_uploads.py -q
 ```
 
 Expected: all tests pass with no skips.
@@ -1223,7 +1544,8 @@ Expected: all tests pass with no skips.
 ```bash
 git add marcedit_web/lib/diff_uploads.py tests/test_diff_uploads.py
 git commit -m "feat: manage Diff staged-file lifecycle"
-test "$(git branch --show-current)" = "task-134-diff-uploader"
+test -n "$(git branch --show-current)"
+test "$(git branch --show-current)" != "main"
 ```
 
 ---
@@ -1275,7 +1597,7 @@ def test_diff_page_uses_rotating_upload_contract_without_materializing():
 Run:
 
 ```bash
-pytest tests/test_diff_page_upload_contract.py -q
+python -m pytest tests/test_diff_page_upload_contract.py -q
 ```
 
 Expected: failure because the page still defines `_read_uploaded`, calls `getbuffer()`, and uses static uploader keys.
@@ -1316,7 +1638,8 @@ Use this sidebar shape:
         try:
             _reset_diff()
         except OSError as exc:
-            st.error(f"Could not remove Diff working files: {exc}")
+            reason = str(exc)[:diff_uploads.MAX_REJECTION_REASON_CHARS]
+            st.error(f"Could not remove Diff working files: {reason}")
         else:
             st.rerun()
 ```
@@ -1383,7 +1706,9 @@ def _render_file_removal(side: str, entries: list[tuple[str, str]]) -> None:
         try:
             diff_uploads.remove_staged_file(st.session_state, side, choice)
         except (KeyError, OSError, ValueError) as exc:
-            st.error(f"Could not remove `{choice}`: {exc}")
+            safe_choice = choice[:diff_uploads.MAX_REJECTION_FILENAME_CHARS]
+            reason = str(exc)[:diff_uploads.MAX_REJECTION_REASON_CHARS]
+            st.error(f"Could not remove `{safe_choice}`: {reason}")
         else:
             st.session_state.pop(f"diff_{side}_remove_choice", None)
             st.rerun()
@@ -1396,7 +1721,7 @@ Call it for both sides before the `if not (old_bufs and new_bufs)` gate. Do not 
 Run:
 
 ```bash
-pytest tests/test_diff_page_upload_contract.py tests/test_diff_uploads.py tests/test_marc_diff.py -q
+python -m pytest tests/test_diff_page_upload_contract.py tests/test_diff_uploads.py tests/test_marc_diff.py -q
 ```
 
 Expected: all pass with no skips.
@@ -1416,7 +1741,8 @@ Expected: exit 0 with no output.
 ```bash
 git add marcedit_web/views/6_Diff.py tests/test_diff_page_upload_contract.py
 git commit -m "feat: rotate Diff upload widgets after ingest"
-test "$(git branch --show-current)" = "task-134-diff-uploader"
+test -n "$(git branch --show-current)"
+test "$(git branch --show-current)" != "main"
 ```
 
 ---
@@ -1463,6 +1789,15 @@ def test_native_env_template_declares_diff_containment_limits():
 
     assert "MARCEDIT_WEB_MAX_DIFF_STAGED_BYTES=8589934592" in template
     assert "MARCEDIT_WEB_DIFF_MIN_FREE_BYTES=1073741824" in template
+
+
+def test_deployment_docs_disclose_per_session_diff_disk_containment():
+    """Operators must know TASK-134 has no service-wide disk reservation."""
+    docs = _repo_file("docs/deployment.md")
+
+    assert "8 GiB ceiling is per Streamlit session" in docs
+    assert "not transactional across sessions" in docs
+    assert "MARCEDIT_WEB_DIFF_MIN_FREE_BYTES" in docs
 ```
 
 - [ ] **Step 2: Run deployment tests and verify RED**
@@ -1470,10 +1805,11 @@ def test_native_env_template_declares_diff_containment_limits():
 Run:
 
 ```bash
-pytest tests/test_docker_compose_config.py::test_pull_compose_passes_diff_containment_limits_to_private_app tests/test_deploy_units.py::test_native_env_template_declares_diff_containment_limits -q
+python -m pytest tests/test_docker_compose_config.py::test_pull_compose_passes_diff_containment_limits_to_private_app tests/test_deploy_units.py::test_native_env_template_declares_diff_containment_limits tests/test_deploy_units.py::test_deployment_docs_disclose_per_session_diff_disk_containment -q
 ```
 
-Expected: both fail because neither deployment surface declares the settings.
+Expected: all three fail because neither deployment surface declares the
+settings and the current docs do not disclose the per-session disk tradeoff.
 
 - [ ] **Step 3: Add exact configuration and cleanup documentation**
 
@@ -1496,6 +1832,11 @@ Replace the current blind runtime-temp cleanup recommendation in `docs/deploymen
 ```markdown
 TASK-134 removes the active Diff work tree when the cataloger selects **Start
 over**, but intentionally does not sweep abandoned Streamlit session trees.
+Its 8 GiB ceiling is per Streamlit session, not transactional across sessions;
+concurrent sessions may stage a multiple of that amount plus replacement
+candidates. `MARCEDIT_WEB_DIFF_MIN_FREE_BYTES` preserves 1 GiB by default before
+each candidate write but is not a service-wide reservation. Monitor aggregate
+temporary-disk use during this containment window.
 Safely proving that a tree is inactive would add locking machinery that the
 durable TASK-164/TASK-165 cutover removes. For native systemd,
 `PrivateTmp=true` means a controlled private-service restart recreates the
@@ -1512,7 +1853,7 @@ these trees while the service is active.
 Run:
 
 ```bash
-pytest tests/test_docker_compose_config.py tests/test_deploy_units.py -q
+python -m pytest tests/test_docker_compose_config.py tests/test_deploy_units.py -q
 ```
 
 Expected: all pass; report any Docker-dependent skips explicitly.
@@ -1522,7 +1863,8 @@ Expected: all pass; report any Docker-dependent skips explicitly.
 ```bash
 git add .env.example docker-compose.pull.yml tests/test_docker_compose_config.py tests/test_deploy_units.py docs/deployment.md
 git commit -m "docs: configure Diff staging containment"
-test "$(git branch --show-current)" = "task-134-diff-uploader"
+test -n "$(git branch --show-current)"
+test "$(git branch --show-current)" != "main"
 ```
 
 ---
@@ -1541,7 +1883,7 @@ test "$(git branch --show-current)" = "task-134-diff-uploader"
 Run:
 
 ```bash
-pytest tests/test_quotas.py tests/test_diff_uploads.py tests/test_diff_page_upload_contract.py tests/test_marc_diff.py tests/test_docker_compose_config.py tests/test_deploy_units.py -q
+python -m pytest tests/test_quotas.py tests/test_diff_uploads.py tests/test_diff_page_upload_contract.py tests/test_marc_diff.py tests/test_docker_compose_config.py tests/test_deploy_units.py -q
 ```
 
 Expected: all runnable tests pass. List every environment-dependent skip by test name and reason; do not summarize a skipped suite as passing.
@@ -1551,7 +1893,7 @@ Expected: all runnable tests pass. List every environment-dependent skip by test
 Run:
 
 ```bash
-pytest -q
+python -m pytest -q
 ```
 
 Expected: zero failures. Report the exact passed/skipped counts.
@@ -1578,7 +1920,28 @@ Through both Diff uploaders, verify:
 4. one accepted plus one rejected file shows the rejection once and retains the accepted file;
 5. rejected-only upload releases its widget without invalidating an existing result;
 6. per-file removal invalidates the result and leaves unrelated files;
-7. **Start over** removes the active work tree and resets only Diff state.
+7. **Start over** removes the active work tree and resets only Diff state;
+8. three simultaneous authenticated sessions can each stage 50 small valid MARC
+   files across both sides; a 51st distinct file is rejected in each session;
+9. the measured process descriptor peak, including its pre-session baseline,
+   remains at or below 768 and therefore leaves at least 256 descriptors of
+   headroom below the supported 1,024 limit.
+
+For systemd, capture the descriptor evidence before opening the three sessions
+and again while all three maximum-size staged lists are rendered:
+
+```bash
+task_pid="$(systemctl show marcedit-web-private.service -p MainPID --value)"
+task_baseline_fds="$(sudo ls "/proc/$task_pid/fd" | wc -l)"
+# Stage and render 50 small valid files in each of three browser sessions.
+task_peak_fds="$(sudo ls "/proc/$task_pid/fd" | wc -l)"
+test "$task_peak_fds" -le 768
+test "$task_peak_fds" -lt 1024
+```
+
+Record both counts in TASK-134. If the deployment uses Compose, resolve the app
+PID with `docker compose -f docker-compose.pull.yml top marcedit-web` and record
+the equivalent host `/proc/<pid>/fd` counts.
 
 Do not use a 2 GiB fixture in this TASK-134 smoke test; the ticket explicitly does not make Streamlit's ingress peak safe.
 
@@ -1601,7 +1964,8 @@ only after all criteria pass.
 ```bash
 git add .tickets/TASK-134-diff-uploader-widget-memory.md
 git commit -m "docs: complete TASK-134 evidence"
-test "$(git branch --show-current)" = "task-134-diff-uploader"
+test -n "$(git branch --show-current)"
+test "$(git branch --show-current)" != "main"
 ```
 
 Do not push or deploy without a separate explicit production-safety check and user authorization.
