@@ -87,6 +87,9 @@ def test_replace_field_subfield_and_indicators_regex_expands_capture_references(
 ```
 
 Keep the current exact-mode, case-sensitivity, ignore-case, and invalid-pattern non-mutation tests unchanged. Add a local `_record_with_035` test helper only if it reduces duplication within `tests/test_transforms.py`.
+Add one more non-mutation regression using a compiled pattern with an invalid
+replacement reference (for example pattern `TFeba(\\d+)` and replacement
+`\\2`). It must raise before any earlier matching field can be changed.
 
 - [ ] **Step 2: Run RED and confirm the production symptom**
 
@@ -126,6 +129,10 @@ for subfield in field.subfields:
 ```
 
 Compile the pattern before iterating over fields exactly as today. Do not change tag, indicator, or subfield-code matching.
+When regex mode is enabled, validate the replacement template before field
+iteration with `pattern.sub(new_value, "")`; Python parses capture references
+even when the subject does not match. This ensures an invalid replacement
+reference cannot partially mutate a multi-field record.
 
 - [ ] **Step 4: Add explicit form help and its regression test**
 
