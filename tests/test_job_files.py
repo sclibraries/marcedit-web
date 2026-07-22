@@ -12,6 +12,21 @@ import pytest
 from marcedit_web.lib import collaboration, db, job_files, jobs
 
 
+class LegacySqliteConnection:
+    """Model production SQLite by rejecting post-3.34 RETURNING syntax."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, parameters=()):
+        if "RETURNING" in sql.upper():
+            raise sqlite3.OperationalError('near "RETURNING": syntax error')
+        return self._connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_job_files_root(tmp_path, monkeypatch):
     monkeypatch.setenv("MARCEDIT_WEB_JOB_FILES_ROOT", str(tmp_path / "job-files"))
@@ -61,6 +76,42 @@ def test_two_attachments_in_one_job_have_separate_current_versions(tmp_path):
     assert [row["id"] for row in rows] == [first["id"], second["id"]]
     assert {row["current_version_number"] for row in rows} == {1}
     assert first["current_version_id"] != second["current_version_id"]
+
+
+def test_shared_members_can_open_attachment_without_sqlite_returning(
+    tmp_path, monkeypatch,
+):
+    """Every job member sees the durable file created on production SQLite."""
+    original_connect = db.connect
+
+    @contextmanager
+    def legacy_connect():
+        with original_connect() as connection:
+            yield LegacySqliteConnection(connection)
+
+    monkeypatch.setattr(db, "connect", legacy_connect)
+    job = jobs.create_job("owner@example.edu", "Routledge load")
+    jobs.grant_access(
+        job["id"], "editor@example.edu", "editor", by="owner@example.edu",
+    )
+    jobs.grant_access(
+        job["id"], "viewer@example.edu", "viewer", by="owner@example.edu",
+    )
+
+    attached = attach_fixture(
+        job["id"], tmp_path, "routledge.mrc", b"record",
+    )
+
+    for member in (
+        "owner@example.edu", "editor@example.edu", "viewer@example.edu",
+    ):
+        rows = job_files.list_files(job["id"], member)
+        assert [row["id"] for row in rows] == [attached["id"]]
+        assert job_files.get_file(attached["id"], member)["id"] == attached["id"]
+        assert (
+            job_files.get_current_version(attached["id"], member)["id"]
+            == attached["current_version_id"]
+        )
 
 
 def test_attachment_rejects_incorrect_file_size(tmp_path):

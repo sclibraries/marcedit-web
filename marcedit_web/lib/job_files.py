@@ -132,23 +132,17 @@ def _migrate_uploads_to_job_files(conn) -> None:
                 target_owned = True
 
             if version is None:
-                version_id = int(
-                    conn.execute(
-                        "INSERT INTO job_file_versions(job_file_id,version_number,"
-                        "file_path,record_count,file_bytes,source_kind,label,created_by,"
-                        "created_at) VALUES(?,1,?,?,?,?,?,?,?) RETURNING id",
-                        (
-                            file_id,
-                            str(target),
-                            upload["record_count"],
-                            upload["file_bytes"],
-                            "legacy-upload",
-                            upload["filename"],
-                            upload["user_email"],
-                            upload["uploaded_at"],
-                        ),
-                    ).fetchone()["id"]
+                cursor = conn.execute(
+                    "INSERT INTO job_file_versions(job_file_id,version_number,file_path,"
+                    "record_count,file_bytes,source_kind,label,created_by,created_at) "
+                    "VALUES(?,1,?,?,?,?,?,?,?)",
+                    (
+                        file_id, str(target), upload["record_count"], upload["file_bytes"],
+                        "legacy-upload", upload["filename"], upload["user_email"],
+                        upload["uploaded_at"],
+                    ),
                 )
+                version_id = int(cursor.lastrowid)
             else:
                 version_id = int(version["id"])
             conn.execute(
@@ -233,22 +227,16 @@ def attach_file(
             target = versions_root() / str(file_id) / "versions" / "v000001.mrc"
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(candidate, target)
-            version = conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO job_file_versions(job_file_id,version_number,file_path,"
                 "record_count,file_bytes,source_kind,label,created_by,created_at) "
-                "VALUES(?,1,?,?,?,?,?,?,?) RETURNING id",
+                "VALUES(?,1,?,?,?,?,?,?,?)",
                 (
-                    file_id,
-                    str(target),
-                    record_count,
-                    file_bytes,
-                    "original",
-                    clean_filename,
-                    user_email,
-                    now,
+                    file_id, str(target), record_count, file_bytes, "original",
+                    clean_filename, user_email, now,
                 ),
-            ).fetchone()
-            version_id = int(version["id"])
+            )
+            version_id = int(cursor.lastrowid)
             conn.execute(
                 "UPDATE job_files SET current_version_id=? WHERE id=?",
                 (version_id, file_id),
@@ -456,24 +444,17 @@ def create_export(
 
             now = _utc_now_iso()
             state = "ready" if version["approval_kind"] is not None else "draft"
-            export_id = int(conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO job_file_exports(job_file_id,version_id,purpose,"
                 "description,filename,file_path,record_count,validation_json,state,"
-                "created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                "created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    file_id,
-                    opened_version_id,
-                    clean_purpose,
-                    description.strip(),
-                    clean_filename,
-                    str(target),
-                    int(version["record_count"]),
-                    version["validation_json"],
-                    state,
-                    user_email,
-                    now,
+                    file_id, opened_version_id, clean_purpose, description.strip(),
+                    clean_filename, str(target), int(version["record_count"]),
+                    version["validation_json"], state, user_email, now,
                 ),
-            ).fetchone()["id"])
+            )
+            export_id = int(cursor.lastrowid)
             if state == "ready":
                 conn.execute(
                     "UPDATE job_files SET status='exported',updated_by=?,updated_at=?"
@@ -816,26 +797,18 @@ def adopt_candidate(
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(staged_candidate, target)
                 renamed = True
-                version_id = int(conn.execute(
+                cursor = conn.execute(
                     "INSERT INTO job_file_versions(job_file_id,version_number,"
                     "parent_version_id,file_path,record_count,file_bytes,source_kind,"
                     "label,summary_json,validation_json,created_by,created_at)"
-                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                    " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        file_id,
-                        next_number,
-                        opened_version_id,
-                        str(target),
-                        count,
-                        byte_count,
-                        source_kind,
-                        label,
-                        json.dumps(summary or {}),
-                        json.dumps(validation or {}),
-                        user_email,
-                        now,
+                        file_id, next_number, opened_version_id, str(target), count,
+                        byte_count, source_kind, label, json.dumps(summary or {}),
+                        json.dumps(validation or {}), user_email, now,
                     ),
-                ).fetchone()["id"])
+                )
+                version_id = int(cursor.lastrowid)
                 changed = conn.execute(
                     "UPDATE job_files SET current_version_id=?,status='in_progress',"
                     "updated_by=?,updated_at=? WHERE id=? AND current_version_id=?",
