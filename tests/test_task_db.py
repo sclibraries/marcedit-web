@@ -81,6 +81,159 @@ def test_set_visibility_toggle():
 
 
 # ---------------------------------------------------------------------------
+# Shared-task collaborator updates
+# ---------------------------------------------------------------------------
+
+
+def test_update_shared_task_preserves_identity_and_visibility():
+    _save(
+        "owner@example.edu",
+        "cleanup",
+        body="old\n",
+        description="old",
+        visibility="shared",
+    )
+    before = task_db.get_task("owner@example.edu", "cleanup")
+
+    task_db.update_shared_task(
+        actor="editor@example.edu",
+        owner="owner@example.edu",
+        name="cleanup",
+        description="corrected",
+        body="new\n",
+        extra_imports=[
+            "from marcedit_web.lib.transforms import delete_tags",
+        ],
+        expected=task_db.task_edit_snapshot(before),
+    )
+
+    after = task_db.get_task("owner@example.edu", "cleanup")
+    assert after["id"] == before["id"]
+    assert after["owner_email"] == "owner@example.edu"
+    assert after["name"] == "cleanup"
+    assert after["visibility"] == "shared"
+    assert after["created_at"] == before["created_at"]
+    assert after["description"] == "corrected"
+    assert after["body"] == "new\n"
+    assert after["extra_imports"] == (
+        "from marcedit_web.lib.transforms import delete_tags"
+    )
+
+
+def test_update_shared_task_rejects_same_second_stale_snapshot(monkeypatch):
+    monkeypatch.setattr(task_db, "_utc_now", lambda: "2026-07-22T12:00:00Z")
+    _save("owner@example.edu", "cleanup", body="opened\n", visibility="shared")
+    opened = task_db.get_task("owner@example.edu", "cleanup")
+    _save("owner@example.edu", "cleanup", body="newer\n", visibility="shared")
+
+    with pytest.raises(ValueError, match="changed since you opened"):
+        task_db.update_shared_task(
+            actor="editor@example.edu",
+            owner="owner@example.edu",
+            name="cleanup",
+            description="stale",
+            body="stale\n",
+            extra_imports=None,
+            expected=task_db.task_edit_snapshot(opened),
+        )
+
+    assert task_db.get_task("owner@example.edu", "cleanup")["body"] == "newer\n"
+
+
+def test_update_shared_task_rejects_private_task_without_changing_it():
+    _save("owner@example.edu", "cleanup", body="private\n", visibility="private")
+    before = task_db.get_task("owner@example.edu", "cleanup")
+
+    with pytest.raises(ValueError, match="no longer shared"):
+        task_db.update_shared_task(
+            actor="editor@example.edu",
+            owner="owner@example.edu",
+            name="cleanup",
+            description="changed",
+            body="changed\n",
+            extra_imports=None,
+            expected=task_db.task_edit_snapshot(before),
+        )
+
+    assert task_db.get_task("owner@example.edu", "cleanup") == before
+
+
+def test_update_shared_task_rejects_task_unshared_after_opening():
+    _save("owner@example.edu", "cleanup", body="shared\n", visibility="shared")
+    opened = task_db.get_task("owner@example.edu", "cleanup")
+    task_db.set_visibility("owner@example.edu", "cleanup", "private")
+    before_attempt = task_db.get_task("owner@example.edu", "cleanup")
+
+    with pytest.raises(ValueError, match="no longer shared"):
+        task_db.update_shared_task(
+            actor="editor@example.edu",
+            owner="owner@example.edu",
+            name="cleanup",
+            description="changed",
+            body="changed\n",
+            extra_imports=None,
+            expected=task_db.task_edit_snapshot(opened),
+        )
+
+    assert task_db.get_task("owner@example.edu", "cleanup") == before_attempt
+
+
+def test_update_shared_task_rejects_deleted_task():
+    _save("owner@example.edu", "cleanup", visibility="shared")
+    opened = task_db.get_task("owner@example.edu", "cleanup")
+    task_db.delete_task("owner@example.edu", "cleanup")
+
+    with pytest.raises(ValueError, match="was removed"):
+        task_db.update_shared_task(
+            actor="editor@example.edu",
+            owner="owner@example.edu",
+            name="cleanup",
+            description="changed",
+            body="changed\n",
+            extra_imports=None,
+            expected=task_db.task_edit_snapshot(opened),
+        )
+
+    assert task_db.get_task("owner@example.edu", "cleanup") is None
+
+
+def test_update_shared_task_rejects_blank_actor_without_changing_task():
+    _save("owner@example.edu", "cleanup", visibility="shared")
+    before = task_db.get_task("owner@example.edu", "cleanup")
+
+    with pytest.raises(ValueError, match="signed-in cataloger required"):
+        task_db.update_shared_task(
+            actor="",
+            owner="owner@example.edu",
+            name="cleanup",
+            description="changed",
+            body="changed\n",
+            extra_imports=None,
+            expected=task_db.task_edit_snapshot(before),
+        )
+
+    assert task_db.get_task("owner@example.edu", "cleanup") == before
+
+
+def test_update_shared_task_rejects_owner_without_changing_task():
+    _save("owner@example.edu", "cleanup", visibility="shared")
+    before = task_db.get_task("owner@example.edu", "cleanup")
+
+    with pytest.raises(ValueError, match="owner must use the owner save path"):
+        task_db.update_shared_task(
+            actor="owner@example.edu",
+            owner="owner@example.edu",
+            name="cleanup",
+            description="changed",
+            body="changed\n",
+            extra_imports=None,
+            expected=task_db.task_edit_snapshot(before),
+        )
+
+    assert task_db.get_task("owner@example.edu", "cleanup") == before
+
+
+# ---------------------------------------------------------------------------
 # Visibility filter — the security-relevant slice
 # ---------------------------------------------------------------------------
 

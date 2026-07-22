@@ -41,6 +41,14 @@ from . import db, editor
 
 logger = logging.getLogger("marcedit_web.task_db")
 
+_EDIT_SNAPSHOT_FIELDS = (
+    "description",
+    "body",
+    "extra_imports",
+    "visibility",
+    "updated_at",
+)
+
 
 def _utc_now() -> str:
     return dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -100,6 +108,50 @@ def get_task(owner: str, name: str) -> dict[str, Any] | None:
             (owner, name),
         ).fetchone()
     return _row_to_dict(row)
+
+
+def task_edit_snapshot(row: dict[str, Any]) -> dict[str, str]:
+    """Return the persisted fields used for collaborative edit conflicts."""
+    return {field: str(row.get(field) or "") for field in _EDIT_SNAPSHOT_FIELDS}
+
+
+def update_shared_task(
+    *,
+    actor: str,
+    owner: str,
+    name: str,
+    description: str,
+    body: str,
+    extra_imports: Iterable[str] | None,
+    expected: dict[str, str],
+) -> None:
+    """Update a shared task for a collaborator when its snapshot is current."""
+    if not actor:
+        raise ValueError("signed-in cataloger required to edit a shared task")
+    if actor == owner:
+        raise ValueError("task owner must use the owner save path")
+    extras = "\n".join(extra_imports or [])
+    now = _utc_now()
+    with db.connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE owner_email = ? AND name = ?",
+            (owner, name),
+        ).fetchone()
+        current = _row_to_dict(row)
+        if current is None:
+            raise ValueError("shared task was removed; reopen the task list")
+        if current["visibility"] != "shared":
+            raise ValueError("task is no longer shared; reopen the task list")
+        if task_edit_snapshot(current) != expected:
+            raise ValueError(
+                "shared task changed since you opened it; reopen and try again"
+            )
+        conn.execute(
+            "UPDATE tasks SET description = ?, body = ?, extra_imports = ?,"
+            " updated_at = ? WHERE owner_email = ? AND name = ?",
+            (description, body, extras, now, owner, name),
+        )
 
 
 def delete_task(owner: str, name: str) -> bool:
