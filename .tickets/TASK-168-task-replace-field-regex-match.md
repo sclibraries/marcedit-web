@@ -18,7 +18,7 @@ Success Criteria:
 - Intent-focused tests, applicable suites, and review pass without unresolved
   Critical or Important findings.
 
-Status: Completed
+Status: In-Progress
 
 Evidence:
 - Transform RED: after correcting an initial test-only missing `re` import
