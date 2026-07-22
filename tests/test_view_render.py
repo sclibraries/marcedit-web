@@ -4,8 +4,117 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from pymarc import Field, Record, Subfield
+
 from marcedit_web.lib import search
 from marcedit_web.render import view
+
+
+class _Context:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _Column(_Context):
+    def button(self, *args, **kwargs):
+        return False
+
+    def number_input(self, *args, **kwargs):
+        return 1
+
+    def selectbox(self, label, options, **kwargs):
+        return options[0]
+
+    def text_input(self, *args, **kwargs):
+        return ""
+
+
+class _Store:
+    revision = 0
+
+    def __init__(self, record):
+        self.record = record
+
+    def count(self):
+        return 1
+
+    def get(self, index):
+        assert index == 0
+        return self.record
+
+
+def _record_with_tags(*tags: str) -> Record:
+    record = Record()
+    for tag in tags:
+        if tag < "010":
+            record.add_field(Field(tag=tag, data=f"value-{tag}"))
+        else:
+            record.add_field(
+                Field(
+                    tag=tag,
+                    indicators=[" ", " "],
+                    subfields=[Subfield("a", f"value-{tag}")],
+                )
+            )
+    return record
+
+
+def _render_events(monkeypatch, record):
+    warnings = []
+    events = []
+    monkeypatch.setattr(view.session, "require_upload", lambda _purpose: True)
+    monkeypatch.setattr(view.session, "current_store", lambda: _Store(record))
+    monkeypatch.setattr(view.st, "session_state", {})
+    monkeypatch.setattr(view.st, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        view.st,
+        "columns",
+        lambda spec: [_Column() for _ in spec],
+    )
+    monkeypatch.setattr(view.st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(view.st, "number_input", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(view.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(view.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(view.st, "expander", lambda *args, **kwargs: _Context())
+    monkeypatch.setattr(view.st, "checkbox", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        view.st,
+        "warning",
+        lambda message: (warnings.append(message), events.append("warning")),
+    )
+    monkeypatch.setattr(
+        view.st,
+        "code",
+        lambda *args, **kwargs: events.append("render"),
+    )
+    monkeypatch.setattr(view.help_lookup, "help_for", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        view.tooltips,
+        "render_help_entry",
+        lambda _entry: "",
+    )
+    monkeypatch.setattr(
+        view.single_record_edit,
+        "render_inline_edit",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        view.fixed_field_helper,
+        "render_fixed_field_helper",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        view.fixed_field_helper,
+        "render_008_helper",
+        lambda **kwargs: None,
+    )
+
+    view.render(rule_set=SimpleNamespace())
+
+    return warnings, events
 
 
 def test_unfiltered_navigation_uses_arithmetic_for_large_batches():
@@ -91,3 +200,35 @@ def test_search_cache_is_released_when_search_is_cleared():
     view._clear_search_cache(state)
 
     assert view._K_SEARCH_RESULTS not in state
+
+
+def test_view_renders_ascending_fields_without_order_warning(monkeypatch):
+    warnings, events = _render_events(
+        monkeypatch,
+        _record_with_tags("001", "035", "040", "245"),
+    )
+
+    assert warnings == []
+    assert events == ["render"]
+
+
+def test_view_warns_before_rendering_fields_in_source_order(monkeypatch):
+    warnings, events = _render_events(
+        monkeypatch,
+        _record_with_tags("001", "040", "035", "245"),
+    )
+
+    assert len(warnings) == 1
+    assert "displayed in source order" in warnings[0]
+    assert "040 before 035" in warnings[0]
+    assert events == ["warning", "render"]
+
+
+def test_view_order_warning_is_bounded_to_twenty_inversions(monkeypatch):
+    warnings, _events = _render_events(
+        monkeypatch,
+        _record_with_tags(*(f"{number:03}" for number in range(22, 0, -1))),
+    )
+
+    assert len(warnings) == 1
+    assert warnings[0].count(" before ") == 20
