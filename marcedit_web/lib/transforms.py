@@ -431,7 +431,7 @@ def replace_field_subfield_and_indicators(
     regex: bool = False,
     ignore_case: bool = False,
 ) -> None:
-    """Update indicators and one subfield value on matched fields."""
+    """Update indicators and matching subfield text on matched fields."""
 
     def normalize_indicator(value: str) -> str:
         if value in ("", "\\", "\\\\"):
@@ -443,11 +443,8 @@ def replace_field_subfield_and_indicators(
 
     flags = re.IGNORECASE if ignore_case else 0
     pattern = re.compile(match_value, flags) if regex else None
-
-    def value_matches(value: str) -> bool:
-        if pattern is not None:
-            return pattern.search(value) is not None
-        return value == match_value
+    if pattern is not None:
+        pattern.sub(new_value, "")
 
     expected_indicators = [
         normalize_indicator(match_ind1),
@@ -465,11 +462,23 @@ def replace_field_subfield_and_indicators(
         updated = False
         subfields = []
         for subfield in field.subfields:
-            if subfield.code == match_code and value_matches(subfield.value):
-                subfields.append(Subfield(code=new_code, value=new_value))
-                updated = True
-            else:
+            if subfield.code != match_code:
                 subfields.append(subfield)
+                continue
+
+            if pattern is not None:
+                value, replacements = pattern.subn(new_value, subfield.value)
+                if replacements == 0:
+                    subfields.append(subfield)
+                    continue
+            else:
+                if subfield.value != match_value:
+                    subfields.append(subfield)
+                    continue
+                value = new_value
+
+            subfields.append(Subfield(code=new_code, value=value))
+            updated = True
         if updated:
             field.indicators = replacement_indicators
             field.subfields = subfields

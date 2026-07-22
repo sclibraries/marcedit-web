@@ -367,13 +367,37 @@ OPERATIONS_PALETTE: list[dict] = [
             {"name": "match_ind1", "label": "Match indicator 1", "type": "indicator", "default": " "},
             {"name": "match_ind2", "label": "Match indicator 2", "type": "indicator", "default": " "},
             {"name": "match_code", "label": "Match subfield code", "type": "subfield_code", "required": True},
-            {"name": "match_value", "label": "Match subfield value", "type": "text", "required": True},
-            {"name": "regex", "label": "Treat match value as regex", "type": "bool", "default": False},
+            {
+                "name": "match_value",
+                "label": "Match subfield value",
+                "type": "text",
+                "required": True,
+                "help": (
+                    "Exact mode matches the complete subfield value. Regex mode treats "
+                    "this as a pattern within the value."
+                ),
+            },
+            {
+                "name": "regex",
+                "label": "Treat match value as regex",
+                "type": "bool",
+                "default": False,
+                "help": "Replace every regex match while retaining unmatched text.",
+            },
             {"name": "ignore_case", "label": "Case-insensitive", "type": "bool", "default": False},
             {"name": "new_ind1", "label": "New indicator 1", "type": "indicator", "default": " "},
             {"name": "new_ind2", "label": "New indicator 2", "type": "indicator", "default": " "},
             {"name": "new_code", "label": "New subfield code", "type": "subfield_code", "required": True},
-            {"name": "new_value", "label": "New subfield value", "type": "text", "required": True},
+            {
+                "name": "new_value",
+                "label": "New subfield value",
+                "type": "text",
+                "required": True,
+                "help": (
+                    "Exact mode replaces the complete value. Regex mode uses this as "
+                    "replacement text and supports capture references such as \\1."
+                ),
+            },
         ],
     },
     {

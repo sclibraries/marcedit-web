@@ -291,6 +291,7 @@ def test_replace_field_subfield_and_indicators_palette_has_regex_options():
             "label": "Treat match value as regex",
             "type": "bool",
             "default": False,
+            "help": "Replace every regex match while retaining unmatched text.",
         },
         {
             "name": "ignore_case",
@@ -299,6 +300,10 @@ def test_replace_field_subfield_and_indicators_palette_has_regex_options():
             "default": False,
         },
     ]
+    params_by_name = {param["name"]: param for param in params}
+    assert "complete" in params_by_name["match_value"]["help"]
+    assert "retaining unmatched text" in params_by_name["regex"]["help"]
+    assert "capture references" in params_by_name["new_value"]["help"]
 
 
 def test_replace_field_subfield_and_indicators_emits_regex_flags():
