@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pymarc
 
 from marcedit_web.lib import search
 from marcedit_web.render import view
@@ -17,6 +20,108 @@ def test_view_warns_about_order_without_sorting_the_record():
     assert "viewer.render_record_human(record, fields=tag_filter)" in source
     assert "sorted(record.fields" not in source
     assert "sort_fields(record" not in source
+
+
+def _record_with_tags(*tags):
+    record = pymarc.Record()
+    for tag in tags:
+        if tag.startswith("00"):
+            record.add_field(pymarc.Field(tag=tag, data=tag))
+        else:
+            record.add_field(
+                pymarc.Field(
+                    tag=tag,
+                    indicators=[" ", " "],
+                    subfields=[pymarc.Subfield("a", tag)],
+                )
+            )
+    return record
+
+
+def _render_view_for_order_test(monkeypatch, record):
+    events = []
+    warnings = []
+    store = SimpleNamespace(
+        revision=0,
+        count=lambda: 1,
+        get=lambda index: record if index == 0 else None,
+    )
+
+    monkeypatch.setattr(view.session, "require_upload", lambda message: True)
+    monkeypatch.setattr(view.session, "current_store", lambda: store)
+    monkeypatch.setattr(view.st, "session_state", {"view_index": 1})
+    monkeypatch.setattr(view.st, "text_input", lambda *args, **kwargs: "")
+    monkeypatch.setattr(view.st, "checkbox", lambda *args, **kwargs: True)
+    monkeypatch.setattr(view.st, "selectbox", lambda *args, **kwargs: "LDR")
+    monkeypatch.setattr(view.st, "columns", lambda widths: [MagicMock() for _ in widths])
+    monkeypatch.setattr(view.st, "expander", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(view.st, "button", lambda *args, **kwargs: False)
+    monkeypatch.setattr(view.st, "number_input", lambda *args, **kwargs: 1)
+    monkeypatch.setattr(view.st, "spinner", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(view.st, "caption", lambda *args, **kwargs: None)
+    monkeypatch.setattr(view.st, "markdown", lambda *args, **kwargs: None)
+    monkeypatch.setattr(view.st, "code", lambda *args, **kwargs: None)
+
+    def capture_warning(message):
+        events.append("warning")
+        warnings.append(message)
+
+    monkeypatch.setattr(view.st, "warning", capture_warning)
+    monkeypatch.setattr(view.help_lookup, "help_for", lambda *args, **kwargs: None)
+    monkeypatch.setattr(view.tooltips, "render_help_entry", lambda entry: "")
+    monkeypatch.setattr(view.single_record_edit, "render_inline_edit", lambda **kwargs: None)
+    monkeypatch.setattr(
+        view.fixed_field_helper,
+        "render_fixed_field_helper",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        view.fixed_field_helper,
+        "render_008_helper",
+        lambda **kwargs: None,
+    )
+    original_render = view.viewer.render_record_human
+
+    def capture_render(rendered_record, *, fields=None):
+        events.append("render")
+        return original_render(rendered_record, fields=fields)
+
+    monkeypatch.setattr(view.viewer, "render_record_human", capture_render)
+
+    view.render(rule_set=SimpleNamespace())
+
+    return events, warnings
+
+
+def test_view_does_not_warn_for_ascending_field_order(monkeypatch):
+    record = _record_with_tags("001", "008", "035", "040")
+
+    events, warnings = _render_view_for_order_test(monkeypatch, record)
+
+    assert warnings == []
+    assert events == ["render"]
+
+
+def test_view_warns_once_before_rendering_an_inverted_record(monkeypatch):
+    record = _record_with_tags("001", "040", "035", "245")
+
+    events, warnings = _render_view_for_order_test(monkeypatch, record)
+
+    assert len(warnings) == 1
+    assert "displayed in source order" in warnings[0]
+    assert "040 before 035" in warnings[0]
+    assert events == ["warning", "render"]
+
+
+def test_view_order_warning_is_bounded_to_twenty_transitions(monkeypatch):
+    tags = [f"{tag:03d}" for tag in range(999, 977, -1)]
+    record = _record_with_tags(*tags)
+
+    events, warnings = _render_view_for_order_test(monkeypatch, record)
+
+    assert len(warnings) == 1
+    assert warnings[0].count(" before ") == 20
+    assert events == ["warning", "render"]
 
 
 def test_unfiltered_navigation_uses_arithmetic_for_large_batches():
