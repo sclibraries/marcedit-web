@@ -9,9 +9,9 @@ Visibility rules:
 
 * **private** — only the owner sees the task in their list and can
   edit / delete it.
-* **shared** — every user sees the task; only the owner can edit or
-  delete it. Other users see it as a read-only registered task they
-  can run against their batches.
+* **shared** — every user can see and run the task. Other signed-in
+  catalogers may correct it in place through ``update_shared_task``;
+  the owner retains control of renaming, visibility, and deletion.
 
 The Python task loader (``lib/tasks.load_user_tasks``) still needs
 ``.py`` files on disk because Python's importlib wants a file path.
