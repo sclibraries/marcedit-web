@@ -135,6 +135,9 @@ def test_open_editor_for_new_forces_build_mode(monkeypatch):
     assert fake_st.session_state[tasks_render.K_FORCE_MODE] == (
         tasks_render.MODE_BUILD
     )
+    assert fake_st.session_state[tasks_render.K_EDITOR_OWNER] is None
+    assert fake_st.session_state[tasks_render.K_EDITOR_SNAPSHOT] is None
+    assert fake_st.session_state[tasks_render.K_EDITOR_COLLABORATIVE] is False
 
 
 def test_save_callback_reports_invalid_form_regex_without_persisting(monkeypatch):

@@ -126,6 +126,9 @@ K_EDITOR_BODY = "tasks_editor_body"
 K_EDITOR_OPS = "tasks_editor_ops"
 K_EDITOR_ORIGINAL_NAME = "tasks_editor_original_name"
 K_EDITOR_VISIBILITY = "tasks_editor_visibility"
+K_EDITOR_OWNER = "tasks_editor_owner"
+K_EDITOR_SNAPSHOT = "tasks_editor_snapshot"
+K_EDITOR_COLLABORATIVE = "tasks_editor_collaborative"
 K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
 K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
 K_EDITOR_FROM_AI_DRAFT = "tasks_editor_from_ai_draft"
@@ -200,6 +203,9 @@ def render() -> None:
     st.session_state.setdefault(K_EDITOR_OPS, [])  # list[dict] — Operation.to_dict()
     st.session_state.setdefault(K_EDITOR_ORIGINAL_NAME, None)
     st.session_state.setdefault(K_EDITOR_VISIBILITY, "private")
+    st.session_state.setdefault(K_EDITOR_OWNER, None)
+    st.session_state.setdefault(K_EDITOR_SNAPSHOT, None)
+    st.session_state.setdefault(K_EDITOR_COLLABORATIVE, False)
     st.session_state.setdefault(K_EDITOR_FROM_AI_DRAFT, False)
     st.session_state.setdefault(K_EDITOR_AI_DRAFT_REVIEW, None)
     st.session_state.setdefault(K_RUN_RESULTS, None)
@@ -308,6 +314,7 @@ def _render_build_mode(
     else:
         for row in visible:
             owned = row["owner_email"] == current_user_id
+            editable = _can_edit_visible_task(row, current_user_id, is_admin)
             cols = st.columns([3, 4, 1, 1, 1])
             label = f"**`{row['name']}`**"
             if row["visibility"] == "shared":
@@ -316,14 +323,20 @@ def _render_build_mode(
                 label += f" &nbsp; _by {row['owner_email']}_"
             cols[0].markdown(label, unsafe_allow_html=False)
             cols[1].caption(row["description"] or "_(no description)_")
-            if owned:
-                if cols[2].button("Edit", key=f"edit_{row['name']}"):
-                    _open_editor_for_existing_row(row, is_admin)
+            row_id = row["id"]
+            if editable:
+                if cols[2].button("Edit", key=f"edit_{row_id}"):
+                    _open_editor_for_existing_row(
+                        row, is_admin, current_user_id
+                    )
                     st.rerun()
+            else:
+                cols[2].caption("_read-only_")
+            if owned:
                 # Toggle visibility in-place.
                 new_vis = "shared" if row["visibility"] == "private" else "private"
                 vis_label = "Share" if new_vis == "shared" else "Unshare"
-                if cols[3].button(vis_label, key=f"vis_{row['name']}"):
+                if cols[3].button(vis_label, key=f"vis_{row_id}"):
                     task_db.set_visibility(current_user_id, row["name"], new_vis)
                     audit_event(
                         "task-visibility-changed",
@@ -333,7 +346,7 @@ def _render_build_mode(
                         to_visibility=new_vis,
                     )
                     st.rerun()
-                if cols[4].button("Delete", key=f"del_{row['name']}"):
+                if cols[4].button("Delete", key=f"del_{row_id}"):
                     task_db.delete_task(current_user_id, row["name"])
                     tasks.TASK_REGISTRY.pop(row["name"], None)
                     audit_event(
@@ -343,8 +356,6 @@ def _render_build_mode(
                     )
                     st.rerun()
             else:
-                # Shared task by someone else — runnable, not editable.
-                cols[2].caption("_read-only_")
                 cols[3].empty()
                 cols[4].empty()
 
@@ -381,6 +392,21 @@ def _render_build_mode(
 # ---------------------------------------------------------------------------
 
 
+def _can_edit_visible_task(row: dict, user: str, is_admin: bool) -> bool:
+    if row["owner_email"] == user:
+        return True
+    if row["visibility"] != "shared":
+        return False
+    parsed = task_builder.parse_ops_from_source(row["body"])
+    return bool(parsed["form_editable"] or is_admin)
+
+
+def _reset_collaborative_editor_context() -> None:
+    st.session_state[K_EDITOR_OWNER] = None
+    st.session_state[K_EDITOR_SNAPSHOT] = None
+    st.session_state[K_EDITOR_COLLABORATIVE] = False
+
+
 def _open_editor_for_new() -> None:
     """Open the editor for a brand-new task in form mode."""
     st.session_state[K_FORCE_MODE] = MODE_BUILD
@@ -400,11 +426,14 @@ def _open_editor_for_new() -> None:
     st.session_state[K_EDITOR_OPS] = []
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
     st.session_state[K_EDITOR_VISIBILITY] = "private"
+    _reset_collaborative_editor_context()
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
 
 
-def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
+def _open_editor_for_existing_row(
+    row: dict, is_admin: bool, current_user: str | None = None
+) -> None:
     """Open the editor pre-populated from a SQL task row.
 
     ``row`` is a dict from ``task_db.list_visible_tasks`` /
@@ -421,6 +450,12 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     st.session_state[K_EDITOR_BODY] = row["body"]
     st.session_state[K_EDITOR_ORIGINAL_NAME] = row["name"]
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
+    owner = row.get("owner_email") or current_user
+    st.session_state[K_EDITOR_OWNER] = owner
+    st.session_state[K_EDITOR_SNAPSHOT] = task_db.task_edit_snapshot(row)
+    st.session_state[K_EDITOR_COLLABORATIVE] = bool(
+        owner and current_user and owner != current_user
+    )
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
 
@@ -760,6 +795,7 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
     st.session_state[K_EDITOR_OPS] = ai_task_draft.operations_for_editor(review)
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
     st.session_state[K_EDITOR_VISIBILITY] = "private"
+    _reset_collaborative_editor_context()
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = True
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = review
 
@@ -821,6 +857,9 @@ def _store_ai_draft_review(review: ai_task_draft.DraftReview) -> None:
 def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
     st.divider()
     is_edit = st.session_state[K_EDITOR_ORIGINAL_NAME] is not None
+    collaborative = bool(
+        st.session_state.get(K_EDITOR_COLLABORATIVE, False)
+    )
     st.subheader(
         f"Edit `{st.session_state[K_EDITOR_ORIGINAL_NAME]}`"
         if is_edit
@@ -851,6 +890,7 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         value=st.session_state[K_EDITOR_NAME],
         help="Used in the @task(...) decorator. Must be unique.",
         key=K_EDITOR_NAME_INPUT,
+        disabled=collaborative,
     )
     st.session_state[K_EDITOR_DESCRIPTION] = st.text_input(
         "Description (one sentence)",
@@ -868,9 +908,15 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         help=(
             "**Private** — only you see this task. "
             "**Shared** — every signed-in user can see and run it; "
-            "only you can edit or delete."
+            "the owner controls its name, visibility, and deletion."
         ),
+        disabled=collaborative,
     )
+
+    if collaborative:
+        st.caption(
+            "The task owner retains rename, visibility, and delete control."
+        )
 
     if st.session_state[K_EDITOR_MODE] == "form":
         _render_form_editor()
@@ -1164,6 +1210,15 @@ def _save_callback(tasks_dir: Path) -> None:
     mode = st.session_state.get(K_EDITOR_MODE, "form")
     visibility = st.session_state.get(K_EDITOR_VISIBILITY, "private")
     user = session.current_user_id()
+    task_owner = st.session_state.get(K_EDITOR_OWNER) or user
+    collaborative = bool(
+        st.session_state.get(K_EDITOR_COLLABORATIVE)
+        and task_owner != user
+    )
+    snapshot = st.session_state.get(K_EDITOR_SNAPSHOT)
+    if collaborative:
+        name = original or ""
+        visibility = "shared"
 
     if _ai_draft_save_blocked_for_new_task():
         st.session_state[K_SAVE_ERROR] = (
@@ -1171,6 +1226,19 @@ def _save_callback(tasks_dir: Path) -> None:
             "new task."
         )
         return
+
+    if collaborative and not isinstance(snapshot, dict):
+        st.session_state[K_SAVE_ERROR] = (
+            "Shared task must be reopened before saving."
+        )
+        return
+    if collaborative and not task_admin.is_admin(user):
+        opened = task_builder.parse_ops_from_source(snapshot.get("body", ""))
+        if mode != "form" or not opened["form_editable"]:
+            st.session_state[K_SAVE_ERROR] = (
+                "Only an administrator can edit a shared code task."
+            )
+            return
 
     # Pre-flight: compile the to-be-saved file before we hit SQL, so
     # a syntax error keeps the existing row intact.
@@ -1199,24 +1267,35 @@ def _save_callback(tasks_dir: Path) -> None:
         return
 
     try:
-        # Rename support: if the user changed the name, delete the
-        # old row before inserting the new one. Visibility carries
-        # forward unless the editor changed it.
-        if original and original != name:
-            task_db.delete_task(user, original)
-        task_db.save_task(
-            owner=user,
-            name=name,
-            description=description,
-            body=body,
-            extra_imports=extra_imports,
-            visibility=visibility,
-        )
+        if collaborative:
+            task_db.update_shared_task(
+                actor=user,
+                owner=task_owner,
+                name=name,
+                description=description,
+                body=body,
+                extra_imports=extra_imports,
+                expected=snapshot,
+            )
+        else:
+            # Rename support: if the user changed the name, delete the
+            # old row before inserting the new one. Visibility carries
+            # forward unless the editor changed it.
+            if original and original != name:
+                task_db.delete_task(user, original)
+            task_db.save_task(
+                owner=user,
+                name=name,
+                description=description,
+                body=body,
+                extra_imports=extra_imports,
+                visibility=visibility,
+            )
     except ValueError as exc:
         st.session_state[K_SAVE_ERROR] = str(exc)
         return
 
-    if original and original != name:
+    if not collaborative and original and original != name:
         tasks.TASK_REGISTRY.pop(original, None)
     tasks.TASK_REGISTRY.pop(name, None)
     # Re-materialize and reload so the running registry matches SQL.
@@ -1225,6 +1304,7 @@ def _save_callback(tasks_dir: Path) -> None:
     st.session_state[K_EDITOR_OPEN] = False
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+    _reset_collaborative_editor_context()
     st.session_state[K_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
     st.session_state[K_SAVE_SUCCESS] = f"Saved `{name}`."
@@ -1237,6 +1317,8 @@ def _save_callback(tasks_dir: Path) -> None:
         mode=mode,
         visibility=visibility,
         is_admin=is_admin,
+        task_owner=task_owner,
+        collaborative_edit=collaborative,
         body_bytes=len(body or ""),
     )
     if mode == "code" and is_admin:
@@ -1247,6 +1329,7 @@ def _save_callback(tasks_dir: Path) -> None:
             user=user,
             action="code-view-save",
             task_name=name,
+            task_owner=task_owner,
         )
 
 
@@ -1255,6 +1338,7 @@ def _cancel_callback() -> None:
     st.session_state[K_EDITOR_OPEN] = False
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+    _reset_collaborative_editor_context()
 
 
 # ---------------------------------------------------------------------------
