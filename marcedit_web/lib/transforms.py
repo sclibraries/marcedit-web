@@ -431,7 +431,7 @@ def replace_field_subfield_and_indicators(
     regex: bool = False,
     ignore_case: bool = False,
 ) -> None:
-    """Update indicators and one subfield value on exactly matched fields."""
+    """Update indicators and one subfield value on matched fields."""
 
     def normalize_indicator(value: str) -> str:
         if value in ("", "\\", "\\\\"):
