@@ -36,6 +36,21 @@ _SUBFIELD_DISPLAY = "‡"
 # --- index / field filtering -------------------------------------------------
 
 
+def field_order_inversions(
+    record: Record, *, limit: int = 20,
+) -> list[tuple[str, str]]:
+    """Return bounded adjacent descending tags without changing the record."""
+    if limit <= 0:
+        return []
+    inversions: list[tuple[str, str]] = []
+    for previous, current in zip(record.fields, record.fields[1:]):
+        if current.tag < previous.tag:
+            inversions.append((previous.tag, current.tag))
+            if len(inversions) >= limit:
+                break
+    return inversions
+
+
 def parse_indices(spec: str) -> set[int]:
     """Parse "1", "1-3", "1,3,5", "1-3,7" into a set of 1-based ints.
 

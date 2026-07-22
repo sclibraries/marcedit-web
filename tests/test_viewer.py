@@ -3,8 +3,25 @@
 from __future__ import annotations
 
 import pytest
+import pymarc
 
 from marcedit_web.lib import viewer
+
+
+def record_with_tags(*tags):
+    record = pymarc.Record()
+    for tag in tags:
+        if tag.startswith("00"):
+            record.add_field(pymarc.Field(tag=tag, data=tag))
+        else:
+            record.add_field(
+                pymarc.Field(
+                    tag=tag,
+                    indicators=[" ", " "],
+                    subfields=[pymarc.Subfield("a", tag)],
+                )
+            )
+    return record
 
 
 def test_parse_indices_simple():
@@ -177,3 +194,45 @@ def test_render_record_human_subfield_value_with_dollar_sign_is_unambiguous(reco
     # stays as a `$` and is not confused for another subfield.
     assert line_020.count("‡") == 1
     assert "$19.99" in line_020
+
+
+# ---------------------------------------------------------------------------
+# Field-order diagnostics — TASK-169 source-order preservation
+# ---------------------------------------------------------------------------
+
+
+def test_field_order_inversions_is_silent_for_ascending_tags():
+    record = record_with_tags("001", "008", "035", "040")
+
+    assert viewer.field_order_inversions(record) == []
+
+
+def test_field_order_inversions_reports_adjacent_descending_tags():
+    record = record_with_tags("001", "040", "035", "245")
+
+    assert viewer.field_order_inversions(record) == [("040", "035")]
+
+
+def test_field_order_inversions_allows_repeated_tags():
+    record = record_with_tags("035", "035", "040")
+
+    assert viewer.field_order_inversions(record) == []
+
+
+def test_field_order_inversions_is_bounded_and_does_not_mutate_record():
+    record = record_with_tags("900", "800", "700", "600", "500")
+    before = record.as_marc()
+
+    inversions = viewer.field_order_inversions(record, limit=3)
+
+    assert len(inversions) == 3
+    assert record.as_marc() == before
+
+
+def test_render_record_human_preserves_source_field_order():
+    record = record_with_tags("001", "040", "035", "245")
+
+    text = viewer.render_record_human(record)
+
+    offsets = [text.index(f"={tag}") for tag in ("001", "040", "035", "245")]
+    assert offsets == sorted(offsets)
