@@ -9,8 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY requirements.txt ./
-COPY LICENSE THIRD_PARTY_NOTICES.md ./
 RUN pip install -r requirements.txt
+COPY LICENSE THIRD_PARTY_NOTICES.md ./
 
 COPY marcedit_web ./marcedit_web
 COPY data ./data

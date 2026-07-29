@@ -113,3 +113,13 @@ def test_docker_image_includes_project_license_and_notices():
     dockerfile = _source("Dockerfile")
 
     assert "COPY LICENSE THIRD_PARTY_NOTICES.md ./" in dockerfile
+
+
+def test_docker_dependency_install_precedes_changeable_license_copy():
+    dockerfile = _source("Dockerfile")
+
+    # Ranged requirements must remain behind a reusable layer when only
+    # project licensing text changes, avoiding an unintended re-resolution.
+    assert dockerfile.index("RUN pip install -r requirements.txt") < dockerfile.index(
+        "COPY LICENSE THIRD_PARTY_NOTICES.md ./"
+    )
