@@ -36,6 +36,11 @@ Status: In-Progress
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-open-task-migration-design.md`
 
+Phase 1:
+- TASK-176: neutral product identity and licensing baseline.
+- Plan:
+  `docs/superpowers/plans/2026-07-29-task-174-phase-1-product-identity-licensing.md`
+
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.
 - TASK-173 owns the single-touch ITS installation and routing envelope.
