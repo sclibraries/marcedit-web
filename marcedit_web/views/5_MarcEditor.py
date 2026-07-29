@@ -9,7 +9,7 @@ from marcedit_web.render import edit, rules_for_page, sidebar_status
 
 session.init_page()
 
-st.title("MarcEditor")
+st.title("Record Editor")
 st.caption(
     "Edit the loaded batch as MarcEdit-style `.mrk` text. Apply runs the "
     "parser and validators; Save serializes back to `.mrc` and updates this "

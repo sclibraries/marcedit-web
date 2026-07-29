@@ -5,8 +5,8 @@ and comparing MARC21 metadata. It is deployed at
 https://libtools2.smith.edu/marcedit-web/ behind Apache + mod_shib on
 RHEL 8.10.
 
-MarcEdit is referenced only to identify the external task-file format accepted
-by the optional migration tools.
+MarcEdit is used only as a referential identifier for supported external
+MarcEdit task and mnemonic text formats; it is not the application's identity.
 This project is not affiliated with or endorsed by MarcEdit or its author.
 
 See `docs/application-overview.md` for the current architecture and
@@ -49,7 +49,7 @@ pytest
 - Python 3.9 (hard — RedHat ships 3.9)
 - Streamlit (multi-page app)
 - pymarc
-- streamlit-ace (for the MarcEditor page)
+- streamlit-ace (for the Record Editor page)
 
 ## Layout
 

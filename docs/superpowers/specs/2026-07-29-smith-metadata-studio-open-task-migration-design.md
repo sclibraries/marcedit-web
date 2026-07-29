@@ -89,8 +89,9 @@ Open-source readiness requires:
 - removal of statements that the application recreates MarcEdit;
 - an explicit name-neutral statement that the product is independent and is
   not affiliated with or endorsed by MarcEdit or its author;
-- use of "MarcEdit" only to identify the source format handled by the optional
-  migration adapter; and
+- use of "MarcEdit" only as a referential identifier for supported external
+  MarcEdit task and mnemonic text formats, never as the application's product
+  identity; and
 - creation and review of sanitized synthetic fixtures; real institutional
   tasks are never published.
 

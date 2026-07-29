@@ -316,7 +316,7 @@ if session.has_upload():
         key="home_prepare_download",
         help=(
             "Serializes the current in-session records. Edits from "
-            "MarcEditor / Tasks / Quick find/replace are reflected. "
+            "Record Editor / Tasks / Quick find/replace are reflected. "
             "The download link appears next to this button — use it "
             "before interacting elsewhere, or prepare again."
         ),

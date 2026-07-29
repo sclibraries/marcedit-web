@@ -64,26 +64,29 @@ def test_repository_has_smith_mit_license():
 
 def test_direct_runtime_dependency_notices_are_present():
     notices = _source("THIRD_PARTY_NOTICES.md")
-    pyproject = _source("pyproject.toml")
+    requirements = _source("requirements.txt")
     expected = {
         "Streamlit": "Apache-2.0",
         "pymarc": "BSD-2-Clause",
         "streamlit-ace": "MIT",
         "Authlib": "BSD-3-Clause",
+        "pytest": "MIT",
     }
 
     for project, license_id in expected.items():
         assert project in notices
         assert license_id in notices
 
-    match = re.search(
-        r"(?ms)^dependencies\s*=\s*\[(.*?)^\]",
-        pyproject,
+    normalized_notices = " ".join(notices.split())
+    assert (
+        "direct dependencies installed into the application Docker image"
+        in normalized_notices
     )
-    assert match is not None
-    declared = set(
-        re.findall(r'(?m)^\s*"([A-Za-z0-9_.-]+)', match.group(1))
-    )
+    declared = {
+        re.match(r"[A-Za-z0-9_.-]+", line).group(0)
+        for raw_line in requirements.splitlines()
+        if (line := raw_line.strip()) and not line.startswith("#")
+    }
     assert {name.lower() for name in declared} == {
         name.lower() for name in expected
     }
@@ -91,13 +94,37 @@ def test_direct_runtime_dependency_notices_are_present():
 
 def test_readme_and_package_description_are_independent_and_neutral():
     readme = _source("README.md")
+    design = _source(
+        "docs/superpowers/specs/"
+        "2026-07-29-smith-metadata-studio-open-task-migration-design.md"
+    )
     pyproject = _source("pyproject.toml")
 
     assert readme.startswith(f"# {PRODUCT_NAME}\n")
     assert "Recreates MarcEdit" not in readme
     assert "not affiliated with or endorsed by MarcEdit or its author" in readme
+    assert "external MarcEdit task and mnemonic text formats" in " ".join(readme.split())
+    assert "external MarcEdit task and mnemonic text formats" in " ".join(design.split())
     assert "recreating MarcEdit" not in pyproject
     assert 'description = "Independent web application for MARC21 metadata workflows."' in pyproject
+
+
+def test_user_facing_editor_copy_uses_neutral_record_editor_label():
+    """Application labels must not turn an external format name into a brand."""
+    editor_page = _source("marcedit_web/views/5_MarcEditor.py")
+    editor_render = _source("marcedit_web/render/edit.py")
+    home = _source("marcedit_web/views/00_Home.py")
+    readme = _source("README.md")
+
+    assert 'st.title("Record Editor")' in editor_page
+    assert 'session.require_upload("edit records in Record Editor")' in editor_render
+    assert '"Record Editor mode"' in editor_render
+    assert "Record Editor / Tasks / Quick find/replace" in home
+    assert "streamlit-ace (for the Record Editor page)" in readme
+
+    assert 'st.title("MarcEditor")' not in editor_page
+    assert '"MarcEditor mode"' not in editor_render
+    assert "MarcEditor / Tasks / Quick find/replace" not in home
 
 
 def test_existing_technical_identifiers_remain_compatible():

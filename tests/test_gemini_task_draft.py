@@ -10,6 +10,7 @@ import pytest
 
 from marcedit_web.lib import ai_task_draft
 from marcedit_web.lib import gemini_task_draft
+from marcedit_web.lib.product_identity import PRODUCT_NAME
 
 
 def _draft_response_text() -> str:
@@ -71,6 +72,18 @@ def test_build_prompt_contains_schema_guardrails_allowed_operations_and_notes():
     assert "replace-field-data-by-regex" in prompt
     assert '"custom"' not in prompt
     assert notes in prompt
+
+
+def test_model_prompt_uses_canonical_product_identity():
+    """Model context must not reintroduce a separate application brand."""
+    prompt = gemini_task_draft.build_prompt("Delete all 029 fields.")
+    payload = gemini_task_draft._payload_for("Delete all 029 fields.")
+    system_text = payload["system_instruction"]["parts"][0]["text"]
+
+    assert PRODUCT_NAME in prompt
+    assert PRODUCT_NAME in system_text
+    assert "MarcEdit Web" not in prompt
+    assert "MarcEdit Web" not in system_text
 
 
 def test_build_prompt_includes_valid_add_field_examples():

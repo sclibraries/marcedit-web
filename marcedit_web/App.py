@@ -108,7 +108,7 @@ def build_pages(public: bool) -> dict[str, list[PageSpec]]:
                      script="views/7_Find.py", icon=":material/search:"),
         ] + inspect_pages[1:],
         "Edit": [
-            PageSpec(url_path="MarcEditor", title="MarcEditor",
+            PageSpec(url_path="MarcEditor", title="Record Editor",
                      script="views/5_MarcEditor.py", icon=":material/edit_note:"),
             PageSpec(url_path="Tasks", title="Tasks",
                      script="views/4_Tasks.py", icon=":material/play_arrow:"),

@@ -1,9 +1,9 @@
 # Third-party notices
 
-The application distribution includes these direct runtime dependencies.
-Their license texts and notices are available from the linked upstream
-projects. Installed distributions retain the license metadata supplied by
-upstream.
+The application distribution includes these direct dependencies installed
+into the application Docker image. Their license texts and notices are
+available from the linked upstream projects. Installed distributions retain
+the license metadata supplied by upstream.
 
 | Project | License | Upstream source |
 | --- | --- | --- |
@@ -11,7 +11,8 @@ upstream.
 | [pymarc](https://github.com/pymarc/pymarc) | BSD-2-Clause | https://github.com/pymarc/pymarc |
 | [streamlit-ace](https://github.com/okld/streamlit-ace) | MIT | https://github.com/okld/streamlit-ace |
 | [Authlib](https://github.com/authlib/authlib) | BSD-3-Clause | https://github.com/authlib/authlib |
+| [pytest](https://github.com/pytest-dev/pytest) | MIT | https://github.com/pytest-dev/pytest |
 
-These notices cover direct dependencies declared in `pyproject.toml`.
+These notices cover direct dependencies installed from `requirements.txt`.
 Transitive dependencies retain the license metadata supplied in their
 installed distributions.

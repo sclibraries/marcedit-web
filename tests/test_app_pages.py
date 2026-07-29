@@ -49,6 +49,19 @@ def test_private_mode_includes_sandbox(monkeypatch):
     assert PRIVATE_ONLY.issubset(paths)
 
 
+def test_private_record_editor_label_preserves_technical_route(monkeypatch):
+    """Product copy changes must not break the established private route."""
+    app = _load_app(monkeypatch, "private")
+    page = next(
+        page
+        for page in app.build_pages(public=False)["Edit"]
+        if page.url_path == "MarcEditor"
+    )
+
+    assert page.title == "Record Editor"
+    assert page.script == "views/5_MarcEditor.py"
+
+
 def test_private_mode_includes_jobs_page(monkeypatch):
     app = _load_app(monkeypatch, "private")
     paths = _url_paths(app.build_pages(public=False))

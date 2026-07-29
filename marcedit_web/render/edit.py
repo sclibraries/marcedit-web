@@ -232,7 +232,7 @@ def _render_single_record_picker(store, total: int, rule_set) -> None:
 
 def render(rule_set: rules_mod.RuleSet | None = None) -> None:
     """Render the MarcEditor tab into the current Streamlit container."""
-    if not session.require_upload("edit records in MarcEditor"):
+    if not session.require_upload("edit records in Record Editor"):
         return
 
     store = session.current_store()
@@ -253,7 +253,7 @@ def render(rule_set: rules_mod.RuleSet | None = None) -> None:
 
     if len(mode_options) > 1:
         st.radio(
-            "MarcEditor mode",
+            "Record Editor mode",
             mode_options,
             horizontal=True,
             key=_K_EDITOR_MODE,

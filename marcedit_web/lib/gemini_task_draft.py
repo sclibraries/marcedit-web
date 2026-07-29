@@ -9,6 +9,7 @@ from typing import Any
 from urllib import error, request
 
 from marcedit_web.lib import ai_task_draft, task_builder
+from marcedit_web.lib.product_identity import PRODUCT_NAME
 
 
 DEFAULT_MODEL = "gemini-3.5-flash"
@@ -159,7 +160,7 @@ def build_prompt(notes: str) -> str:
     ]
 
     return (
-        "Translate the cataloging notes into a MarcEdit Web task draft.\n"
+        f"Translate the cataloging notes into a {PRODUCT_NAME} task draft.\n"
         "\n"
         "Guardrails:\n"
         "- JSON only. Return one JSON object and no Markdown fences.\n"
@@ -196,7 +197,7 @@ def _payload_for(notes: str) -> dict[str, Any]:
             "parts": [
                 {
                     "text": (
-                        "You are the AI task draft translator for MarcEdit Web. "
+                        f"You are the AI task draft translator for {PRODUCT_NAME}. "
                         "Return reviewable task-builder JSON, not executable code."
                     )
                 }
