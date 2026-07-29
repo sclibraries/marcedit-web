@@ -171,3 +171,29 @@ def test_docker_dependency_install_precedes_changeable_license_copy():
     assert dockerfile.index("RUN pip install -r requirements.txt") < dockerfile.index(
         "COPY LICENSE THIRD_PARTY_NOTICES.md ./"
     )
+
+
+def test_phase_one_plan_derives_notices_from_direct_requirements_entries():
+    plan = _source(
+        "docs/superpowers/plans/"
+        "2026-07-29-task-174-phase-1-product-identity-licensing.md"
+    )
+
+    assert "direct non-comment `requirements.txt` entries" in " ".join(plan.split())
+    assert (
+        "| [pytest](https://github.com/pytest-dev/pytest) | MIT | "
+        "https://github.com/pytest-dev/pytest |"
+    ) in plan
+
+
+def test_phase_one_plan_installs_dependencies_before_license_copy():
+    plan = _source(
+        "docs/superpowers/plans/"
+        "2026-07-29-task-174-phase-1-product-identity-licensing.md"
+    )
+
+    assert (
+        "COPY requirements.txt ./\n"
+        "RUN pip install -r requirements.txt\n"
+        "COPY LICENSE THIRD_PARTY_NOTICES.md ./"
+    ) in plan

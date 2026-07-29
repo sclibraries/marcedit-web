@@ -51,7 +51,7 @@ Phase 1:
   `docs/superpowers/evidence/task-176-record-editor-browser-smoke.md`.
   The local-only `.superpowers/sdd/task-176-task-4-report.md` is ignored by Git
   and absent from clean checkouts.
-- In-progress checkpoint: TASK-177 finalizes the display-only public name as
+- Completed checkpoint: TASK-177 finalizes the display-only public name as
   `Smith Metadata Studio` in implementation commit `2481c39`. TDD recorded the
   intended two-test RED, then 2 narrow and 58 focused passes with zero skips.
   The rebuilt `marcedit-web:task-177` image reused its dependency-install layer,

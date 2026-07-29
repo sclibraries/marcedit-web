@@ -56,14 +56,14 @@ compatibility contracts and are guarded by regression assertions.
 - Modify `marcedit_web/views/6_Diff.py`: use the constant for the Diff sidebar
   brand.
 - Create `LICENSE`: MIT license for Smith College.
-- Create `THIRD_PARTY_NOTICES.md`: direct runtime dependency names, licenses,
-  and upstream sources.
+- Create `THIRD_PARTY_NOTICES.md`: names, licenses, and upstream sources for
+  all direct non-comment `requirements.txt` entries installed in the image.
 - Modify `README.md`: neutral heading, independent-product description, and
   disclaimer while retaining technical setup/deployment identifiers.
 - Modify `pyproject.toml`: neutral project description while retaining the
   distribution name.
 - Modify `Dockerfile`: copy `LICENSE` and `THIRD_PARTY_NOTICES.md` into
-  `/app`.
+  `/app` after the dependency-install layer.
 - Modify `.tickets/TASK-176-neutral-product-identity-licensing.md`: execution
   status and final evidence.
 - Modify `.tickets/TASK-174-smith-metadata-studio-open-task-migration.md`: link
@@ -366,9 +366,10 @@ git commit -m "feat: centralize user-facing product identity"
 
 **Interfaces:**
 - Consumes: the exact interim `PRODUCT_NAME` value from Task 1.
-- Produces: repository and Docker-distributed MIT license, verified direct
-  dependency notices, neutral README/package descriptions, and explicit
-  technical-identifier compatibility assertions.
+- Produces: repository and Docker-distributed MIT license, verified notices
+  for all direct non-comment `requirements.txt` entries, neutral
+  README/package descriptions, and explicit technical-identifier
+  compatibility assertions.
 
 - [ ] **Step 1: Add failing repository-boundary tests**
 
@@ -385,26 +386,29 @@ def test_repository_has_smith_mit_license():
 
 def test_direct_runtime_dependency_notices_are_present():
     notices = _source("THIRD_PARTY_NOTICES.md")
-    pyproject = _source("pyproject.toml")
+    requirements = _source("requirements.txt")
     expected = {
         "Streamlit": "Apache-2.0",
         "pymarc": "BSD-2-Clause",
         "streamlit-ace": "MIT",
         "Authlib": "BSD-3-Clause",
+        "pytest": "MIT",
     }
 
     for project, license_id in expected.items():
         assert project in notices
         assert license_id in notices
 
-    match = re.search(
-        r"(?ms)^dependencies\s*=\s*\[(.*?)^\]",
-        pyproject,
+    normalized_notices = " ".join(notices.split())
+    assert (
+        "direct dependencies installed into the application Docker image"
+        in normalized_notices
     )
-    assert match is not None
-    declared = set(
-        re.findall(r'(?m)^\s*"([A-Za-z0-9_.-]+)', match.group(1))
-    )
+    declared = {
+        re.match(r"[A-Za-z0-9_.-]+", line).group(0)
+        for raw_line in requirements.splitlines()
+        if (line := raw_line.strip()) and not line.startswith("#")
+    }
     assert {name.lower() for name in declared} == {
         name.lower() for name in expected
     }
@@ -434,6 +438,16 @@ def test_docker_image_includes_project_license_and_notices():
     dockerfile = _source("Dockerfile")
 
     assert "COPY LICENSE THIRD_PARTY_NOTICES.md ./" in dockerfile
+
+
+def test_docker_dependency_install_precedes_changeable_license_copy():
+    dockerfile = _source("Dockerfile")
+
+    # Ranged requirements must remain behind a reusable layer when only
+    # project licensing text changes, avoiding an unintended re-resolution.
+    assert dockerfile.index("RUN pip install -r requirements.txt") < dockerfile.index(
+        "COPY LICENSE THIRD_PARTY_NOTICES.md ./"
+    )
 ```
 
 - [ ] **Step 2: Run the repository-boundary tests and verify they fail**
@@ -449,8 +463,9 @@ docker run --rm --network none \
   python -m pytest tests/test_product_identity.py -q
 ```
 
-Expected: the Task 1 and Task 2 tests pass; the five new tests fail because
-the license/notices do not exist and the old descriptions remain.
+Expected: the Task 1 and Task 2 tests pass; the six new tests fail because the
+license/notices do not exist, the Docker order cannot yet be satisfied, and
+the old descriptions remain.
 
 - [ ] **Step 3: Add the MIT license**
 
@@ -480,17 +495,17 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-- [ ] **Step 4: Add direct runtime dependency notices**
+- [ ] **Step 4: Add direct Docker dependency notices**
 
 Create `THIRD_PARTY_NOTICES.md` with:
 
 ```markdown
 # Third-party notices
 
-The application distribution includes these direct runtime dependencies.
-Their license texts and notices are available from the linked upstream
-projects. Installed distributions retain the license metadata supplied by
-upstream.
+The application distribution includes these direct dependencies installed
+into the application Docker image. Their license texts and notices are
+available from the linked upstream projects. Installed distributions retain
+the license metadata supplied by upstream.
 
 | Project | License | Upstream source |
 | --- | --- | --- |
@@ -498,16 +513,20 @@ upstream.
 | [pymarc](https://github.com/pymarc/pymarc) | BSD-2-Clause | https://github.com/pymarc/pymarc |
 | [streamlit-ace](https://github.com/okld/streamlit-ace) | MIT | https://github.com/okld/streamlit-ace |
 | [Authlib](https://github.com/authlib/authlib) | BSD-3-Clause | https://github.com/authlib/authlib |
+| [pytest](https://github.com/pytest-dev/pytest) | MIT | https://github.com/pytest-dev/pytest |
 
-These notices cover direct dependencies declared in `pyproject.toml`.
+These notices cover direct dependencies installed from `requirements.txt`.
 Transitive dependencies retain the license metadata supplied in their
 installed distributions.
 ```
 
-The license identifiers are verified against the existing
-`marcedit-web:dev` image: Streamlit 1.50.0 reports Apache License 2.0, pymarc
-5.3.1 carries the two-clause BSD text, streamlit-ace 0.1.1 reports MIT, and
-Authlib 1.3.2 reports BSD-3-Clause.
+Derive the notice set from all direct non-comment `requirements.txt` entries,
+including tools such as pytest that are installed in the application Docker
+image. The license identifiers and upstream sources are verified against the
+existing `marcedit-web:dev` image and upstream projects: Streamlit 1.50.0
+reports Apache License 2.0, pymarc 5.3.1 carries the two-clause BSD text,
+streamlit-ace 0.1.1 reports MIT, Authlib 1.3.2 reports BSD-3-Clause, and pytest
+8 reports MIT with upstream source `https://github.com/pytest-dev/pytest`.
 
 - [ ] **Step 5: Replace README identity and add the disclaimer**
 
@@ -549,13 +568,19 @@ Keep:
 name = "marcedit-web"
 ```
 
-- [ ] **Step 7: Include the license and notices in the image**
+- [ ] **Step 7: Include the license and notices after dependency installation**
 
-In `Dockerfile`, immediately after `COPY requirements.txt ./`, add:
+In `Dockerfile`, preserve this order:
 
 ```dockerfile
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
 COPY LICENSE THIRD_PARTY_NOTICES.md ./
 ```
+
+The dependency-install layer must precede the changeable project license and
+notice copy so licensing-only changes reuse the existing dependency layer and
+do not re-resolve ranged requirements.
 
 Do not change the base image, runtime user, command, healthcheck, exposed port,
 or any application path.
