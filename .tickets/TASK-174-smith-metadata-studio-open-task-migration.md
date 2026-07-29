@@ -51,6 +51,21 @@ Phase 1:
   `docs/superpowers/evidence/task-176-record-editor-browser-smoke.md`.
   The local-only `.superpowers/sdd/task-176-task-4-report.md` is ignored by Git
   and absent from clean checkouts.
+- In-progress checkpoint: TASK-177 finalizes the display-only public name as
+  `Smith Metadata Studio` in implementation commit `2481c39`. TDD recorded the
+  intended two-test RED, then 2 narrow and 58 focused passes with zero skips.
+  The rebuilt `marcedit-web:task-177` image reused its dependency-install layer,
+  passed packaged license/notice checks, and produced 1,586 complete-suite
+  passes with four disclosed Docker-CLI-dependent Compose skips. Trusted
+  public-mode browser acceptance verified the exact title and two headings,
+  upload controls, and absence of the superseded and prohibited public labels;
+  both the accessibility snapshot and successful single-attempt screenshot are
+  tracked under `docs/superpowers/evidence/`. The initial private-mode sign-in
+  gate required only a disposable `MARCEDIT_WEB_MODE=public` harness correction;
+  source and production defaults were unchanged. Technical `marcedit-web`,
+  `MARCEDIT_WEB_*`, `/marcedit-web/`, and `MarcEditor` route/script identifiers
+  remain preserved. Review range `5b7824e..HEAD` awaits independent approval,
+  so TASK-177 and TASK-174 remain `In-Progress`.
 
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.

@@ -1,0 +1,72 @@
+- generic [ref=f3e2]:
+  - generic [ref=f3e7]:
+    - list [ref=f3e10]:
+      - generic [ref=f3e11]:
+        - generic [ref=f3e12] [cursor=pointer]: Start
+        - listitem [ref=f3e14]:
+          - link "upload_file Home" [ref=f3e16] [cursor=pointer]:
+            - /url: http://127.0.0.1:18501/
+            - generic [ref=f3e17]: upload_file
+            - generic [ref=f3e20]: Home
+      - generic [ref=f3e21]:
+        - generic [ref=f3e22] [cursor=pointer]: Inspect
+        - listitem [ref=f3e24]:
+          - link "visibility View" [ref=f3e26] [cursor=pointer]:
+            - /url: http://127.0.0.1:18501/View
+            - generic [ref=f3e27]: visibility
+            - generic [ref=f3e30]: View
+        - listitem [ref=f3e31]:
+          - link "rule Validate" [ref=f3e33] [cursor=pointer]:
+            - /url: http://127.0.0.1:18501/Validate
+            - generic [ref=f3e34]: rule
+            - generic [ref=f3e37]: Validate
+        - listitem [ref=f3e38]:
+          - link "insights Report" [ref=f3e40] [cursor=pointer]:
+            - /url: http://127.0.0.1:18501/Report
+            - generic [ref=f3e41]: insights
+            - generic [ref=f3e44]: Report
+      - generic [ref=f3e45]:
+        - generic [ref=f3e46] [cursor=pointer]: Convert
+        - listitem [ref=f3e48]:
+          - link "swap_horiz Marc Tools" [ref=f3e50] [cursor=pointer]:
+            - /url: http://127.0.0.1:18501/MarcTools
+            - generic [ref=f3e51]: swap_horiz
+            - generic [ref=f3e54]: Marc Tools
+    - generic [ref=f3e58]:
+      - heading "Smith Metadata Studio" [level=2] [ref=f3e62]
+      - paragraph [ref=f3e66]: v0.3.0
+      - paragraph [ref=f3e70]:
+        - text: Signed in as
+        - strong [ref=f3e71]: anonymous
+      - separator [ref=f3e75]
+      - paragraph [ref=f3e79]: No file loaded yet.
+  - generic [ref=f3e3]:
+    - banner
+    - generic [ref=f3e82]:
+      - heading "Smith Metadata Studio" [level=1] [ref=f3e87]
+      - paragraph [ref=f3e92]: MARC21 viewer, validator, editor, and diff — in your browser.
+      - heading "Upload a MARC file" [level=2] [ref=f3e97]
+      - generic [ref=f3e100]:
+        - paragraph [ref=f3e103]: Start path
+        - radiogroup "Start path" [ref=f3e104] [cursor=pointer]:
+          - generic [ref=f3e105]:
+            - radio "Quick Load" [checked]
+            - paragraph [ref=f3e110]: Quick Load
+          - generic [ref=f3e111]:
+            - radio "Job Workspace"
+            - paragraph [ref=f3e116]: Job Workspace
+      - heading "Quick Load" [level=3] [ref=f3e121]
+      - paragraph [ref=f3e126]: Use this for one-off viewing, validation, reports, editing, or conversion.
+      - generic [ref=f3e129]:
+        - paragraph [ref=f3e132]: Choose a .mrc file
+        - region "Choose a .mrc file" [ref=f3e139] [cursor=pointer]:
+          - button "Choose File" [ref=f3e140]
+          - generic [ref=f3e146]:
+            - generic [ref=f3e147]: Drag and drop file here
+            - generic [ref=f3e148]: Limit 2GB per file • MRC, MARC
+          - button "Browse files" [ref=f3e150]
+      - alert [ref=f3e153]:
+        - paragraph [ref=f3e158]:
+          - text: Upload a
+          - code [ref=f3e159]: .mrc
+          - text: file above to begin. Nothing persists across sessions — closing the tab discards everything.
