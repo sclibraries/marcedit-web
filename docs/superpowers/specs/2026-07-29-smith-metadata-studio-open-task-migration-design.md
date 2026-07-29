@@ -4,7 +4,7 @@
 
 **Date:** 2026-07-29
 
-**Status:** Approved in design discussion; awaiting review of this written specification
+**Status:** Revised after written-specification review; awaiting approval
 
 ## Context
 
@@ -22,11 +22,11 @@ MarcEdit. MarcEdit documents individual editing functions but does not publish
 a complete specification for every field and flag in its exported task format.
 Universal compatibility therefore cannot be verified safely.
 
-The product will become **Smith Metadata Studio**, subject to Smith's formal
-name review. It will be positioned as an independent, open metadata workflow
-and MARC21 transformation platform. MarcEdit task support will become an
-optional migration adapter, not the application's identity or native execution
-model.
+**Smith Metadata Studio** is the working product name, subject to Smith's
+formal name review. The product will be positioned as an independent, open
+metadata workflow and MARC21 transformation platform. MarcEdit task support
+will become an optional migration adapter, not the application's identity or
+native execution model.
 
 The supplied `MarcEdit Tasks` folder is the initial compatibility corpus. The
 read-only inventory found 10 distinct task definitions after deduplication,
@@ -46,9 +46,8 @@ starting contract, not evidence of complete MarcEdit compatibility.
 6. Use Smith CORE Holdings and Items as the first end-to-end migration fixture.
 7. Remove cataloger-facing JSON, raw template, and generated-code requirements
    from normal task authoring.
-8. Restore useful Streamlit header activity feedback.
-9. Preserve production startup compatibility until a single consolidated ITS
-   change can be applied safely.
+8. Preserve all existing production entry points while the task model and
+   user-facing identity evolve.
 
 ## Non-goals
 
@@ -60,16 +59,25 @@ starting contract, not evidence of complete MarcEdit compatibility.
 - Replacing the current sandbox and durable-operation execution path in this
   project.
 - Making raw Python part of the portable task standard.
-- Publishing the supplied institutional task corpus without a privacy,
-  attribution, and workflow-content review.
+- Publishing the supplied institutional task corpus.
 - Removing legacy technical aliases during the initial rebrand.
+- Restoring Streamlit header activity feedback, which belongs to
+  [TASK-175](../../../.tickets/TASK-175-streamlit-activity-header.md).
+- Preparing or applying the ITS installation and routing envelope, which
+  belongs to the existing TASK-173 infrastructure release.
 
 ## Product Identity and Licensing Boundary
 
 Smith Metadata Studio is the working product name. An initial exact-name search
 did not find an obvious exact conflict, but "Metadata Studio" is used by
 unrelated products. Smith must complete its normal name and trademark review
-before public launch.
+before the name is merged as the public identity.
+
+Every user-facing product-name string is routed through one product identity
+constant. The constant retains the current identity until Smith's approval is
+recorded; the approved name switch is then one localized value change. Internal
+module names, environment variables, paths, and service entry points remain
+compatibility identifiers and are not derived from that constant.
 
 Open-source readiness requires:
 
@@ -77,15 +85,19 @@ Open-source readiness requires:
   declaration;
 - third-party notices for distributed dependencies, including `pymarc`;
 - removal of statements that the application recreates MarcEdit;
-- an explicit statement that Smith Metadata Studio is independent and is not
-  affiliated with or endorsed by MarcEdit or its author;
+- an explicit name-neutral statement that the product is independent and is
+  not affiliated with or endorsed by MarcEdit or its author;
 - use of "MarcEdit" only to identify the source format handled by the optional
   migration adapter; and
-- review and sanitization of institutional task fixtures before publication.
+- creation and review of sanitized synthetic fixtures; real institutional
+  tasks are never published.
 
-This is a technical product boundary, not a legal opinion. Smith should route
-the final public name, disclaimer, and release language through its normal
-institutional review.
+The `LICENSE`, third-party notices, README correction, and independent-product
+disclaimer do not wait for name approval. Until approval, those documents use a
+neutral description such as "Smith College Libraries MARC21 workflow
+application." This is a technical product boundary, not a legal opinion. Smith
+should route the final public name, disclaimer, and release language through
+its normal institutional review.
 
 Relevant public references:
 
@@ -132,9 +144,17 @@ save and run through the existing durable sandbox path
 ```
 
 Imported instructions are never executable inputs. Each source line retains
-its original text for provenance and receives a review status. The current
-deterministic operation-to-Python compiler may remain temporarily as an
-internal execution artifact. The portable task definition contains no Python.
+its original text in the local migration audit and receives a review status.
+For this program, a validated native definition is passed to the existing
+deterministic operation-to-Python compiler. Its generated Python is a trusted
+internal execution snapshot that continues through the existing sandbox and
+durable-operation path. "Non-executable native format" describes the canonical
+stored and portable definition; it does not claim that the current execution
+bridge has no generated code.
+
+A direct native-operation interpreter is explicitly deferred to a separate
+future ticket. TASK-174 does not duplicate operation semantics in a new
+interpreter.
 
 Admin-only Custom Python remains a local legacy extension. It is not part of
 the open task schema and cannot be exported as a portable native task.
@@ -149,7 +169,6 @@ A native task contains:
 
 - schema version;
 - name and description;
-- applicable metadata/MARC profile;
 - ordered, stable step identifiers;
 - explicit operation names and parameters; and
 - optional source provenance.
@@ -163,7 +182,6 @@ conceptually represented as:
   "schema_version": 1,
   "name": "smith-core-holdings-and-items",
   "description": "Core changes to 852, 856, 876, and 877",
-  "profile": "marc21",
   "steps": [
     {
       "id": "step-7",
@@ -191,27 +209,44 @@ conceptually represented as:
         }
       ],
       "missing_source": "skip_and_report",
-      "existing_target": "append"
+      "existing_target": "append",
+      "source": {
+        "format": "marcedit-task",
+        "line": 7,
+        "instruction_sha256": "8c7d6e7a5a3d94fcd03d0c51ef9b2210d21f7296a28e571f8f5ab1a8ab58ef91"
+      }
     }
-  ],
-  "provenance": {
-    "source_format": "marcedit-task"
-  }
+  ]
 }
 ```
 
 The choices `missing_source` and `existing_target` are explicit native
-semantics. They are not inferred from undocumented trailing flags.
+semantics. They are not inferred from undocumented trailing flags. During
+review, the local import audit holds the exact original source text. A portable
+task carries only the per-step source format, source line, and normalized
+instruction-signature hash; it does not publish institutional record or
+workflow content.
+
+Schema version 1 is the only version accepted by this program. An unknown
+`schema_version` is refused before editing, compilation, preview, or execution,
+and the error reports the encountered and supported versions. There is no
+best-effort parsing of future versions.
 
 ### Storage transition
 
 The current `tasks` table stores Python `body` and `extra_imports` text. The
 native transition will add a nullable, versioned definition field rather than
-silently rewrite existing rows:
+silently rewrite existing rows. For every native task, the definition is the
+only source of truth:
 
-- new native tasks store the structured definition as the canonical value;
-- generated body/imports may be retained as a compatibility execution
-  snapshot while the current loader remains in service;
+- every save validates the definition and compiles fresh `body` and
+  `extra_imports` snapshots before opening the storage transaction;
+- the definition and both generated snapshots are stored atomically, so a
+  validation or compilation failure leaves the previously saved row unchanged;
+- preview and execution deterministically recompile the stored definition and
+  require the result to match both stored snapshots byte for byte;
+- any mismatch is a hard integrity error that blocks preview and execution,
+  reports the task as requiring repair, and never falls back to stale code;
 - form-built tasks with valid `# OP:` markers can be offered an explicit
   migration;
 - legacy raw-Python tasks remain available and clearly labeled legacy; and
@@ -245,10 +280,15 @@ the migration audit. No line silently disappears.
 
 ## Initial Compatibility Corpus
 
-The supplied task folder is inventoried deterministically by content hash.
-Duplicate archive/plain-text copies do not create duplicate compatibility
-requirements. Every unique instruction signature receives a support record
-containing:
+Real institutional tasks remain untracked and local, including the supplied
+`MarcEdit Tasks/` folder. They are never copied into the repository. Only
+sanitized synthetic task and MARC fixtures may be checked in; fixtures contain
+no staff identity, vendor account data, licensed metadata, local access URLs,
+or institutional record content.
+
+The local corpus is inventoried deterministically by content hash. Duplicate
+archive/plain-text copies do not create duplicate compatibility requirements.
+Every unique instruction signature receives a support record containing:
 
 - source task and line number;
 - parsed verb and arguments;
@@ -256,6 +296,14 @@ containing:
 - support state;
 - documentation or fixture supporting the interpretation; and
 - tests that establish the native behavior.
+
+The compatibility matrix is the checked-in
+`docs/compatibility/legacy-marcedit-task-migration.md`. It names normalized
+structural instruction signatures with institution-specific literals replaced
+by semantic placeholders; it never includes real task names, source lines, or
+record content. A deterministic test regenerates the matrix from sanitized
+synthetic fixtures in memory and requires an exact byte-for-byte match, so
+fixture support cannot drift from the published document.
 
 The compatibility statement is limited to the observed and tested signatures:
 
@@ -402,7 +450,12 @@ become a reusable native step.
 Task import, authoring, and execution fail closed:
 
 - every source line has a line number and state;
-- archive safety and size limits are enforced before parsing;
+- a plain-text task upload is at most 1 MiB;
+- a `.task` ZIP upload is at most 10 MiB compressed, contains at most 256
+  regular `.txt` members, expands to at most 50 MiB total, and contains no
+  `.txt` member larger than 1 MiB;
+- encrypted members, duplicate normalized member names, NULs, absolute paths,
+  and `..` path components reject the complete archive before conversion;
 - unknown operations remain visible and blocking;
 - unknown option combinations become explicit confirmation questions;
 - required form parameters are enforced before save;
@@ -435,38 +488,16 @@ operation, and sandbox boundaries.
 
 ## Shared Task Authorization Conflict
 
-Current main documentation says shared tasks are editable only by their owner.
-The approved production hotfix work is intended to allow other authorized
-catalogers to correct shared tasks. TASK-174 must not silently choose between
-these contradictory states.
+TASK-174 does not change task authorization. Native view, edit, import,
+migration, preview, and run controls call the same authorization policy as the
+corresponding legacy task action.
 
-Before implementation touches shared-task controls, the hotfix branch must be
-integrated or its final authorization contract recorded. Code, help text,
-tests, and the native task migration must then follow that one proven policy.
-
-## Streamlit Activity Feedback
-
-The Streamlit framework header/status area is restored so users see the
-running animation during reruns and operations that otherwise leave the page
-quiet.
-
-The current `[client] toolbarMode = "minimal"` setting was intended to suppress
-developer controls. The first tested configuration is `viewer`, which
-Streamlit documents as hiding developer options from viewers. The choice is
-verified in the project's pinned Streamlit version inside Docker.
-
-Acceptance requirements:
-
-- a deliberately slow rerun shows the framework running indicator;
-- developer and deployment controls remain unavailable to catalogers;
-- Account and operation-notification controls do not overlap the header;
-- public and private modes behave consistently;
-- existing in-page progress remains available; and
-- if configuration alone is insufficient, styling hides only proven unwanted
-  controls rather than the complete header.
-
-Reference:
-[Streamlit app chrome](https://docs.streamlit.io/develop/concepts/architecture/app-chrome).
+If the reviewed shared-task hotfix is present on the implementation baseline,
+TASK-174 inherits its authorized-cataloger editing policy and regression tests.
+If that hotfix has not landed, TASK-174 ships with the current owner-only edit
+policy and labels shared tasks read-only for other catalogers. The migration
+program does not block, broaden access, or recreate the hotfix; that policy can
+change later through its own reviewed ticket.
 
 ## Verification Strategy
 
@@ -474,7 +505,8 @@ Reference:
 
 - Deduplicate supplied task definitions by content hash.
 - Assert that every line in every unique task receives one classification.
-- Emit a machine-readable compatibility report.
+- Regenerate the checked-in compatibility matrix from sanitized synthetic
+  fixtures and assert an exact match.
 - Fail tests if a source line disappears or has an unrecognized state.
 
 ### Operation tests
@@ -498,12 +530,14 @@ Reference:
 ### Compatibility and regression tests
 
 - Validate native JSON against schema version 1.
+- Refuse an unknown schema version and report the supported version.
 - Export and re-import native tasks without changing step order or values.
+- Fail preview and execution when canonical definition recompilation differs
+  from either stored execution snapshot.
 - Keep existing form-built tasks runnable.
 - Keep raw-Python tasks available and clearly legacy.
-- Verify shared-task authorization against the integrated hotfix contract.
-- Verify the Streamlit running indicator and hidden developer controls in
-  Docker browser testing.
+- Verify native controls use the baseline's existing task authorization
+  contract without widening it.
 - Run the full suite with every skip reported.
 
 The isolated TASK-174 baseline is 1,573 passed and 4 skipped. All four skips
@@ -513,24 +547,26 @@ could not allocate a new Docker network because the local predefined address
 pool is exhausted; the successful baseline used the existing development image
 with `--network none`.
 
-## Rebrand and Production Rollout
+## Rebrand and Production Compatibility
 
-The rebrand is staged so current ITS-managed startup remains valid:
+TASK-174 changes application identity without requiring an infrastructure
+change:
 
-1. Add the new user-facing identity, documentation, license material, native
-   task model, and new entry points on main.
-2. Retain existing `marcedit_web` modules, environment variables, paths, and
-   service entry points as compatibility aliases.
-3. Prove that the current production unit can start the new code unchanged.
-4. Prepare and test `/smith-metadata-studio/` routing locally.
-5. Give ITS one consolidated request for the new route and any desired service
-   unit changes.
-6. Keep `/marcedit-web/` as a temporary redirect or compatibility route.
-7. Remove legacy technical aliases only in a separately approved later release.
+1. Ship the `LICENSE`, notices, README correction, and name-neutral disclaimer
+   independently of the final name decision.
+2. Route user-facing product-name strings through one constant while retaining
+   the current value.
+3. After recorded institutional approval, switch that constant to the approved
+   name and update reviewed public release language.
+4. Retain existing `marcedit_web` modules, environment variables, filesystem
+   paths, URLs, and service entry points unchanged.
+5. Prove that the current production unit starts the new code without an ITS
+   change.
 
-ITS applying its portion before the application deployment must fail safely:
-main will contain the referenced new entry points before the request is made,
-and existing entry points will remain valid throughout the transition.
+New public routing, redirects, service units, and the consolidated ITS request
+are outside TASK-174. They remain part of TASK-173's single-touch
+infrastructure release and may only reference an application entry point that
+has already landed and passed TASK-173's out-of-order activation guards.
 
 ## Implementation Decomposition
 
@@ -544,20 +580,22 @@ recommended order is:
 4. import review state model and compatibility report;
 5. Smith CORE Holdings and Items vertical-slice migration;
 6. remaining corpus signatures and recipes;
-7. task preview promotion gate;
-8. Streamlit activity-header restoration and browser verification; and
-9. consolidated production/ITS migration envelope.
+7. task preview promotion gate.
 
 Each child ticket must have independent success criteria, TDD evidence, and
 review. No child may broaden MarcEdit compatibility beyond a documented,
-tested signature.
+tested signature. TASK-175 owns activity-header restoration, and TASK-173 owns
+the production/ITS installation and routing envelope; neither is a TASK-174
+child.
 
 ## Success Criteria
 
 The design is successfully implemented when:
 
-- the application presents itself as Smith Metadata Studio with reviewed
-  independent-product language;
+- all user-facing product-name strings use one constant, and the approved name
+  is not selected until institutional approval is recorded;
+- the application uses reviewed, name-neutral independent-product language
+  before that approval;
 - repository licensing and third-party notices are complete;
 - native tasks have a documented, versioned, non-executable schema;
 - the existing form supports guided, blank, and migration entry paths;
@@ -568,8 +606,11 @@ The design is successfully implemented when:
 - unresolved imported behavior cannot run;
 - native task preview shows step and record outcomes before promotion;
 - legacy tasks remain available without silent rewriting;
-- the Streamlit activity indicator is restored without developer controls;
-- the current production startup path remains valid until the consolidated ITS
-  change; and
+- native definitions are canonical and stale or mismatched generated snapshots
+  cannot run;
+- real institutional task files remain local and untracked while published
+  compatibility is backed by sanitized synthetic fixtures and a freshness
+  test;
+- the current production startup path remains valid without an ITS change; and
 - all applicable tests pass with every skip reported and code review has no
   unresolved Critical or Important findings.
