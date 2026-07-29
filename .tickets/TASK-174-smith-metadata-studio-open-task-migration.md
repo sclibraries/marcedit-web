@@ -41,10 +41,12 @@ Phase 1:
 - Plan:
   `docs/superpowers/plans/2026-07-29-task-174-phase-1-product-identity-licensing.md`
 - Completed checkpoint: TASK-176 evidence records the reviewed
-  `b1234eb..0610315` range, 41 focused passes, 1,582 complete-suite passes,
+  `b1234eb..29a4b71` range, 57 focused passes, 1,585 complete-suite passes,
   four disclosed skips, corrected browser identity, Docker licensing
-  artifacts, reusable dependency-install layering, preserved technical entry
-  points, and no unresolved Critical or Important findings. See
+  artifacts including pytest, reusable dependency-install layering,
+  preserved technical entry points, and no unresolved Critical or Important
+  findings. Browser acceptance has a durable accessibility snapshot; the
+  unavailable screenshot is an explicit Minor plan deviation. See
   `.tickets/TASK-176-neutral-product-identity-licensing.md` and
   `.superpowers/sdd/task-176-task-4-report.md`.
 
