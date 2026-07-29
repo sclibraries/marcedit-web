@@ -7,10 +7,10 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRODUCT_NAME = "Smith College Libraries MARC21 workflow application"
+PRODUCT_NAME = "Smith Metadata Studio"
 
 
-def test_interim_product_name_is_neutral_and_centralized():
+def test_approved_product_name_is_centralized():
     from marcedit_web.lib import product_identity
 
     assert product_identity.PRODUCT_NAME == PRODUCT_NAME
@@ -106,6 +106,7 @@ def test_readme_and_package_description_are_independent_and_neutral():
     pyproject = _source("pyproject.toml")
 
     assert readme.startswith(f"# {PRODUCT_NAME}\n")
+    assert "Smith College Libraries MARC21 workflow application" not in readme
     assert "Recreates MarcEdit" not in readme
     assert "not affiliated with or endorsed by MarcEdit or its author" in readme
     for policy_source in (readme, design, ticket, plan):

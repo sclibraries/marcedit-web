@@ -1,4 +1,4 @@
-# Smith College Libraries MARC21 workflow application
+# Smith Metadata Studio
 
 An independently developed web application for viewing, validating, editing,
 and comparing MARC21 metadata. It is deployed at
