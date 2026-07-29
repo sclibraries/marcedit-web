@@ -32,7 +32,7 @@ Success Criteria:
   smoke test pass with every skip reported.
 - Code review has no unresolved Critical or Important findings.
 
-Status: In-Progress
+Status: Completed
 
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-open-task-migration-design.md`
@@ -43,11 +43,13 @@ Plan:
 Evidence:
 - Focused supported-runtime suite:
   `tests/test_product_identity.py`, `tests/test_app_pages.py`, and
-  `tests/test_home_page_jobs.py` completed with 40 passed and 0 skipped.
+  `tests/test_home_page_jobs.py` completed with 41 passed and 0 skipped after
+  the Docker layer-order regression was added.
 - Image `marcedit-web:task-176` built successfully at review-fix commit
-  `8c425b1`; `/app/LICENSE` and `/app/THIRD_PARTY_NOTICES.md` both passed the
-  network-free image-content check.
-- Complete supported-runtime Docker suite completed with 1,581 passed and 4
+  `0610315`; the build showed `RUN pip install -r requirements.txt` as
+  `CACHED`, and `/app/LICENSE` and `/app/THIRD_PARTY_NOTICES.md` both passed
+  the network-free image-content check.
+- Complete supported-runtime Docker suite completed with 1,582 passed and 4
   skipped. Two skips at `tests/test_docker_compose_config.py:88` and two at
   `tests/test_docker_compose_config.py:130` each reported:
   `docker CLI is required to render Compose configuration`.
@@ -56,8 +58,9 @@ Evidence:
   and sidebar level-2 heading exactly matched
   `Smith College Libraries MARC21 workflow application`; the Home upload
   heading and Quick Load/file chooser controls rendered; and no user-facing
-  `marcedit-web` string appeared. Screenshot:
-  `./task176-product-identity.png`.
+  `marcedit-web` string appeared. The screenshot was a controller-captured
+  tool-session artifact named `task176-product-identity.png`; it is not stored
+  in Git or in this worktree, and no independent durable path is claimed.
 - Browser execution used controller-provided trusted Playwright evidence after
   the requested browser-use CLI was absent and the approved in-app Browser
   fallback did not expose its required control tool. The disposable
@@ -67,14 +70,17 @@ Evidence:
   `.streamlit/`, or `docker-compose*.yml` file changed; the `marcedit-web`
   distribution name, `/marcedit-web/` production URL,
   `marcedit_web/App.py` commands, and `/app` image paths remain present.
-- Reviewed range: `b1234eb..8c425b1`; `git diff --check` passed and every
+- Reviewed range: `b1234eb..0610315`; `git diff --check` passed and every
   changed line was reviewed against TASK-176.
 - Review findings: Critical: none. Important: one shared-sidebar literal was
   found, reproduced with two failing regression assertions, fixed in
   `8c425b1`, and verified with two passing targeted tests plus the focused and
-  complete suites; no Important finding remains. Minor: placing the licensing
-  copy layer before dependency installation invalidated the dependency layer
-  during the first licensing build, although the unchanged requirements were
-  reused on the post-fix rebuild.
+  complete suites. A second Important finding showed the changeable licensing
+  copy invalidated dependency installation and could re-resolve ranged
+  requirements; its ordering regression failed first, then passed after
+  `0610315` moved the copy after dependency installation. Minor: the original
+  screenshot reference implied a local file that did not exist; it now
+  accurately identifies a non-repository controller tool-session artifact.
+  No Critical or Important finding remains.
 - Full execution report:
   `.superpowers/sdd/task-176-task-4-report.md`.
