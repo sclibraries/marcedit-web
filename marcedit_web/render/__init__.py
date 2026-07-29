@@ -18,6 +18,7 @@ import streamlit as st
 
 from marcedit_web.lib import rules as rules_mod
 from marcedit_web.lib import session
+from marcedit_web.lib.product_identity import PRODUCT_NAME
 from marcedit_web.render.batch_status import loaded_batch_status
 from marcedit_web.render import operation_notifications
 
@@ -55,7 +56,7 @@ def sidebar_status() -> None:
     Every page calls this so the chrome stays identical across the app.
     """
     with st.sidebar:
-        st.header("marcedit-web")
+        st.header(PRODUCT_NAME)
         user = session.current_user_id()
         st.caption(f"Signed in as **{user}**")
         st.divider()

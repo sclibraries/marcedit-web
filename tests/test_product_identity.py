@@ -25,6 +25,7 @@ def test_current_streamlit_brand_surfaces_use_product_name_constant():
     app = _source("marcedit_web/App.py")
     home = _source("marcedit_web/views/00_Home.py")
     diff = _source("marcedit_web/views/6_Diff.py")
+    shared_render = _source("marcedit_web/render/__init__.py")
 
     assert "from marcedit_web.lib.product_identity import PRODUCT_NAME" in app
     assert "page_title=PRODUCT_NAME" in app
@@ -36,16 +37,21 @@ def test_current_streamlit_brand_surfaces_use_product_name_constant():
     assert "from marcedit_web.lib.product_identity import PRODUCT_NAME" in diff
     assert "st.header(PRODUCT_NAME)" in diff
 
+    assert "from marcedit_web.lib.product_identity import PRODUCT_NAME" in shared_render
+    assert "st.header(PRODUCT_NAME)" in shared_render
+
 
 def test_current_streamlit_brand_calls_do_not_embed_legacy_name():
     app = _source("marcedit_web/App.py")
     home = _source("marcedit_web/views/00_Home.py")
     diff = _source("marcedit_web/views/6_Diff.py")
+    shared_render = _source("marcedit_web/render/__init__.py")
 
     assert 'page_title="marcedit-web"' not in app
     assert 'st.title("marcedit-web")' not in home
     assert 'st.header("marcedit-web")' not in home
     assert 'st.header("marcedit-web")' not in diff
+    assert 'st.header("marcedit-web")' not in shared_render
 
 
 def test_repository_has_smith_mit_license():
