@@ -33,7 +33,7 @@ Success Criteria:
   smoke test pass with every skip reported.
 - Code review has no unresolved Critical or Important findings.
 
-Status: In-Progress
+Status: Completed
 
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-open-task-migration-design.md`
@@ -107,8 +107,8 @@ Evidence:
   `.superpowers/sdd/task-176-task-4-report.md`. Essential evidence remains in
   this tracked ticket and
   `docs/superpowers/evidence/task-176-record-editor-browser-smoke.md`.
-- Post-final-review correction (approval pending narrow re-review): the final
-  whole-branch review found that the governing Phase 1 plan still derived
+- Post-final-review correction: the final whole-branch review found that the
+  governing Phase 1 plan still derived
   notices from four `pyproject.toml` dependencies, omitted Docker-installed
   pytest from its notice example, and prescribed copying changeable licensing
   files before dependency installation. Two plan-contract regressions were
@@ -121,6 +121,10 @@ Evidence:
   the complete `tests/test_product_identity.py` file passed 13/13, and
   `git diff --check` exited 0 with no output. The host exposes `python3`, not
   `python`; the initial alias-based command exited 127 before the valid RED
-  run. No runtime or deployment configuration changed. TASK-176 remains
-  `In-Progress` pending the narrow re-review; TASK-174 remains `In-Progress`
-  and TASK-177 remains `Completed`.
+  run. No runtime or deployment configuration changed. At correction commit
+  `6425b9b`, TASK-176 remained `In-Progress` pending narrow re-review.
+- Narrow re-review approved exact range
+  `f1dfbde96dd1e1426e6026eeff99b1bceaaed769..6425b9b5ec3f4ae3d73a3bf76692da83a04edf5e`
+  with zero Critical, Important, or Minor findings and explicitly authorized
+  restoring TASK-176 to `Completed`. TASK-174 remains `In-Progress` and
+  TASK-177 remains `Completed`.
