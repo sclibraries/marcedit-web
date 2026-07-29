@@ -30,6 +30,7 @@ from dataclasses import dataclass
 import streamlit as st
 
 from marcedit_web.lib import access_gate, authz, db, identity, runmode
+from marcedit_web.lib.product_identity import PRODUCT_NAME
 from marcedit_web.render import operation_notifications
 
 
@@ -255,7 +256,7 @@ if __name__ == "__main__":
         db.init_schema()
 
     st.set_page_config(
-        page_title="marcedit-web",
+        page_title=PRODUCT_NAME,
         page_icon="\N{BOOKS}",
         layout="wide",
         initial_sidebar_state="expanded",

@@ -16,6 +16,7 @@ import streamlit as st
 
 from marcedit_web.lib import job_files as work_files, jobs, session
 from marcedit_web.lib.identity import is_anonymous
+from marcedit_web.lib.product_identity import PRODUCT_NAME
 from marcedit_web.render import job_files
 
 session.init_page()
@@ -156,7 +157,7 @@ def _render_job_uploads(job_id: int, user: str, role: str | None) -> None:
 # --- Upload widget (handled FIRST so the sidebar reads fresh state) --------
 
 
-st.title("marcedit-web")
+st.title(PRODUCT_NAME)
 st.caption("MARC21 viewer, validator, editor, and diff — in your browser.")
 # h2 — heading ladder must step h1 → h2 → h3 without gaps (TASK-054).
 st.header("Upload a MARC file")
@@ -280,7 +281,7 @@ if start_path == _START_PATH_JOB:
 
 
 with st.sidebar:
-    st.header("marcedit-web")
+    st.header(PRODUCT_NAME)
     from marcedit_web import __version__
     st.caption(f"v{__version__}")
     user = session.current_user_id()

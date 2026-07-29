@@ -32,6 +32,7 @@ import streamlit as st
 from marcedit_web.lib import marc_diff, quotas, session
 from marcedit_web.lib.audit import audit_event
 from marcedit_web.lib.marc_diff import FieldSpec, OCOLC_SPEC
+from marcedit_web.lib.product_identity import PRODUCT_NAME
 
 logger = logging.getLogger("marcedit_web.diff")
 
@@ -441,7 +442,7 @@ st.caption(
 
 
 with st.sidebar:
-    st.header("marcedit-web")
+    st.header(PRODUCT_NAME)
     user = session.current_user_id()
     st.caption(f"Signed in as **{user}**")
     st.divider()
