@@ -32,8 +32,9 @@ compatibility contracts and are guarded by regression assertions.
 - Keep `marcedit-web`, `marcedit_web`, `/marcedit-web/`,
   `MARCEDIT_WEB_*`, all Docker service names, filesystem paths, and systemd
   units unchanged.
-- Use MarcEdit only to identify the external format accepted by the optional
-  migration adapter; do not claim compatibility beyond tested signatures.
+- Use MarcEdit only as a referential identifier for supported external
+  MarcEdit task and mnemonic text formats, never as the application's product
+  identity; do not claim compatibility beyond tested signatures.
 - Do not change `.streamlit/config.toml`; activity-header work belongs to
   TASK-175.
 - Do not change deployment units, proxy routes, install scripts, or ITS
@@ -520,9 +521,9 @@ and comparing MARC21 metadata. It is deployed at
 https://libtools2.smith.edu/marcedit-web/ behind Apache + mod_shib on
 RHEL 8.10.
 
-MarcEdit is referenced only to identify the external task-file format accepted
-by the optional migration tools. This project is not affiliated with or
-endorsed by MarcEdit or its author.
+MarcEdit is used only as a referential identifier for supported external
+MarcEdit task and mnemonic text formats; it is not the application's identity.
+This project is not affiliated with or endorsed by MarcEdit or its author.
 ```
 
 Keep all existing local-development commands, `marcedit_web/` layout names,

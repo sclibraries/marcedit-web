@@ -10,8 +10,9 @@ Scope:
 - Add the repository's MIT license and direct-dependency notices.
 - Replace README and package-description language that says the application
   recreates MarcEdit.
-- Add a name-neutral independence disclaimer that uses MarcEdit only to
-  identify the optional external task format.
+- Add a name-neutral independence disclaimer that uses MarcEdit only as a
+  referential identifier for supported external MarcEdit task and mnemonic
+  text formats, never as the application's product identity.
 - Include the license and notices in the Docker image.
 - Preserve the `marcedit-web` package name, `marcedit_web` Python package,
   `/marcedit-web/` URL, environment variables, Docker service names, filesystem
@@ -32,7 +33,7 @@ Success Criteria:
   smoke test pass with every skip reported.
 - Code review has no unresolved Critical or Important findings.
 
-Status: Completed
+Status: In-Progress
 
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-open-task-migration-design.md`
@@ -93,5 +94,7 @@ Evidence:
   non-comment `requirements.txt` entries. Both Important findings are
   resolved. The unavailable screenshot remains the only unresolved Minor/plan
   deviation; no Critical or Important finding remains.
-- Full execution report:
-  `.superpowers/sdd/task-176-task-4-report.md`.
+- Execution report is local-only, ignored by Git, and absent from clean checkouts:
+  `.superpowers/sdd/task-176-task-4-report.md`. Essential evidence remains in
+  this tracked ticket and
+  `docs/superpowers/evidence/task-176-record-editor-browser-smoke.md`.

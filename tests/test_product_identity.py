@@ -98,15 +98,35 @@ def test_readme_and_package_description_are_independent_and_neutral():
         "docs/superpowers/specs/"
         "2026-07-29-smith-metadata-studio-open-task-migration-design.md"
     )
+    ticket = _source(".tickets/TASK-176-neutral-product-identity-licensing.md")
+    plan = _source(
+        "docs/superpowers/plans/"
+        "2026-07-29-task-174-phase-1-product-identity-licensing.md"
+    )
     pyproject = _source("pyproject.toml")
 
     assert readme.startswith(f"# {PRODUCT_NAME}\n")
     assert "Recreates MarcEdit" not in readme
     assert "not affiliated with or endorsed by MarcEdit or its author" in readme
-    assert "external MarcEdit task and mnemonic text formats" in " ".join(readme.split())
-    assert "external MarcEdit task and mnemonic text formats" in " ".join(design.split())
+    for policy_source in (readme, design, ticket, plan):
+        assert (
+            "external MarcEdit task and mnemonic text formats"
+            in " ".join(policy_source.split())
+        )
     assert "recreating MarcEdit" not in pyproject
     assert 'description = "Independent web application for MARC21 metadata workflows."' in pyproject
+
+
+def test_ticket_marks_ignored_execution_report_as_local_only():
+    """Clean-checkout evidence must not imply an ignored report is durable."""
+    ticket = _source(".tickets/TASK-176-neutral-product-identity-licensing.md")
+    parent_ticket = _source(
+        ".tickets/TASK-174-smith-metadata-studio-open-task-migration.md"
+    )
+
+    for evidence_source in (ticket, parent_ticket):
+        assert "local-only" in evidence_source
+        assert "absent from clean checkouts" in evidence_source
 
 
 def test_user_facing_editor_copy_uses_neutral_record_editor_label():

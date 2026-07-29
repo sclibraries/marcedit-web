@@ -46,9 +46,11 @@ Phase 1:
   artifacts including pytest, reusable dependency-install layering,
   preserved technical entry points, and no unresolved Critical or Important
   findings. Browser acceptance has a durable accessibility snapshot; the
-  unavailable screenshot is an explicit Minor plan deviation. See
+  unavailable screenshot is an explicit Minor plan deviation. See the tracked
   `.tickets/TASK-176-neutral-product-identity-licensing.md` and
-  `.superpowers/sdd/task-176-task-4-report.md`.
+  `docs/superpowers/evidence/task-176-record-editor-browser-smoke.md`.
+  The local-only `.superpowers/sdd/task-176-task-4-report.md` is ignored by Git
+  and absent from clean checkouts.
 
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.
