@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "marcedit-web"
 version = "0.3.0"
-description = "Web-based MARC21 editor recreating MarcEdit's core features."
+description = "Independent web application for MARC21 metadata workflows."
 readme = "README.md"
 requires-python = ">=3.9,<3.10"
 license = { text = "MIT" }

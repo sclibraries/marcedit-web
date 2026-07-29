@@ -1,9 +1,13 @@
-# marcedit-web
+# Smith College Libraries MARC21 workflow application
 
-Web-based MARC21 viewer, validator, editor, and diff. Recreates MarcEdit's
-generic editing features as a Streamlit app, deployed at
+An independently developed web application for viewing, validating, editing,
+and comparing MARC21 metadata. It is deployed at
 https://libtools2.smith.edu/marcedit-web/ behind Apache + mod_shib on
 RHEL 8.10.
+
+MarcEdit is referenced only to identify the external task-file format accepted
+by the optional migration tools.
+This project is not affiliated with or endorsed by MarcEdit or its author.
 
 See `docs/application-overview.md` for the current architecture and
 recommended speed, consistency, and hardening improvements.

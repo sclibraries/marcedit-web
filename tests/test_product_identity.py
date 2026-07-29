@@ -46,3 +46,64 @@ def test_current_streamlit_brand_calls_do_not_embed_legacy_name():
     assert 'st.title("marcedit-web")' not in home
     assert 'st.header("marcedit-web")' not in home
     assert 'st.header("marcedit-web")' not in diff
+
+
+def test_repository_has_smith_mit_license():
+    license_text = _source("LICENSE")
+
+    assert license_text.startswith("MIT License\n")
+    assert "Copyright (c) 2026 Smith College" in license_text
+    assert "Permission is hereby granted, free of charge" in license_text
+
+
+def test_direct_runtime_dependency_notices_are_present():
+    notices = _source("THIRD_PARTY_NOTICES.md")
+    pyproject = _source("pyproject.toml")
+    expected = {
+        "Streamlit": "Apache-2.0",
+        "pymarc": "BSD-2-Clause",
+        "streamlit-ace": "MIT",
+        "Authlib": "BSD-3-Clause",
+    }
+
+    for project, license_id in expected.items():
+        assert project in notices
+        assert license_id in notices
+
+    match = re.search(
+        r"(?ms)^dependencies\s*=\s*\[(.*?)^\]",
+        pyproject,
+    )
+    assert match is not None
+    declared = set(
+        re.findall(r'(?m)^\s*"([A-Za-z0-9_.-]+)', match.group(1))
+    )
+    assert {name.lower() for name in declared} == {
+        name.lower() for name in expected
+    }
+
+
+def test_readme_and_package_description_are_independent_and_neutral():
+    readme = _source("README.md")
+    pyproject = _source("pyproject.toml")
+
+    assert readme.startswith(f"# {PRODUCT_NAME}\n")
+    assert "Recreates MarcEdit" not in readme
+    assert "not affiliated with or endorsed by MarcEdit or its author" in readme
+    assert "recreating MarcEdit" not in pyproject
+    assert 'description = "Independent web application for MARC21 metadata workflows."' in pyproject
+
+
+def test_existing_technical_identifiers_remain_compatible():
+    readme = _source("README.md")
+    pyproject = _source("pyproject.toml")
+
+    assert 'name = "marcedit-web"' in pyproject
+    assert "https://libtools2.smith.edu/marcedit-web/" in readme
+    assert "streamlit run marcedit_web/App.py" in readme
+
+
+def test_docker_image_includes_project_license_and_notices():
+    dockerfile = _source("Dockerfile")
+
+    assert "COPY LICENSE THIRD_PARTY_NOTICES.md ./" in dockerfile
