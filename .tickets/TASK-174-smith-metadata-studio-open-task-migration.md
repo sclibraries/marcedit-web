@@ -64,8 +64,10 @@ Phase 1:
   gate required only a disposable `MARCEDIT_WEB_MODE=public` harness correction;
   source and production defaults were unchanged. Technical `marcedit-web`,
   `MARCEDIT_WEB_*`, `/marcedit-web/`, and `MarcEditor` route/script identifiers
-  remain preserved. Review range `5b7824e..HEAD` awaits independent approval,
-  so TASK-177 and TASK-174 remain `In-Progress`.
+  remain preserved. Independent review approved exact range
+  `5b7824e..b7a1c07592c69ef2560256ec6de57577d6a973f6`: spec compliance and
+  code quality passed with zero Critical, Important, or Minor findings.
+  TASK-177 is `Completed`; TASK-174 remains `In-Progress`.
 
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.

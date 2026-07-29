@@ -19,7 +19,7 @@ Success Criteria:
   acceptance pass with every skip or evidence deviation reported.
 - Code review has no unresolved Critical or Important findings.
 
-Status: In-Progress
+Status: Completed
 
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-display-name-design.md`
@@ -69,4 +69,7 @@ Implementation Evidence:
   `views/5_MarcEditor.py`. Remaining MarcEdit references are technical route
   identifiers, compatibility assertions, implementation-plan constraints, or
   referential descriptions of supported external formats.
-- Review range awaiting independent review: `5b7824e..HEAD`.
+- Independently reviewed range:
+  `5b7824e..b7a1c07592c69ef2560256ec6de57577d6a973f6`.
+- Review verdict: approved. Spec compliance passed, code quality passed, and
+  the reviewer reported zero Critical, Important, or Minor findings.
