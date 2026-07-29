@@ -33,7 +33,7 @@ Success Criteria:
   smoke test pass with every skip reported.
 - Code review has no unresolved Critical or Important findings.
 
-Status: In-Progress
+Status: Completed
 
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-open-task-migration-design.md`
@@ -45,7 +45,8 @@ Evidence:
 - Focused supported-runtime suite:
   `tests/test_product_identity.py`, `tests/test_app_pages.py`,
   `tests/test_home_page_jobs.py`, `tests/test_gemini_task_draft.py`, and
-  `tests/test_marceditor_mode.py` completed with 57 passed and 0 skipped.
+  `tests/test_marceditor_mode.py` completed with 58 passed and 0 skipped after
+  adding the governing-policy and evidence-durability regressions.
 - Image `marcedit-web:task-176` built successfully at review-fix commit
   `29a4b71`; the build showed `RUN pip install -r requirements.txt` as
   `CACHED`, and `/app/LICENSE` and `/app/THIRD_PARTY_NOTICES.md` both passed
@@ -75,7 +76,7 @@ Evidence:
   `.streamlit/`, or `docker-compose*.yml` file changed; the `marcedit-web`
   distribution name, `/marcedit-web/` production URL,
   `marcedit_web/App.py` commands, and `/app` image paths remain present.
-- Reviewed range: `b1234eb..29a4b71`; `git diff --check` passed and every
+- Reviewed range: `b1234eb..b53f9c5`; `git diff --check` passed and every
   changed line was reviewed against TASK-176.
 - Review findings: Critical: none. Important: one shared-sidebar literal was
   found, reproduced with two failing regression assertions, fixed in
@@ -93,7 +94,15 @@ Evidence:
   verified pytest MIT/source notice, and reconciled notices against direct
   non-comment `requirements.txt` entries. Both Important findings are
   resolved. The unavailable screenshot remains the only unresolved Minor/plan
-  deviation; no Critical or Important finding remains.
+  deviation. A final documentation re-review found the TASK-176 scope and
+  Phase 1 plan still limited MarcEdit references to task migration only.
+  Commit `b53f9c5` aligned every governing contract with the supported
+  external task-and-mnemonic-text referential policy and labeled the ignored
+  execution report local-only. Targeted tests passed 2/2 and the expanded
+  focused suite passed 58/58. Docker, full-suite, and browser checks were not
+  rerun because this correction changed only tracked Markdown and its static
+  regression test; their prior evidence remains applicable. No Critical or
+  Important finding remains.
 - Execution report is local-only, ignored by Git, and absent from clean checkouts:
   `.superpowers/sdd/task-176-task-4-report.md`. Essential evidence remains in
   this tracked ticket and
