@@ -8,6 +8,8 @@ Scope:
   metadata workflow identity.
 - Define a versioned, non-executable native task format and layered task
   authoring experience built on the existing Tasks form.
+- Define compiler-fingerprinted execution snapshots so trusted compiler changes
+  regenerate native tasks without masking same-fingerprint corruption.
 - Define a fail-closed MarcEdit task migration assistant using the supplied
   task folder as the initial compatibility corpus.
 - Use Smith CORE Holdings and Items as the first end-to-end migration fixture.
@@ -21,8 +23,8 @@ Scope:
 Success Criteria:
 - The approved design records architecture, native task representation,
   import review states, existing-form improvements, failure handling,
-  verification, licensing/rebranding, and production-compatibility
-  requirements.
+  compiler migration, local-corpus skip behavior, verification,
+  licensing/rebranding, and production-compatibility requirements.
 - The implementation plan explicitly references this ticket and the approved
   design.
 - Every future file change for this effort is traceable to TASK-174.

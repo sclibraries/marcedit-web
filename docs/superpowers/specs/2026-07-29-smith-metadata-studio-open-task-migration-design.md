@@ -4,7 +4,7 @@
 
 **Date:** 2026-07-29
 
-**Status:** Revised after written-specification review; awaiting approval
+**Status:** Approved; written-specification review amendments incorporated
 
 ## Context
 
@@ -74,10 +74,12 @@ unrelated products. Smith must complete its normal name and trademark review
 before the name is merged as the public identity.
 
 Every user-facing product-name string is routed through one product identity
-constant. The constant retains the current identity until Smith's approval is
-recorded; the approved name switch is then one localized value change. Internal
-module names, environment variables, paths, and service entry points remain
-compatibility identifiers and are not derived from that constant.
+constant. Its interim value is the same neutral description used in the README
+and disclaimer: "Smith College Libraries MARC21 workflow application." After
+Smith's approval is recorded, the approved name switch is one localized value
+change. Internal module names, environment variables, paths, and service entry
+points remain compatibility identifiers and are not derived from that
+constant.
 
 Open-source readiness requires:
 
@@ -235,18 +237,36 @@ best-effort parsing of future versions.
 ### Storage transition
 
 The current `tasks` table stores Python `body` and `extra_imports` text. The
-native transition will add a nullable, versioned definition field rather than
-silently rewrite existing rows. For every native task, the definition is the
-only source of truth:
+native transition will add a nullable, versioned definition field and nullable
+`compiler_fingerprint` field rather than silently rewrite existing rows. For
+every native task, the definition is the only source of truth:
 
 - every save validates the definition and compiles fresh `body` and
-  `extra_imports` snapshots before opening the storage transaction;
-- the definition and both generated snapshots are stored atomically, so a
-  validation or compilation failure leaves the previously saved row unchanged;
-- preview and execution deterministically recompile the stored definition and
-  require the result to match both stored snapshots byte for byte;
-- any mismatch is a hard integrity error that blocks preview and execution,
-  reports the task as requiring repair, and never falls back to stale code;
+  `extra_imports` snapshots using the current compiler fingerprint before
+  opening the storage transaction;
+- the definition, both generated snapshots, and compiler fingerprint are stored
+  atomically, so a validation or compilation failure leaves the previously
+  saved row unchanged;
+- the fingerprint is a SHA-256 digest of the canonical bytes of a checked-in,
+  versioned compiler contract manifest. The manifest contains the native schema
+  version, compiler contract version, supported serialization/runtime version,
+  and SHA-256 hashes of the generated `body` and `extra_imports` for golden
+  native definitions;
+- a freshness test recompiles every golden definition and requires its output
+  hashes to match the manifest. An output change therefore requires a manifest
+  update, which mechanically produces a new fingerprint;
+- when a stored fingerprint differs from the current fingerprint, preview or
+  execution recompiles the canonical definition, validates the candidate, and
+  atomically replaces both snapshots and the fingerprint only if the stored
+  definition and task revision are still current. This trusted compiler
+  migration does not present a cataloger error, but records an audit event with
+  the old and new fingerprints;
+- if migration compilation or validation fails, the old row remains unchanged
+  and execution fails closed with a deployment-compatibility error;
+- when the stored fingerprint matches the current fingerprint, preview and
+  execution deterministically recompile the definition and require the result
+  to match both snapshots byte for byte. A mismatch in this state is a genuine
+  integrity error that blocks execution and never falls back to stale code;
 - form-built tasks with valid `# OP:` markers can be offered an explicit
   migration;
 - legacy raw-Python tasks remain available and clearly labeled legacy; and
@@ -304,6 +324,14 @@ by semantic placeholders; it never includes real task names, source lines, or
 record content. A deterministic test regenerates the matrix from sanitized
 synthetic fixtures in memory and requires an exact byte-for-byte match, so
 fixture support cannot drift from the published document.
+
+The committed suite and CI guarantees rest exclusively on those sanitized
+synthetic fixtures. Corpus-wide checks against real institutional tasks are a
+local discovery and acceptance supplement. When `MarcEdit Tasks/` is absent,
+the local-corpus test reports one explicit skip stating that the institutional
+corpus is unavailable; it never passes vacuously. When the directory is
+present but contains no readable task definitions, the test fails rather than
+passing with zero classifications.
 
 The compatibility statement is limited to the observed and tested signatures:
 
@@ -503,11 +531,17 @@ change later through its own reviewed ticket.
 
 ### Deterministic corpus checks
 
-- Deduplicate supplied task definitions by content hash.
-- Assert that every line in every unique task receives one classification.
-- Regenerate the checked-in compatibility matrix from sanitized synthetic
-  fixtures and assert an exact match.
-- Fail tests if a source line disappears or has an unrecognized state.
+- Always run the sanitized synthetic fixtures in clean checkouts and CI.
+- Regenerate the checked-in compatibility matrix from those fixtures and
+  assert an exact match.
+- When the local institutional corpus is present, deduplicate its task
+  definitions by content hash and assert that every line in every unique task
+  receives one classification.
+- Explicitly skip the local-corpus supplement with a named reason when the
+  untracked corpus is absent; never interpret absence as a passing empty
+  corpus.
+- Fail if a present corpus is empty, a source line disappears, or a line has an
+  unrecognized state.
 
 ### Operation tests
 
@@ -532,8 +566,12 @@ change later through its own reviewed ticket.
 - Validate native JSON against schema version 1.
 - Refuse an unknown schema version and report the supported version.
 - Export and re-import native tasks without changing step order or values.
-- Fail preview and execution when canonical definition recompilation differs
-  from either stored execution snapshot.
+- Regenerate both snapshots atomically when the compiler fingerprint changes,
+  and audit the old and new fingerprints.
+- Fail preview and execution when the fingerprint is current but canonical
+  definition recompilation differs from either stored execution snapshot.
+- Fail closed without changing the stored row when compiler migration cannot
+  compile or validate the canonical definition.
 - Keep existing form-built tasks runnable.
 - Keep raw-Python tasks available and clearly legacy.
 - Verify native controls use the baseline's existing task authorization
@@ -554,8 +592,8 @@ change:
 
 1. Ship the `LICENSE`, notices, README correction, and name-neutral disclaimer
    independently of the final name decision.
-2. Route user-facing product-name strings through one constant while retaining
-   the current value.
+2. Route user-facing product-name strings through one constant whose interim
+   value is "Smith College Libraries MARC21 workflow application."
 3. After recorded institutional approval, switch that constant to the approved
    name and update reviewed public release language.
 4. Retain existing `marcedit_web` modules, environment variables, filesystem
@@ -592,8 +630,9 @@ child.
 
 The design is successfully implemented when:
 
-- all user-facing product-name strings use one constant, and the approved name
-  is not selected until institutional approval is recorded;
+- all user-facing product-name strings use one constant with the neutral
+  interim value, and the approved name is not selected until institutional
+  approval is recorded;
 - the application uses reviewed, name-neutral independent-product language
   before that approval;
 - repository licensing and third-party notices are complete;
@@ -606,11 +645,12 @@ The design is successfully implemented when:
 - unresolved imported behavior cannot run;
 - native task preview shows step and record outcomes before promotion;
 - legacy tasks remain available without silent rewriting;
-- native definitions are canonical and stale or mismatched generated snapshots
-  cannot run;
+- native definitions are canonical; compiler-fingerprint changes regenerate
+  snapshots safely, while same-fingerprint mismatches cannot run;
 - real institutional task files remain local and untracked while published
   compatibility is backed by sanitized synthetic fixtures and a freshness
-  test;
+  test, and an absent local corpus is an explicit reported skip rather than a
+  vacuous pass;
 - the current production startup path remains valid without an ITS change; and
 - all applicable tests pass with every skip reported and code review has no
   unresolved Critical or Important findings.
