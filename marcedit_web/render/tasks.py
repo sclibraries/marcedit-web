@@ -40,6 +40,7 @@ from marcedit_web.lib import (
     collaboration,
     editor,
     gemini_task_draft,
+    guided_replace_preview,
     job_files,
     marcedit_import,
     note_task_draft,
@@ -129,6 +130,7 @@ K_AI_DRAFT_REVIEW = "tasks_ai_draft_review"
 K_AI_DRAFT_ERROR = "tasks_ai_draft_error"
 K_AI_DRAFT_BLOCKING_ACK = "tasks_ai_draft_blocking_ack"
 K_QB_DOWNLOAD_READY = "quick_batch_download_ready"
+K_GUIDED_REPLACE_PREVIEWS = "task_guided_replace_previews"
 
 # TASK-143: workspace mode switcher.
 MODE_RUN = "Run"
@@ -965,6 +967,7 @@ def _render_form_editor() -> None:
         session.current_user_id()
     )
     ops = st.session_state[K_EDITOR_OPS]
+    previews = st.session_state.setdefault(K_GUIDED_REPLACE_PREVIEWS, {})
     to_remove: list[int] = []
     store = session.current_store()
     preview_record = (
@@ -1018,6 +1021,12 @@ def _render_form_editor() -> None:
                     )
                     st.caption(
                         task_authoring.describe_guided_replace(op)
+                    )
+                    task_authoring_render.render_guided_replace_preview(
+                        op,
+                        store,
+                        previews,
+                        key_prefix=f"op_{i}",
                     )
                 elif op["kind"] not in {
                     "add-field",
@@ -1367,6 +1376,7 @@ def _render_run_panel(registered, tasks_dir: Path) -> None:
 def _submit_queued_run(selection: list[str], tasks_dir: Path) -> None:
     """Snapshot selected task definitions and submit one durable operation."""
     specs: list[sandbox.TaskSpec] = []
+    raw_guided_operations = []
     for name in selection:
         try:
             parsed = editor.parse_user_task_file(
@@ -1385,11 +1395,45 @@ def _submit_queued_run(selection: list[str], tasks_dir: Path) -> None:
                 "{1}".format(name, unresolved[0])
             )
             return
+        parsed_ops = task_builder.parse_ops_from_source(parsed["body"])
+        if parsed_ops["form_editable"]:
+            raw_guided_operations.extend(
+                op.to_dict()
+                for op in parsed_ops["ops"]
+                if (
+                    op.kind == "guided-find-replace"
+                    and op.params.get("match_mode") == "raw_regex"
+                )
+            )
         specs.append(sandbox.TaskSpec(
             name=name,
             body=parsed["body"],
             imports=[],
         ))
+
+    if raw_guided_operations:
+        store = session.current_store()
+        previews = st.session_state.get(K_GUIDED_REPLACE_PREVIEWS, {})
+        for operation in raw_guided_operations:
+            try:
+                cache_key = guided_replace_preview.preview_cache_key(
+                    operation
+                )
+            except (TypeError, ValueError):
+                cache_key = ""
+            preview = previews.get(cache_key)
+            if (
+                store is None
+                or preview is None
+                or not guided_replace_preview.is_current(
+                    preview, store, operation
+                )
+            ):
+                st.error(
+                    "Preview this raw regular expression successfully "
+                    "against the current loaded file before submitting it."
+                )
+                return
 
     user = session.current_user_id()
     try:

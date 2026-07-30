@@ -540,6 +540,172 @@ def test_saved_task_submission_copies_current_quick_load_source(
     assert [spec.name for spec in submitted[0]["task_specs"]] == ["cleanup"]
 
 
+def test_raw_regex_submission_requires_current_preview(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    operation = tasks_render.Operation(
+        kind="guided-find-replace",
+        params={
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "raw_regex",
+            "find": r"^(TFeba)(\d+)$",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": r"(SCTFEBA)\2",
+            "occurrences": "all",
+            "condition": "always",
+        },
+    )
+    body = tasks_render.task_builder.render_ops_to_python([operation])["body"]
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": body},
+    )
+    store = SimpleNamespace(revision=0)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    fake_st.session_state[
+        tasks_render.K_GUIDED_REPLACE_PREVIEWS
+    ] = {}
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs),
+    )
+
+    tasks_render._submit_queued_run(["raw-guided"], tmp_path)
+
+    assert submitted == []
+    assert "Preview this raw regular expression" in fake_st.errors[-1]
+
+
+def test_raw_regex_submission_accepts_current_successful_preview(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    operation = tasks_render.Operation(
+        kind="guided-find-replace",
+        params={
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "raw_regex",
+            "find": r"^(TFeba)(\d+)$",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": r"(SCTFEBA)\2",
+            "occurrences": "all",
+            "condition": "always",
+        },
+    )
+    body = tasks_render.task_builder.render_ops_to_python([operation])["body"]
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": body},
+    )
+    source = tmp_path / "current.mrc"
+    source.write_bytes(b"records")
+    store = SimpleNamespace(path=source, revision=0, count=lambda: 1)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    normalized = tasks_render.task_authoring.normalize_operation(
+        operation.to_dict()
+    )
+    preview = tasks_render.guided_replace_preview.GuidedReplacePreview(
+        request=normalized,
+        store_id=id(store),
+        store_revision=0,
+        result={
+            "matched_values": 1,
+            "changed_values": 1,
+            "matched_occurrences": 1,
+        },
+    )
+    cache_key = tasks_render.guided_replace_preview.preview_cache_key(
+        operation.to_dict()
+    )
+    fake_st.session_state[tasks_render.K_GUIDED_REPLACE_PREVIEWS] = {
+        cache_key: preview
+    }
+    monkeypatch.setattr(
+        tasks_render.session,
+        "current_user_id",
+        lambda: "owner@smith.edu",
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_filename", lambda: "vendor.mrc"
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs) or {"id": 44},
+    )
+
+    tasks_render._submit_queued_run(["raw-guided"], tmp_path)
+
+    assert len(submitted) == 1
+
+
+def test_literal_guided_submission_does_not_require_preview(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    operation = tasks_render.Operation(
+        kind="guided-find-replace",
+        params={
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "contains",
+            "find": "TFeba",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": "(SCTFEBA)",
+            "occurrences": "all",
+            "condition": "always",
+        },
+    )
+    body = tasks_render.task_builder.render_ops_to_python([operation])["body"]
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": body},
+    )
+    source = tmp_path / "current.mrc"
+    source.write_bytes(b"records")
+    store = SimpleNamespace(path=source, revision=0, count=lambda: 1)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(
+        tasks_render.session,
+        "current_user_id",
+        lambda: "owner@smith.edu",
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_filename", lambda: "vendor.mrc"
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs) or {"id": 45},
+    )
+
+    tasks_render._submit_queued_run(["literal-guided"], tmp_path)
+
+    assert len(submitted) == 1
+
+
 def test_unresolved_add_build_task_is_not_submitted(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render()

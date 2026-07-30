@@ -105,6 +105,80 @@ def test_noop_task_round_trips(one_record_bytes):
     assert reread[0].get("001").data == "1234567890"
 
 
+def test_trusted_task_result_can_be_captured_for_preview(one_record_bytes):
+    spec = sandbox.TaskSpec(
+        name="capture",
+        body="_guided_replace_result = {'matched_values': 2, "
+             "'changed_values': 1, 'matched_occurrences': 2}",
+        capture_result="_guided_replace_result",
+    )
+    result = sandbox.run_tasks_subprocess(
+        [spec], record_bytes=one_record_bytes
+    )
+    assert result.returncode == 0
+    assert result.captured_results == [
+        {
+            "record_index": 1,
+            "task": "capture",
+            "result": {
+                "matched_values": 2,
+                "changed_values": 1,
+                "matched_occurrences": 2,
+            },
+        }
+    ]
+
+
+def test_default_sandbox_call_does_not_capture_task_namespace(
+    one_record_bytes,
+):
+    result = sandbox.run_tasks_subprocess(
+        [sandbox.TaskSpec(name="plain", body="pass")],
+        record_bytes=one_record_bytes,
+    )
+    assert result.captured_results == []
+
+
+def test_non_json_capture_is_a_transform_failure(one_record_bytes):
+    result = sandbox.run_tasks_subprocess(
+        [
+            sandbox.TaskSpec(
+                name="capture",
+                body="_guided_replace_result = {object()}",
+                capture_result="_guided_replace_result",
+            )
+        ],
+        record_bytes=one_record_bytes,
+    )
+
+    assert result.returncode == 0
+    assert result.captured_results == []
+    assert result.error_count == 1
+    assert result.errors[0]["code"] == "transform-failed"
+
+
+def test_capture_rejects_unbounded_non_guided_result(one_record_bytes):
+    result = sandbox.run_tasks_subprocess(
+        [
+            sandbox.TaskSpec(
+                name="capture",
+                body=(
+                    "_guided_replace_result = {"
+                    "'matched_values': 1, 'changed_values': 1, "
+                    "'matched_occurrences': 1, 'payload': 'x' * 900000}"
+                ),
+                capture_result="_guided_replace_result",
+            )
+        ],
+        record_bytes=one_record_bytes,
+    )
+
+    assert result.returncode == 0
+    assert result.captured_results == []
+    assert result.error_count == 1
+    assert result.errors[0]["code"] == "transform-failed"
+
+
 def test_progress_sidecar_reaches_input_count(tmp_path, two_records_bytes):
     """Each completed input record advances durable observable progress."""
     progress = tmp_path / "progress.json"

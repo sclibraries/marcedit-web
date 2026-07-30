@@ -428,6 +428,37 @@ def _form_save_state(tasks_render, operations):
     }
 
 
+def test_valid_raw_regex_saves_without_file_or_preview(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operation = {
+        "kind": "guided-find-replace",
+        "params": {
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "raw_regex",
+            "find": r"^(TFeba)(\d+)$",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": r"(SCTFEBA)\2",
+            "occurrences": "all",
+            "condition": "always",
+        },
+    }
+    fake_st.session_state.update(
+        _form_save_state(tasks_render, [operation])
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: None)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert tasks_render.K_SAVE_ERROR not in fake_st.session_state
+    assert len(saved) == 1
+
+
 def test_save_blocks_invalid_structured_field_before_sql(
     monkeypatch, tmp_path
 ):

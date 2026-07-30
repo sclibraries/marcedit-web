@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pymarc import Field, Record
 
+from marcedit_web.lib.guided_replace_preview import GuidedReplacePreview
+
 
 class FakeStreamlit:
     def __init__(
@@ -310,6 +312,78 @@ def test_guided_widget_keys_are_unique_and_operation_scoped(monkeypatch):
     keys = [key for key in fake.widget_keys if key is not None]
     assert len(keys) == len(set(keys))
     assert all(key.startswith("op_0_") for key in keys)
+
+
+def test_guided_preview_runs_only_on_button_and_replaces_request_cache(
+    monkeypatch,
+):
+    operation = _guided_operation()
+    fake = FakeStreamlit(pressed={"op_0_preview"})
+    renderer = _renderer(monkeypatch, fake)
+    preview = GuidedReplacePreview(
+        request=operation,
+        store_id=7,
+        store_revision=0,
+        before="035 $aTFeba123",
+        after="035 $a(SCTFEBA)123",
+        result={
+            "matched_values": 1,
+            "changed_values": 1,
+            "matched_occurrences": 1,
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        renderer.guided_replace_preview,
+        "build_preview",
+        lambda store, op: calls.append((store, op)) or preview,
+    )
+    cache = {}
+
+    renderer.render_guided_replace_preview(
+        operation, object(), cache, key_prefix="op_0"
+    )
+
+    assert len(calls) == 1
+    assert list(cache.values()) == [preview]
+    assert any("Matched values: 1" in text for text in fake.captions)
+    assert fake.code_blocks[-2:] == [
+        "035 $aTFeba123",
+        "035 $a(SCTFEBA)123",
+    ]
+
+
+def test_guided_preview_does_not_rerun_sandbox_and_reports_zero_matches(
+    monkeypatch,
+):
+    operation = _guided_operation()
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    preview = GuidedReplacePreview(
+        request=operation,
+        store_id=7,
+        store_revision=0,
+        result={
+            "matched_values": 0,
+            "changed_values": 0,
+            "matched_occurrences": 0,
+        },
+    )
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+    cache = {key: preview}
+    monkeypatch.setattr(
+        renderer.guided_replace_preview,
+        "build_preview",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("preview runs only when its button is pressed")
+        ),
+    )
+
+    renderer.render_guided_replace_preview(
+        operation, object(), cache, key_prefix="op_0"
+    )
+
+    assert any("zero matches" in text.lower() for text in fake.infos)
 
 
 def test_add_field_uses_rows_instead_of_json_textarea(monkeypatch):

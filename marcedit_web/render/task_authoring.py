@@ -8,7 +8,11 @@ from typing import Any, Mapping, Optional
 import streamlit as st
 from pymarc import Record
 
-from marcedit_web.lib import task_authoring, task_builder
+from marcedit_web.lib import (
+    guided_replace_preview,
+    task_authoring,
+    task_builder,
+)
 
 
 EXISTING_FIELD_OPTIONS = (
@@ -445,6 +449,80 @@ def render_guided_find_replace_params(
         format_func=lambda value: task_builder.LEADER_CONDITION_LABELS[value],
         key=_key(key_prefix, "condition"),
     )
+
+
+def render_guided_replace_preview(
+    operation: Mapping[str, Any],
+    store,
+    previews: dict,
+    *,
+    key_prefix: str,
+) -> None:
+    """Render one request-keyed preview without running it on rerenders."""
+
+    try:
+        cache_key = guided_replace_preview.preview_cache_key(operation)
+    except (TypeError, ValueError) as exc:
+        st.error("Preview validation failed: {0}".format(exc))
+        return
+
+    if st.button(
+        "Preview this operation",
+        key=_key(key_prefix, "preview"),
+    ):
+        if store is None:
+            normalized = task_authoring.normalize_operation(operation)
+            previews[cache_key] = (
+                guided_replace_preview.GuidedReplacePreview(
+                    request=normalized,
+                    store_id=None,
+                    store_revision=None,
+                    error="No loaded file is available to preview.",
+                )
+            )
+        else:
+            previews[cache_key] = guided_replace_preview.build_preview(
+                store, operation
+            )
+
+    preview = previews.get(cache_key)
+    if preview is None:
+        st.info(
+            "Preview this operation against the first loaded record "
+            "before running it."
+        )
+        return
+    if preview.error is not None:
+        st.error(preview.error)
+        return
+
+    result = preview.result or {}
+    matched_values = int(result.get("matched_values", 0))
+    changed_values = int(result.get("changed_values", 0))
+    matched_occurrences = int(result.get("matched_occurrences", 0))
+    st.caption(
+        "Matched values: {0} · Changed values: {1} · "
+        "Matched occurrences: {2}".format(
+            matched_values,
+            changed_values,
+            matched_occurrences,
+        )
+    )
+    if matched_values == 0:
+        st.info("Preview found zero matches in the first loaded record.")
+    if (
+        operation.get("params", {}).get("replacement_mode")
+        == "whole_value"
+        and matched_values
+    ):
+        st.warning(
+            "This operation will replace {0} whole selected value(s) "
+            "in the preview record.".format(matched_values)
+        )
+    st.markdown("**Before**")
+    st.code(preview.before or "(no selected values)", language="text")
+    st.markdown("**After**")
+    st.code(preview.after or "(no selected values)", language="text")
 
 
 def render_operation_explanation(

@@ -85,6 +85,7 @@ class TaskSpec:
     name: str
     body: str
     imports: list[str] = field(default_factory=list)
+    capture_result: Optional[str] = None
 
 
 @dataclass
@@ -108,6 +109,7 @@ class SandboxResult:
     returncode: int = 0
     timed_out: bool = False
     cancelled: bool = False
+    captured_results: list[dict] = field(default_factory=list)
 
 
 # Inlined driver script — passed via -c to the child. Kept here so the
@@ -156,6 +158,26 @@ def _bounded_text(value, max_chars, max_bytes):
     )
 
 
+def _validated_capture_result(value):
+    keys = {
+        "matched_values",
+        "changed_values",
+        "matched_occurrences",
+    }
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ValueError("captured result is not a guided count result")
+    for key in keys:
+        count = value[key]
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            or count > 2147483647
+        ):
+            raise ValueError("captured guided count is out of bounds")
+    return {key: value[key] for key in sorted(keys)}
+
+
 # Defensive re-set of rlimits inside the child. The parent's preexec_fn
 # also sets these; we duplicate here so the limits are visible if
 # someone bypasses preexec.
@@ -187,6 +209,7 @@ def main():
 
     errors = []
     error_count = 0
+    captured_results = []
     with open(args.input, "rb") as fin:
         reader = pymarc.MARCReader(fin, to_unicode=True, permissive=True)
         with open(args.output, "wb") as fout:
@@ -232,6 +255,21 @@ def main():
                             "<task:%s>" % task.get("name", "?"),
                             "exec",
                         ), ns)
+                        capture_name = task.get("capture_result")
+                        if capture_name and len(captured_results) < idx:
+                            value = _validated_capture_result(
+                                ns.get(capture_name)
+                            )
+                            json.dumps(value)
+                            captured_results.append({
+                                "record_index": idx,
+                                "task": _bounded_text(
+                                    task.get("name", "?"),
+                                    args.max_task_chars,
+                                    args.max_task_bytes,
+                                ),
+                                "result": value,
+                            })
                     writer.write(record)
                 except Exception as exc:
                     failed_task = task.get("name", "?") if 'task' in locals() else "?"
@@ -257,7 +295,11 @@ def main():
                 _write_progress(args.progress, idx)
 
     with open(args.errors, "w") as f:
-        json.dump({"error_count": error_count, "errors": errors}, f)
+        json.dump({
+            "error_count": error_count,
+            "errors": errors,
+            "captured_results": captured_results,
+        }, f)
 
 
 if __name__ == "__main__":
@@ -321,7 +363,12 @@ def run_tasks_subprocess(
         )
 
     tasks_list = [
-        {"name": t.name, "body": t.body, "imports": list(t.imports)}
+        {
+            "name": t.name,
+            "body": t.body,
+            "imports": list(t.imports),
+            "capture_result": t.capture_result,
+        }
         for t in tasks
     ]
 
@@ -490,6 +537,13 @@ def run_tasks_subprocess(
             if isinstance(error, dict)
         ]
         error_count = int(error_payload.get("error_count", len(errors)))
+        captured_results = [
+            captured
+            for captured in list(
+                error_payload.get("captured_results") or []
+            )
+            if isinstance(captured, dict)
+        ]
     else:
         errors = [
             bound_error(error)
@@ -497,6 +551,7 @@ def run_tasks_subprocess(
             if isinstance(error, dict)
         ]
         error_count = len(errors)
+        captured_results = []
 
     if timed_out:
         error_count += 1
@@ -528,6 +583,7 @@ def run_tasks_subprocess(
         returncode=returncode,
         timed_out=timed_out,
         cancelled=cancelled,
+        captured_results=captured_results,
     )
 
 
