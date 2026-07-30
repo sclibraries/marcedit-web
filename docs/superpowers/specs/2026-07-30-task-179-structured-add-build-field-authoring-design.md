@@ -6,7 +6,7 @@
 
 **Date:** 2026-07-30
 
-**Status:** Approved in conversation; awaiting written-specification review
+**Status:** Approved
 
 ## Purpose
 

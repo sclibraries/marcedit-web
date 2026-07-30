@@ -45,3 +45,6 @@ Status: Todo
 
 Design:
 - `docs/superpowers/specs/2026-07-30-task-179-structured-add-build-field-authoring-design.md`
+
+Plan:
+- `docs/superpowers/plans/2026-07-30-task-179-structured-add-build-field-authoring.md`
