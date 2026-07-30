@@ -90,11 +90,23 @@ Phase 3:
 - TASK-179: structured Add Field and Build Field authoring in the existing
   Tasks form, with transparent MARC syntax, deterministic previews, and
   sanitized Smith CORE acceptance examples.
+- Completed checkpoint: TASK-179 replaces normal Add Field JSON and Build Field
+  raw templates with ordered rows and typed segments, provides deterministic
+  explanations and first-record previews, preserves exact save/reopen state,
+  and fails closed on ambiguous imports or unknown stored shapes. The final
+  candidate passed 227 focused tests with zero skips; its full Docker run
+  recorded 1,673 passes, the same eight approved build-context identity
+  failures, and 39 disclosed skips. The native compiler manifest remained
+  unchanged. Independent review approved `293ecb6..2e887ee` with zero Critical,
+  Important, or Minor findings, and cataloger browser acceptance completed on
+  synthetic data. TASK-179 is `Completed`; TASK-174 remains `In-Progress`.
 - TASK-180: deferred structured Find/Replace and Subfield Edit authoring.
 - TASK-181: deferred explicit deterministic RDA operations.
 - TASK-182: deferred explicit MARC field reordering as both a quick action and
   an optional task step, while View continues to preserve source order under
   TASK-169.
+- TASK-183: deferred cataloger-facing reference and contextual help for every
+  deterministic Tasks operation.
 
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.

@@ -50,10 +50,44 @@ Success Criteria:
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: In-Progress
+Status: Completed
 
 Design:
 - `docs/superpowers/specs/2026-07-30-task-179-structured-add-build-field-authoring-design.md`
 
 Plan:
 - `docs/superpowers/plans/2026-07-30-task-179-structured-add-build-field-authoring.md`
+
+Final Evidence:
+- Implementation commits:
+  - `2495990` — validate structured task authoring.
+  - `3fadaf5` — add explicit field construction policies.
+  - `bbc1e69` — explain and preview structured fields.
+  - `8981e7b` — add guided Add and Build Field controls.
+  - `7c6c737` — block ambiguous external task instructions.
+  - `7682fb9` — add the structured task authoring reference.
+  - `853a8ae` — align preview, import, validation, and execution boundaries.
+  - `2e41914` — preserve unknown task authoring shapes.
+  - `2e887ee` — render unknown task parameters safely.
+- Focused Docker: 227 passed, 0 failed, 0 skipped, 0 warnings in 1.96
+  seconds, with the syntax reference and untracked institutional corpus mounted
+  read-only.
+- Full Docker: 1,673 passed, 8 failed, 39 skipped, 0 warnings in 49.35
+  seconds against image
+  `sha256:075f8a4330d5cb555077391ecfd20f2f5565cafc4c0050e068d2d82e6afd518b`.
+  The eight failures are the user-approved pre-existing product-identity tests
+  that expect repository-root files omitted from the Docker build context.
+  The 39 explicit skips cover deployment/configuration files and Docker CLI
+  unavailable in the image, plus the syntax reference and local corpus absent
+  from the default image run. TASK-179's authoritative mounted suite has no
+  skips.
+- Compiler contract: the golden-definition freshness test passed, and
+  `marcedit_web/schemas/native-task-compiler-contract-v1.json` is unchanged.
+- Browser acceptance:
+  `docs/superpowers/evidence/task-179-cataloger-browser-smoke.md`.
+- Independent review: exact range `293ecb6..2e887ee` was approved with zero
+  unresolved Critical, Important, or Minor findings after three fail-closed
+  correction cycles.
+- Cataloger follow-ups: TASK-180 owns explicit Find/Replace scope and
+  preservation behavior. TASK-183 owns the complete cataloger-facing operation
+  reference.
