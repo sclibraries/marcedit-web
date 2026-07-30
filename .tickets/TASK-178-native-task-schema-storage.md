@@ -60,8 +60,12 @@ Pre-review Evidence:
     verification, migration, materialization, and audit; and
   - `1b1b77d9a3791bec892817af2553309e998581b7` — deferred review
     follow-ups for runtime fingerprint isolation and the typed compiler plan
-    example. The isolation regression passed 8 contract tests and failed under
-    a deliberate mutation that introduced runtime golden-fixture verification.
+    example; and
+  - `ee9fb8af5bda1657519b0200a1989ce9844cbe2d` — independent-review
+    correction that spies on every runtime `Path.read_text` call and permits
+    only the resolved packaged contract path. The isolation regression passed
+    8 contract tests and failed under a deliberate direct read of
+    `tests/fixtures/native_tasks/build-field.json`.
 - Schema version `1` validates and compiles exactly `delete_tag`,
   `build_field`, and `sort_fields`. Structured Build Field text and
   control-field segments remain typed through the compiler bridge.
@@ -86,12 +90,14 @@ Pre-review Evidence:
   and emits `native-task-compiler-migrated` only after commit with owner, task,
   old fingerprint, new fingerprint, and audit user.
 - `docker build -t marcedit-web:task-178 .` exited `0`. The network-disabled
-  artifact check exited `0` with no output and proved that `jsonschema`,
-  `LICENSE`, `THIRD_PARTY_NOTICES.md`, the version-1 schema, and the compiler
-  contract manifest are packaged.
+  rebuilt candidate manifest-list digest is
+  `sha256:c07998e1c646c1303f04db0615ef6d61faad0c37eeb55bca9c983bb70d2bb29b`.
+  The network-disabled artifact check exited `0` with no output and proved
+  that `jsonschema`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, the version-1 schema,
+  and the compiler contract manifest are packaged.
 - The exact focused candidate suite passed `101` tests with `0` skips in
-  `3.27s`. The complete candidate suite passed `1,634` tests with `4` skips in
-  `49.54s`. All skips are disclosed: two parametrizations at
+  `2.44s`. The complete candidate suite passed `1,634` tests with `4` skips in
+  `44.40s`. All skips are disclosed: two parametrizations at
   `tests/test_docker_compose_config.py:88` and two at
   `tests/test_docker_compose_config.py:130`, each because the Docker CLI is
   required to render Compose configuration and is absent from the
