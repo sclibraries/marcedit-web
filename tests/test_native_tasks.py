@@ -33,6 +33,14 @@ def _run_compiled(definition: dict, record: Record) -> None:
     namespace["apply"](record)
 
 
+def test_native_build_bridge_uses_only_legacy_if_absent_vocabulary():
+    step = _definition("build-field.json")["steps"][0]
+    operation = native_tasks._operation_for_step(step)
+    assert operation.params["if_absent"] is False
+    assert "existing_field_action" not in operation.params
+    assert "missing_control_action" not in operation.params
+
+
 def test_definition_round_trip_preserves_step_order_and_values():
     definition = _definition("delete-and-sort.json")
     exported = native_tasks.export_definition(definition)

@@ -83,6 +83,134 @@ def test_legacy_build_field_still_infers_numeric_template_placeholders():
     assert "'B({003}){001}-SC'.replace('{003}', _t_003)" in out["body"]
 
 
+def test_add_field_replace_policy_deletes_target_before_adding():
+    out = task_builder.render_ops_to_python(
+        [
+            Operation(
+                kind="add-field",
+                params={
+                    "tag": "877",
+                    "ind1": " ",
+                    "ind2": " ",
+                    "subfields": [["m", "Map"]],
+                    "existing_field_action": "replace_all",
+                    "condition": "always",
+                },
+            )
+        ]
+    )
+    assert out["body"].index(
+        "delete_tags(record, '877')"
+    ) < out["body"].index("record.add_ordered_field")
+    assert any("delete_tags" in line for line in out["imports"])
+
+
+def test_add_and_build_palettes_keep_legacy_ai_draft_contract():
+    entries = {
+        entry["kind"]: entry
+        for entry in task_builder.OPERATIONS_PALETTE
+        if entry["kind"] in {"add-field", "build-field"}
+    }
+    for entry in entries.values():
+        names = [param["name"] for param in entry["params"]]
+        assert "if_absent" in names
+        assert "existing_field_action" not in names
+        assert "missing_control_action" not in names
+    build_names = [
+        param["name"] for param in entries["build-field"]["params"]
+    ]
+    assert "subfields" in build_names
+    assert "structured_subfields" not in build_names
+
+
+def test_build_field_missing_control_fail_is_explicit():
+    out = task_builder.render_ops_to_python(
+        [
+            Operation(
+                kind="build-field",
+                params={
+                    "tag": "876",
+                    "ind1": " ",
+                    "ind2": " ",
+                    "structured_subfields": [
+                        [
+                            "a",
+                            [{"type": "control_field", "tag": "001"}],
+                        ]
+                    ],
+                    "existing_field_action": "append",
+                    "missing_control_action": "fail_record",
+                    "condition": "always",
+                },
+            )
+        ]
+    )
+    assert "else:" in out["body"]
+    assert (
+        "raise ValueError('Build Field requires control field 001')"
+        in out["body"]
+    )
+
+
+def test_old_if_absent_marker_keeps_existing_codegen_shape():
+    op = Operation(
+        kind="build-field",
+        params={
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "structured_subfields": [
+                [
+                    "a",
+                    [
+                        {"type": "text", "value": "B("},
+                        {"type": "control_field", "tag": "003"},
+                        {"type": "text", "value": ")"},
+                        {"type": "control_field", "tag": "001"},
+                    ],
+                ]
+            ],
+            "condition": "always",
+            "if_absent": True,
+        },
+    )
+    out = task_builder.render_ops_to_python([op])
+    assert "add_field_if_absent" in out["body"]
+    assert '"existing_field_action"' not in out["body"]
+
+
+def test_build_replace_waits_until_source_and_leader_guards_pass():
+    out = task_builder.render_ops_to_python(
+        [
+            Operation(
+                kind="build-field",
+                params={
+                    "tag": "876",
+                    "ind1": " ",
+                    "ind2": " ",
+                    "structured_subfields": [
+                        [
+                            "a",
+                            [{"type": "control_field", "tag": "001"}],
+                        ]
+                    ],
+                    "existing_field_action": "replace_all",
+                    "missing_control_action": "skip_field",
+                    "condition": "books",
+                },
+            )
+        ]
+    )
+    assert (
+        "if leader_type(record) in 'amt' and "
+        "leader_biblevel(record) == 'm':\n"
+        "    _t_001 = control_value(record, '001')\n"
+        "    if _t_001 is not None:\n"
+        "        delete_tags(record, '876')\n"
+        "        record.add_ordered_field"
+    ) in out["body"]
+
+
 def test_parse_round_trip_for_delete_tag():
     ops = [Operation(kind="delete-tag", params={"tag": "029"})]
     rendered = task_builder.render_ops_to_python(ops)

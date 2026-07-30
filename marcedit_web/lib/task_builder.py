@@ -427,6 +427,35 @@ def _format_subfield_args(subfields: list) -> str:
     )
 
 
+def _field_mutation_lines(
+    tag: str,
+    make_call: str,
+    existing_field_action: str,
+) -> tuple[list[str], set[str]]:
+    """Render one explicit existing-field policy."""
+
+    add_stmt = f"record.add_ordered_field({make_call})"
+    if existing_field_action == "replace_all":
+        return (
+            [f"delete_tags(record, {lit(tag)})", add_stmt],
+            {"delete_tags"},
+        )
+    if existing_field_action == "skip_if_tag_exists":
+        return (
+            [
+                f"if not record.get_fields({lit(tag)}):",
+                f"    {add_stmt}",
+            ],
+            set(),
+        )
+    if existing_field_action == "skip_if_identical":
+        return (
+            [f"add_field_if_absent(record, {make_call})"],
+            {"add_field_if_absent"},
+        )
+    return ([add_stmt], set())
+
+
 def _extract_template_tokens(subfields: list) -> list[str]:
     """Return the unique control-field tags referenced across all subfield
     values, in first-seen order.
@@ -549,20 +578,27 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         ind2 = (p.get("ind2") or " ")[:1] or " "
         subfields = list(p.get("subfields") or [])
         sf_args = _format_subfield_args(subfields)
-        prefix = "add_field_if_absent" if p.get("if_absent") else "record.add_ordered_field"
         make_call = f"make_field({lit(tag)}, {lit(ind1)}, {lit(ind2)}, {sf_args})"
-        if p.get("if_absent"):
-            stmt = f"add_field_if_absent(record, {make_call})"
-            imports = {"add_field_if_absent", "make_field"}
-        else:
-            stmt = f"record.add_ordered_field({make_call})"
-            imports = {"make_field"}
+        existing_field_action = p.get("existing_field_action")
+        if existing_field_action is None:
+            existing_field_action = (
+                "skip_if_identical" if p.get("if_absent") else "append"
+            )
+        mutation_lines, mutation_imports = _field_mutation_lines(
+            tag, make_call, existing_field_action
+        )
+        imports = {"make_field"} | mutation_imports
         condition_key = p.get("condition") or "always"
         condition_expr = LEADER_CONDITIONS.get(condition_key, "")
         if condition_expr:
             imports |= {"leader_type", "leader_biblevel"}
-            return ([f"if {condition_expr}:", f"    {stmt}"], imports, False)
-        return ([stmt], imports, False)
+            return (
+                [f"if {condition_expr}:"]
+                + [f"    {line}" for line in mutation_lines],
+                imports,
+                False,
+            )
+        return (mutation_lines, imports, False)
 
     if op.kind == "build-field":
         tag = str(p.get("tag", "")).strip()
@@ -582,6 +618,14 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         imports: set[str] = {"make_field"}
         condition_key = p.get("condition") or "always"
         condition_expr = LEADER_CONDITIONS.get(condition_key, "")
+        existing_field_action = p.get("existing_field_action")
+        if existing_field_action is None:
+            existing_field_action = (
+                "skip_if_identical" if p.get("if_absent") else "append"
+            )
+        missing_control_action = p.get(
+            "missing_control_action", "skip_field"
+        )
 
         # No template tokens? Fall back to the same shape as add-field —
         # build-field stays usable as a strict superset.
@@ -594,15 +638,19 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             make_call = (
                 f"make_field({lit(tag)}, {lit(ind1)}, {lit(ind2)}, {sf_args})"
             )
-            if p.get("if_absent"):
-                stmt = f"add_field_if_absent(record, {make_call})"
-                imports |= {"add_field_if_absent"}
-            else:
-                stmt = f"record.add_ordered_field({make_call})"
+            mutation_lines, mutation_imports = _field_mutation_lines(
+                tag, make_call, existing_field_action
+            )
+            imports |= mutation_imports
             if condition_expr:
                 imports |= {"leader_type", "leader_biblevel"}
-                return ([f"if {condition_expr}:", f"    {stmt}"], imports, False)
-            return ([stmt], imports, False)
+                return (
+                    [f"if {condition_expr}:"]
+                    + [f"    {line}" for line in mutation_lines],
+                    imports,
+                    False,
+                )
+            return (mutation_lines, imports, False)
 
         # Template path: look up each referenced control field, guard on
         # non-None (skip the whole add if any is missing), then substitute
@@ -633,15 +681,28 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         else:
             sf_args = structured_sf_args
         make_call = f"make_field({lit(tag)}, {lit(ind1)}, {lit(ind2)}, {sf_args})"
-        if p.get("if_absent"):
-            add_stmt = f"add_field_if_absent(record, {make_call})"
-            imports |= {"add_field_if_absent"}
-        else:
-            add_stmt = f"record.add_ordered_field({make_call})"
+        mutation_lines, mutation_imports = _field_mutation_lines(
+            tag, make_call, existing_field_action
+        )
+        imports |= mutation_imports
 
         # Indent the guarded body. If a leader condition is also present,
         # wrap the whole block in the outer condition.
-        body_lines = lookup_lines + [f"if {guard}:", f"    {add_stmt}"]
+        body_lines = (
+            lookup_lines
+            + [f"if {guard}:"]
+            + [f"    {line}" for line in mutation_lines]
+        )
+        if missing_control_action == "fail_record":
+            missing = ", ".join(tokens)
+            body_lines.extend(
+                [
+                    "else:",
+                    "    raise ValueError("
+                    + lit("Build Field requires control field " + missing)
+                    + ")",
+                ]
+            )
         if condition_expr:
             imports |= {"leader_type", "leader_biblevel"}
             return (
