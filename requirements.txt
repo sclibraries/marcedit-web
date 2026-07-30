@@ -10,3 +10,4 @@ streamlit-ace>=0.1.1,<0.2
 # Stay on 1.3.x until Streamlit catches up.
 Authlib>=1.3.2,<1.4
 pytest>=8,<9
+jsonschema>=4.23,<5

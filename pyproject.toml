@@ -19,6 +19,7 @@ dependencies = [
     # cache branch of set_state_data, but Streamlit 1.50 passes
     # session=None there, so 1.4+ crashes the sign-in callback.
     "Authlib>=1.3.2,<1.4",
+    "jsonschema>=4.23,<5",
 ]
 
 [project.optional-dependencies]

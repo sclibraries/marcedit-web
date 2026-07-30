@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "name": "build-holdings-field",
+  "description": "Build an 876 from control fields 003 and 001.",
+  "steps": [
+    {
+      "id": "build-876",
+      "action": "build_field",
+      "target": {
+        "tag": "876",
+        "indicators": [" ", " "]
+      },
+      "subfields": [
+        {
+          "code": "a",
+          "segments": [
+            {"type": "text", "value": "B("},
+            {"type": "control_field", "tag": "003"},
+            {"type": "text", "value": ")"},
+            {"type": "control_field", "tag": "001"},
+            {"type": "text", "value": "-SC"}
+          ]
+        },
+        {
+          "code": "l",
+          "segments": [
+            {"type": "text", "value": "Internet"}
+          ]
+        }
+      ],
+      "missing_source": "skip_and_report",
+      "existing_target": "append",
+      "source": {
+        "format": "marcedit-task",
+        "line": 7,
+        "instruction_sha256": "8c7d6e7a5a3d94fcd03d0c51ef9b2210d21f7296a28e571f8f5ab1a8ab58ef91"
+      }
+    }
+  ]
+}

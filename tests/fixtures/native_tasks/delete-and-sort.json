@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "delete-vendor-field",
+  "description": "Delete 029 fields and restore tag order.",
+  "steps": [
+    {
+      "id": "delete-029",
+      "action": "delete_tag",
+      "target": {"tag": "029"}
+    },
+    {
+      "id": "sort-fields",
+      "action": "sort_fields"
+    }
+  ]
+}

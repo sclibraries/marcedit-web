@@ -71,6 +71,7 @@ def test_direct_runtime_dependency_notices_are_present():
         "streamlit-ace": "MIT",
         "Authlib": "BSD-3-Clause",
         "pytest": "MIT",
+        "jsonschema": "MIT",
     }
 
     for project, license_id in expected.items():
