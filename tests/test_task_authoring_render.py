@@ -217,6 +217,19 @@ def test_unconvertible_legacy_build_renders_raw_value_instead_of_crashing(
     assert any("literal {name}" in block for block in fake.code_blocks)
 
 
+def test_non_mapping_params_render_raw_value_instead_of_crashing(monkeypatch):
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    operation = {
+        "kind": "add-field",
+        "authoring_error": "operation parameters must be an object",
+        "params": ["future", "shape"],
+    }
+    renderer.render_operation_explanation(operation, _source_record())
+    assert fake.warnings == ["operation parameters must be an object"]
+    assert any("future" in block for block in fake.code_blocks)
+
+
 def test_nested_subfield_and_segment_button_keys_are_unique(monkeypatch):
     fake = FakeStreamlit()
     renderer = _renderer(monkeypatch, fake)

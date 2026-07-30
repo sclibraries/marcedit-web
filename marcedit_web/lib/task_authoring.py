@@ -414,7 +414,10 @@ def _join_words(values: Sequence[str]) -> str:
 
 
 def _legacy_mnemonic(op: Mapping[str, Any]) -> str:
-    params = dict(op.get("params") or {})
+    params_value = op.get("params", {})
+    if not isinstance(params_value, Mapping):
+        return "Raw operation parameters: {0!r}".format(params_value)
+    params = dict(params_value)
     prefix = "={0}  {1}{2}".format(
         params.get("tag", "???"),
         _display_indicator(params.get("ind1", " ")),
