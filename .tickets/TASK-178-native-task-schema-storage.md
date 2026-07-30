@@ -65,7 +65,12 @@ Pre-review Evidence:
     correction that spies on every runtime `Path.read_text` call and permits
     only the resolved packaged contract path. The isolation regression passed
     8 contract tests and failed under a deliberate direct read of
-    `tests/fixtures/native_tasks/build-field.json`.
+    `tests/fixtures/native_tasks/build-field.json`; and
+  - `a44d1e684208927cf674697592058dd10f4978f9` — final whole-branch
+    review correction that removes only the failing native row's previously
+    materialized Python path when native preparation raises a compatibility
+    or integrity error, then re-raises. The tracked ignored Task 4 scratch
+    report was also removed.
 - Schema version `1` validates and compiles exactly `delete_tag`,
   `build_field`, and `sort_fields`. Structured Build Field text and
   control-field segments remain typed through the compiler bridge.
@@ -86,18 +91,21 @@ Pre-review Evidence:
   import integrity checks, stale-fingerprint snapshot regeneration, invalid
   stored definition refusal, compiler-failure rollback, revision-race CAS
   refusal, legacy compiler bypass, parseable materialization, and no output
-  file on integrity failure. Successful stale migration increments revision
-  and emits `native-task-compiler-migrated` only after commit with owner, task,
-  old fingerprint, new fingerprint, and audit user.
+  file on a first integrity failure. A final-review regression also proves
+  that a current-fingerprint integrity failure removes that task's previously
+  materialized Python path before re-raising; the cleanup is per-row,
+  symlink-safe, and tolerates a missing path. Successful stale migration
+  increments revision and emits `native-task-compiler-migrated` only after
+  commit with owner, task, old fingerprint, new fingerprint, and audit user.
 - `docker build -t marcedit-web:task-178 .` exited `0`. The network-disabled
   rebuilt candidate manifest-list digest is
-  `sha256:c07998e1c646c1303f04db0615ef6d61faad0c37eeb55bca9c983bb70d2bb29b`.
+  `sha256:fee64c0823a861af7965cd463f080b5b05ebcde586c73bb2ad9eeb52d1452a34`.
   The network-disabled artifact check exited `0` with no output and proved
   that `jsonschema`, `LICENSE`, `THIRD_PARTY_NOTICES.md`, the version-1 schema,
   and the compiler contract manifest are packaged.
-- The exact focused candidate suite passed `101` tests with `0` skips in
-  `2.44s`. The complete candidate suite passed `1,634` tests with `4` skips in
-  `44.40s`. All skips are disclosed: two parametrizations at
+- The exact focused candidate suite passed `102` tests with `0` skips in
+  `2.44s`. The complete candidate suite passed `1,635` tests with `4` skips in
+  `44.56s`. All skips are disclosed: two parametrizations at
   `tests/test_docker_compose_config.py:88` and two at
   `tests/test_docker_compose_config.py:130`, each because the Docker CLI is
   required to render Compose configuration and is absent from the
