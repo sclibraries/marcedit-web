@@ -13,6 +13,8 @@ Scope:
 - Block empty-find SUBFIELD_EDIT imports and submission of existing generated
   empty-find operations because Python empty-string replacement silently
   inserts text between every character.
+- Keep the unproven external `^b` signature visible and unresolved rather than
+  importing it as a literal replacement or guessing that it means prepend.
 - Preserve existing saved operation semantics and defer external conversion,
   structural field/tag/indicator changes, tag ranges, and structured patterns
   to TASK-184 and TASK-185.
@@ -31,6 +33,7 @@ Success Criteria:
   characterization tests.
 - Empty-find imports and already-saved generated empty-find form operations
   fail loud instead of executing.
+- Unproven `^b` instructions remain visible, unresolved, and unexecuted.
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
@@ -38,3 +41,6 @@ Status: Todo
 
 Design:
 - `docs/superpowers/specs/2026-07-30-task-180-structured-find-replace-authoring-design.md`
+
+Plan:
+- `docs/superpowers/plans/2026-07-30-task-180-core-structured-find-replace-authoring.md`
