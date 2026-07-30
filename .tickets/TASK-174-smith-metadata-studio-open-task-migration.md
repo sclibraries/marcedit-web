@@ -69,6 +69,13 @@ Phase 1:
   code quality passed with zero Critical, Important, or Minor findings.
   TASK-177 is `Completed`; TASK-174 remains `In-Progress`.
 
+Phase 2:
+- TASK-178: native task schema and storage compatibility.
+- In-progress checkpoint: isolated baseline completed with 1,588 passed and
+  four explicitly disclosed Docker-CLI-dependent Compose skips. The approved
+  implementation plan is
+  `docs/superpowers/plans/2026-07-30-task-178-native-task-schema-storage.md`.
+
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.
 - TASK-173 owns the single-touch ITS installation and routing envelope.

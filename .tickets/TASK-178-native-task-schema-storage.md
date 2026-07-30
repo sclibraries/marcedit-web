@@ -40,3 +40,6 @@ Status: In-Progress
 
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-open-task-migration-design.md`
+
+Plan:
+- `docs/superpowers/plans/2026-07-30-task-178-native-task-schema-storage.md`
