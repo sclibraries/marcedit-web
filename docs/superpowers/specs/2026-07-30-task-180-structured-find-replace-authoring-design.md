@@ -1,107 +1,112 @@
-# TASK-180 Structured Find and Replace Authoring Design
+# TASK-180 Core Structured Find and Replace Authoring Design
 
 **Ticket:** [TASK-180](../../../.tickets/TASK-180-structured-find-replace-authoring.md)
 
 **Parent:** [TASK-174](../../../.tickets/TASK-174-smith-metadata-studio-open-task-migration.md)
 
+**Depends on:** Completed
+[TASK-179](../../../.tickets/TASK-179-structured-add-build-field-authoring.md)
+
+**Follow-ups:**
+[TASK-184](../../../.tickets/TASK-184-structural-find-replace-authoring.md)
+and
+[TASK-185](../../../.tickets/TASK-185-external-find-replace-migration.md)
+
 **Date:** 2026-07-30
 
-**Status:** Approved
+**Status:** Review requested after scope split
 
 ## Purpose
 
-TASK-180 makes common MARC find-and-replace work understandable and safe in
-the existing Tasks form. A cataloger describes where to look, what to match,
-and what to change through labeled controls. The editor then shows the
-plain-language meaning, technical expression, and a deterministic preview
-before execution.
+TASK-180 adds a safe, cataloger-readable Find and Replace operation to the
+existing Tasks form. It covers the common value-editing work needed now,
+including the Smith 035 example, without asking a cataloger to write a regular
+expression or Python.
 
-The primary acceptance example is a 035 subfield whose value begins with
-`TFeba` followed by an identifier. Replacing only the matched `TFeba` text
-with `(SCTFEBA)` must retain the identifier:
+The primary acceptance record contains:
 
 ```marc
 =035  \\$aTFeba9780020306634
 ```
 
-becomes:
+Replacing only the matched `TFeba` text with `(SCTFEBA)` must produce:
 
 ```marc
 =035  \\$a(SCTFEBA)9780020306634
 ```
 
-The design generalizes that example without requiring regular expressions for
-normal work. Catalogers who need them retain an explicit advanced raw-regex
-path.
+The identifier following the match is retained because new guided operations
+default to replacing matched text, not the whole subfield value. Catalogers
+who need a regular expression can always open an advanced raw-regex path.
+
+## Scope Split
+
+The original TASK-180 design combined seven target locations, six matching
+modes, eight replacement actions, external conversion, legacy conversion, and
+a Quick Find/Replace refactor. That cross-product did not define a complete
+compatibility matrix and was too large for one safe implementation cycle.
+
+The work is now divided as follows:
+
+- **TASK-180:** control-field and subfield value changes, optional raw regex,
+  preview, persistence, and empty-find safety.
+- **TASK-184:** whole data fields, tags, indicators, tag ranges, structured
+  pattern pieces, and named captures.
+- **TASK-185:** exact external-instruction and legacy-operation conversion,
+  including explicit meanings for empty-find instructions.
+
+TASK-180 creates the deterministic engine that later tickets extend. It does
+not add partial controls for TASK-184 or guess conversions assigned to
+TASK-185.
 
 ## Goals
 
-1. Add one guided Find and Replace operation to the existing Tasks form.
-2. Make replacement scope explicit, especially the difference between
-   replacing matched text, an entire subfield value, or an entire field.
-3. Support literal contains, starts-with, ends-with, and whole-value matching
-   without requiring regular expressions.
-4. Support structured patterns that combine literals, variable text, digits,
-   character sets, and anchors.
-5. Keep raw regular expressions available as an advanced option with
-   validation, exact preservation, and successful-preview gating.
-6. Use one deterministic matching and replacement engine for preview and
+1. Add one `guided-find-replace` operation to the existing Tasks form.
+2. Support one control-field value, one subfield code, or all subfield values
+   in one tag.
+3. Support contains, starts-with, ends-with, and whole-value matching through
+   guided controls.
+4. Keep raw regular expressions available as an advanced option.
+5. Support matched-text replacement, whole-selected-value replacement,
+   prepend, and append.
+6. Make case handling and first/all occurrence behavior explicit.
+7. Use the same deterministic transformation engine for preview and
    execution.
-7. Preserve the behavior of existing saved operations.
-8. Convert only external or legacy instructions whose meaning is known
-   exactly.
+8. Preserve all existing saved operation semantics.
+9. Fail closed on empty-find external imports and detectable saved generated
+   empty-find operations.
 
 ## Non-goals
 
-- Creating a second Tasks editor.
-- Reinterpreting or silently migrating existing saved `subfield-replace`,
+- Whole data-field replacement, tag changes, indicator changes, tag ranges,
+  structured pattern pieces, or named captures; these belong to TASK-184.
+- General external import translation or legacy-to-guided conversion; these
+  belong to TASK-185.
+- Interpreting `^b`, numeric external flags, arbitrary `.mrk` regex, or another
+  undocumented external dialect.
+- Refactoring Quick Find/Replace or adding **Add to saved task** there. Its
+  existing in-process record selector and sandbox transformation remain
+  unchanged.
+- Reinterpreting or silently migrating `subfield-replace`,
   `replace-field-data-by-regex`, or
-  `replace-field-subfield-and-indicators` operations.
-- Completing general MarcEdit task compatibility.
-- Guessing the meaning of undocumented external flags or regex dialects.
-- Asking a language model to interpret, route, compile, validate, or execute
-  task instructions.
-- Changing the existing AI task-draft behavior, prompts, palette contract, or
-  validation. That work is explicitly deferred to a later release.
-- Changing TASK-178's native-task schema or compiler contract.
-- Changing the database schema, task ownership, task sharing, worker,
-  deployment, service, cron, routing, or ITS configuration.
-- Adding an **Add to saved task** action to Quick Find/Replace. The Quick tool
-  shares the deterministic engine where its existing behavior is equivalent,
-  but that authoring shortcut is deferred.
-- Implementing general MARC field reordering, which belongs to
+  `replace-field-subfield-and-indicators`.
+- Adding the new operation to deterministic note drafting, Gemini drafting, or
+  any other AI-assisted drafting contract.
+- Changing TASK-178's native schema or compiler contract.
+- Changing the database schema, task ownership, sharing, worker, deployment,
+  service, cron, routing, or ITS configuration.
+- General MARC field reordering, which belongs to
   [TASK-182](../../../.tickets/TASK-182-explicit-marc-field-reordering.md).
-- Writing the complete cataloger help guide, which belongs to
+- The complete cataloger operation guide, which belongs to
   [TASK-183](../../../.tickets/TASK-183-cataloger-operation-reference.md).
-
-## Chosen Approach
-
-TASK-180 adds a new `guided-find-replace` form operation. It stores structured
-cataloger intent and compiles through the existing deterministic form-task
-pipeline. It does not alter the meaning of existing operation kinds.
-
-This approach was selected over:
-
-1. changing `subfield-replace` in place, which would change existing task
-   behavior;
-2. adding a separate operation for every combination of location, matching,
-   and replacement behavior, which would make the palette difficult to learn;
-   and
-3. storing only generated regular expressions, which would hide the
-   cataloger's intent and make safe editing and explanation harder.
-
-One guided operation provides a consistent card while progressive disclosure
-shows only controls relevant to the selected behavior.
 
 ## Storage and Compatibility Boundary
 
 The existing ordered form-operation list, `# OP:` serialization, task
-persistence, compiler, subprocess sandbox, and execution history remain
-authoritative.
+persistence, compiler, subprocess sandbox, and history remain authoritative.
+TASK-180 does not introduce another task representation.
 
-A new guided operation stores its intent directly using the form editor's
-existing flat parameter convention. It does not store a generated regular
-expression as the canonical value. A representative value is:
+The new operation uses the form editor's flat parameter convention:
 
 ```json
 {
@@ -112,7 +117,7 @@ expression as the canonical value. A representative value is:
     "subfield": "a",
     "match_mode": "contains",
     "find": "TFeba",
-    "case_sensitive": true,
+    "ignore_case": false,
     "replacement_mode": "matched_text",
     "replacement": "(SCTFEBA)",
     "occurrences": "all",
@@ -121,376 +126,380 @@ expression as the canonical value. A representative value is:
 }
 ```
 
-Structured patterns add an ordered `match_segments` list. Raw-regex mode stores
-the entered pattern in `find` and its replacement in `replacement` exactly.
-The saved values must retain every explicit concept and round-trip without
-semantic loss.
+Using `ignore_case` matches existing `subfield-replace` and
+`BatchReplaceRequest` conventions and avoids an inverted compatibility
+mapping.
 
-Existing saved operation kinds retain their current semantics:
+Raw-regex mode stores the entered expression in `find` and its replacement in
+`replacement` exactly. Generated expressions for starts-with and ends-with
+are technical display values, not the canonical saved intent.
 
-- existing `subfield-replace` operations continue to use their present
-  literal or regex substitution behavior;
-- existing `replace-field-subfield-and-indicators` operations continue to
-  replace the complete selected subfield value when they currently do so; and
-- existing raw field-regex operations remain raw operations.
-
-Opening an old task does not silently convert it. When a known legacy
-operation can be represented losslessly, the editor offers an explicit
-**Convert to guided operation** action. Conversion requires cataloger
-confirmation and must preserve a comparison of old and proposed meanings.
-An operation that cannot be converted exactly remains in its current
-technical form.
+Existing operation kinds retain their current code generation and execution
+behavior. Opening an old task never changes its kind. TASK-180 does not offer
+legacy conversion; TASK-185 owns that review and confirmation workflow.
 
 ## Cataloger Workflow
 
-The operation card begins with three questions:
+The card asks:
 
 1. **Where should Smith Metadata Studio look?**
 2. **What should it find?**
 3. **What should it change?**
 
-The normal path uses guided controls. Advanced controls remain collapsed until
-the cataloger requests them.
+Normal controls appear first. **Write a regular expression directly** remains
+available in an advanced expander.
 
 ### Where to Look
 
-Supported locations are:
+TASK-180 supports exactly three target kinds:
 
-- a complete control-field value;
-- a specific subfield code within a data-field tag;
-- every subfield value within one data-field tag;
-- indicator 1 or indicator 2;
-- the field tag itself; and
-- an explicitly selected inclusive tag range where the chosen target type is
-  valid.
+- **Control-field value** — one field from 001 through 009.
+- **One subfield code** — one tag from 010 through 999 and one subfield code.
+- **All subfield values in a tag** — every subfield value in each occurrence
+  of one tag from 010 through 999.
 
-The UI prevents incompatible combinations. For example, a control-field
-target cannot also specify indicators or a subfield code. A range cannot mix
-control- and data-field behavior when the requested action would be
-ambiguous.
+The Leader (`000`) is not a control-field target. A control-field target cannot
+specify a subfield. A data-field target requires a valid one-character
+subfield code only when **One subfield code** is selected.
 
-The operation can also use an existing supported Leader condition. The
-condition wraps matching and mutation together; no record is changed when the
-condition is false.
+An existing supported Leader condition can wrap the operation. Matching and
+mutation occur inside the same condition, so a false condition never changes
+the record.
 
 ### What to Find
 
-The default match modes are:
+Guided match modes are:
 
-- **Contains** — find the entered text anywhere in the selected value.
-- **Starts with** — find it only at the beginning.
-- **Ends with** — find it only at the end.
-- **Whole value** — change only a value that equals the entered text.
-- **Structured pattern** — combine guided pattern pieces.
+- **Contains** — match the entered text anywhere in the selected value.
+- **Starts with** — match only at the beginning.
+- **Ends with** — match only at the end.
+- **Whole value** — match only when the selected value equals the entered
+  text.
 
-All modes expose an explicit case-sensitive choice. Find text cannot be empty.
-Prepending and appending are modeled as replacement actions rather than as an
-empty find.
+Find text is required for matched-text and whole-selected-value replacement.
+Empty Find is never overloaded to mean prepend, append, add-if-missing, or
+ensure-one. Prepend and append are explicit replacement actions and therefore
+do not show or store a Find value.
 
-Structured patterns support ordered pieces:
-
-- literal text;
-- any text;
-- one or more digits;
-- a cataloger-entered character set;
-- start of value; and
-- end of value.
-
-Where later replacement needs the matched value, a piece can be given a
-plain-language name. The replacement editor refers to that name instead of
-asking the cataloger to count regex groups. The generated expression is shown
-as technical information, but it is not the canonical saved intent.
+**Ignore uppercase/lowercase differences** maps to `ignore_case`. It defaults
+to false.
 
 ### Advanced Raw Regular Expression
 
-An advanced expander provides **Write a regular expression directly**.
+The advanced path:
 
-When selected:
+- accepts a Python regular expression and replacement text;
+- supports standard replacement references such as `\1`;
+- preserves both strings exactly on save and reopen;
+- validates expression syntax and capture references before save;
+- states plainly that the expression is applied as written;
+- requires a current successful sandbox preview before submission; and
+- requires confirmation before switching modes when that would discard an
+  entered raw expression.
 
-- the cataloger enters the raw expression and replacement text;
-- standard Python replacement references such as `\1` are supported;
-- the expression and replacement are preserved exactly on save and reopen;
-- the selected replacement scope remains explicit;
-- invalid expressions and invalid capture references block save;
-- a plain warning states that the expression is applied as written;
-- a successful representative preview is required before submission; and
-- changing back to guided mode requires confirmation before discarding the
-  raw expression.
-
-Preview and execution retain the existing subprocess time limit. TASK-180
-does not claim that arbitrary regular expressions are safe to execute in the
-Streamlit process.
+Raw expressions are compiled and applied only inside the existing subprocess
+sandbox. Raw regex is available for matched-text and
+whole-selected-value replacement. Prepend and append do not need a match and
+therefore do not expose raw regex. The current subprocess time limit remains
+authoritative.
 
 ### What to Change
 
-Replacement actions are:
+TASK-180 supports:
 
-- **Replace only the matched text**;
-- **Replace the whole subfield value**;
-- **Replace the whole field**;
-- **Add text before the selected value**;
-- **Add text after the selected value**;
-- **Change the field tag**;
-- **Set indicator 1**; and
-- **Set indicator 2**.
+- **Replace only matched text** — preserves unmatched text before and after
+  each match.
+- **Replace the whole selected value** — replaces the complete control-field
+  or individual subfield value after that value matches.
+- **Add text before the selected value** — retains the selected value.
+- **Add text after the selected value** — retains the selected value.
 
-Only compatible actions appear for the selected target.
+New operations default to **Replace only matched text**.
 
-For a data field, **Replace the whole field** is selected after a match in a
-specific subfield or any subfield identifies the field. Its replacement is
-entered with TASK-179's structured indicators-and-subfields controls. The
-operation never treats MARC mnemonic punctuation such as `$a` as ordinary
-replaceable text. For a control field, whole-field replacement means replacing
-its complete data value.
+For matched-text replacement, **First occurrence** changes the first match in
+each selected value and **Every occurrence** changes every match in each
+selected value. Whole-selected-value replacement acts once per value that
+matches. Prepend and append act once per selected value without a Find
+condition. The occurrence control is disabled for all three because it cannot
+change their result.
 
-New guided text replacements default to **Replace only the matched text**.
-This explicitly preserves text before and after the match. Whole-subfield and
-whole-field replacement require deliberate selection and are named in the
-summary and preview.
+When **All subfield values in a tag** is selected, each subfield value is a
+separate selected value. The operation does not concatenate subfields or
+search MARC mnemonic punctuation.
 
-The cataloger chooses whether to change the first occurrence in each selected
-value or every occurrence. When multiple fields or subfields meet the
-criteria, the operation applies consistently to each selected value; it does
-not stop after the first record-level match.
+## Compatibility Matrix
 
-## Deterministic Matching and Replacement Engine
+Every cell below is part of the TASK-180 contract. Combinations not listed are
+unsupported in this ticket.
 
-One pure deterministic engine owns validation, matching, replacement, and
-cataloger-readable result metadata. It accepts a normalized guided request and
-a MARC record or field value. It does not read Streamlit session state, write
-files, invoke a language model, or decide task routing.
+### Targets and actions
 
-The engine returns enough structured information for callers to report:
+| Target | Matched text | Whole selected value | Prepend | Append |
+| --- | --- | --- | --- | --- |
+| Control-field value 001–009 | Supported | Supported | Supported | Supported |
+| One subfield code in tag 010–999 | Supported | Supported | Supported | Supported |
+| All subfield values in tag 010–999 | Supported | Supported | Supported | Supported |
 
-- whether the record matched;
-- whether the record changed;
-- how many values and occurrences matched;
-- which configured condition caused a skip; and
+For the final row, the chosen action applies independently to every subfield
+value in every field occurrence with the selected tag.
+
+### Match modes and actions
+
+| Match mode | Matched text | Whole selected value | Prepend | Append |
+| --- | --- | --- | --- | --- |
+| Contains | First or every match | Once when value matches | Not used | Not used |
+| Starts with | First match only | Once when value matches | Not used | Not used |
+| Ends with | First match only | Once when value matches | Not used | Not used |
+| Whole value | First match only | Once when value matches | Not used | Not used |
+| Raw regex | First or every match | Once using the first match | Not supported | Not supported |
+| No match condition | Not supported | Not supported | Once per selected value | Once per selected value |
+
+Raw-regex whole-selected-value replacement expands capture references from the
+first successful match. Prepend and append text is literal and is applied once;
+this prevents one selected value from being prefixed or suffixed repeatedly.
+
+## Deterministic Engine and Compiler Integration
+
+One pure engine owns request validation, matching, replacement, and structured
+result metadata. It lives in a focused library module. It does not read
+Streamlit session state, write files, route work, or invoke a language model.
+
+`marcedit_web.lib.transforms` imports and re-exports the engine's public
+record-transform entry point. The form compiler requests that transform name
+through its existing `transforms_needed` mechanism. This matches the sandbox
+contract, which pre-exposes public `transforms` attributes, and avoids adding a
+new compiler special marker or a second implementation.
+
+The engine reports:
+
+- whether a record matched;
+- whether it changed;
+- selected-value and occurrence counts;
+- condition-skipped status; and
 - validation or execution errors.
 
-The saved-task compiler emits a small call into this engine. It does not
-duplicate matching logic as generated inline Python.
+The compiler emits one call with the saved explicit parameters. It does not
+emit independent inline matching logic.
 
-The card-level preview uses the same request normalization and engine. The
-existing Quick Find/Replace path should use this engine where its current
-literal and regex behavior is semantically equivalent. Adopting the shared
-engine must not broaden or silently change Quick Find/Replace behavior.
+## AI Boundary
 
-The compiler and sandbox remain the execution boundary. Regular expressions
-are compiled and applied inside task execution, not during ordinary
-Streamlit-page rendering. A lightweight syntax and capture-reference check
-occurs before save, but successful execution preview remains mandatory for raw
-regex.
+Adding a form-palette entry currently exposes an operation to two AI paths
+unless it is excluded deliberately. TASK-180 keeps AI behavior unchanged by:
+
+1. marking `guided-find-replace` unsupported in
+   `ai_task_draft` before parameter validation;
+2. making Gemini's prompt schema use that same support decision, so it does
+   not advertise the operation; and
+3. retaining focused regression tests for deterministic note drafts, AI draft
+   validation, and Gemini prompt generation.
+
+TASK-180 uses only existing palette parameter types (`text`, `select`, `bool`,
+and the existing tag/subfield controls). It does not add an unchecked
+`match_segments` type; structured segments belong to TASK-184.
 
 ## Explanation and Technical Transparency
 
-Every valid guided operation shows four aligned representations:
+Each valid card shows:
 
 1. a plain-language summary;
-2. the saved structured choices;
-3. generated technical matching information, including regex when one is
-   used internally; and
+2. its explicit saved choices;
+3. generated technical matching information; and
 4. a before/after preview.
 
-For the primary example, the summary is equivalent to:
+The primary example says:
 
 > In every 035 subfield a, replace every case-sensitive occurrence of
 > “TFeba” with “(SCTFEBA)”. Keep text before and after each match.
 
-The preview must show:
+It shows:
 
 ```text
 Before: 035 $aTFeba9780020306634
 After:  035 $a(SCTFEBA)9780020306634
 ```
 
-Whole-value replacement must instead say that the entire selected value will
-be discarded and replaced. Prepend and append summaries state that existing
-data is retained.
+Whole-selected-value replacement says that the complete value will be
+discarded. Prepend and append say that existing data is retained.
 
-Technical details are not hidden. The operation links to
-`docs/task-authoring-syntax.md`, and TASK-180 adds the supported find/replace
-syntax there. Complete operation guidance remains assigned to TASK-183.
+Technical details remain visible and link to `docs/task-authoring-syntax.md`.
+TASK-180 adds the core operation syntax there; TASK-183 owns the complete
+cataloger guide.
 
-## Preview
+## Preview and Staleness
 
-Preview is deterministic and non-mutating. It runs through the same normalized
-request and transformation engine used by execution.
+Preview is deterministic, non-mutating, and executes the same compiled engine
+call used by saved tasks. Raw regex preview always runs inside the sandbox.
 
-The Tasks form provides:
+The preview state follows the existing `BatchReplacePreview` convention:
 
-- a first-record or representative-record before/after example when a file is
-  loaded;
-- match and change counts for the previewed sample;
-- the number of records skipped by conditions;
-- a clear zero-match result; and
-- validation or execution errors associated with the specific operation.
+- `store_id` identifies the loaded store object;
+- `store_revision` identifies its current content; and
+- the normalized guided request stored with the preview must equal the
+  operation's current normalized request.
 
-Raw regex preview must execute inside the existing sandbox boundary. The UI
-records a preview fingerprint derived from the operation's exact saved
-parameters and the source revision. Any relevant edit or source-file change
-invalidates the successful-preview state.
+A different store, changed revision, or changed request invalidates the
+preview. TASK-180 does not introduce a separate compiler fingerprint for this
+state.
 
-Preview never changes the loaded file, saves a task, queues durable work, or
-creates a task output. Submission and full execution perform their normal
-fresh run; preview output is not promoted as final output.
+The form reports match and change counts, condition skips, zero matches, and
+representative before/after data. Preview never changes the loaded file,
+saves a task, queues work, or promotes preview output as final output.
 
-## Import and Conversion Boundary
+## Empty-Find Import Safety
 
-External instructions are classified as exactly supported, recognized but
-unresolved, or unsupported.
+The current `SUBFIELD_EDIT` importer emits:
 
-Known exact examples include:
+```python
+sf.value.replace(find, replacement)
+```
 
-- `SUBFIELD_EDIT 856 u ^b <prefix>` as prepend `<prefix>` to 856 subfield u;
-- an exact field retag expression such as changing `=956  ` to `=856  ` when
-  the external syntax and spacing have a proven meaning; and
-- exact literal or proven-regex subfield replacement signatures whose
-  occurrence, case, and replacement scopes are all known.
+Python treats an empty `find` specially: `"ab".replace("", "X")` produces
+`"XaXbX"`. An empty-find external instruction can therefore become a silent
+data corrupter.
 
-An empty-find external subfield edit is not assumed to mean one thing. The
-cataloger must choose among:
+TASK-180 changes this existing importer behavior deliberately:
 
-- add the subfield when it is missing;
-- replace existing occurrences; or
-- ensure exactly one occurrence.
+- a newly imported empty-find `SUBFIELD_EDIT` is classified unresolved, shown
+  with its original instruction, and not persisted as an executable task;
+- a previously saved form operation whose `# OP:` marker identifies
+  `subfield-replace` with an empty `find` remains visible but is blocked at
+  submission; and
+- unrelated existing operations and non-empty legacy replacements retain
+  their current behavior.
 
-Those behaviors are not treated as equivalent.
+Arbitrary code-mode tasks do not have a trustworthy structured marker and are
+not reinterpreted by TASK-180. TASK-180 must not guess at Python source.
+TASK-185 provides explicit add-if-missing, replace-existing, and ensure-one
+conversion choices after their external meanings are reviewed.
 
-Arbitrary regular expressions over `.mrk` text remain blocking unless an
-adapter proves the target, match, replacement, and occurrence semantics.
-External regex syntax is not assumed to be Python-compatible. A proven subset
-converts; otherwise the original instruction and reason remain visible for
-cataloger review.
-
-Conversion never deletes the original review evidence silently. A proposed
-guided operation shows its interpreted meaning and requires confirmation.
+The corpus value `^b` is not treated as proven prefix syntax. It remains
+recognized but unresolved until documentation, executable behavior, or another
+authoritative source establishes its exact meaning.
 
 ## Validation and Failure Handling
 
 Save and preview are blocked when:
 
-- a tag or tag range is invalid;
-- a selected target is incompatible with the tag type;
-- a subfield code is invalid;
-- an indicator value is not one character or the explicit blank value;
-- Find is empty for an action that requires a match;
-- a character set or structured pattern piece is invalid;
-- a raw regular expression is invalid;
-- a replacement refers to a capture that the expression does not define;
-- a replacement action conflicts with its selected target;
-- a tag change would create an invalid MARC field;
-- the operation cannot round-trip through its saved representation;
-- an imported instruction has unresolved semantics; or
+- a tag is not exactly three numeric characters;
+- the target and tag type conflict;
+- a required subfield code is invalid;
+- Find is empty for matched-text or whole-selected-value replacement;
+- prepend or append carries a hidden Find or regex value;
+- a match or replacement mode is unknown;
+- a raw expression is invalid;
+- a replacement refers to an undefined regex capture;
+- a target/action combination is outside the compatibility matrix;
+- the operation cannot round-trip without loss; or
 - a required raw-regex preview is missing or stale.
 
-Validation names the operation and faulty control and explains how to correct
-it. Unknown modes and values fail closed. Data is not silently discarded,
-coerced into a different replacement scope, or executed using a best guess.
+Submission also blocks detectable saved generated empty-find operations.
+Messages identify the operation and control and explain how to correct it.
+Unknown values fail closed. No path silently changes replacement scope,
+drops entered data, or executes a guessed external meaning.
 
-If a mode switch would discard entered pattern data, the UI requires explicit
-confirmation. An invalid legacy operation remains visible in its existing
-technical form and does not crash the Tasks page.
+An invalid legacy operation remains visible in its existing technical form and
+does not crash the Tasks page. Switching modes requires confirmation before
+discarding raw pattern data.
 
 ## Testing Strategy
 
-Tests encode cataloger intent rather than merely asserting generated strings.
+Tests encode cataloger intent, not only generated source strings.
 
-### Engine tests
+### Characterization first
 
-Table-driven tests cover:
+Before adding the new kind, tests pin current behavior for:
 
-- contains, starts-with, ends-with, whole-value, structured, and raw-regex
-  matching;
-- case-sensitive and case-insensitive behavior;
-- first and every occurrence;
-- matched-text, whole-subfield, whole-field, prepend, and append behavior;
-- preservation of text before and after a match;
-- named structured captures and raw `\1` replacement references;
-- control fields, selected subfields, all subfields, structured whole-field
-  replacement, indicators, tags, and valid tag ranges;
-- repeated fields and repeated subfields;
-- no-match and condition-skipped records; and
+- literal and regex `subfield-replace`;
+- `replace-field-data-by-regex`;
+- `replace-field-subfield-and-indicators`;
+- Quick Find/Replace match counts and transformations; and
+- deterministic note, AI validation, and Gemini prompt paths.
+
+These tests prove TASK-180 does not change the legacy or Quick workflows.
+
+### Engine matrix
+
+Table-driven tests cover every compatibility-matrix cell with:
+
+- contains, starts-with, ends-with, whole-value, and raw-regex matching;
+- case-sensitive and ignored-case behavior;
+- first and every matched-text occurrence;
+- one-time whole-value behavior and unconditional prepend and append behavior;
+- control fields, one subfield code, all subfield values, repeated fields, and
+  repeated subfields;
+- no match and condition skip; and
 - invalid combinations failing without mutation.
 
-The primary regression asserts that replacing `TFeba` in
-`TFeba9780020306634` produces `(SCTFEBA)9780020306634`, not merely
-`(SCTFEBA)`.
+The primary regression asserts that `TFeba9780020306634` becomes
+`(SCTFEBA)9780020306634`, not merely `(SCTFEBA)`.
 
-### Preview and compiler tests
+Raw-regex tests include capture references, invalid expressions, invalid
+references, first/all behavior, and subprocess timeout handling.
 
-Tests prove:
-
-- preview and sandbox execution produce the same transformed record;
-- preview leaves the source record and source file unchanged;
-- compiled saved tasks call the shared engine rather than a second
-  implementation;
-- raw regex preview is sandboxed and becomes stale after an operation or
-  source revision change;
-- zero matches and skipped conditions are reported; and
-- invalid regex and capture references never reach execution.
-
-### Editor and persistence tests
+### Compiler, preview, and persistence
 
 Tests prove:
 
-- guided controls serialize and reopen losslessly;
-- progressive controls do not discard hidden values;
-- switching away from raw regex requires confirmation;
-- summaries distinguish matched-text, whole-value, prepend, and append;
-- technical regex is visible when generated or entered;
-- nested widget keys remain unique; and
-- invalid legacy data remains visible without taking down the page.
+- the compiler calls the re-exported transform entry point;
+- preview and sandbox execution produce the same record;
+- preview leaves source records and files unchanged;
+- preview invalidates on store identity, store revision, or request change;
+- raw regex cannot submit without a current successful preview;
+- form values serialize and reopen exactly;
+- summaries distinguish matched text, whole value, prepend, and append; and
+- mode changes do not silently discard entered data.
 
-### Compatibility and import tests
+### Import and compatibility safety
 
-Characterization tests pin existing saved operation behavior before the new
-operation is added. Tests also prove:
+Tests prove:
 
-- old operation kinds are not normalized into the new kind automatically;
-- an explicit conversion is lossless before it is offered;
-- supported external signatures map to the intended guided definition;
-- ambiguous empty-find and arbitrary `.mrk` regex instructions remain
-  blocking; and
-- the untracked institutional corpus audit is a local-only, loudly reported
-  supplement rather than a CI guarantee.
+- new empty-find `SUBFIELD_EDIT` input is unresolved and not saved;
+- an existing marker-based empty-find form operation is visible but blocked
+  from submission;
+- non-empty legacy imports retain their current output;
+- old operation kinds are never normalized into the new kind;
+- `^b` remains unresolved rather than being guessed as prepend; and
+- arbitrary code-mode tasks are not parsed or rewritten.
 
-The existing AI draft tests remain unchanged and must continue passing.
-TASK-180 does not add the new operation to the AI palette.
+The untracked institutional corpus audit is a local-only, loudly reported
+supplement. Committed guarantees use sanitized synthetic fixtures.
 
 ### Verification
 
-Focused tests run first through the supported Docker path, followed by the
-complete Docker suite. Every skip is reported. Python 3.9 compatibility is
-verified. The TASK-178 native compiler contract manifest must remain unchanged
-unless an independently justified native-schema ticket changes it.
+Focused tests run through the supported Docker path before the complete Docker
+suite. Every skip is reported. Python 3.9 compatibility is verified. The
+TASK-178 native compiler contract manifest remains unchanged.
 
-Browser acceptance covers the primary 035 example, a prepend example, raw
-regex validation and preview gating, save/reopen, and a visibly blocked
-ambiguous import. Evidence contains only synthetic records and task values.
+Browser acceptance covers:
 
-Independent review must have no unresolved Critical or Important findings
-before TASK-180 is marked Completed.
+- the primary 035 example;
+- prepend and append;
+- one control field and all subfields in a tag;
+- raw-regex validation, preview gating, and staleness;
+- save and reopen; and
+- a visibly blocked empty-find import.
+
+Evidence contains only synthetic records and task values. Independent review
+must have no unresolved Critical or Important findings.
 
 ## Success Criteria
 
 TASK-180 is complete when:
 
-1. a cataloger can build the primary 035 replacement without writing regex or
-   Python;
-2. the result preserves the identifier following `TFeba`;
-3. replacement scope is explicit in controls, summary, and preview;
-4. guided matching covers literal, anchored, structured, and optional raw
-   regex workflows;
-5. raw regex remains available, round-trips exactly, validates before save,
-   and requires a current successful preview;
-6. preview and execution use the same deterministic transformation logic;
-7. saved guided operations reopen without semantic loss;
-8. existing saved operations retain their established behavior;
-9. only exact external translations convert and ambiguous instructions fail
-   loud;
-10. no AI, native-schema, database, deployment, service, worker, cron,
-    routing, or ITS change is introduced;
-11. focused and complete supported Docker suites pass with every skip
-    reported; and
-12. independent review has no unresolved Critical or Important findings.
+1. a cataloger can build the 035 `TFeba` replacement without regex or Python;
+2. the result preserves the identifier following the match;
+3. every supported target, match, action, and occurrence combination is
+   defined by the compatibility matrix and tested;
+4. matched-text replacement is the new-operation default;
+5. optional raw regex remains available, round-trips exactly, validates
+   before save, and requires a current successful sandbox preview;
+6. preview and execution call the same deterministic engine;
+7. guided operations save and reopen without semantic loss;
+8. existing operation, Quick Find/Replace, and AI behavior remain unchanged;
+9. new and detectable saved empty-find operations fail loud instead of
+   executing Python empty-string replacement;
+10. TASK-184 and TASK-185 concerns are not partially implemented;
+11. no native-schema, database, deployment, service, worker, cron, routing, or
+    ITS change is introduced;
+12. focused and complete Docker suites pass with every skip reported; and
+13. independent review has no unresolved Critical or Important findings.
