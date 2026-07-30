@@ -83,6 +83,55 @@ def test_invalid_structured_operations_name_the_fault(operation, message):
     )
 
 
+def test_unknown_leader_condition_is_rejected_instead_of_becoming_always():
+    operation = {
+        "kind": "add-field",
+        "params": {
+            "tag": "877",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["m", "Map"]],
+            "condition": "future-condition",
+        },
+    }
+    assert task_authoring.validate_operation(operation) == (
+        "record condition is not supported",
+    )
+    with pytest.raises(ValueError, match="record condition"):
+        task_builder.render_ops_to_python([Operation.from_dict(operation)])
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {
+            "tag": "877",
+            "ind1": "12",
+            "ind2": " ",
+            "subfields": [["m", "Map"]],
+        },
+        {
+            "tag": "877",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["m", "Map"]],
+            "existing_field_action": "future-policy",
+        },
+        {
+            "tag": "877",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["m", 42]],
+        },
+    ],
+)
+def test_invalid_persisted_add_shapes_stay_raw_and_read_only(params):
+    original = {"kind": "add-field", "params": params}
+    normalized = task_authoring.normalize_operations_for_editor([original])
+    assert normalized[0]["params"] == params
+    assert normalized[0]["authoring_error"]
+
+
 def test_existing_if_absent_normalizes_to_identical_field_compatibility():
     normalized = task_authoring.normalize_operation(
         {
@@ -398,6 +447,94 @@ def test_876_preview_matches_compiled_sandbox_output():
     assert task_authoring.preview_operation(operation, record).mnemonic == (
         "=876  \\\\$aB(NhCcYBP)SYNTHETIC12345-SC$lInternet"
     )
+
+
+@pytest.mark.parametrize(
+    ("leader_type", "preview_status", "expected_fields"),
+    [
+        ("e", "ready", 1),
+        ("a", "skipped", 0),
+    ],
+)
+def test_conditional_preview_matches_compiled_execution(
+    leader_type, preview_status, expected_fields
+):
+    record = _source_record()
+    leader = list(record.leader)
+    leader[6] = leader_type
+    record.leader = "".join(leader)
+    operation = {
+        "kind": "add-field",
+        "params": {
+            "tag": "877",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["m", "Map"]],
+            "existing_field_action": "append",
+            "condition": "maps",
+        },
+    }
+    preview = task_authoring.preview_operation(operation, record)
+    rendered = task_builder.render_ops_to_python(
+        [Operation.from_dict(operation)]
+    )
+    result = sandbox.run_tasks_subprocess(
+        [
+            sandbox.TaskSpec(
+                name="conditional-preview-equivalence",
+                body=rendered["body"],
+                imports=rendered["imports"],
+            )
+        ],
+        record.as_marc(),
+    )
+    assert result.returncode == 0
+    with result.output_path.open("rb") as stream:
+        output = next(iter(MARCReader(stream)))
+    assert preview.status == preview_status
+    assert len(output.get_fields("877")) == expected_fields
+
+
+@pytest.mark.parametrize(
+    ("leader_type", "drop_003", "preview_status", "expected_fields"),
+    [
+        ("e", False, "ready", 1),
+        ("a", True, "skipped", 0),
+    ],
+)
+def test_conditional_build_preview_checks_condition_before_missing_sources(
+    leader_type, drop_003, preview_status, expected_fields
+):
+    record = _source_record()
+    leader = list(record.leader)
+    leader[6] = leader_type
+    record.leader = "".join(leader)
+    if drop_003:
+        record.remove_fields("003")
+    operation = smith_876_operation()
+    operation["params"]["condition"] = "maps"
+    preview = task_authoring.preview_operation(operation, record)
+    rendered = task_builder.render_ops_to_python(
+        [Operation.from_dict(operation)]
+    )
+    result = sandbox.run_tasks_subprocess(
+        [
+            sandbox.TaskSpec(
+                name="conditional-build-preview-equivalence",
+                body=rendered["body"],
+                imports=rendered["imports"],
+            )
+        ],
+        record.as_marc(),
+    )
+    assert result.returncode == 0
+    with result.output_path.open("rb") as stream:
+        output = next(iter(MARCReader(stream)))
+    assert preview.status == preview_status
+    assert len(output.get_fields("876")) == expected_fields
+    if drop_003:
+        assert "does not match" in preview.message
+        assert "Missing required control field" not in preview.message
 
 
 def test_legacy_if_absent_preview_matches_identical_field_execution():

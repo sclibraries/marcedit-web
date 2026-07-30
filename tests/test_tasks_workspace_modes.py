@@ -257,6 +257,32 @@ def test_unconvertible_legacy_build_remains_visible_in_memory(monkeypatch):
     assert "cannot convert" in operation["authoring_error"]
 
 
+def test_invalid_persisted_condition_remains_visible_without_form_coercion(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    body = (
+        '# OP: add-field {"tag":"877","ind1":" ","ind2":" ",'
+        '"subfields":[["m","Map"]],"condition":"future-condition"}\n'
+        "pass"
+    )
+
+    tasks_render._open_editor_for_existing_row(
+        {
+            "name": "future-condition",
+            "description": "",
+            "body": body,
+            "visibility": "private",
+        },
+        is_admin=False,
+    )
+
+    operation = fake_st.session_state[tasks_render.K_EDITOR_OPS][0]
+    assert operation["params"]["condition"] == "future-condition"
+    assert "record condition" in operation["authoring_error"]
+
+
 def test_form_editor_fetches_preview_record_once_and_delegates_add_build(
     monkeypatch,
 ):

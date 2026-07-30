@@ -7,6 +7,8 @@ than producing references to deleted helpers.
 
 from __future__ import annotations
 
+import pytest
+
 from marcedit_web.lib import marcedit_import
 
 
@@ -50,6 +52,22 @@ def test_add_with_empty_priority_and_known_condition_is_exact():
     )
     assert result.unsupported == []
     assert "# OP: add-field" in result.body
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ADD\t877\t\\\\\t\t",
+        "ADD\tbad\t\\\\$mMap\t\t",
+        "ADD\t877\t\\\\$!Map\t\t",
+    ],
+)
+def test_structurally_invalid_add_lines_remain_unresolved(line):
+    result = marcedit_import.convert_tasksfile_text(
+        line + "\n", name="invalid-add", description_fallback=""
+    )
+    assert result.unsupported == [line.rstrip()]
+    assert "# TODO: invalid ADD" in result.body
 
 
 def test_add_with_unmapped_numeric_priority_remains_blocking():

@@ -26,6 +26,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from marcedit_web.lib import task_authoring
 from marcedit_web.lib.codegen_safety import lit
 
 logger = logging.getLogger("marcedit_web.marcedit_import")
@@ -225,6 +226,26 @@ def _emit_add(parts: list[str]) -> HandlerEmission:
     form_key = _form_condition_key(condition)
     # Form-builder shape: subfields are list-of-pairs.
     sf_pairs = [[code, value] for code, value in subfields]
+    validation_errors = task_authoring.validate_operation(
+        {
+            "kind": "add-field",
+            "params": {
+                "tag": tag,
+                "ind1": ind1,
+                "ind2": ind2,
+                "subfields": sf_pairs,
+                "condition": form_key or "always",
+                "if_absent": False,
+            },
+        }
+    )
+    if validation_errors:
+        return HandlerEmission(
+            code=(
+                "# TODO: invalid ADD ({0}) — recreate with structured "
+                "Add Field"
+            ).format("; ".join(validation_errors)),
+        )
     if expr is None and supported:
         # No leader condition (always-apply). Clean palette mapping when
         # the form-builder also recognises the condition (it always does

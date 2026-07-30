@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, TypeVar
 
 from pymarc import Record
-from marcedit_web.lib.transforms import is_control_tag
+from marcedit_web.lib import task_builder
+from marcedit_web.lib.transforms import (
+    is_control_tag,
+    leader_biblevel,
+    leader_type,
+)
 
 
 EXISTING_FIELD_ACTIONS = (
@@ -107,16 +112,24 @@ def normalize_operations_for_editor(
     for op in ops:
         original = copy.deepcopy(dict(op))
         try:
-            normalized.append(normalize_operation(original))
+            candidate = normalize_operation(original)
         except ValueError as exc:
             original["authoring_error"] = str(exc)
             normalized.append(original)
+            continue
+        errors = validate_operation(candidate)
+        if errors:
+            original["authoring_error"] = "; ".join(errors)
+            normalized.append(original)
+        else:
+            normalized.append(candidate)
     return normalized
 
 
 _UNRESOLVED_ADD_BUILD_PREFIXES = (
     "# TODO: buildnewfield template ",
     "# TODO: unresolved ADD option(s);",
+    "# TODO: invalid ADD ",
     "# TODO: ADD with unsupported condition ",
     "# TODO: malformed 'ADD' ",
     "# TODO: malformed 'buildnewfield' ",
@@ -146,6 +159,8 @@ def validate_operations(
 
 
 def _validate_tag(tag: object) -> list[str]:
+    if not isinstance(tag, str):
+        return ["tag must be text"]
     value = str(tag or "")
     if not _TAG_RE.fullmatch(value):
         return ["tag must be exactly three numeric characters"]
@@ -155,6 +170,8 @@ def _validate_tag(tag: object) -> list[str]:
 
 
 def _validate_indicator(value: object, label: str) -> list[str]:
+    if not isinstance(value, str):
+        return ["{0} must be text".format(label)]
     if len(str(value)) != 1:
         return [
             "{0} must be one character or an explicit blank".format(label)
@@ -163,6 +180,8 @@ def _validate_indicator(value: object, label: str) -> list[str]:
 
 
 def _validate_code(value: object, label: str) -> list[str]:
+    if not isinstance(value, str):
+        return ["{0} must be text".format(label)]
     if not re.fullmatch(r"[a-z0-9]", str(value or "")):
         return [
             "{0} must be one lowercase letter or digit".format(label)
@@ -192,6 +211,8 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
         errors.append("existing-field action is not supported")
     if params.get("missing_control_action") not in MISSING_CONTROL_ACTIONS:
         errors.append("missing-control action is not supported")
+    if params.get("condition", "always") not in task_builder.LEADER_CONDITIONS:
+        errors.append("record condition is not supported")
     key = "subfields" if kind == "add-field" else "structured_subfields"
     subfields = list(params.get(key) or [])
     if not subfields:
@@ -316,6 +337,28 @@ def _resolve_segments(
         else:
             parts.append(str(field.data))
     return "".join(parts), tuple(dict.fromkeys(missing))
+
+
+def _record_matches_condition(record: Record, condition: str) -> bool:
+    record_type = leader_type(record)
+    bibliographic_level = leader_biblevel(record)
+    if condition == "always":
+        return True
+    if condition == "books":
+        return record_type in "amt" and bibliographic_level == "m"
+    if condition == "serials":
+        return bibliographic_level == "s"
+    if condition == "databases":
+        return bibliographic_level == "i"
+    if condition == "maps":
+        return record_type in "ef"
+    if condition == "videos":
+        return record_type == "g"
+    if condition == "audios":
+        return record_type in "ij"
+    if condition == "scores":
+        return record_type in "cd"
+    raise ValueError("record condition is not supported")
 
 
 def _join_words(values: Sequence[str]) -> str:
@@ -501,6 +544,15 @@ def preview_operation(
         )
     candidate = copy.deepcopy(record)
     params = normalized["params"]
+    condition = params.get("condition", "always")
+    if not _record_matches_condition(candidate, condition):
+        return AuthoringPreview(
+            "skipped",
+            unresolved,
+            "The first loaded record does not match: {0}.".format(
+                task_builder.LEADER_CONDITION_LABELS[condition]
+            ),
+        )
     missing = []
     if normalized["kind"] == "build-field":
         for _code, segments in params["structured_subfields"]:

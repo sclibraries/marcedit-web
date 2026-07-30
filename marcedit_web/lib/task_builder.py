@@ -589,7 +589,9 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         )
         imports = {"make_field"} | mutation_imports
         condition_key = p.get("condition") or "always"
-        condition_expr = LEADER_CONDITIONS.get(condition_key, "")
+        if condition_key not in LEADER_CONDITIONS:
+            raise ValueError("record condition is not supported")
+        condition_expr = LEADER_CONDITIONS[condition_key]
         if condition_expr:
             imports |= {"leader_type", "leader_biblevel"}
             return (
@@ -617,7 +619,9 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             )
         imports: set[str] = {"make_field"}
         condition_key = p.get("condition") or "always"
-        condition_expr = LEADER_CONDITIONS.get(condition_key, "")
+        if condition_key not in LEADER_CONDITIONS:
+            raise ValueError("record condition is not supported")
+        condition_expr = LEADER_CONDITIONS[condition_key]
         existing_field_action = p.get("existing_field_action")
         if existing_field_action is None:
             existing_field_action = (
