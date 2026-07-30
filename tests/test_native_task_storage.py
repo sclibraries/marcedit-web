@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from marcedit_web.lib import db, native_tasks, task_db
+from marcedit_web.lib import audit, db, native_tasks, task_db
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "native_tasks"
@@ -293,4 +293,238 @@ def test_native_save_rejects_invalid_visibility_before_connect(monkeypatch):
             owner="alice@example.edu",
             definition=_definition("delete-and-sort.json"),
             visibility="public",
+        )
+
+
+@pytest.mark.parametrize("column", ["body", "extra_imports"])
+def test_current_fingerprint_snapshot_mismatch_blocks_without_repair(column):
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+    with db.connect() as conn:
+        conn.execute(
+            f"UPDATE tasks SET {column} = ? WHERE id = ?",
+            ("tampered", created["id"]),
+        )
+    before = task_db.get_task("alice@example.edu", definition["name"])
+
+    with pytest.raises(task_db.NativeTaskIntegrityError, match=column):
+        task_db.prepare_task_for_execution(
+            "alice@example.edu",
+            definition["name"],
+            audit_user="alice@example.edu",
+        )
+
+    assert task_db.get_task("alice@example.edu", definition["name"]) == before
+
+
+def test_stale_fingerprint_regenerates_snapshots_and_audits_after_commit(
+    monkeypatch,
+):
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET compiler_fingerprint = ?, body = ?,"
+            " extra_imports = ? WHERE id = ?",
+            ("0" * 64, "old body", "old imports", created["id"]),
+        )
+    events = []
+
+    def collect(kind, **fields):
+        assert (
+            task_db.get_task("alice@example.edu", definition["name"])[
+                "compiler_fingerprint"
+            ]
+            == native_tasks.current_compiler_fingerprint()
+        )
+        events.append((kind, fields))
+
+    monkeypatch.setattr(audit, "audit_event", collect)
+
+    prepared = task_db.prepare_task_for_execution(
+        "alice@example.edu",
+        definition["name"],
+        audit_user="viewer@example.edu",
+    )
+
+    assert prepared["body"] == native_tasks.compile_definition(definition).body
+    assert prepared["compiler_fingerprint"] == (
+        native_tasks.current_compiler_fingerprint()
+    )
+    assert prepared["revision"] == created["revision"] + 1
+    assert events == [
+        (
+            "native-task-compiler-migrated",
+            {
+                "user": "viewer@example.edu",
+                "owner": "alice@example.edu",
+                "task_name": definition["name"],
+                "old_fingerprint": "0" * 64,
+                "new_fingerprint": prepared["compiler_fingerprint"],
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        native_tasks.NativeDefinitionError("compile failed"),
+        native_tasks.CompilerContractError("contract failed"),
+    ],
+)
+def test_stale_fingerprint_compile_failure_preserves_row_bytes(
+    monkeypatch,
+    failure,
+):
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET compiler_fingerprint = ?, body = ?,"
+            " extra_imports = ? WHERE id = ?",
+            ("0" * 64, "old body", "old imports", created["id"]),
+        )
+    before = task_db.get_task("alice@example.edu", definition["name"])
+    monkeypatch.setattr(
+        native_tasks,
+        "compile_definition",
+        lambda value: (_ for _ in ()).throw(failure),
+    )
+
+    with pytest.raises(
+        task_db.NativeTaskCompatibilityError,
+        match=str(failure),
+    ) as caught:
+        task_db.prepare_task_for_execution(
+            "alice@example.edu",
+            definition["name"],
+            audit_user="alice@example.edu",
+        )
+
+    assert caught.value.__cause__ is failure
+    assert task_db.get_task("alice@example.edu", definition["name"]) == before
+
+
+def test_stale_fingerprint_revision_race_fails_cas_without_overwrite(monkeypatch):
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET compiler_fingerprint = ? WHERE id = ?",
+            ("0" * 64, created["id"]),
+        )
+    original_compile = native_tasks.compile_definition
+
+    def compile_after_concurrent_edit(value):
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE tasks SET body = ?, revision = revision + 1"
+                " WHERE id = ?",
+                ("concurrent body", created["id"]),
+            )
+        return original_compile(value)
+
+    monkeypatch.setattr(
+        native_tasks,
+        "compile_definition",
+        compile_after_concurrent_edit,
+    )
+
+    with pytest.raises(
+        task_db.NativeTaskCompatibilityError,
+        match="native task changed during compiler migration",
+    ):
+        task_db.prepare_task_for_execution(
+            "alice@example.edu",
+            definition["name"],
+            audit_user="alice@example.edu",
+        )
+
+    after = task_db.get_task("alice@example.edu", definition["name"])
+    assert after["body"] == "concurrent body"
+    assert after["compiler_fingerprint"] == "0" * 64
+    assert after["revision"] == created["revision"] + 1
+
+
+def test_invalid_stored_native_json_blocks_without_mutation(monkeypatch):
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET definition_json = ? WHERE id = ?",
+            ("{invalid", created["id"]),
+        )
+    before = task_db.get_task("alice@example.edu", definition["name"])
+    monkeypatch.setattr(
+        native_tasks,
+        "compile_definition",
+        lambda value: pytest.fail("invalid JSON must block before compilation"),
+    )
+
+    with pytest.raises(
+        task_db.NativeTaskCompatibilityError,
+        match="invalid native task JSON",
+    ):
+        task_db.prepare_task_for_execution(
+            "alice@example.edu",
+            definition["name"],
+            audit_user="alice@example.edu",
+        )
+
+    assert task_db.get_task("alice@example.edu", definition["name"]) == before
+
+
+def test_legacy_execution_preparation_bypasses_native_compiler(monkeypatch):
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="legacy-task",
+        description="Legacy",
+        body="pass",
+    )
+    before = task_db.get_task("alice@example.edu", "legacy-task")
+    monkeypatch.setattr(
+        native_tasks,
+        "compile_definition",
+        lambda value: pytest.fail("legacy rows must bypass native compilation"),
+    )
+    monkeypatch.setattr(
+        native_tasks,
+        "current_compiler_fingerprint",
+        lambda: pytest.fail("legacy rows must bypass the native contract"),
+    )
+
+    prepared = task_db.prepare_task_for_execution(
+        "alice@example.edu",
+        "legacy-task",
+        audit_user="viewer@example.edu",
+    )
+
+    assert prepared == before
+
+
+def test_missing_execution_task_is_a_compatibility_error():
+    with pytest.raises(
+        task_db.NativeTaskCompatibilityError,
+        match="native task not found",
+    ):
+        task_db.prepare_task_for_execution(
+            "alice@example.edu",
+            "missing",
+            audit_user="alice@example.edu",
         )

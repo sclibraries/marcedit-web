@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
-from marcedit_web.lib import db, editor, task_db
+from marcedit_web.lib import db, editor, native_tasks, task_db
+
+
+FIXTURES = Path(__file__).parent / "fixtures" / "native_tasks"
 
 
 @pytest.fixture(autouse=True)
@@ -210,3 +216,66 @@ def test_materialize_rewrites_when_body_changes(tmp_path):
     task_db.materialize_to_dir("alice@example.edu", target)
     text_after = (target / "t1.py").read_text()
     assert text_before != text_after
+
+
+def test_materialize_valid_native_task_to_parseable_python(tmp_path):
+    definition = json.loads(
+        (FIXTURES / "delete-and-sort.json").read_text(encoding="utf-8")
+    )
+    task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+
+    target = tmp_path / "mat"
+    task_db.materialize_to_dir("alice@example.edu", target)
+
+    parsed = editor.parse_user_task_file(target / "delete_vendor_field.py")
+    assert parsed["body"] == native_tasks.compile_definition(definition).body
+
+
+def test_materialize_migrates_stale_native_task_before_writing(tmp_path):
+    definition = json.loads(
+        (FIXTURES / "delete-and-sort.json").read_text(encoding="utf-8")
+    )
+    created = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+        visibility="shared",
+    )
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET compiler_fingerprint = ?, body = ? WHERE id = ?",
+            ("0" * 64, "old body", created["id"]),
+        )
+
+    target = tmp_path / "mat"
+    task_db.materialize_to_dir("viewer@example.edu", target)
+
+    prepared = task_db.get_task("alice@example.edu", definition["name"])
+    parsed = editor.parse_user_task_file(target / "delete_vendor_field.py")
+    assert prepared["compiler_fingerprint"] == (
+        native_tasks.current_compiler_fingerprint()
+    )
+    assert parsed["body"] == prepared["body"]
+
+
+def test_materialize_integrity_failure_writes_no_native_task_file(tmp_path):
+    definition = json.loads(
+        (FIXTURES / "delete-and-sort.json").read_text(encoding="utf-8")
+    )
+    created = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("tampered", created["id"]),
+        )
+
+    target = tmp_path / "mat"
+    with pytest.raises(task_db.NativeTaskIntegrityError, match="body"):
+        task_db.materialize_to_dir("alice@example.edu", target)
+
+    assert not (target / "delete_vendor_field.py").exists()

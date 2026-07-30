@@ -16,6 +16,7 @@ Event categories the app emits today (kept aligned with the actual
 * ``archive-imported`` / ``archive-rejected`` (MarcEdit zip path)
 * ``sandbox-timeout`` / ``sandbox-nonzero-exit``
 * ``task-saved`` / ``task-deleted`` / ``task-visibility-changed``
+* ``native-task-compiler-migrated`` (native execution snapshot refresh)
 * ``task-run-completed`` (TASK-034 — carries task names,
   in/out/changed/error counts, returncode, timed_out)
 * ``batch-replace-applied`` (Quick find/replace Apply; matched/applied

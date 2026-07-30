@@ -38,7 +38,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from . import db, editor, native_tasks
+from . import audit, db, editor, native_tasks
 
 logger = logging.getLogger("marcedit_web.task_db")
 
@@ -48,6 +48,14 @@ class NativeTaskStorageError(RuntimeError):
 
 
 class NativeTaskConflict(NativeTaskStorageError):
+    pass
+
+
+class NativeTaskCompatibilityError(NativeTaskStorageError):
+    pass
+
+
+class NativeTaskIntegrityError(NativeTaskStorageError):
     pass
 
 
@@ -216,6 +224,81 @@ def get_task(owner: str, name: str) -> dict[str, Any] | None:
     return _row_to_dict(row)
 
 
+def prepare_task_for_execution(
+    owner: str,
+    name: str,
+    *,
+    audit_user: str,
+) -> dict[str, Any]:
+    """Verify or migrate a task's native compiler snapshots before execution."""
+    row = get_task(owner, name)
+    if row is None:
+        raise NativeTaskCompatibilityError(
+            f"native task not found: {owner}/{name}"
+        )
+    if row["definition_json"] is None:
+        return row
+
+    try:
+        definition = native_tasks.load_definition_json(row["definition_json"])
+        compiled = native_tasks.compile_definition(definition)
+        current_fingerprint = native_tasks.current_compiler_fingerprint()
+    except (ValueError, native_tasks.CompilerContractError) as exc:
+        raise NativeTaskCompatibilityError(str(exc)) from exc
+
+    compiled_imports = "\n".join(compiled.imports)
+    if row["compiler_fingerprint"] == current_fingerprint:
+        for column, expected in (
+            ("body", compiled.body),
+            ("extra_imports", compiled_imports),
+        ):
+            if row[column] != expected:
+                raise NativeTaskIntegrityError(
+                    f"native task {column} snapshot does not match"
+                    " the current compiler"
+                )
+        return row
+
+    now = _utc_now()
+    with db.connect() as conn:
+        cursor = conn.execute(
+            "UPDATE tasks"
+            " SET body = ?,"
+            " extra_imports = ?,"
+            " compiler_fingerprint = ?,"
+            " revision = revision + 1,"
+            " updated_at = ?"
+            " WHERE id = ? AND revision = ? AND definition_json = ?",
+            (
+                compiled.body,
+                compiled_imports,
+                current_fingerprint,
+                now,
+                row["id"],
+                row["revision"],
+                row["definition_json"],
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise NativeTaskCompatibilityError(
+                "native task changed during compiler migration"
+            )
+        migrated = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?",
+            (row["id"],),
+        ).fetchone()
+    prepared = _row_to_dict(migrated)
+    audit.audit_event(
+        "native-task-compiler-migrated",
+        user=audit_user,
+        owner=row["owner_email"],
+        task_name=row["name"],
+        old_fingerprint=row["compiler_fingerprint"],
+        new_fingerprint=current_fingerprint,
+    )
+    return prepared
+
+
 def delete_task(owner: str, name: str) -> bool:
     """Delete a task. Returns True iff a row was removed."""
     with db.connect() as conn:
@@ -323,16 +406,27 @@ def materialize_to_dir(user: str, target_dir: Path) -> int:
 
     written = 0
     for t in visible:
+        execution_row = (
+            prepare_task_for_execution(
+                t["owner_email"],
+                t["name"],
+                audit_user=user,
+            )
+            if t.get("definition_json") is not None
+            else t
+        )
         extras = [
-            line for line in (t.get("extra_imports") or "").split("\n") if line
+            line
+            for line in (execution_row.get("extra_imports") or "").split("\n")
+            if line
         ]
         content = editor.serialize_user_task(
-            t["name"],
-            t["description"],
-            t["body"],
+            execution_row["name"],
+            execution_row["description"],
+            execution_row["body"],
             extra_imports=extras or None,
         )
-        path = editor.task_file_path(target_dir, t["name"])
+        path = editor.task_file_path(target_dir, execution_row["name"])
         existing = path.read_text() if path.exists() else None
         if existing != content:
             # Only rewrite when bytes change — preserves mtime for

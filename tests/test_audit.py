@@ -42,6 +42,32 @@ def test_audit_event_appends_multiple_lines(tmp_path, monkeypatch):
     ]
 
 
+def test_native_task_compiler_migration_event_retains_fingerprints(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("MARCEDIT_WEB_AUDIT_DIR", str(tmp_path))
+    audit.audit_event(
+        "native-task-compiler-migrated",
+        user="viewer@example.edu",
+        owner="alice@example.edu",
+        task_name="delete-vendor-field",
+        old_fingerprint="0" * 64,
+        new_fingerprint="1" * 64,
+    )
+
+    row = _read_lines(list(tmp_path.glob("audit-*.log"))[0])[0]
+    assert row == {
+        "ts": row["ts"],
+        "kind": "native-task-compiler-migrated",
+        "user": "viewer@example.edu",
+        "owner": "alice@example.edu",
+        "task_name": "delete-vendor-field",
+        "old_fingerprint": "0" * 64,
+        "new_fingerprint": "1" * 64,
+    }
+
+
 def test_audit_event_default_user_is_anonymous(tmp_path, monkeypatch):
     monkeypatch.setenv("MARCEDIT_WEB_AUDIT_DIR", str(tmp_path))
     audit.audit_event("upload-accepted")
