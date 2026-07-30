@@ -452,6 +452,56 @@ def _extract_template_tokens(subfields: list) -> list[str]:
     return seen
 
 
+def _format_structured_build_subfields(
+    subfields: list,
+) -> tuple[str, list[str]]:
+    """Render typed text/control segments without inferring placeholders."""
+    tokens: list[str] = []
+    rendered: list[str] = []
+    for code, segments in subfields:
+        control_tags: list[str] = []
+        for segment in segments:
+            segment_type = segment.get("type")
+            if segment_type == "control_field":
+                tag = segment["tag"]
+                control_tags.append(tag)
+                if tag not in tokens:
+                    tokens.append(tag)
+            elif segment_type != "text":
+                raise ValueError(
+                    f"unsupported structured build-field segment {segment_type!r}"
+                )
+
+        text_has_braces = any(
+            segment["type"] == "text"
+            and ("{" in segment["value"] or "}" in segment["value"])
+            for segment in segments
+        )
+        if text_has_braces:
+            parts = [
+                lit(segment["value"])
+                if segment["type"] == "text"
+                else f"_t_{segment['tag']}"
+                for segment in segments
+            ]
+            value_expression = " + ".join(parts)
+        else:
+            template = "".join(
+                segment["value"]
+                if segment["type"] == "text"
+                else "{" + segment["tag"] + "}"
+                for segment in segments
+            )
+            replace_chain = "".join(
+                f".replace({lit('{' + tag + '}')}, _t_{tag})"
+                for tag in tokens
+                if tag in control_tags
+            )
+            value_expression = f"{lit(template)}{replace_chain}"
+        rendered.append(f"({lit(code)}, {value_expression})")
+    return ", ".join(rendered), tokens
+
+
 def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
     """Render a single operation.
 
@@ -519,9 +569,16 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         ind1 = (p.get("ind1") or " ")[:1] or " "
         ind2 = (p.get("ind2") or " ")[:1] or " "
         subfields = list(p.get("subfields") or [])
-        # Validate placeholders up front so malformed templates fail at
-        # render time (when the cataloger is editing) instead of at run time.
-        tokens = _extract_template_tokens(subfields)
+        structured_subfields = p.get("structured_subfields")
+        if structured_subfields is None:
+            # Validate placeholders up front so malformed templates fail at
+            # render time (when the cataloger is editing) instead of at run time.
+            tokens = _extract_template_tokens(subfields)
+            structured_sf_args = None
+        else:
+            structured_sf_args, tokens = _format_structured_build_subfields(
+                structured_subfields
+            )
         imports: set[str] = {"make_field"}
         condition_key = p.get("condition") or "always"
         condition_expr = LEADER_CONDITIONS.get(condition_key, "")
@@ -529,7 +586,11 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         # No template tokens? Fall back to the same shape as add-field —
         # build-field stays usable as a strict superset.
         if not tokens:
-            sf_args = _format_subfield_args(subfields)
+            sf_args = (
+                structured_sf_args
+                if structured_sf_args is not None
+                else _format_subfield_args(subfields)
+            )
             make_call = (
                 f"make_field({lit(tag)}, {lit(ind1)}, {lit(ind2)}, {sf_args})"
             )
@@ -555,19 +616,22 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             f"_t_{tok} = control_value(record, {lit(tok)})" for tok in tokens
         ]
         guard = " and ".join(f"_t_{tok} is not None" for tok in tokens)
-        sf_items: list[str] = []
-        for code, value in subfields:
-            value_str = str(value)
-            if re.search(r"\{\d{3}\}", value_str):
-                replace_chain = "".join(
-                    f".replace({lit('{' + tok + '}')}, _t_{tok})"
-                    for tok in tokens
-                    if f"{{{tok}}}" in value_str
-                )
-                sf_items.append(f"({lit(code)}, {lit(value)}{replace_chain})")
-            else:
-                sf_items.append(f"({lit(code)}, {lit(value)})")
-        sf_args = ", ".join(sf_items)
+        if structured_sf_args is None:
+            sf_items: list[str] = []
+            for code, value in subfields:
+                value_str = str(value)
+                if re.search(r"\{\d{3}\}", value_str):
+                    replace_chain = "".join(
+                        f".replace({lit('{' + tok + '}')}, _t_{tok})"
+                        for tok in tokens
+                        if f"{{{tok}}}" in value_str
+                    )
+                    sf_items.append(f"({lit(code)}, {lit(value)}{replace_chain})")
+                else:
+                    sf_items.append(f"({lit(code)}, {lit(value)})")
+            sf_args = ", ".join(sf_items)
+        else:
+            sf_args = structured_sf_args
         make_call = f"make_field({lit(tag)}, {lit(ind1)}, {lit(ind2)}, {sf_args})"
         if p.get("if_absent"):
             add_stmt = f"add_field_if_absent(record, {make_call})"

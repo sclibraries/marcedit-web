@@ -65,6 +65,24 @@ def test_render_unknown_kind_becomes_todo():
     assert "TODO" in out["body"]
 
 
+def test_legacy_build_field_still_infers_numeric_template_placeholders():
+    out = task_builder.render_ops_to_python(
+        [
+            Operation(
+                kind="build-field",
+                params={
+                    "tag": "876",
+                    "subfields": [["a", "B({003}){001}-SC"]],
+                },
+            )
+        ]
+    )
+
+    assert "_t_003 = control_value(record, '003')" in out["body"]
+    assert "_t_001 = control_value(record, '001')" in out["body"]
+    assert "'B({003}){001}-SC'.replace('{003}', _t_003)" in out["body"]
+
+
 def test_parse_round_trip_for_delete_tag():
     ops = [Operation(kind="delete-tag", params={"tag": "029"})]
     rendered = task_builder.render_ops_to_python(ops)

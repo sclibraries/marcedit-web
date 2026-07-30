@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import copy
 import json
+import textwrap
 from pathlib import Path
 
 import pytest
+from pymarc import Field, Record
 
 from marcedit_web.lib import native_tasks
 
@@ -14,6 +16,21 @@ FIXTURES = Path(__file__).parent / "fixtures" / "native_tasks"
 
 def _definition(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def _run_compiled(definition: dict, record: Record) -> None:
+    compiled = native_tasks.compile_definition(definition)
+    source = "\n".join(
+        [
+            *compiled.imports,
+            "",
+            "def apply(record):",
+            textwrap.indent(compiled.body, "    "),
+        ]
+    )
+    namespace: dict = {}
+    exec(source, namespace)
+    namespace["apply"](record)
 
 
 def test_definition_round_trip_preserves_step_order_and_values():
@@ -85,3 +102,52 @@ def test_structured_build_field_compiles_without_source_text():
     assert "'B({003}){001}-SC'" in compiled.body
     assert "marcedit-task" not in compiled.body
     assert "8c7d6e7a" not in compiled.body
+
+
+def test_structured_text_braces_remain_literal_when_compiled_and_run():
+    definition = _definition("build-field.json")
+    definition["steps"][0]["subfields"] = [
+        {
+            "code": "a",
+            "segments": [
+                {"type": "text", "value": "literal {001} and {name}: "},
+                {"type": "control_field", "tag": "003"},
+            ],
+        }
+    ]
+    record = Record()
+    record.add_field(Field(tag="001", data="must-not-substitute"))
+    record.add_field(Field(tag="003", data="explicit-value"))
+
+    _run_compiled(definition, record)
+
+    assert record["876"].get_subfields("a") == [
+        "literal {001} and {name}: explicit-value"
+    ]
+
+
+def test_structured_control_segments_substitute_when_compiled_and_run():
+    record = Record()
+    record.add_field(Field(tag="001", data="12345"))
+    record.add_field(Field(tag="003", data="CtY"))
+
+    _run_compiled(_definition("build-field.json"), record)
+
+    assert record["876"].get_subfields("a") == ["B(CtY)12345-SC"]
+
+
+def test_compile_definition_rejects_renderer_todo_output(monkeypatch):
+    def render_todo(_ops):
+        return {"body": "# TODO: unsupported operation", "imports": []}
+
+    monkeypatch.setattr(
+        native_tasks.task_builder,
+        "render_ops_to_python",
+        render_todo,
+    )
+
+    with pytest.raises(
+        native_tasks.NativeDefinitionError,
+        match="produced unsupported code",
+    ):
+        native_tasks.compile_definition(_definition("delete-and-sort.json"))
