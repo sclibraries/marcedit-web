@@ -173,6 +173,7 @@ def _form_condition_key(condition: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 _SUBFIELD_RE = re.compile(r"\$(.)([^$]*)")
+_SUBFIELD_PAYLOAD_RE = re.compile(r"(?:\$.[^$]*)+")
 
 
 def parse_mrk_field_data(data: str) -> tuple[str, str, list[tuple[str, str]]]:
@@ -186,6 +187,10 @@ def parse_mrk_field_data(data: str) -> tuple[str, str, list[tuple[str, str]]]:
     ind1 = " " if data[0] == "\\" else data[0]
     ind2 = " " if data[1] == "\\" else data[1]
     rest = data[2:]
+    if rest and _SUBFIELD_PAYLOAD_RE.fullmatch(rest) is None:
+        raise ValueError(
+            "field data after the indicators is not an exact subfield sequence"
+        )
     subfields = [
         (m.group(1), m.group(2))
         for m in _SUBFIELD_RE.finditer(rest)
@@ -214,7 +219,15 @@ def _emit_add(parts: list[str]) -> HandlerEmission:
                 "trailing={1!r} — recreate with structured Add Field"
             ).format(priority, unknown_tail),
         )
-    ind1, ind2, subfields = parse_mrk_field_data(data)
+    try:
+        ind1, ind2, subfields = parse_mrk_field_data(data)
+    except ValueError as exc:
+        return HandlerEmission(
+            code=(
+                "# TODO: invalid ADD ({0}) — recreate with structured "
+                "Add Field"
+            ).format(exc),
+        )
     sf_args = ", ".join(
         f"({code!r}, {value!r})" for code, value in subfields
     )

@@ -588,8 +588,13 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             tag, make_call, existing_field_action
         )
         imports = {"make_field"} | mutation_imports
-        condition_key = p.get("condition") or "always"
-        if condition_key not in LEADER_CONDITIONS:
+        condition_key = (
+            p["condition"] if "condition" in p else "always"
+        )
+        if (
+            not isinstance(condition_key, str)
+            or condition_key not in LEADER_CONDITIONS
+        ):
             raise ValueError("record condition is not supported")
         condition_expr = LEADER_CONDITIONS[condition_key]
         if condition_expr:
@@ -618,8 +623,13 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
                 structured_subfields
             )
         imports: set[str] = {"make_field"}
-        condition_key = p.get("condition") or "always"
-        if condition_key not in LEADER_CONDITIONS:
+        condition_key = (
+            p["condition"] if "condition" in p else "always"
+        )
+        if (
+            not isinstance(condition_key, str)
+            or condition_key not in LEADER_CONDITIONS
+        ):
             raise ValueError("record condition is not supported")
         condition_expr = LEADER_CONDITIONS[condition_key]
         existing_field_action = p.get("existing_field_action")

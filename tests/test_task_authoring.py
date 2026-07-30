@@ -83,7 +83,13 @@ def test_invalid_structured_operations_name_the_fault(operation, message):
     )
 
 
-def test_unknown_leader_condition_is_rejected_instead_of_becoming_always():
+@pytest.mark.parametrize(
+    "condition",
+    ["future-condition", "", 0, False, []],
+)
+def test_unknown_leader_condition_is_rejected_instead_of_becoming_always(
+    condition,
+):
     operation = {
         "kind": "add-field",
         "params": {
@@ -91,7 +97,7 @@ def test_unknown_leader_condition_is_rejected_instead_of_becoming_always():
             "ind1": " ",
             "ind2": " ",
             "subfields": [["m", "Map"]],
-            "condition": "future-condition",
+            "condition": condition,
         },
     }
     assert task_authoring.validate_operation(operation) == (
@@ -130,6 +136,39 @@ def test_invalid_persisted_add_shapes_stay_raw_and_read_only(params):
     normalized = task_authoring.normalize_operations_for_editor([original])
     assert normalized[0]["params"] == params
     assert normalized[0]["authoring_error"]
+
+
+def test_non_mapping_persisted_params_stay_visible_instead_of_crashing():
+    original = {"kind": "add-field", "params": ["future", "shape"]}
+    normalized = task_authoring.normalize_operations_for_editor([original])
+    assert normalized[0]["params"] == original["params"]
+    assert "parameters must be an object" in normalized[0]["authoring_error"]
+
+
+def test_future_build_segment_keys_stay_raw_and_read_only():
+    original = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "structured_subfields": [
+                [
+                    "a",
+                    [
+                        {
+                            "type": "text",
+                            "value": "Internet",
+                            "future": "preserve-me",
+                        }
+                    ],
+                ]
+            ],
+        },
+    }
+    normalized = task_authoring.normalize_operations_for_editor([original])
+    assert normalized[0]["params"] == original["params"]
+    assert "unexpected keys" in normalized[0]["authoring_error"]
 
 
 def test_existing_if_absent_normalizes_to_identical_field_compatibility():

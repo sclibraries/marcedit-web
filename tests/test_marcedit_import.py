@@ -60,6 +60,8 @@ def test_add_with_empty_priority_and_known_condition_is_exact():
         "ADD\t877\t\\\\\t\t",
         "ADD\tbad\t\\\\$mMap\t\t",
         "ADD\t877\t\\\\$!Map\t\t",
+        "ADD\t877\t\\\\junk$mMap\t\t",
+        "ADD\t877\t\\\\$mMap$\t\t",
     ],
 )
 def test_structurally_invalid_add_lines_remain_unresolved(line):

@@ -78,9 +78,13 @@ def normalize_operation(op: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize an exact legacy Add/Build operation for structured editing."""
 
     normalized = copy.deepcopy(dict(op))
-    params = normalized.setdefault("params", {})
     if normalized.get("kind") not in {"add-field", "build-field"}:
         return normalized
+    params_value = normalized.setdefault("params", {})
+    if not isinstance(params_value, Mapping):
+        raise ValueError("operation parameters must be an object")
+    params = dict(params_value)
+    normalized["params"] = params
     params.setdefault(
         "existing_field_action",
         "skip_if_identical" if params.get("if_absent") else "append",
@@ -211,15 +215,35 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
         errors.append("existing-field action is not supported")
     if params.get("missing_control_action") not in MISSING_CONTROL_ACTIONS:
         errors.append("missing-control action is not supported")
-    if params.get("condition", "always") not in task_builder.LEADER_CONDITIONS:
+    condition = params.get("condition", "always")
+    if (
+        not isinstance(condition, str)
+        or condition not in task_builder.LEADER_CONDITIONS
+    ):
         errors.append("record condition is not supported")
     key = "subfields" if kind == "add-field" else "structured_subfields"
+    allowed_params = {
+        "tag",
+        "ind1",
+        "ind2",
+        "condition",
+        "existing_field_action",
+        "missing_control_action",
+        key,
+    }
+    unexpected_params = sorted(set(params) - allowed_params)
+    if unexpected_params:
+        errors.append(
+            "operation parameters contain unexpected keys: {0}".format(
+                ", ".join(unexpected_params)
+            )
+        )
     subfields = list(params.get(key) or [])
     if not subfields:
         errors.append("at least one subfield is required")
         return tuple(errors)
     for subfield_index, subfield in enumerate(subfields, start=1):
-        if not isinstance(subfield, (list, tuple)) or len(subfield) != 2:
+        if not isinstance(subfield, list) or len(subfield) != 2:
             errors.append(
                 "subfield {0} must contain a code and value".format(
                     subfield_index
@@ -272,16 +296,36 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
         for segment_index, segment in enumerate(segments, start=1):
             segment_type = (
                 segment.get("type")
-                if isinstance(segment, Mapping)
+                if isinstance(segment, dict)
                 else None
             )
             if segment_type == "text":
+                unexpected = sorted(set(segment) - {"type", "value"})
+                if unexpected:
+                    errors.append(
+                        "subfield {0} segment {1} contains unexpected "
+                        "keys: {2}".format(
+                            subfield_index,
+                            segment_index,
+                            ", ".join(unexpected),
+                        )
+                    )
                 if not isinstance(segment.get("value"), str):
                     errors.append(
                         "subfield {0} segment {1} literal must be "
                         "text".format(subfield_index, segment_index)
                     )
             elif segment_type == "control_field":
+                unexpected = sorted(set(segment) - {"type", "tag"})
+                if unexpected:
+                    errors.append(
+                        "subfield {0} segment {1} contains unexpected "
+                        "keys: {2}".format(
+                            subfield_index,
+                            segment_index,
+                            ", ".join(unexpected),
+                        )
+                    )
                 tag = str(segment.get("tag") or "")
                 if not is_control_tag(tag):
                     errors.append(
