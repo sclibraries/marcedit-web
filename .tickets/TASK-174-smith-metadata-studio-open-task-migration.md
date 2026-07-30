@@ -75,6 +75,18 @@ Phase 2:
   four explicitly disclosed Docker-CLI-dependent Compose skips. The approved
   implementation plan is
   `docs/superpowers/plans/2026-07-30-task-178-native-task-schema-storage.md`.
+- In-progress pre-review checkpoint: TASK-178 now documents schema version `1`
+  and the `delete_tag`, structured `build_field`, and `sort_fields` compiler
+  boundary; preserves legacy rows through schema version 14; and verifies
+  atomic native saves, compiler-fingerprinted execution snapshots, fail-closed
+  integrity and revision races, stale migration, and audit evidence. The exact
+  `marcedit-web:task-178` candidate packaged its dependency, license, schema,
+  and compiler manifest, then passed 101 focused tests with zero skips and
+  1,634 complete-suite tests with four explicitly disclosed
+  Docker-CLI-dependent Compose-rendering skips. Scope audit found no
+  infrastructure, cataloger UI, authorization, technical identifier, or local
+  corpus changes. TASK-178 and TASK-174 remain `In-Progress` pending
+  independent Task 5 review.
 
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.
