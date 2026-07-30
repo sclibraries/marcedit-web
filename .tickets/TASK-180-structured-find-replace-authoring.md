@@ -27,9 +27,14 @@ Success Criteria:
   current successful sandbox preview.
 - Save/reopen is lossless and existing saved operation kinds retain their
   established behavior.
+- Quick Find/Replace and AI drafting behavior remain unchanged, verified by
+  characterization tests.
 - Empty-find imports and already-saved generated empty-find form operations
   fail loud instead of executing.
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
 Status: Todo
+
+Design:
+- `docs/superpowers/specs/2026-07-30-task-180-structured-find-replace-authoring-design.md`

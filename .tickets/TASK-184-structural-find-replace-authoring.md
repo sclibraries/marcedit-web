@@ -28,3 +28,6 @@ Success Criteria:
 - Independent review has no unresolved Critical or Important findings.
 
 Status: Todo
+
+Design:
+- Not yet written; required before implementation.

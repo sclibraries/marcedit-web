@@ -14,7 +14,7 @@ and
 
 **Date:** 2026-07-30
 
-**Status:** Review requested after scope split
+**Status:** Approved
 
 ## Purpose
 
@@ -131,8 +131,10 @@ Using `ignore_case` matches existing `subfield-replace` and
 mapping.
 
 Raw-regex mode stores the entered expression in `find` and its replacement in
-`replacement` exactly. Generated expressions for starts-with and ends-with
-are technical display values, not the canonical saved intent.
+`replacement` exactly, with `match_mode` set to the exact value `raw_regex`.
+There is no separate `use_regex` Boolean. Generated expressions for
+starts-with and ends-with are technical display values, not the canonical
+saved intent.
 
 Existing operation kinds retain their current code generation and execution
 behavior. Opening an old task never changes its kind. TASK-180 does not offer
@@ -193,6 +195,7 @@ The advanced path:
 - preserves both strings exactly on save and reopen;
 - validates expression syntax and capture references before save;
 - states plainly that the expression is applied as written;
+- allows a syntactically valid draft to be saved without a loaded file;
 - requires a current successful sandbox preview before submission; and
 - requires confirmation before switching modes when that would discard an
   entered raw expression.
@@ -258,11 +261,19 @@ Raw-regex whole-selected-value replacement expands capture references from the
 first successful match. Prepend and append text is literal and is applied once;
 this prevents one selected value from being prefixed or suffixed repeatedly.
 
+Target choice never restricts match mode or occurrence behavior. The two
+tables are independent projections of the supported target × match × action ×
+occurrence space, so their valid rows and cells can be combined directly in
+table-driven tests.
+
 ## Deterministic Engine and Compiler Integration
 
 One pure engine owns request validation, matching, replacement, and structured
-result metadata. It lives in a focused library module. It does not read
-Streamlit session state, write files, route work, or invoke a language model.
+result metadata. It lives in a focused leaf library module that imports no
+other `marcedit_web.lib` module. It does not read Streamlit session state,
+write files, route work, or invoke a language model. In particular, it does
+not import `is_control_tag` from `transforms`, because `transforms` re-exports
+the engine entry point and that import would create a cycle.
 
 `marcedit_web.lib.transforms` imports and re-exports the engine's public
 record-transform entry point. The form compiler requests that transform name
@@ -319,7 +330,9 @@ After:  035 $a(SCTFEBA)9780020306634
 ```
 
 Whole-selected-value replacement says that the complete value will be
-discarded. Prepend and append say that existing data is retained.
+discarded. When the operation can affect multiple selected values, the summary
+and preview state how many previewed values will be discarded. Prepend and
+append say that existing data is retained.
 
 Technical details remain visible and link to `docs/task-authoring-syntax.md`.
 TASK-180 adds the core operation syntax there; TASK-183 owns the complete
@@ -367,6 +380,12 @@ TASK-180 changes this existing importer behavior deliberately:
 - unrelated existing operations and non-empty legacy replacements retain
   their current behavior.
 
+The submission path uses one composed task preflight rather than adding
+independent gates in `_submit_queued_run`. That preflight preserves
+TASK-179's unresolved Add/Build check and adds the empty-find check. It parses
+structured operation markers with `task_builder.parse_ops_from_source`; it
+does not search generated Python source for text patterns.
+
 Arbitrary code-mode tasks do not have a trustworthy structured marker and are
 not reinterpreted by TASK-180. TASK-180 must not guess at Python source.
 TASK-185 provides explicit add-if-missing, replace-existing, and ensure-one
@@ -378,7 +397,7 @@ authoritative source establishes its exact meaning.
 
 ## Validation and Failure Handling
 
-Save and preview are blocked when:
+Save and preview validation block when:
 
 - a tag is not exactly three numeric characters;
 - the target and tag type conflict;
@@ -389,9 +408,10 @@ Save and preview are blocked when:
 - a raw expression is invalid;
 - a replacement refers to an undefined regex capture;
 - a target/action combination is outside the compatibility matrix;
-- the operation cannot round-trip without loss; or
-- a required raw-regex preview is missing or stale.
+- the operation cannot round-trip without loss.
 
+Saving a raw-regex draft does not require a loaded file or a successful
+preview. Submission blocks when its raw-regex preview is missing or stale.
 Submission also blocks detectable saved generated empty-find operations.
 Messages identify the operation and control and explain how to correct it.
 Unknown values fail closed. No path silently changes replacement scope,
@@ -445,6 +465,7 @@ Tests prove:
 - preview leaves source records and files unchanged;
 - preview invalidates on store identity, store revision, or request change;
 - raw regex cannot submit without a current successful preview;
+- a valid raw-regex draft can save without a loaded source file;
 - form values serialize and reopen exactly;
 - summaries distinguish matched text, whole value, prepend, and append; and
 - mode changes do not silently discard entered data.
@@ -468,7 +489,10 @@ supplement. Committed guarantees use sanitized synthetic fixtures.
 
 Focused tests run through the supported Docker path before the complete Docker
 suite. Every skip is reported. Python 3.9 compatibility is verified. The
-TASK-178 native compiler contract manifest remains unchanged.
+TASK-178 native compiler contract manifest remains unchanged, verified by
+`test_checked_in_contract_matches_every_golden_definition` and
+`git diff --exit-code main -- marcedit_web/schemas/native-task-compiler-contract-v1.json`
+from the implementation branch.
 
 Browser acceptance covers:
 
@@ -492,7 +516,8 @@ TASK-180 is complete when:
    defined by the compatibility matrix and tested;
 4. matched-text replacement is the new-operation default;
 5. optional raw regex remains available, round-trips exactly, validates
-   before save, and requires a current successful sandbox preview;
+   before save, permits saving without a loaded file, and requires a current
+   successful sandbox preview only at submission;
 6. preview and execution call the same deterministic engine;
 7. guided operations save and reopen without semantic loss;
 8. existing operation, Quick Find/Replace, and AI behavior remain unchanged;
