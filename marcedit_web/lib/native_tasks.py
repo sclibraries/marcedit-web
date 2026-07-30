@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,8 +13,15 @@ from marcedit_web.lib import task_builder
 
 
 SUPPORTED_SCHEMA_VERSION = 1
+COMPILER_CONTRACT_VERSION = 1
+SERIALIZATION_RUNTIME = "python-3.9"
 _SCHEMA_PATH = (
     Path(__file__).resolve().parents[1] / "schemas" / "native-task-v1.schema.json"
+)
+_CONTRACT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "schemas"
+    / "native-task-compiler-contract-v1.json"
 )
 
 
@@ -22,6 +30,10 @@ class NativeDefinitionError(ValueError):
 
 
 class UnsupportedSchemaVersion(NativeDefinitionError):
+    pass
+
+
+class CompilerContractError(RuntimeError):
     pass
 
 
@@ -120,3 +132,179 @@ def compile_definition(value: Mapping[str, Any]) -> CompiledNativeTask:
         body=rendered["body"],
         imports=tuple(rendered["imports"]),
     )
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def build_contract_manifest(golden_dir: Path) -> dict[str, Any]:
+    snapshots = {}
+    for path in sorted(golden_dir.glob("*.json")):
+        definition = load_definition_json(path.read_text(encoding="utf-8"))
+        compiled = compile_definition(definition)
+        snapshots[path.name] = {
+            "definition_sha256": _sha256_text(
+                canonical_definition_json(definition)
+            ),
+            "body_sha256": _sha256_text(compiled.body),
+            "extra_imports_sha256": _sha256_text("\n".join(compiled.imports)),
+        }
+    return {
+        "native_schema_version": SUPPORTED_SCHEMA_VERSION,
+        "compiler_contract_version": COMPILER_CONTRACT_VERSION,
+        "serialization_runtime": SERIALIZATION_RUNTIME,
+        "golden_snapshots": snapshots,
+    }
+
+
+def canonical_manifest_json(manifest: Mapping[str, Any]) -> str:
+    return json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _validate_contract_manifest(manifest: Any) -> Mapping[str, Any]:
+    if not isinstance(manifest, Mapping):
+        raise CompilerContractError("compiler contract manifest must be an object")
+
+    expected_versions = {
+        "native_schema_version": SUPPORTED_SCHEMA_VERSION,
+        "compiler_contract_version": COMPILER_CONTRACT_VERSION,
+        "serialization_runtime": SERIALIZATION_RUNTIME,
+    }
+    allowed_fields = set(expected_versions) | {"golden_snapshots"}
+    unknown_fields = sorted(set(manifest) - allowed_fields)
+    if unknown_fields:
+        raise CompilerContractError(
+            "compiler contract manifest has unknown field "
+            f"{unknown_fields[0]}"
+        )
+    for field, expected in expected_versions.items():
+        if field not in manifest:
+            raise CompilerContractError(
+                f"compiler contract manifest is missing {field}"
+            )
+        if (
+            type(manifest[field]) is not type(expected)
+            or manifest[field] != expected
+        ):
+            raise CompilerContractError(
+                f"compiler contract manifest has {field}={manifest[field]!r}; "
+                f"expected {expected!r}"
+            )
+
+    snapshots = manifest.get("golden_snapshots")
+    if not isinstance(snapshots, Mapping):
+        raise CompilerContractError(
+            "compiler contract manifest golden_snapshots must be an object"
+        )
+    snapshot_fields = (
+        "definition_sha256",
+        "body_sha256",
+        "extra_imports_sha256",
+    )
+    for filename, snapshot in snapshots.items():
+        if not isinstance(filename, str) or not isinstance(snapshot, Mapping):
+            raise CompilerContractError(
+                "compiler contract manifest snapshots must map filenames to objects"
+            )
+        unknown_fields = sorted(set(snapshot) - set(snapshot_fields))
+        if unknown_fields:
+            raise CompilerContractError(
+                f"compiler contract manifest {filename} has unknown field "
+                f"{unknown_fields[0]}"
+            )
+        for field in snapshot_fields:
+            digest = snapshot.get(field)
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise CompilerContractError(
+                    f"compiler contract manifest {filename} has invalid {field}"
+                )
+    return manifest
+
+
+def load_contract_manifest() -> Mapping[str, Any]:
+    try:
+        manifest = json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CompilerContractError(
+            f"cannot load compiler contract manifest: {exc}"
+        ) from exc
+    return _validate_contract_manifest(manifest)
+
+
+def verify_contract_manifest(golden_dir: Path) -> None:
+    checked_in = load_contract_manifest()
+    generated = build_contract_manifest(golden_dir)
+
+    for field in (
+        "native_schema_version",
+        "compiler_contract_version",
+        "serialization_runtime",
+    ):
+        if checked_in[field] != generated[field]:
+            raise CompilerContractError(
+                f"compiler contract {field} mismatch: "
+                f"checked in {checked_in[field]!r}, generated {generated[field]!r}"
+            )
+
+    checked_snapshots = checked_in["golden_snapshots"]
+    generated_snapshots = generated["golden_snapshots"]
+    for filename in sorted(set(checked_snapshots) | set(generated_snapshots)):
+        if filename not in checked_snapshots:
+            raise CompilerContractError(
+                f"compiler contract missing checked-in snapshot for {filename}"
+            )
+        if filename not in generated_snapshots:
+            raise CompilerContractError(
+                f"compiler contract has stale snapshot for {filename}"
+            )
+        for field in (
+            "definition_sha256",
+            "body_sha256",
+            "extra_imports_sha256",
+        ):
+            if checked_snapshots[filename][field] != generated_snapshots[filename][
+                field
+            ]:
+                raise CompilerContractError(
+                    f"compiler contract {filename} {field} mismatch: "
+                    f"checked in {checked_snapshots[filename][field]!r}, "
+                    f"generated {generated_snapshots[filename][field]!r}"
+                )
+
+
+def current_compiler_fingerprint() -> str:
+    manifest = load_contract_manifest()
+    return _sha256_text(canonical_manifest_json(manifest))
+
+
+def _main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--print-contract", type=Path)
+    args = parser.parse_args()
+    if args.print_contract is None:
+        parser.error("--print-contract GOLDEN_DIR is required")
+    print(
+        json.dumps(
+            build_contract_manifest(args.print_contract),
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

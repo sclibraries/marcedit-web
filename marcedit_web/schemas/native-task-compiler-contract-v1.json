@@ -1,0 +1,17 @@
+{
+  "compiler_contract_version": 1,
+  "golden_snapshots": {
+    "build-field.json": {
+      "body_sha256": "9c835e5c357a0a63b6cce9df3acf0359cbd1628205fa09438e499c8120cb80d2",
+      "definition_sha256": "0661218152e435bfae97b38e06d5b5df1c9b1a26b4150c2e1d27f3042e18e741",
+      "extra_imports_sha256": "8161fef593c728b47d49e4bd2074945a1950242bebf76547642aa35f149214cb"
+    },
+    "delete-and-sort.json": {
+      "body_sha256": "0c27f683020d0c40df87cfe64e03f76d7c38b37636d874a854d82996283e8ce9",
+      "definition_sha256": "fcabde192a4ac6f422679c500acd5591d2f45044752aad8608a7248bd649f2c1",
+      "extra_imports_sha256": "16c25cca40354d986f586580581d71388b7377e19a74bf95f904bdc17771effa"
+    }
+  },
+  "native_schema_version": 1,
+  "serialization_runtime": "python-3.9"
+}
