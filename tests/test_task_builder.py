@@ -538,6 +538,53 @@ def test_subfield_replace_regex_toggle_emits_re_sub():
     assert "import re" in out["imports"]
 
 
+def test_legacy_subfield_replace_compiler_contract_is_unchanged():
+    rendered = task_builder.render_ops_to_python(
+        [
+            task_builder.Operation(
+                kind="subfield-replace",
+                params={
+                    "tag": "035",
+                    "code": "a",
+                    "find": "TFeba",
+                    "replace": "(SCTFEBA)",
+                    "regex": True,
+                    "ignore_case": False,
+                },
+            )
+        ]
+    )
+
+    assert "_pat.sub('(SCTFEBA)', sf.value)" in rendered["body"]
+    assert "if sf.code == 'a'" in rendered["body"]
+    assert rendered["imports"] == ["import re", "from pymarc import Subfield"]
+
+
+def test_existing_atomic_regex_replace_still_replaces_complete_subfield():
+    rendered = task_builder.render_ops_to_python(
+        [
+            task_builder.Operation(
+                kind="replace-field-subfield-and-indicators",
+                params={
+                    "tag": "035",
+                    "match_ind1": " ",
+                    "match_ind2": " ",
+                    "match_code": "a",
+                    "match_value": "TFeba",
+                    "regex": True,
+                    "new_ind1": " ",
+                    "new_ind2": "9",
+                    "new_code": "a",
+                    "new_value": "(SCTFEBA)",
+                },
+            )
+        ]
+    )
+
+    assert "replace_field_subfield_and_indicators(" in rendered["body"]
+    assert "'(SCTFEBA)'" in rendered["body"]
+
+
 def test_subfield_replace_literal_unchanged_by_default():
     """Default regex=False keeps the pre-TASK-030 literal codegen shape."""
     out = task_builder.render_ops_to_python(

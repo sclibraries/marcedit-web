@@ -37,7 +37,7 @@ Success Criteria:
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: Todo
+Status: In-Progress
 
 Design:
 - `docs/superpowers/specs/2026-07-30-task-180-structured-find-replace-authoring-design.md`
