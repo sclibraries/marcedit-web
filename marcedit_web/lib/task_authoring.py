@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Any, Mapping, Sequence, TypeVar
+from dataclasses import dataclass
+from typing import Any, Mapping, Optional, Sequence, TypeVar
 
+from pymarc import Record
 from marcedit_web.lib.transforms import is_control_tag
 
 
@@ -274,3 +276,295 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
                     )
                 )
     return tuple(errors)
+
+
+@dataclass(frozen=True)
+class AuthoringPreview:
+    """One deterministic, non-mutating structured-operation preview."""
+
+    status: str
+    mnemonic: str
+    message: str
+
+
+def _normalized_indicator(value: object) -> str:
+    text = str(value or "")
+    return " " if text in ("", "\\", "\\\\") else text
+
+
+def _display_indicator(value: object) -> str:
+    normalized = _normalized_indicator(value)
+    return "\\" if normalized == " " else normalized
+
+
+def _resolve_segments(
+    segments: Sequence[Mapping[str, str]],
+    record: Optional[Record],
+) -> tuple[str, tuple[str, ...]]:
+    parts = []
+    missing = []
+    for segment in segments:
+        if segment["type"] == "text":
+            parts.append(segment["value"])
+            continue
+        if record is None:
+            parts.append("{" + segment["tag"] + "}")
+            continue
+        field = record.get(segment["tag"])
+        if field is None:
+            missing.append(segment["tag"])
+        else:
+            parts.append(str(field.data))
+    return "".join(parts), tuple(dict.fromkeys(missing))
+
+
+def _join_words(values: Sequence[str]) -> str:
+    if len(values) < 2:
+        return "".join(values)
+    if len(values) == 2:
+        return " and ".join(values)
+    return ", ".join(values[:-1]) + ", and " + values[-1]
+
+
+def _legacy_mnemonic(op: Mapping[str, Any]) -> str:
+    params = dict(op.get("params") or {})
+    prefix = "={0}  {1}{2}".format(
+        params.get("tag", "???"),
+        _display_indicator(params.get("ind1", " ")),
+        _display_indicator(params.get("ind2", " ")),
+    )
+    return prefix + "".join(
+        "${0}{1}".format(code, value)
+        for code, value in list(params.get("subfields") or [])
+    )
+
+
+def describe_operation(op: Mapping[str, Any]) -> str:
+    """Describe one Add/Build operation in cataloger-facing language."""
+
+    try:
+        normalized = normalize_operation(op)
+    except ValueError as exc:
+        return "Build Field needs review: {0}.".format(exc)
+    params = normalized["params"]
+    tag = params["tag"]
+    article = "an" if tag.startswith(("0", "8")) else "a"
+    ind1_value = _normalized_indicator(params.get("ind1", " "))
+    ind2_value = _normalized_indicator(params.get("ind2", " "))
+    ind1 = (
+        "a blank indicator 1"
+        if ind1_value == " "
+        else "indicator 1 “{0}”".format(ind1_value)
+    )
+    ind2 = (
+        "a blank indicator 2"
+        if ind2_value == " "
+        else "indicator 2 “{0}”".format(ind2_value)
+    )
+    if normalized["kind"] == "build-field":
+        codes = [
+            str(code)
+            for code, _segments in params["structured_subfields"]
+        ]
+        label = "subfield" if len(codes) == 1 else "subfields"
+        description = "Add {0} {1} field with {2}, {3}, and {4} {5}".format(
+            article, tag, ind1, ind2, label, _join_words(codes)
+        )
+        sources = []
+        for _code, segments in params["structured_subfields"]:
+            for segment in segments:
+                if (
+                    segment["type"] == "control_field"
+                    and segment["tag"] not in sources
+                ):
+                    sources.append(segment["tag"])
+        if sources:
+            description += " built from {0}".format(_join_words(sources))
+    else:
+        values = [
+            "subfield {0} containing “{1}”".format(code, value)
+            for code, value in params["subfields"]
+        ]
+        description = "Add {0} {1} field with {2}, {3}, and {4}".format(
+            article, tag, ind1, ind2, _join_words(values)
+        )
+    existing = {
+        "append": "add another field",
+        "replace_all": "replace every field with this tag",
+        "skip_if_tag_exists": "leave the record unchanged",
+        "skip_if_identical": "add unless an identical field exists",
+    }[params["existing_field_action"]]
+    description += ". When {0} exists, {1}".format(tag, existing)
+    if normalized["kind"] == "build-field":
+        missing = {
+            "skip_field": "do not build this field",
+            "fail_record": "record a task error for this record",
+        }[params["missing_control_action"]]
+        description += ". If a source is missing, {0}".format(missing)
+    return description + "."
+
+
+def render_mnemonic(
+    op: Mapping[str, Any],
+    record: Optional[Record] = None,
+) -> str:
+    """Render transparent MARC mnemonic from structured values."""
+
+    try:
+        normalized = normalize_operation(op)
+    except ValueError:
+        return _legacy_mnemonic(op)
+    params = normalized["params"]
+    if normalized["kind"] == "add-field":
+        resolved_subfields = [
+            (str(code), str(value))
+            for code, value in params["subfields"]
+        ]
+    else:
+        resolved_subfields = [
+            (str(code), _resolve_segments(segments, record)[0])
+            for code, segments in params["structured_subfields"]
+        ]
+    prefix = "={0}  {1}{2}".format(
+        params["tag"],
+        _display_indicator(params.get("ind1", " ")),
+        _display_indicator(params.get("ind2", " ")),
+    )
+    subfield_text = "".join(
+        "${0}{1}".format(code, value)
+        for code, value in resolved_subfields
+    )
+    return prefix + subfield_text
+
+
+def token_annotations(op: Mapping[str, Any]) -> tuple[str, ...]:
+    """Explain each displayed MARC token in order."""
+
+    try:
+        normalized = normalize_operation(op)
+    except ValueError as exc:
+        return (
+            "Cannot interpret this legacy Build Field: {0}".format(exc),
+            "Raw technical value preserved: {0}".format(
+                _legacy_mnemonic(op)
+            ),
+        )
+    params = normalized["params"]
+    annotations = [
+        "={0}: target MARC tag.".format(params["tag"]),
+        "{0}{1}: indicator 1 and indicator 2; backslash means "
+        "blank.".format(
+            _display_indicator(params.get("ind1", " ")),
+            _display_indicator(params.get("ind2", " ")),
+        ),
+    ]
+    key = (
+        "subfields"
+        if normalized["kind"] == "add-field"
+        else "structured_subfields"
+    )
+    for code, value in params[key]:
+        annotations.append("${0}: start subfield {0}.".format(code))
+        if normalized["kind"] == "add-field":
+            annotations.append("{0}: literal subfield text.".format(value))
+            continue
+        for segment in value:
+            if segment["type"] == "text":
+                annotations.append(
+                    "{0}: literal text.".format(segment["value"])
+                )
+            else:
+                annotations.append(
+                    "{{{0}}}: value from control field {0}.".format(
+                        segment["tag"]
+                    )
+                )
+    return tuple(annotations)
+
+
+def preview_operation(
+    op: Mapping[str, Any],
+    record: Optional[Record],
+) -> AuthoringPreview:
+    """Preview one operation without mutating the loaded record."""
+
+    errors = validate_operation(op)
+    if errors:
+        return AuthoringPreview("error", "", "; ".join(errors))
+    normalized = normalize_operation(op)
+    unresolved = render_mnemonic(normalized)
+    if record is None:
+        return AuthoringPreview(
+            "no-file",
+            unresolved,
+            "Load a MARC file to resolve source control fields.",
+        )
+    candidate = copy.deepcopy(record)
+    params = normalized["params"]
+    missing = []
+    if normalized["kind"] == "build-field":
+        for _code, segments in params["structured_subfields"]:
+            for segment in segments:
+                if (
+                    segment["type"] == "control_field"
+                    and candidate.get(segment["tag"]) is None
+                    and segment["tag"] not in missing
+                ):
+                    missing.append(segment["tag"])
+    if missing:
+        status = (
+            "error"
+            if params["missing_control_action"] == "fail_record"
+            else "skipped"
+        )
+        return AuthoringPreview(
+            status,
+            unresolved,
+            "Missing required control field {0}.".format(
+                ", ".join(missing)
+            ),
+        )
+    action = params["existing_field_action"]
+    if action == "skip_if_tag_exists" and candidate.get_fields(params["tag"]):
+        return AuthoringPreview(
+            "skipped",
+            unresolved,
+            "Target field {0} already exists.".format(params["tag"]),
+        )
+    if action == "skip_if_identical":
+        if normalized["kind"] == "add-field":
+            signature_subfields = tuple(
+                (str(code), str(value))
+                for code, value in params["subfields"]
+            )
+        else:
+            signature_subfields = tuple(
+                (str(code), _resolve_segments(segments, candidate)[0])
+                for code, segments in params["structured_subfields"]
+            )
+        new_signature = (
+            _normalized_indicator(params.get("ind1", " ")),
+            _normalized_indicator(params.get("ind2", " ")),
+            signature_subfields,
+        )
+        existing_signatures = {
+            (
+                field.indicators[0],
+                field.indicators[1],
+                tuple((sf.code, sf.value) for sf in field.subfields),
+            )
+            for field in candidate.get_fields(params["tag"])
+        }
+        if new_signature in existing_signatures:
+            return AuthoringPreview(
+                "skipped",
+                unresolved,
+                "An identical {0} field already exists.".format(
+                    params["tag"]
+                ),
+            )
+    return AuthoringPreview(
+        "ready",
+        render_mnemonic(normalized, candidate),
+        "Preview resolved from the first loaded record.",
+    )

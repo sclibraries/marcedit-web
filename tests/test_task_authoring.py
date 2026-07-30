@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from pymarc import Field, MARCReader, Record, Subfield
 
-from marcedit_web.lib import task_authoring
+from marcedit_web.lib import sandbox, task_authoring, task_builder
+from marcedit_web.lib.task_builder import Operation
 
 
 def test_legacy_build_value_becomes_typed_segments_without_losing_literals():
@@ -166,3 +168,274 @@ def test_blank_subfield_row_names_the_cataloger_action():
         }
     )
     assert "Complete or remove blank subfield row 1" in errors
+
+
+def _source_record():
+    record = Record()
+    record.add_field(Field(tag="001", data="SYNTHETIC12345"))
+    record.add_field(Field(tag="003", data="NhCcYBP"))
+    return record
+
+
+def smith_035_operation():
+    return {
+        "kind": "build-field",
+        "params": {
+            "tag": "035",
+            "ind1": "9",
+            "ind2": " ",
+            "structured_subfields": [
+                [
+                    "a",
+                    [
+                        {"type": "text", "value": "("},
+                        {"type": "control_field", "tag": "003"},
+                        {"type": "text", "value": ")"},
+                        {"type": "control_field", "tag": "001"},
+                    ],
+                ]
+            ],
+            "existing_field_action": "append",
+            "missing_control_action": "skip_field",
+            "condition": "always",
+        },
+    }
+
+
+def smith_876_operation(missing_control_action="skip_field"):
+    return {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "structured_subfields": [
+                [
+                    "a",
+                    [
+                        {"type": "text", "value": "B("},
+                        {"type": "control_field", "tag": "003"},
+                        {"type": "text", "value": ")"},
+                        {"type": "control_field", "tag": "001"},
+                        {"type": "text", "value": "-SC"},
+                    ],
+                ],
+                ["l", [{"type": "text", "value": "Internet"}]],
+            ],
+            "existing_field_action": "append",
+            "missing_control_action": missing_control_action,
+            "condition": "always",
+        },
+    }
+
+
+def _build_operation_with_text(value):
+    operation = smith_035_operation()
+    operation["params"]["structured_subfields"] = [
+        ["a", [{"type": "text", "value": value}]]
+    ]
+    return operation
+
+
+def test_035_explanation_and_resolved_preview_agree():
+    operation = smith_035_operation()
+    assert task_authoring.describe_operation(operation) == (
+        "Add an 035 field with indicator 1 “9”, a blank indicator 2, "
+        "and subfield a built from 003 and 001. When 035 exists, add "
+        "another field. If a source is missing, do not build this field."
+    )
+    preview = task_authoring.preview_operation(operation, _source_record())
+    assert preview.status == "ready"
+    assert preview.mnemonic == "=035  9\\$a(NhCcYBP)SYNTHETIC12345"
+
+
+def test_add_field_explanation_names_values_and_existing_field_action():
+    operation = {
+        "kind": "add-field",
+        "params": {
+            "tag": "877",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["m", "Map"]],
+            "existing_field_action": "replace_all",
+            "missing_control_action": "skip_field",
+        },
+    }
+    assert task_authoring.describe_operation(operation) == (
+        "Add an 877 field with a blank indicator 1, a blank indicator 2, "
+        "and subfield m containing “Map”. When 877 exists, replace every "
+        "field with this tag."
+    )
+
+
+def test_876_preview_keeps_two_subfields_in_order():
+    preview = task_authoring.preview_operation(
+        smith_876_operation(), _source_record()
+    )
+    assert preview.mnemonic == (
+        "=876  \\\\$aB(NhCcYBP)SYNTHETIC12345-SC$lInternet"
+    )
+
+
+def test_missing_control_preview_obeys_skip_and_fail_policies():
+    record = Record()
+    record.add_field(Field(tag="001", data="123"))
+    skipped = task_authoring.preview_operation(
+        smith_876_operation(missing_control_action="skip_field"), record
+    )
+    failed = task_authoring.preview_operation(
+        smith_876_operation(missing_control_action="fail_record"), record
+    )
+    assert skipped.status == "skipped"
+    assert skipped.message == "Missing required control field 003."
+    assert failed.status == "error"
+    assert failed.message == "Missing required control field 003."
+
+
+def test_preview_never_mutates_source_record():
+    record = _source_record()
+    before = record.as_marc()
+    task_authoring.preview_operation(smith_035_operation(), record)
+    assert record.as_marc() == before
+
+
+def test_literal_braces_render_as_literals_in_structured_preview():
+    operation = _build_operation_with_text("{local}")
+    assert "$a{local}" in task_authoring.preview_operation(
+        operation, _source_record()
+    ).mnemonic
+
+
+def test_unconvertible_legacy_text_is_presented_without_raising():
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["a", "literal {name}"]],
+        },
+    }
+    assert "needs review" in task_authoring.describe_operation(operation)
+    assert task_authoring.render_mnemonic(operation) == (
+        "=876  \\\\$aliteral {name}"
+    )
+    assert "cannot convert" in " ".join(
+        task_authoring.token_annotations(operation)
+    )
+
+
+def test_legacy_if_absent_preview_does_not_skip_a_different_same_tag_field():
+    record = _source_record()
+    record.add_field(
+        Field(
+            tag="876",
+            indicators=[" ", " "],
+            subfields=[Subfield("a", "Different value")],
+        )
+    )
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["a", "Internet"]],
+            "if_absent": True,
+        },
+    }
+    assert task_authoring.preview_operation(operation, record).status == "ready"
+
+
+def test_legacy_backslash_indicator_matches_execution_blank_indicator():
+    record = _source_record()
+    record.add_field(
+        Field(
+            tag="876",
+            indicators=[" ", " "],
+            subfields=[Subfield("a", "Internet")],
+        )
+    )
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": "\\",
+            "ind2": "\\\\",
+            "subfields": [["a", "Internet"]],
+            "if_absent": True,
+        },
+    }
+    assert task_authoring.preview_operation(
+        operation, record
+    ).status == "skipped"
+
+
+def test_876_preview_matches_compiled_sandbox_output():
+    record = _source_record()
+    operation = smith_876_operation()
+    rendered = task_builder.render_ops_to_python(
+        [Operation.from_dict(operation)]
+    )
+    result = sandbox.run_tasks_subprocess(
+        [
+            sandbox.TaskSpec(
+                name="preview-equivalence",
+                body=rendered["body"],
+                imports=rendered["imports"],
+            )
+        ],
+        record.as_marc(),
+    )
+    assert result.returncode == 0
+    assert result.errors == []
+    with result.output_path.open("rb") as stream:
+        output = next(iter(MARCReader(stream)))
+    assert output["876"].get_subfields("a") == [
+        "B(NhCcYBP)SYNTHETIC12345-SC"
+    ]
+    assert output["876"].get_subfields("l") == ["Internet"]
+    assert task_authoring.preview_operation(operation, record).mnemonic == (
+        "=876  \\\\$aB(NhCcYBP)SYNTHETIC12345-SC$lInternet"
+    )
+
+
+def test_legacy_if_absent_preview_matches_identical_field_execution():
+    record = _source_record()
+    record.add_field(
+        Field(
+            tag="876",
+            indicators=[" ", " "],
+            subfields=[Subfield("a", "Different value")],
+        )
+    )
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["a", "Internet"]],
+            "if_absent": True,
+        },
+    }
+    rendered = task_builder.render_ops_to_python(
+        [Operation.from_dict(operation)]
+    )
+    result = sandbox.run_tasks_subprocess(
+        [
+            sandbox.TaskSpec(
+                name="legacy-if-absent-equivalence",
+                body=rendered["body"],
+                imports=rendered["imports"],
+            )
+        ],
+        record.as_marc(),
+    )
+    assert result.returncode == 0
+    with result.output_path.open("rb") as stream:
+        output = next(iter(MARCReader(stream)))
+    assert task_authoring.preview_operation(operation, record).status == "ready"
+    assert [
+        field.get_subfields("a") for field in output.get_fields("876")
+    ] == [["Different value"], ["Internet"]]
