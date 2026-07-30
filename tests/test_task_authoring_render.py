@@ -12,13 +12,16 @@ class FakeStreamlit:
         *,
         checked=None,
         selectbox_values=None,
+        session_state=None,
         text_values=None,
     ):
         self.pressed = set(pressed or ())
-        self.checked = set(checked or ())
+        self.checked = None if checked is None else set(checked)
         self.selectbox_values = dict(selectbox_values or {})
         self.text_values = dict(text_values or {})
-        self.session_state = {}
+        self.session_state = (
+            session_state if session_state is not None else {}
+        )
         self.text_input_labels = []
         self.text_area_labels = []
         self.selectbox_labels = []
@@ -51,13 +54,24 @@ class FakeStreamlit:
         self, label, options, index=0, format_func=None, **kwargs
     ):
         self.selectbox_labels.append(label)
-        self.widget_keys.append(kwargs.get("key"))
-        return self.selectbox_values.get(label, options[index])
+        key = kwargs.get("key")
+        self.widget_keys.append(key)
+        selected = self.selectbox_values.get(
+            label,
+            self.session_state.get(key, options[index]),
+        )
+        self.session_state[key] = selected
+        return selected
 
     def checkbox(self, label, value=False, key=None, **kwargs):
         self.checkbox_labels.append(label)
         self.widget_keys.append(key)
-        return key in self.checked
+        if self.checked is not None:
+            selected = key in self.checked
+        else:
+            selected = self.session_state.get(key, False)
+        self.session_state[key] = selected
+        return selected
 
     def radio(self, label, options, index=0, key=None, **kwargs):
         self.radio_labels.append(label)
@@ -255,6 +269,34 @@ def test_leaving_raw_mode_requires_confirmation_before_discard(monkeypatch):
     )
     assert params["match_mode"] == "contains"
     assert params["find"] == ""
+
+
+def test_keep_raw_mode_cancels_prepend_switch_on_next_rerun(monkeypatch):
+    params = _guided_operation(
+        match_mode="raw_regex",
+        find=r"^(TFeba)(\d+)$",
+        replacement=r"(SCTFEBA)\2",
+    )["params"]
+    shared_state = {}
+    first = FakeStreamlit(
+        pressed={"op_0_mode_switch_keep"},
+        checked={"op_0_advanced_regex"},
+        selectbox_values={"What should it change?": "prepend"},
+        session_state=shared_state,
+    )
+    renderer = _renderer(monkeypatch, first)
+
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    rerun = FakeStreamlit(session_state=shared_state)
+    renderer = _renderer(monkeypatch, rerun)
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    assert rerun.warnings == []
+    assert params["replacement_mode"] == "matched_text"
+    assert params["match_mode"] == "raw_regex"
+    assert params["find"] == r"^(TFeba)(\d+)$"
+    assert params["replacement"] == r"(SCTFEBA)\2"
 
 
 def test_guided_widget_keys_are_unique_and_operation_scoped(monkeypatch):

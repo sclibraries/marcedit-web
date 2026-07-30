@@ -314,11 +314,12 @@ def render_guided_find_replace_params(
     previous_replacement_mode = str(
         params.get("replacement_mode") or "matched_text"
     )
+    replacement_mode_key = _key(key_prefix, "replacement_mode")
     requested_replacement_mode = _select_policy(
         "What should it change?",
         previous_replacement_mode,
         GUIDED_REPLACEMENT_OPTIONS,
-        key=_key(key_prefix, "replacement_mode"),
+        key=replacement_mode_key,
     )
     previous_match_mode = str(params.get("match_mode") or "contains")
     advanced_key = _key(key_prefix, "advanced_regex")
@@ -346,6 +347,9 @@ def render_guided_find_replace_params(
             key=_key(key_prefix, "mode_switch_keep"),
         ):
             st.session_state[advanced_key] = True
+            st.session_state[replacement_mode_key] = (
+                previous_replacement_mode
+            )
         if st.button(
             "Discard matching text and switch",
             key=_key(key_prefix, "mode_switch_discard"),
