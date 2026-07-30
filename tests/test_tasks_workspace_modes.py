@@ -23,6 +23,7 @@ class _FakeStreamlit:
         self.errors = []
         self.successes = []
         self.code_blocks = []
+        self.captions = []
 
     def radio(self, label, options, horizontal=False, key=None,
               label_visibility=None):
@@ -51,7 +52,7 @@ class _FakeStreamlit:
         return False
 
     def caption(self, value):
-        return None
+        self.captions.append(str(value))
 
     def warning(self, value):
         self.warnings.append(str(value))
@@ -194,6 +195,24 @@ def test_new_build_field_defaults_are_structured(monkeypatch):
     assert params["missing_control_action"] == "skip_field"
 
 
+def test_new_guided_find_replace_defaults_match_storage_contract(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+
+    assert tasks_render._default_params_for("guided-find-replace") == {
+        "target_kind": "subfield",
+        "tag": "",
+        "subfield": "",
+        "match_mode": "contains",
+        "find": "",
+        "ignore_case": False,
+        "replacement_mode": "matched_text",
+        "replacement": "",
+        "occurrences": "all",
+        "condition": "always",
+    }
+
+
 def test_existing_legacy_build_is_normalized_in_memory(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
@@ -283,7 +302,7 @@ def test_invalid_persisted_condition_remains_visible_without_form_coercion(
     assert "record condition" in operation["authoring_error"]
 
 
-def test_form_editor_fetches_preview_record_once_and_delegates_add_build(
+def test_form_editor_fetches_preview_record_once_and_delegates_guided_card(
     monkeypatch,
 ):
     fake_st = _FakeStreamlit()
@@ -306,6 +325,21 @@ def test_form_editor_fetches_preview_record_once_and_delegates_add_build(
                 ],
                 "existing_field_action": "append",
                 "missing_control_action": "skip_field",
+            },
+        },
+        {
+            "kind": "guided-find-replace",
+            "params": {
+                "target_kind": "subfield",
+                "tag": "035",
+                "subfield": "a",
+                "match_mode": "contains",
+                "find": "TFeba",
+                "ignore_case": False,
+                "replacement_mode": "matched_text",
+                "replacement": "(SCTFEBA)",
+                "occurrences": "all",
+                "condition": "always",
             },
         },
     ]
@@ -340,6 +374,12 @@ def test_form_editor_fetches_preview_record_once_and_delegates_add_build(
     )
     monkeypatch.setattr(
         tasks_render.task_authoring_render,
+        "render_guided_find_replace_params",
+        lambda params, key_prefix: calls.append(("guided", key_prefix)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tasks_render.task_authoring_render,
         "render_operation_explanation",
         lambda op, record: calls.append(("preview", record)),
     )
@@ -349,7 +389,9 @@ def test_form_editor_fetches_preview_record_once_and_delegates_add_build(
     assert store.get_calls == [0]
     assert ("add", "op_0") in calls
     assert ("build", "op_1") in calls
+    assert ("guided", "op_2") in calls
     assert calls.count(("preview", "first-record")) == 2
+    assert any("replace every" in caption for caption in fake_st.captions)
 
 
 def _wire_successful_save(monkeypatch, tasks_render, saved):
@@ -484,6 +526,45 @@ def test_existing_unresolved_custom_op_can_be_preserved_during_save(
     tasks_render._save_callback(tmp_path)
 
     assert len(saved) == 1
+
+
+def test_valid_guided_raw_regex_saves_without_a_loaded_file(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update(
+        _form_save_state(
+            tasks_render,
+            [
+                {
+                    "kind": "guided-find-replace",
+                    "params": {
+                        "target_kind": "subfield",
+                        "tag": "035",
+                        "subfield": "a",
+                        "match_mode": "raw_regex",
+                        "find": r"^(TFeba)(\d+)$",
+                        "ignore_case": False,
+                        "replacement_mode": "matched_text",
+                        "replacement": r"(SCTFEBA)\2",
+                        "occurrences": "all",
+                        "condition": "always",
+                    },
+                }
+            ],
+        )
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.session, "current_store", lambda: None
+    )
+
+    tasks_render._save_callback(tmp_path)
+
+    assert len(saved) == 1
+    assert tasks_render.K_SAVE_ERROR not in fake_st.session_state
 
 
 def test_stale_form_errors_do_not_block_code_mode_save(monkeypatch, tmp_path):

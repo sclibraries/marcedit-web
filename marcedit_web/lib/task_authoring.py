@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, TypeVar
 
 from pymarc import Record
-from marcedit_web.lib import task_builder
+from marcedit_web.lib import guided_replace, task_builder
 from marcedit_web.lib.transforms import (
     is_control_tag,
     leader_biblevel,
@@ -26,6 +26,30 @@ MISSING_CONTROL_ACTIONS = ("skip_field", "fail_record")
 _TAG_RE = re.compile(r"^\d{3}$")
 _TOKEN_RE = re.compile(r"\{(\d{3})\}")
 _T = TypeVar("_T")
+_GUIDED_REPLACE_PARAMS = {
+    "target_kind",
+    "tag",
+    "subfield",
+    "match_mode",
+    "find",
+    "ignore_case",
+    "replacement_mode",
+    "replacement",
+    "occurrences",
+    "condition",
+}
+_GUIDED_REPLACE_DEFAULTS = {
+    "target_kind": "subfield",
+    "tag": "",
+    "subfield": "",
+    "match_mode": "contains",
+    "find": "",
+    "ignore_case": False,
+    "replacement_mode": "matched_text",
+    "replacement": "",
+    "occurrences": "all",
+    "condition": "always",
+}
 
 
 def legacy_value_to_segments(value: str) -> list[dict[str, str]]:
@@ -74,10 +98,28 @@ def move_item(
     return result
 
 
+def normalize_guided_replace_operation(
+    op: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Apply storage defaults without discarding guided authoring state."""
+
+    normalized = copy.deepcopy(dict(op))
+    params_value = normalized.setdefault("params", {})
+    if not isinstance(params_value, Mapping):
+        raise ValueError("operation parameters must be an object")
+    params = dict(params_value)
+    normalized["params"] = params
+    for name, value in _GUIDED_REPLACE_DEFAULTS.items():
+        params.setdefault(name, value)
+    return normalized
+
+
 def normalize_operation(op: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize an exact legacy Add/Build operation for structured editing."""
 
     normalized = copy.deepcopy(dict(op))
+    if normalized.get("kind") == "guided-find-replace":
+        return normalize_guided_replace_operation(normalized)
     if normalized.get("kind") not in {"add-field", "build-field"}:
         return normalized
     params_value = normalized.setdefault("params", {})
@@ -197,6 +239,35 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
     """Return actionable validation errors for one structured operation."""
 
     kind = str(op.get("kind") or "")
+    if kind == "guided-find-replace":
+        try:
+            normalized = normalize_guided_replace_operation(op)
+        except ValueError as exc:
+            return (str(exc),)
+        params = normalized["params"]
+        errors = list(
+            guided_replace.validate_request(
+                target_kind=params["target_kind"],
+                tag=params["tag"],
+                subfield=params["subfield"],
+                match_mode=params["match_mode"],
+                find=params["find"],
+                ignore_case=params["ignore_case"],
+                replacement_mode=params["replacement_mode"],
+                replacement=params["replacement"],
+                occurrences=params["occurrences"],
+            )
+        )
+        if params["condition"] not in task_builder.LEADER_CONDITIONS:
+            errors.append("record condition is not supported")
+        unexpected = sorted(set(params) - _GUIDED_REPLACE_PARAMS)
+        if unexpected:
+            errors.append(
+                "operation parameters contain unexpected keys: {0}".format(
+                    ", ".join(unexpected)
+                )
+            )
+        return tuple(errors)
     if kind not in {"add-field", "build-field"}:
         return ()
     try:
@@ -411,6 +482,76 @@ def _join_words(values: Sequence[str]) -> str:
     if len(values) == 2:
         return " and ".join(values)
     return ", ".join(values[:-1]) + ", and " + values[-1]
+
+
+def describe_guided_replace(
+    op: Mapping[str, Any],
+    previewed_discard_count: int = 0,
+) -> str:
+    """Describe guided choices without interpreting generated Python."""
+
+    params = normalize_guided_replace_operation(op)["params"]
+    target = {
+        "control_field": "every {0} control field".format(params["tag"]),
+        "subfield": "every {0} subfield {1}".format(
+            params["tag"], params["subfield"]
+        ),
+        "all_subfields": "every subfield in every {0} field".format(
+            params["tag"]
+        ),
+    }.get(
+        params["target_kind"],
+        "selected MARC values",
+    )
+    replacement_mode = params["replacement_mode"]
+    if replacement_mode == "prepend":
+        return "In {0}, prepend “{1}”.".format(
+            target, params["replacement"]
+        )
+    if replacement_mode == "append":
+        return "In {0}, append “{1}”.".format(
+            target, params["replacement"]
+        )
+
+    occurrence = "first" if params["occurrences"] == "first" else "every"
+    sensitivity = (
+        "case-insensitive" if params["ignore_case"] else "case-sensitive"
+    )
+    match_mode = params["match_mode"]
+    match = {
+        "contains": "occurrence of “{0}”".format(params["find"]),
+        "starts_with": "value starting with “{0}”".format(params["find"]),
+        "ends_with": "value ending with “{0}”".format(params["find"]),
+        "whole_value": "value equal to “{0}”".format(params["find"]),
+        "raw_regex": "regular-expression match for “{0}”".format(
+            params["find"]
+        ),
+    }.get(match_mode, "match")
+    if replacement_mode == "whole_value":
+        summary = (
+            "In {0}, when {1} {2} is found, replace it with “{3}” "
+            "and discard the complete value."
+        ).format(
+            target,
+            occurrence,
+            sensitivity + " " + match,
+            params["replacement"],
+        )
+        if previewed_discard_count:
+            summary += " This would discard {0} previewed values.".format(
+                previewed_discard_count
+            )
+        return summary
+    return (
+        "In {0}, replace {1} {2} {3} with “{4}”. "
+        "Keep text before and after each match."
+    ).format(
+        target,
+        occurrence,
+        sensitivity,
+        match,
+        params["replacement"],
+    )
 
 
 def _legacy_mnemonic(op: Mapping[str, Any]) -> str:

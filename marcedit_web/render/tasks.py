@@ -1010,7 +1010,20 @@ def _render_form_editor() -> None:
                     task_authoring_render.render_build_field_params(
                         params, key_prefix=f"op_{i}"
                     )
-                elif op["kind"] not in {"add-field", "build-field"}:
+                elif op["kind"] == "guided-find-replace" and not op.get(
+                    "authoring_error"
+                ):
+                    task_authoring_render.render_guided_find_replace_params(
+                        params, key_prefix=f"op_{i}"
+                    )
+                    st.caption(
+                        task_authoring.describe_guided_replace(op)
+                    )
+                elif op["kind"] not in {
+                    "add-field",
+                    "build-field",
+                    "guided-find-replace",
+                }:
                     for param in palette_entry["params"]:
                         _render_param_input(
                             param,
@@ -1071,6 +1084,19 @@ def _palette_entry(kind: str) -> dict | None:
 
 
 def _default_params_for(kind: str) -> dict:
+    if kind == "guided-find-replace":
+        return {
+            "target_kind": "subfield",
+            "tag": "",
+            "subfield": "",
+            "match_mode": "contains",
+            "find": "",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": "",
+            "occurrences": "all",
+            "condition": "always",
+        }
     entry = _palette_entry(kind)
     if entry is None:
         return {}

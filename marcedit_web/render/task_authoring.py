@@ -25,6 +25,23 @@ SEGMENT_TYPE_OPTIONS = (
     ("text", "Literal text"),
     ("control_field", "Source control field"),
 )
+GUIDED_TARGET_OPTIONS = (
+    ("subfield", "One subfield code"),
+    ("all_subfields", "All subfield values in a tag"),
+    ("control_field", "A control field value"),
+)
+GUIDED_MATCH_OPTIONS = (
+    ("contains", "Contains"),
+    ("starts_with", "Starts with"),
+    ("ends_with", "Ends with"),
+    ("whole_value", "Is the whole value"),
+)
+GUIDED_REPLACEMENT_OPTIONS = (
+    ("matched_text", "Replace the matched text"),
+    ("whole_value", "Replace the whole selected value"),
+    ("prepend", "prepend"),
+    ("append", "append"),
+)
 
 
 def _key(prefix: str, *parts: object) -> str:
@@ -265,6 +282,165 @@ def render_build_field_params(params: dict, *, key_prefix: str) -> None:
             ["", [{"type": "text", "value": ""}]]
         )
         st.rerun()
+
+
+def render_guided_find_replace_params(
+    params: dict,
+    *,
+    key_prefix: str,
+) -> None:
+    """Render progressive controls for one guided value replacement."""
+
+    params["target_kind"] = _select_policy(
+        "Where should Smith Metadata Studio look?",
+        str(params.get("target_kind") or "subfield"),
+        GUIDED_TARGET_OPTIONS,
+        key=_key(key_prefix, "target_kind"),
+    )
+    params["tag"] = st.text_input(
+        "Tag",
+        value=str(params.get("tag", "")),
+        max_chars=3,
+        key=_key(key_prefix, "tag"),
+    )
+    if params["target_kind"] == "subfield":
+        params["subfield"] = st.text_input(
+            "Subfield code",
+            value=str(params.get("subfield", "")),
+            max_chars=1,
+            key=_key(key_prefix, "subfield"),
+        )
+
+    previous_replacement_mode = str(
+        params.get("replacement_mode") or "matched_text"
+    )
+    requested_replacement_mode = _select_policy(
+        "What should it change?",
+        previous_replacement_mode,
+        GUIDED_REPLACEMENT_OPTIONS,
+        key=_key(key_prefix, "replacement_mode"),
+    )
+    previous_match_mode = str(params.get("match_mode") or "contains")
+    advanced_key = _key(key_prefix, "advanced_regex")
+    requested_raw = st.checkbox(
+        "Write a regular expression directly",
+        value=previous_match_mode == "raw_regex",
+        key=advanced_key,
+    )
+
+    leaving_raw = (
+        previous_match_mode == "raw_regex"
+        and (
+            not requested_raw
+            or requested_replacement_mode in {"prepend", "append"}
+        )
+    )
+    if leaving_raw:
+        preserved_key = _key(key_prefix, "preserved_raw_find")
+        st.session_state[preserved_key] = params.get("find", "")
+        st.warning(
+            "Switching modes will discard the current regular expression."
+        )
+        if st.button(
+            "Keep current mode",
+            key=_key(key_prefix, "mode_switch_keep"),
+        ):
+            st.session_state[advanced_key] = True
+        if st.button(
+            "Discard matching text and switch",
+            key=_key(key_prefix, "mode_switch_discard"),
+        ):
+            params["replacement_mode"] = requested_replacement_mode
+            params["match_mode"] = (
+                "none"
+                if requested_replacement_mode in {"prepend", "append"}
+                else "contains"
+            )
+            params["find"] = ""
+            params["occurrences"] = (
+                "all"
+                if requested_replacement_mode in {"prepend", "append"}
+                else params.get("occurrences", "all")
+            )
+            st.session_state.pop(preserved_key, None)
+        return
+
+    params["replacement_mode"] = requested_replacement_mode
+    if requested_replacement_mode in {"prepend", "append"}:
+        params["match_mode"] = "none"
+        params["find"] = ""
+        params["occurrences"] = "all"
+    elif requested_raw:
+        params["match_mode"] = "raw_regex"
+        params["find"] = st.text_input(
+            "Find regular expression",
+            value=str(params.get("find", "")),
+            key=_key(key_prefix, "find_regex"),
+        )
+    else:
+        params["match_mode"] = _select_policy(
+            "How should it match?",
+            (
+                previous_match_mode
+                if previous_match_mode != "raw_regex"
+                else "contains"
+            ),
+            GUIDED_MATCH_OPTIONS,
+            key=_key(key_prefix, "match_mode"),
+        )
+        params["find"] = st.text_input(
+            "Find",
+            value=str(params.get("find", "")),
+            key=_key(key_prefix, "find"),
+        )
+
+    if requested_replacement_mode not in {"prepend", "append"}:
+        params["ignore_case"] = st.checkbox(
+            "Ignore uppercase/lowercase differences",
+            value=bool(params.get("ignore_case", False)),
+            key=_key(key_prefix, "ignore_case"),
+        )
+    params["replacement"] = st.text_input(
+        "Replace with",
+        value=str(params.get("replacement", "")),
+        key=_key(key_prefix, "replacement"),
+    )
+
+    if (
+        params["replacement_mode"] == "matched_text"
+        and params["match_mode"] in {"contains", "raw_regex"}
+    ):
+        occurrence_values = ("first", "all")
+        current_occurrences = str(params.get("occurrences") or "all")
+        if current_occurrences not in occurrence_values:
+            current_occurrences = "all"
+        params["occurrences"] = st.radio(
+            "First or every match?",
+            options=occurrence_values,
+            index=occurrence_values.index(current_occurrences),
+            format_func=lambda value: {
+                "first": "First",
+                "all": "Every",
+            }[value],
+            horizontal=True,
+            key=_key(key_prefix, "occurrences"),
+        )
+    elif params["replacement_mode"] in {"prepend", "append"}:
+        params["occurrences"] = "all"
+    else:
+        params["occurrences"] = "first"
+
+    condition_values = list(task_builder.LEADER_CONDITIONS)
+    current_condition = str(params.get("condition") or "always")
+    if current_condition not in condition_values:
+        current_condition = "always"
+    params["condition"] = st.selectbox(
+        "Apply when",
+        options=condition_values,
+        index=condition_values.index(current_condition),
+        format_func=lambda value: task_builder.LEADER_CONDITION_LABELS[value],
+        key=_key(key_prefix, "condition"),
+    )
 
 
 def render_operation_explanation(

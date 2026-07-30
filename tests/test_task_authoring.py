@@ -9,6 +9,76 @@ from marcedit_web.lib import sandbox, task_authoring, task_builder
 from marcedit_web.lib.task_builder import Operation
 
 
+def _guided_operation(**changes):
+    params = {
+        "target_kind": "subfield",
+        "tag": "035",
+        "subfield": "a",
+        "match_mode": "contains",
+        "find": "TFeba",
+        "ignore_case": False,
+        "replacement_mode": "matched_text",
+        "replacement": "(SCTFEBA)",
+        "occurrences": "all",
+        "condition": "always",
+    }
+    params.update(changes)
+    return {"kind": "guided-find-replace", "params": params}
+
+
+def test_guided_summary_promises_to_keep_both_sides_of_match():
+    assert task_authoring.describe_guided_replace(
+        _guided_operation()
+    ) == (
+        "In every 035 subfield a, replace every case-sensitive occurrence "
+        "of “TFeba” with “(SCTFEBA)”. Keep text before and after each match."
+    )
+
+
+def test_whole_value_summary_names_destructive_preview_count():
+    summary = task_authoring.describe_guided_replace(
+        _guided_operation(replacement_mode="whole_value"),
+        previewed_discard_count=4,
+    )
+    assert "discard the complete value" in summary
+    assert "4 previewed values" in summary
+    assert "the every" not in summary
+
+
+def test_prepend_with_hidden_matching_state_is_preserved_and_rejected():
+    normalized = task_authoring.normalize_guided_replace_operation(
+        _guided_operation(
+            replacement_mode="prepend",
+            match_mode="contains",
+            find="stale",
+        )
+    )
+    assert normalized["params"]["match_mode"] == "contains"
+    assert normalized["params"]["find"] == "stale"
+    assert task_authoring.validate_operation(normalized) == (
+        "prepend requires match mode 'none' and an empty Find value.",
+    )
+
+
+def test_unknown_guided_parameter_blocks_lossy_round_trip():
+    operation = _guided_operation()
+    operation["params"]["future_option"] = True
+    assert task_authoring.validate_operation(operation) == (
+        "operation parameters contain unexpected keys: future_option",
+    )
+
+
+def test_guided_operation_editor_normalization_is_lossless():
+    operation = _guided_operation(
+        match_mode="raw_regex",
+        find=r"^(TFeba)(\d+)$",
+        replacement=r"(SCTFEBA)\2",
+    )
+    assert task_authoring.normalize_operations_for_editor(
+        [operation]
+    ) == [operation]
+
+
 def test_legacy_build_value_becomes_typed_segments_without_losing_literals():
     assert task_authoring.legacy_value_to_segments(
         "B({003}){001}-SC"

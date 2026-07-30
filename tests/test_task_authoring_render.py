@@ -6,11 +6,25 @@ from pymarc import Field, Record
 
 
 class FakeStreamlit:
-    def __init__(self, pressed=None):
+    def __init__(
+        self,
+        pressed=None,
+        *,
+        checked=None,
+        selectbox_values=None,
+        text_values=None,
+    ):
         self.pressed = set(pressed or ())
+        self.checked = set(checked or ())
+        self.selectbox_values = dict(selectbox_values or {})
+        self.text_values = dict(text_values or {})
+        self.session_state = {}
         self.text_input_labels = []
         self.text_area_labels = []
         self.selectbox_labels = []
+        self.checkbox_labels = []
+        self.radio_labels = []
+        self.widget_keys = []
         self.button_keys = []
         self.captions = []
         self.code_blocks = []
@@ -26,7 +40,8 @@ class FakeStreamlit:
 
     def text_input(self, label, value="", **kwargs):
         self.text_input_labels.append(label)
-        return value
+        self.widget_keys.append(kwargs.get("key"))
+        return self.text_values.get(label, value)
 
     def text_area(self, label, value="", **kwargs):
         self.text_area_labels.append(label)
@@ -36,10 +51,28 @@ class FakeStreamlit:
         self, label, options, index=0, format_func=None, **kwargs
     ):
         self.selectbox_labels.append(label)
+        self.widget_keys.append(kwargs.get("key"))
+        return self.selectbox_values.get(label, options[index])
+
+    def checkbox(self, label, value=False, key=None, **kwargs):
+        self.checkbox_labels.append(label)
+        self.widget_keys.append(key)
+        return key in self.checked
+
+    def radio(self, label, options, index=0, key=None, **kwargs):
+        self.radio_labels.append(label)
+        self.widget_keys.append(key)
         return options[index]
+
+    def metric(self, label, value, **kwargs):
+        return None
+
+    def spinner(self, text):
+        return self
 
     def button(self, label, key=None, **kwargs):
         self.button_keys.append(key)
+        self.widget_keys.append(key)
         return key in self.pressed
 
     def caption(self, value):
@@ -137,6 +170,104 @@ def _smith_876_operation():
             "condition": "always",
         },
     }
+
+
+def _guided_operation(**changes):
+    params = {
+        "target_kind": "subfield",
+        "tag": "035",
+        "subfield": "a",
+        "match_mode": "contains",
+        "find": "TFeba",
+        "ignore_case": False,
+        "replacement_mode": "matched_text",
+        "replacement": "(SCTFEBA)",
+        "occurrences": "all",
+        "condition": "always",
+    }
+    params.update(changes)
+    return {"kind": "guided-find-replace", "params": params}
+
+
+def test_guided_default_shows_plain_find_without_regex(monkeypatch):
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    params = _guided_operation()["params"]
+
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    assert "Where should Smith Metadata Studio look?" in fake.selectbox_labels
+    assert "Find" in fake.text_input_labels
+    assert "Write a regular expression directly" in fake.checkbox_labels
+    assert params["match_mode"] == "contains"
+
+
+def test_prepend_hides_find_and_occurrence_controls(monkeypatch):
+    fake = FakeStreamlit(
+        selectbox_values={"What should it change?": "prepend"}
+    )
+    renderer = _renderer(monkeypatch, fake)
+    params = _guided_operation()["params"]
+
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    assert "Find" not in fake.text_input_labels
+    assert "First or every match?" not in fake.radio_labels
+    assert params["match_mode"] == "none"
+    assert params["find"] == ""
+
+
+def test_raw_regex_is_explicit_and_preserves_entered_strings(monkeypatch):
+    fake = FakeStreamlit(
+        checked={"op_0_advanced_regex"},
+        text_values={
+            "Find regular expression": r"^(TFeba)(\d+)$",
+            "Replace with": r"(SCTFEBA)\2",
+        },
+    )
+    renderer = _renderer(monkeypatch, fake)
+    params = _guided_operation()["params"]
+
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    assert params["match_mode"] == "raw_regex"
+    assert params["find"] == r"^(TFeba)(\d+)$"
+    assert params["replacement"] == r"(SCTFEBA)\2"
+
+
+def test_leaving_raw_mode_requires_confirmation_before_discard(monkeypatch):
+    params = _guided_operation(
+        match_mode="raw_regex",
+        find=r"^(TFeba)(\d+)$",
+        replacement=r"(SCTFEBA)\2",
+    )["params"]
+    first = FakeStreamlit()
+    renderer = _renderer(monkeypatch, first)
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+    assert params["match_mode"] == "raw_regex"
+    assert params["find"] == r"^(TFeba)(\d+)$"
+    assert any("discard" in text.lower() for text in first.warnings)
+
+    confirmed = FakeStreamlit(pressed={"op_0_mode_switch_discard"})
+    renderer = _renderer(monkeypatch, confirmed)
+    renderer.render_guided_find_replace_params(
+        params, key_prefix="op_0"
+    )
+    assert params["match_mode"] == "contains"
+    assert params["find"] == ""
+
+
+def test_guided_widget_keys_are_unique_and_operation_scoped(monkeypatch):
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+
+    renderer.render_guided_find_replace_params(
+        _guided_operation()["params"], key_prefix="op_0"
+    )
+
+    keys = [key for key in fake.widget_keys if key is not None]
+    assert len(keys) == len(set(keys))
+    assert all(key.startswith("op_0_") for key in keys)
 
 
 def test_add_field_uses_rows_instead_of_json_textarea(monkeypatch):
