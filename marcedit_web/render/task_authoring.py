@@ -474,7 +474,7 @@ def render_guided_replace_preview(
             normalized = task_authoring.normalize_operation(operation)
             previews[cache_key] = (
                 guided_replace_preview.GuidedReplacePreview(
-                    request=normalized,
+                    request=normalized["params"],
                     store_id=None,
                     store_revision=None,
                     error="No loaded file is available to preview.",

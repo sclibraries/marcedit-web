@@ -3,6 +3,7 @@ import io
 from pathlib import Path
 
 import pymarc
+import pytest
 from pymarc import Field, Record, Subfield
 
 from marcedit_web.lib import guided_replace_preview, sandbox
@@ -134,6 +135,70 @@ def test_preview_cache_key_is_canonical_normalized_request_json():
 
     assert guided_replace_preview.preview_cache_key(sparse) == (
         guided_replace_preview.preview_cache_key(explicit)
+    )
+
+
+def test_oversized_request_fails_loud_and_is_never_current(
+    tmp_path, monkeypatch
+):
+    store = _store_with_035(tmp_path, "TFeba123")
+    operation = _guided_operation(
+        replacement="x" * (sandbox.MAX_ERROR_MESSAGE_BYTES + 1)
+    )
+    monkeypatch.setattr(
+        guided_replace_preview.sandbox,
+        "run_tasks_subprocess",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("oversized request must not reach the sandbox")
+        ),
+    )
+
+    preview = guided_replace_preview.build_preview(store, operation)
+
+    assert "request" in preview.error.lower()
+    assert "limit" in preview.error.lower()
+    assert preview.request == {}
+    assert len(preview.error.encode("utf-8")) <= (
+        sandbox.MAX_ERROR_MESSAGE_BYTES
+    )
+    assert not guided_replace_preview.is_current(preview, store, operation)
+    with pytest.raises(ValueError, match="request.*limit"):
+        guided_replace_preview.preview_cache_key(operation)
+
+
+def test_many_large_selected_values_have_bounded_visible_display(tmp_path):
+    record = Record()
+    original_values = []
+    for index in range(4):
+        value = "TFeba{0}{1}".format(index, "x" * 4000)
+        original_values.append(value)
+        record.add_field(
+            Field(
+                tag="035",
+                indicators=[" ", " "],
+                subfields=[Subfield(code="a", value=value)],
+            )
+        )
+    store = RecordStore.from_bytes(
+        _record_bytes(record),
+        tmp_dir=tmp_path / "large-display",
+    )
+
+    preview = guided_replace_preview.build_preview(store, _guided_operation())
+
+    assert preview.error is None
+    assert preview.result == {
+        "matched_values": 4,
+        "changed_values": 4,
+        "matched_occurrences": 4,
+    }
+    assert len(preview.before.encode("utf-8")) <= sandbox.MAX_STDERR_BYTES
+    assert len(preview.after.encode("utf-8")) <= sandbox.MAX_STDERR_BYTES
+    assert "preview truncated" in preview.before
+    assert "4 selected values" in preview.before
+    assert "preview truncated" in preview.after
+    assert [field["a"] for field in store.get(0).get_fields("035")] == (
+        original_values
     )
 
 

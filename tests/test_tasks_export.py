@@ -585,6 +585,49 @@ def test_raw_regex_submission_requires_current_preview(
     assert "Preview this raw regular expression" in fake_st.errors[-1]
 
 
+def test_oversized_raw_regex_submission_fails_closed(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    operation = tasks_render.Operation(
+        kind="guided-find-replace",
+        params={
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "raw_regex",
+            "find": r"^(TFeba)(\d+)$",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": "x" * 3000,
+            "occurrences": "all",
+            "condition": "always",
+        },
+    )
+    body = tasks_render.task_builder.render_ops_to_python([operation])["body"]
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": body},
+    )
+    store = SimpleNamespace(revision=0)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs),
+    )
+
+    tasks_render._submit_queued_run(["oversized-raw"], tmp_path)
+
+    assert submitted == []
+    assert "request" in fake_st.errors[-1].lower()
+    assert "limit" in fake_st.errors[-1].lower()
+
+
 def test_raw_regex_submission_accepts_current_successful_preview(
     monkeypatch, tmp_path
 ):
@@ -620,7 +663,7 @@ def test_raw_regex_submission_accepts_current_successful_preview(
         operation.to_dict()
     )
     preview = tasks_render.guided_replace_preview.GuidedReplacePreview(
-        request=normalized,
+        request=normalized["params"],
         store_id=id(store),
         store_revision=0,
         result={

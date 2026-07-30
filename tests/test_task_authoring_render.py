@@ -386,6 +386,25 @@ def test_guided_preview_does_not_rerun_sandbox_and_reports_zero_matches(
     assert any("zero matches" in text.lower() for text in fake.infos)
 
 
+def test_oversized_guided_preview_request_is_not_cached(monkeypatch):
+    operation = _guided_operation(
+        replacement="x" * 3000,
+    )
+    fake = FakeStreamlit(pressed={"op_0_preview"})
+    renderer = _renderer(monkeypatch, fake)
+    cache = {}
+
+    renderer.render_guided_replace_preview(
+        operation, object(), cache, key_prefix="op_0"
+    )
+
+    assert cache == {}
+    assert any(
+        "request" in message.lower() and "limit" in message.lower()
+        for message in fake.errors
+    )
+
+
 def test_add_field_uses_rows_instead_of_json_textarea(monkeypatch):
     fake = FakeStreamlit()
     renderer = _renderer(monkeypatch, fake)

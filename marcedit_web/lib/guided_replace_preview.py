@@ -23,6 +23,9 @@ from marcedit_web.lib import (
 
 _MAX_ERROR_CHARS = 1024
 _MAX_ERROR_BYTES = 2048
+_MAX_REQUEST_CHARS = sandbox.MAX_ERROR_MESSAGE_CHARS
+_MAX_REQUEST_BYTES = sandbox.MAX_ERROR_MESSAGE_BYTES
+_MAX_DISPLAY_BYTES = sandbox.MAX_STDERR_BYTES
 
 
 @dataclass(frozen=True)
@@ -41,18 +44,34 @@ def _normalized(operation: Mapping[str, Any]) -> dict:
     errors = task_authoring.validate_operation(normalized)
     if errors:
         raise ValueError("; ".join(errors))
+    _canonical_request_json(normalized)
     return normalized
+
+
+def _canonical_request_json(normalized: Mapping[str, Any]) -> str:
+    request_json = json.dumps(
+        normalized["params"],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if (
+        len(request_json) > _MAX_REQUEST_CHARS
+        or len(request_json.encode("utf-8")) > _MAX_REQUEST_BYTES
+    ):
+        raise ValueError(
+            "Preview request exceeds the {0}-character/{1}-byte limit.".format(
+                _MAX_REQUEST_CHARS,
+                _MAX_REQUEST_BYTES,
+            )
+        )
+    return request_json
 
 
 def preview_cache_key(operation: Mapping[str, Any]) -> str:
     """Return canonical normalized request JSON for the session cache."""
 
     normalized = _normalized(operation)
-    return json.dumps(
-        normalized["params"],
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    return _canonical_request_json(normalized)
 
 
 def is_current(
@@ -70,7 +89,7 @@ def is_current(
         preview.error is None
         and preview.store_id == id(store)
         and preview.store_revision == getattr(store, "revision", None)
-        and preview.request == normalized
+        and preview.request == normalized["params"]
     )
 
 
@@ -94,7 +113,7 @@ def build_preview(
 
     if store.count() == 0:
         return GuidedReplacePreview(
-            request=normalized,
+            request=normalized["params"],
             store_id=store_id,
             store_revision=store_revision,
             error="No loaded record is available to preview.",
@@ -103,7 +122,7 @@ def build_preview(
     source_record = store.get(0)
     if source_record is None:
         return GuidedReplacePreview(
-            request=normalized,
+            request=normalized["params"],
             store_id=store_id,
             store_revision=store_revision,
             error="No loaded record is available to preview.",
@@ -138,7 +157,7 @@ def build_preview(
         error = _sandbox_error(result)
         if error is not None:
             return GuidedReplacePreview(
-                request=normalized,
+                request=normalized["params"],
                 store_id=store_id,
                 store_revision=store_revision,
                 before=before,
@@ -154,7 +173,7 @@ def build_preview(
         if not _valid_counts(captured):
             raise ValueError("sandbox returned invalid preview counts")
         return GuidedReplacePreview(
-            request=normalized,
+            request=normalized["params"],
             store_id=store_id,
             store_revision=store_revision,
             before=before,
@@ -165,7 +184,7 @@ def build_preview(
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return GuidedReplacePreview(
-            request=normalized,
+            request=normalized["params"],
             store_id=store_id,
             store_revision=store_revision,
             before=before,
@@ -206,7 +225,26 @@ def _format_selected_values(record, params: Mapping[str, Any]) -> str:
         else:
             code = field.subfields[subfield_index].code
             lines.append("{0} ${1}{2}".format(field.tag, code, value))
-    return "\n".join(lines)
+    return _bounded_display("\n".join(lines), selected_values=len(lines))
+
+
+def _bounded_display(value: str, *, selected_values: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= _MAX_DISPLAY_BYTES:
+        return value
+    marker = (
+        "\n...[preview truncated: {0} bytes across {1} selected values; "
+        "limit {2} bytes]...\n"
+    ).format(len(encoded), selected_values, _MAX_DISPLAY_BYTES)
+    marker_bytes = marker.encode("utf-8")
+    remaining = _MAX_DISPLAY_BYTES - len(marker_bytes)
+    head_size = remaining // 2
+    tail_size = remaining - head_size
+    return (
+        encoded[:head_size].decode("utf-8", "ignore")
+        + marker
+        + encoded[-tail_size:].decode("utf-8", "ignore")
+    )
 
 
 def _sandbox_error(result: sandbox.SandboxResult) -> Optional[str]:

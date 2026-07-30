@@ -1419,8 +1419,9 @@ def _submit_queued_run(selection: list[str], tasks_dir: Path) -> None:
                 cache_key = guided_replace_preview.preview_cache_key(
                     operation
                 )
-            except (TypeError, ValueError):
-                cache_key = ""
+            except (TypeError, ValueError) as exc:
+                st.error(str(exc))
+                return
             preview = previews.get(cache_key)
             if (
                 store is None
