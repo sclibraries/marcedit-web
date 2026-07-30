@@ -73,6 +73,13 @@ the existing form-task path and does not introduce mixed native/legacy saves.
 A later migration may move complete, supported operation sets across the
 native boundary atomically.
 
+The existing AI drafting paths remain available but frozen on their current
+legacy Add/Build contract (`subfields` plus `if_absent`). TASK-179 does not
+change their prompts, generators, accepted capability set, or validation
+schema. Their output is normalized once, deterministically, when it enters the
+structured form editor. Updating, expanding, disabling, or removing AI
+drafting is deferred to a future release and requires a separate ticket.
+
 The structured UI maps to existing operation values:
 
 - Add Field stores an ordered list of subfield-code/value pairs.
@@ -124,9 +131,10 @@ and:
 
 JSON is not part of normal entry. Existing exact Add Field data is converted
 to rows on reopen. Data that cannot be represented losslessly remains visible
-in its prior technical form. It cannot be converted into a structured
-operation, but an unchanged legacy value may be preserved while the cataloger
-fixes another operation.
+in its prior technical form and blocks form save until the cataloger recreates
+that operation with structured controls. This is distinct from an already
+persisted unresolved import marker, which may be preserved unchanged while a
+different operation is corrected.
 
 ## Build Field Editor
 
@@ -249,7 +257,8 @@ Each structured card shows:
 Presentation validates before interpreting the operation. Invalid or
 unconvertible legacy data shows its prior technical representation and an
 actionable warning; summary, mnemonic, and annotation helpers never propagate
-normalization errors into the Streamlit page.
+normalization errors into the Streamlit page. An unconvertible legacy
+operation blocks form save until repaired.
 
 If no record is loaded, the first three remain available and the resolved
 example explains that a file is required. If a source tag is missing from the
@@ -303,6 +312,9 @@ shown read-only with a warning. Submission performs a separate preflight and
 refuses to queue that task until every unresolved Add/Build instruction has
 been recreated with structured controls. General historical TODO comments
 from unrelated operation families are not reclassified by TASK-179.
+This preflight applies to submissions made after TASK-179 is deployed.
+Operation payloads already queued before deployment are immutable snapshots
+and are outside this gate.
 
 ## Syntax Reference
 
@@ -380,7 +392,9 @@ A later design may add a deterministic controlled-language drafting layer, for
 example turning “remove every 856 and add one 856 with this URL” into a
 structured draft while asking for missing indicators and subfield details.
 That draft must use a grammar and deterministic validator, require cataloger
-review, and never execute directly. No AI expansion is part of TASK-179.
+review, and never execute directly. Existing AI drafting remains unchanged as
+a frozen compatibility path in TASK-179; any later AI redesign or retirement
+requires its own ticket.
 
 TASK-182 will provide explicit canonical MARC field reordering both as a quick
 file action and as a reusable task step, commonly placed last. It will share
@@ -439,7 +453,11 @@ Intent-focused tests cover:
 - missing-source and existing-target policies;
 - validation messages and blocking behavior;
 - deterministic preview values;
+- preview/execution agreement for blank indicators expressed as spaces or
+  legacy backslashes;
 - proof that preview does not mutate source records or create output;
+- unchanged legacy AI-draft generation and deterministic normalization at
+  editor handoff;
 - exact legacy conversion;
 - malformed and ambiguous import blocking;
 - syntax-reference examples synchronized with executable fixtures; and
