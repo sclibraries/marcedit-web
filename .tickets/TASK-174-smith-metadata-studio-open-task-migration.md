@@ -86,6 +86,16 @@ Phase 2:
   Important, or Minor findings. TASK-178 is `Completed`; TASK-174 remains
   `In-Progress` for its remaining form, migration, corpus, and preview phases.
 
+Phase 3:
+- TASK-179: structured Add Field and Build Field authoring in the existing
+  Tasks form, with transparent MARC syntax, deterministic previews, and
+  sanitized Smith CORE acceptance examples.
+- TASK-180: deferred structured Find/Replace and Subfield Edit authoring.
+- TASK-181: deferred explicit deterministic RDA operations.
+- TASK-182: deferred explicit MARC field reordering as both a quick action and
+  an optional task step, while View continues to preserve source order under
+  TASK-169.
+
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.
 - TASK-173 owns the single-touch ITS installation and routing envelope.

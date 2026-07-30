@@ -1,0 +1,35 @@
+Title: Add explicit canonical MARC field reordering
+
+Parent: TASK-174
+
+Related: TASK-169
+
+Scope:
+- Add a quick action that reorders a selected MARC file into the application's
+  documented canonical field order.
+- Add the same deterministic operation as an optional task step, including a
+  convenient final-step placement after other task operations.
+- Preserve the relative order of repeated fields with the same tag unless a
+  separately documented rule requires otherwise.
+- Preview and summarize inversions and changes before writing output.
+- Keep View faithful to source order and retain TASK-169's non-mutating warning;
+  sorting occurs only through an explicit user action or saved task step.
+- Define leader and control-field placement, numeric tag ordering, repeated-tag
+  stability, malformed-tag handling, and output serialization behavior.
+
+Success Criteria:
+- A cataloger can run field reordering directly against a selected file without
+  first creating a reusable task.
+- A cataloger can add the identical operation to a task and place it last.
+- Already ordered records are byte-equivalent apart from unavoidable,
+  documented serializer behavior.
+- Repeated fields retain their original relative order.
+- Preview reports a bounded summary and does not mutate source or stored
+  output.
+- Malformed or unsupported tags fail loud or follow a documented deterministic
+  policy; they are never silently dropped.
+- Quick-action and task-step paths share one tested ordering implementation.
+- Focused and complete supported Docker suites pass with every skip reported.
+- Independent review has no unresolved Critical or Important findings.
+
+Status: Todo
