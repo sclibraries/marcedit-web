@@ -33,6 +33,22 @@ def test_fingerprint_is_sha256_of_canonical_manifest_bytes():
     assert len(expected) == 64
 
 
+def test_runtime_fingerprint_does_not_compile_or_read_golden_fixtures(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("runtime fingerprint touched the golden compiler path")
+
+    monkeypatch.setattr(native_tasks, "compile_definition", fail)
+    monkeypatch.setattr(native_tasks, "build_contract_manifest", fail)
+    monkeypatch.setattr(native_tasks, "verify_contract_manifest", fail)
+
+    manifest = native_tasks.load_contract_manifest()
+    expected = hashlib.sha256(
+        native_tasks.canonical_manifest_json(manifest).encode("utf-8")
+    ).hexdigest()
+
+    assert native_tasks.current_compiler_fingerprint() == expected
+
+
 def test_output_change_requires_manifest_change(monkeypatch):
     original = native_tasks.compile_definition
 

@@ -537,15 +537,10 @@ if action == "delete_tag":
 if action == "sort_fields":
     return task_builder.Operation(kind="sort-fields", params={})
 if action == "build_field":
-    subfields = []
-    for subfield in step["subfields"]:
-        value = "".join(
-            segment["value"]
-            if segment["type"] == "text"
-            else "{" + segment["tag"] + "}"
-            for segment in subfield["segments"]
-        )
-        subfields.append([subfield["code"], value])
+    structured_subfields = [
+        [subfield["code"], subfield["segments"]]
+        for subfield in step["subfields"]
+    ]
     indicators = step["target"]["indicators"]
     return task_builder.Operation(
         kind="build-field",
@@ -553,7 +548,7 @@ if action == "build_field":
             "tag": step["target"]["tag"],
             "ind1": indicators[0],
             "ind2": indicators[1],
-            "subfields": subfields,
+            "structured_subfields": structured_subfields,
             "condition": "always",
             "if_absent": step["existing_target"] == "skip",
         },
