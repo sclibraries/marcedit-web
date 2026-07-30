@@ -279,3 +279,28 @@ def test_materialize_integrity_failure_writes_no_native_task_file(tmp_path):
         task_db.materialize_to_dir("alice@example.edu", target)
 
     assert not (target / "delete_vendor_field.py").exists()
+
+
+def test_materialize_integrity_failure_removes_previous_native_task_file(tmp_path):
+    definition = json.loads(
+        (FIXTURES / "delete-and-sort.json").read_text(encoding="utf-8")
+    )
+    created = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+    target = tmp_path / "mat"
+    path = target / "delete_vendor_field.py"
+    task_db.materialize_to_dir("alice@example.edu", target)
+    assert path.exists()
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET body = ? WHERE id = ?",
+            ("tampered", created["id"]),
+        )
+
+    with pytest.raises(task_db.NativeTaskIntegrityError, match="body"):
+        task_db.materialize_to_dir("alice@example.edu", target)
+
+    assert not path.exists()

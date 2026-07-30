@@ -406,15 +406,19 @@ def materialize_to_dir(user: str, target_dir: Path) -> int:
 
     written = 0
     for t in visible:
-        execution_row = (
-            prepare_task_for_execution(
-                t["owner_email"],
-                t["name"],
-                audit_user=user,
-            )
-            if t.get("definition_json") is not None
-            else t
-        )
+        if t.get("definition_json") is not None:
+            path = editor.task_file_path(target_dir, t["name"])
+            try:
+                execution_row = prepare_task_for_execution(
+                    t["owner_email"],
+                    t["name"],
+                    audit_user=user,
+                )
+            except (NativeTaskCompatibilityError, NativeTaskIntegrityError):
+                path.unlink(missing_ok=True)
+                raise
+        else:
+            execution_row = t
         extras = [
             line
             for line in (execution_row.get("extra_imports") or "").split("\n")
