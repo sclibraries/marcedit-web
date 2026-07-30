@@ -77,9 +77,21 @@ The structured UI maps to existing operation values:
 
 - Add Field stores an ordered list of subfield-code/value pairs.
 - Build Field stores the existing typed `structured_subfields` representation.
+- Form-only existing-field and missing-control actions use names distinct from
+  native schema version 1. Native `existing_target`, native
+  `missing_source`, and legacy `if_absent` are not treated as interchangeable.
 - Operation ordering and move/duplicate/remove controls remain unchanged.
 - Save/reopen must preserve every row and segment without normalization that
   changes meaning.
+
+On open, exact legacy form values are normalized in memory into the structured
+editor representation. A legacy `if_absent` value retains its actual
+identical-field comparison semantics; it is not converted to tag-level skip.
+Successfully converted Build Field values remove the stale raw `subfields`
+copy so one operation never carries two competing representations. The
+database is unchanged until the cataloger saves. If normalization cannot be
+lossless, the original technical value remains visible with an actionable
+error and the page continues rendering.
 
 ## Add Field Editor
 
@@ -112,8 +124,9 @@ and:
 
 JSON is not part of normal entry. Existing exact Add Field data is converted
 to rows on reopen. Data that cannot be represented losslessly remains visible
-in its prior technical form and blocks structured save until the user resolves
-it.
+in its prior technical form. It cannot be converted into a structured
+operation, but an unchanged legacy value may be preserved while the cataloger
+fixes another operation.
 
 ## Build Field Editor
 
@@ -155,14 +168,14 @@ is presented as:
 Given:
 
 ```marc
-=001  TFeba9780020306634
+=001  SYNTHETIC12345
 =003  NhCcYBP
 ```
 
 the preview is:
 
 ```marc
-=035  9\$a(NhCcYBP)TFeba9780020306634
+=035  9\$a(NhCcYBP)SYNTHETIC12345
 ```
 
 The Smith CORE Holdings and Items example:
@@ -185,7 +198,7 @@ is presented as:
 Against the same source record, the preview is:
 
 ```marc
-=876  \\$aB(NhCcYBP)TFeba9780020306634-SC$lInternet
+=876  \\$aB(NhCcYBP)SYNTHETIC12345-SC$lInternet
 ```
 
 The technical mnemonic is displayed, not hidden. An adjacent link to the
@@ -197,13 +210,24 @@ text.
 The form uses explicit cataloger-facing choices for behavior that changes the
 record:
 
-- when the target field exists, append another field, replace existing
-  matching fields, or skip the record;
-- when a required source field is absent, skip the record and report it, or
-  fail the operation.
+- when the target tag exists, append another field, replace every field with
+  that tag, or leave the record unchanged;
+- legacy tasks may retain a fourth compatibility action that suppresses only
+  an identical field, matching the existing `add_field_if_absent` helper; and
+- when a required source control field is absent, skip building this field and
+  report it in preview, or record a task error for that record.
 
 No default silently deletes an existing field. The selected behavior appears
-in the operation's plain-language summary and preview.
+in the operation's plain-language summary, technical representation, and
+preview. Replace/delete work occurs inside both the leader-condition and
+source-availability guards, so a record is never stripped when the new field
+will not be added.
+
+These form actions are deliberately named `existing_field_action` and
+`missing_control_action`. They do not reuse native version 1's
+`existing_target: append|skip` or
+`missing_source: skip_and_report` vocabulary. Native compilation remains
+pinned to its existing `if_absent` bridge and compiler contract.
 
 TASK-179 does not infer the meanings of the four trailing Boolean values in an
 external `buildnewfield` line. An exact signature may be converted only after
@@ -222,6 +246,11 @@ Each structured card shows:
 3. expandable token annotations; and
 4. a resolved first-record example when a record is loaded.
 
+Presentation validates before interpreting the operation. Invalid or
+unconvertible legacy data shows its prior technical representation and an
+actionable warning; summary, mnemonic, and annotation helpers never propagate
+normalization errors into the Streamlit page.
+
 If no record is loaded, the first three remain available and the resolved
 example explains that a file is required. If a source tag is missing from the
 first record, preview applies the selected skip/fail policy and names the
@@ -230,7 +259,7 @@ output.
 
 ## Validation and Failure Handling
 
-Save and preview are blocked when:
+Structured save and preview are blocked when:
 
 - a tag is not exactly three numeric characters;
 - an indicator is not one character or the explicit blank value;
@@ -240,7 +269,8 @@ Save and preview are blocked when:
 - a source reference is not a supported control-field reference;
 - structured data cannot round-trip through the existing form representation
   without loss;
-- an imported line retains an unresolved TODO or ambiguous option; or
+- an Add Field or Build Field cannot be represented without an unresolved
+  ambiguity; or
 - generated mnemonic and structured values disagree.
 
 Messages name the operation and faulty control and explain how to correct it.
@@ -264,6 +294,15 @@ An external line is classified as:
 Only exactly supported lines populate structured controls. Other lines retain
 their local provenance and technical text in the migration review, but they
 cannot be saved as an executable structured operation.
+
+New imports containing any unresolved instruction are not persisted. Existing
+saved tasks that already contain unresolved Add/Build instructions remain
+openable and editable: an unchanged unresolved instruction may be preserved
+while a cataloger corrects another operation. The unresolved instruction is
+shown read-only with a warning. Submission performs a separate preflight and
+refuses to queue that task until every unresolved Add/Build instruction has
+been recreated with structured controls. General historical TODO comments
+from unrelated operation families are not reclassified by TASK-179.
 
 ## Syntax Reference
 

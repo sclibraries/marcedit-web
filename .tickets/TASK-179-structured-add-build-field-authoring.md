@@ -29,8 +29,11 @@ Success Criteria:
   mnemonic, token explanation, and deterministic first-record preview when a
   record is available.
 - Invalid tags, indicators, subfield codes, empty definitions, unresolved
-  source references, lossy round trips, and unresolved import TODOs block save
-  or preview with actionable messages.
+  source references, and lossy round trips block structured save or preview
+  with actionable messages.
+- New imports with unresolved instructions are not persisted. Existing
+  unresolved Add/Build instructions remain visible and preservable during
+  unrelated edits but block task execution until recreated.
 - Structured Add Field and Build Field definitions survive save and reopen
   without changing order, types, or values.
 - Exact supported legacy signatures convert losslessly; malformed or

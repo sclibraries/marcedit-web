@@ -17,9 +17,10 @@
 - Run implementation in an isolated worktree created with `superpowers:using-git-worktrees`; update TASK-179 to `In-Progress` only after the worktree exists.
 - Keep `marcedit_web`, `MARCEDIT_WEB_*`, `/marcedit-web/`, service names, paths, database schema, worker, proxy, and deployment files unchanged.
 - Keep the existing form-task path authoritative; do not create mixed native/legacy saves or change native schema version 1.
+- Keep form `existing_field_action`/`missing_control_action`, native-v1 `existing_target`/`missing_source`, and legacy `if_absent` as distinct contracts; pin the native bridge with a characterization test.
 - Do not change existing AI behavior or call a model for validation, preview, routing, or transformation.
 - Use only deterministic Python for parsing, validation, summaries, mnemonic output, and preview.
-- Preserve the current compiler output for TASK-178's native Build Field fixture; the compiler contract fingerprint must remain unchanged.
+- Preserve the current compiler output for TASK-178's native Build Field fixture. The meaningful guard is `verify_contract_manifest` recompiling the golden definitions; printing `current_compiler_fingerprint()` alone is not a code-generation check.
 - Real files under `MarcEdit Tasks/` and real vendor records remain untracked and must not appear in commits, snapshots, or error fixtures.
 - Python syntax must remain compatible with `>=3.9,<3.10`; do not use `slots=True`, `match`, `X | Y` annotations, or other Python 3.10-only syntax.
 - Unsupported or ambiguous external instructions must be visible and blocking; never silently discard, guess, or execute them.
@@ -33,14 +34,16 @@
 
 - Create `marcedit_web/lib/task_authoring.py`: pure normalization, row/segment mutation, validation, summaries, mnemonic rendering, and read-only preview.
 - Create `marcedit_web/render/task_authoring.py`: Streamlit controls for Add Field rows, Build Field typed segments, and explanation/preview panels.
-- Modify `marcedit_web/lib/task_builder.py`: palette schemas and backward-compatible existing-target/missing-source code generation.
-- Modify `marcedit_web/render/tasks.py`: delegate Add/Build rendering, validate before save, and obtain at most the first loaded record for preview.
+- Modify `marcedit_web/lib/task_builder.py`: palette schemas and backward-compatible form-policy code generation.
+- Modify `marcedit_web/render/tasks.py`: normalize exact operations on open, delegate Add/Build rendering, validate form-mode saves, block unresolved Add/Build submission, and obtain at most the first loaded record for preview.
 - Modify `marcedit_web/lib/marcedit_import.py`: exact Add classification and unresolved Build Field behavior.
 - Create `docs/task-authoring-syntax.md`: supported MARC mnemonic and structured-authoring reference.
 - Create `tests/test_task_authoring.py`: pure model, validation, presentation, preview, and compiled-equivalence coverage.
 - Create `tests/test_task_authoring_render.py`: focused Streamlit widget contract tests.
 - Modify `tests/test_task_builder.py`: palette, code-generation, backward-compatibility, and round-trip tests.
+- Modify `tests/test_native_tasks.py`: pin the native-v1-to-legacy compiler bridge so form policy names cannot change native semantics.
 - Modify `tests/test_tasks_workspace_modes.py`: save blocking and first-record editor integration tests.
+- Modify `tests/test_tasks_export.py`: unresolved Add/Build execution-preflight coverage.
 - Modify `tests/test_marcedit_import.py`: exact/unresolved import classification and no-persist assertions.
 - Create `tests/test_task_authoring_corpus.py`: sanitized workflow fixtures and optional local-corpus classification.
 - Create `tests/fixtures/task_authoring/smith-core-instance.tasksfile.txt`: sanitized Instance signatures.
@@ -65,7 +68,9 @@
 - Produces: `validate_operations(ops: Sequence[Mapping[str, Any]]) -> tuple[str, ...]`.
 - Produces: `legacy_value_to_segments(value: str) -> list[dict[str, str]]`.
 - Produces: `move_item(items: Sequence[_T], index: int, direction: int) -> list[_T]`.
-- Produces: constants `EXISTING_TARGET_POLICIES` and `MISSING_SOURCE_POLICIES`.
+- Produces: constants `EXISTING_FIELD_ACTIONS` and `MISSING_CONTROL_ACTIONS`.
+- Produces: `normalize_operations_for_editor(ops: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]`.
+- Produces: `unresolved_add_build_instructions(body: str) -> tuple[str, ...]`.
 
 - [ ] **Step 1: Create the isolated worktree and mark TASK-179 In-Progress**
 
@@ -121,6 +126,7 @@ def test_literal_braces_are_never_guessed_as_source_references():
     ("operation", "message"),
     [
         ({"kind": "add-field", "params": {"tag": "87"}}, "three numeric"),
+        ({"kind": "add-field", "params": {"tag": "000"}}, "data fields"),
         (
             {
                 "kind": "add-field",
@@ -156,7 +162,7 @@ def test_invalid_structured_operations_name_the_fault(operation, message):
     )
 
 
-def test_existing_if_absent_marker_normalizes_to_skip_without_rewriting_marker():
+def test_existing_if_absent_normalizes_to_identical_field_compatibility():
     normalized = task_authoring.normalize_operation(
         {
             "kind": "build-field",
@@ -167,11 +173,44 @@ def test_existing_if_absent_marker_normalizes_to_skip_without_rewriting_marker()
             },
         }
     )
-    assert normalized["params"]["existing_target"] == "skip"
-    assert normalized["params"]["missing_source"] == "skip"
+    assert normalized["params"]["existing_field_action"] == "skip_if_identical"
+    assert normalized["params"]["missing_control_action"] == "skip_field"
     assert normalized["params"]["structured_subfields"] == [
         ["a", [{"type": "text", "value": "Internet"}]]
     ]
+    assert "if_absent" not in normalized["params"]
+    assert "subfields" not in normalized["params"]
+
+
+def test_unconvertible_legacy_build_stays_visible_in_editor_state():
+    original = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "subfields": [["a", "literal {name}"]],
+            "if_absent": False,
+        },
+    }
+    normalized = task_authoring.normalize_operations_for_editor([original])
+    assert normalized[0]["params"] == original["params"]
+    assert "cannot convert" in normalized[0]["authoring_error"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "# TODO: buildnewfield template '=876  \\\\\\\\$a{001}'",
+        "# TODO: unresolved ADD option(s); priority='106'",
+        "# TODO: ADD with unsupported condition '/unknown/'",
+        "# TODO: malformed 'ADD' — ADD",
+        "# TODO: malformed 'buildnewfield' — buildnewfield",
+    ],
+)
+def test_only_unresolved_add_build_markers_are_execution_blocking(line):
+    assert task_authoring.unresolved_add_build_instructions(line) == (line,)
+    assert task_authoring.unresolved_add_build_instructions(
+        "# TODO: REPLACE arbitrary regex"
+    ) == ()
 
 
 def test_move_item_preserves_order_and_rejects_out_of_range_moves():
@@ -205,8 +244,13 @@ from typing import Any, Mapping, Sequence, TypeVar
 from marcedit_web.lib.transforms import is_control_tag
 
 
-EXISTING_TARGET_POLICIES = ("append", "replace", "skip")
-MISSING_SOURCE_POLICIES = ("skip", "fail")
+EXISTING_FIELD_ACTIONS = (
+    "append",
+    "replace_all",
+    "skip_if_tag_exists",
+    "skip_if_identical",
+)
+MISSING_CONTROL_ACTIONS = ("skip_field", "fail_record")
 _TAG_RE = re.compile(r"^\d{3}$")
 _TOKEN_RE = re.compile(r"\{(\d{3})\}")
 _T = TypeVar("_T")
@@ -254,16 +298,50 @@ def normalize_operation(op: Mapping[str, Any]) -> dict[str, Any]:
     if normalized.get("kind") not in {"add-field", "build-field"}:
         return normalized
     params.setdefault(
-        "existing_target",
-        "skip" if params.get("if_absent") else "append",
+        "existing_field_action",
+        "skip_if_identical" if params.get("if_absent") else "append",
     )
-    params.setdefault("missing_source", "skip")
+    params.setdefault("missing_control_action", "skip_field")
+    params.pop("if_absent", None)
     if normalized["kind"] == "build-field" and "structured_subfields" not in params:
         params["structured_subfields"] = [
             [str(code), legacy_value_to_segments(str(value))]
             for code, value in list(params.get("subfields") or [])
         ]
+    if normalized["kind"] == "build-field":
+        params.pop("subfields", None)
     return normalized
+
+
+def normalize_operations_for_editor(
+    ops: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized = []
+    for op in ops:
+        original = copy.deepcopy(dict(op))
+        try:
+            normalized.append(normalize_operation(original))
+        except ValueError as exc:
+            original["authoring_error"] = str(exc)
+            normalized.append(original)
+    return normalized
+
+
+_UNRESOLVED_ADD_BUILD_PREFIXES = (
+    "# TODO: buildnewfield template ",
+    "# TODO: unresolved ADD option(s);",
+    "# TODO: ADD with unsupported condition ",
+    "# TODO: malformed 'ADD' ",
+    "# TODO: malformed 'buildnewfield' ",
+)
+
+
+def unresolved_add_build_instructions(body: str) -> tuple[str, ...]:
+    return tuple(
+        line.strip()
+        for line in body.splitlines()
+        if line.strip().startswith(_UNRESOLVED_ADD_BUILD_PREFIXES)
+    )
 
 
 def validate_operations(
@@ -280,7 +358,7 @@ def _validate_tag(tag: object) -> list[str]:
     value = str(tag or "")
     if not _TAG_RE.fullmatch(value):
         return ["tag must be exactly three numeric characters"]
-    if is_control_tag(value):
+    if value == "000" or is_control_tag(value):
         return ["Add Field and Build Field targets must be data fields"]
     return []
 
@@ -300,8 +378,6 @@ def _validate_code(value: object, label: str) -> list[str]:
 def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
     kind = str(op.get("kind") or "")
     params = dict(op.get("params") or {})
-    if kind == "custom" and "# TODO:" in str(params.get("code") or ""):
-        return ("unresolved imported instruction must be recreated",)
     if kind not in {"add-field", "build-field"}:
         return ()
     try:
@@ -312,10 +388,10 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
     errors = _validate_tag(params.get("tag"))
     errors.extend(_validate_indicator(params.get("ind1", " "), "indicator 1"))
     errors.extend(_validate_indicator(params.get("ind2", " "), "indicator 2"))
-    if params.get("existing_target") not in EXISTING_TARGET_POLICIES:
-        errors.append("existing-target policy is not supported")
-    if params.get("missing_source") not in MISSING_SOURCE_POLICIES:
-        errors.append("missing-source policy is not supported")
+    if params.get("existing_field_action") not in EXISTING_FIELD_ACTIONS:
+        errors.append("existing-field action is not supported")
+    if params.get("missing_control_action") not in MISSING_CONTROL_ACTIONS:
+        errors.append("missing-control action is not supported")
     key = "subfields" if kind == "add-field" else "structured_subfields"
     subfields = list(params.get(key) or [])
     if not subfields:
@@ -329,12 +405,19 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
                 )
             )
             continue
-        errors.extend(
-            _validate_code(
-                subfield[0],
-                "subfield {0} code".format(subfield_index),
+        if str(subfield[0] or "") == "":
+            errors.append(
+                "Complete or remove blank subfield row {0}".format(
+                    subfield_index
+                )
             )
-        )
+        else:
+            errors.extend(
+                _validate_code(
+                    subfield[0],
+                    "subfield {0} code".format(subfield_index),
+                )
+            )
         if kind == "add-field":
             if not isinstance(subfield[1], str):
                 errors.append(
@@ -392,7 +475,7 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(errors)
 ```
 
-These functions reject non-numeric tags, control tags used as Add/Build data-field targets, multi-character indicators/codes, empty Add rows, empty Build subfields or segments, unknown segment types, non-control source tags, invalid policies, and any `custom` operation whose code contains the unresolved marker `# TODO:`. They leave unrelated existing operation kinds unchanged.
+These functions reject non-numeric tags, control tags used as Add/Build data-field targets, multi-character indicators/codes, empty Add rows, empty Build subfields or segments, unknown segment types, non-control source tags, and invalid policies. They leave `custom` and unrelated existing operation kinds unchanged; unresolved Add/Build execution is a separate body preflight in Task 5.
 
 - [ ] **Step 5: Run focused tests and verify GREEN**
 
@@ -419,12 +502,13 @@ git commit -m "feat: validate structured task authoring"
 - Modify: `marcedit_web/lib/task_builder.py:125-192`
 - Modify: `marcedit_web/lib/task_builder.py:421-635`
 - Modify: `tests/test_task_builder.py`
+- Modify: `tests/test_native_tasks.py`
 - Test: `tests/test_native_task_contract.py`
 
 **Interfaces:**
-- Consumes: `task_authoring.normalize_operation`.
-- Produces: Add/Build params `existing_target: append|replace|skip`.
-- Produces: Build param `missing_source: skip|fail`.
+- Consumes: explicit form params without passing native operations through form normalization.
+- Produces: Add/Build param `existing_field_action: append|replace_all|skip_if_tag_exists|skip_if_identical`.
+- Produces: Build param `missing_control_action: skip_field|fail_record`.
 - Preserves: old `if_absent` marker behavior and TASK-178 compiler manifest bytes.
 
 - [ ] **Step 1: Write failing policy and compatibility tests**
@@ -441,7 +525,7 @@ def test_add_field_replace_policy_deletes_target_before_adding():
                 "ind1": " ",
                 "ind2": " ",
                 "subfields": [["m", "Map"]],
-                "existing_target": "replace",
+                "existing_field_action": "replace_all",
                 "condition": "always",
             },
         )
@@ -452,7 +536,24 @@ def test_add_field_replace_policy_deletes_target_before_adding():
     assert "delete_tags" in out["imports"][0]
 
 
-def test_build_field_missing_source_fail_is_explicit():
+def test_add_and_build_palettes_expose_one_unambiguous_policy_control():
+    entries = {
+        entry["kind"]: entry
+        for entry in task_builder.OPERATIONS_PALETTE
+        if entry["kind"] in {"add-field", "build-field"}
+    }
+    for entry in entries.values():
+        names = [param["name"] for param in entry["params"]]
+        assert "existing_field_action" in names
+        assert "if_absent" not in names
+    build_names = [
+        param["name"] for param in entries["build-field"]["params"]
+    ]
+    assert "structured_subfields" in build_names
+    assert "subfields" not in build_names
+
+
+def test_build_field_missing_control_fail_is_explicit():
     out = task_builder.render_ops_to_python([
         Operation(
             kind="build-field",
@@ -464,8 +565,8 @@ def test_build_field_missing_source_fail_is_explicit():
                     "a",
                     [{"type": "control_field", "tag": "001"}],
                 ]],
-                "existing_target": "append",
-                "missing_source": "fail",
+                "existing_field_action": "append",
+                "missing_control_action": "fail_record",
                 "condition": "always",
             },
         )
@@ -496,71 +597,132 @@ def test_old_if_absent_marker_keeps_existing_codegen_shape():
     )
     out = task_builder.render_ops_to_python([op])
     assert "add_field_if_absent" in out["body"]
-    assert '"existing_target"' not in out["body"]
+    assert '"existing_field_action"' not in out["body"]
+
+
+def test_build_replace_waits_until_source_and_leader_guards_pass():
+    out = task_builder.render_ops_to_python([
+        Operation(
+            kind="build-field",
+            params={
+                "tag": "876",
+                "ind1": " ",
+                "ind2": " ",
+                "structured_subfields": [[
+                    "a",
+                    [{"type": "control_field", "tag": "001"}],
+                ]],
+                "existing_field_action": "replace_all",
+                "missing_control_action": "skip_field",
+                "condition": "books",
+            },
+        )
+    ])
+    assert (
+        "if leader_type(record) in 'amt' and "
+        "leader_biblevel(record) == 'm':\n"
+        "    _t_001 = control_value(record, '001')\n"
+        "    if _t_001 is not None:\n"
+        "        delete_tags(record, '876')\n"
+        "        record.add_ordered_field"
+    ) in out["body"]
 ```
 
-Record the current compiler fingerprint before editing:
+Pin the native bridge in `tests/test_native_tasks.py`:
+
+```python
+def test_native_build_bridge_uses_only_legacy_if_absent_vocabulary():
+    step = _definition("build-field.json")["steps"][0]
+    operation = native_tasks._operation_for_step(step)
+    assert operation.params["if_absent"] is False
+    assert "existing_field_action" not in operation.params
+    assert "missing_control_action" not in operation.params
+```
+
+Before editing, run the actual freshness detector:
 
 ```bash
-docker compose run --rm marcedit-web python -c "from marcedit_web.lib.native_tasks import current_compiler_fingerprint; print(current_compiler_fingerprint())"
+docker compose run --rm marcedit-web pytest -q tests/test_native_task_contract.py::test_checked_in_contract_matches_every_golden_definition
 ```
+
+Expected: one pass. A runtime fingerprint printout is not used as evidence because it hashes the checked-in manifest without compiling.
 
 - [ ] **Step 2: Run the tests to verify RED**
 
 Run:
 
 ```bash
-docker compose run --rm marcedit-web pytest -q tests/test_task_builder.py -k "replace_policy or missing_source_fail or old_if_absent"
+docker compose run --rm marcedit-web pytest -q tests/test_task_builder.py tests/test_native_tasks.py -k "replace_policy or missing_control_fail or old_if_absent or waits_until_source or native_build_bridge"
 ```
 
-Expected: replace-policy and fail-policy assertions fail; old compatibility remains green.
+Expected: the new form-policy tests fail; the old `if_absent` compatibility test remains green; the native bridge test is a green characterization test.
 
 - [ ] **Step 3: Implement minimal policy code without changing old output**
 
-Import `task_authoring` and normalize only for policy lookup:
+Read form-specific policy names directly and fall back to the existing legacy Boolean only when the form names are absent:
 
 ```python
-normalized = task_authoring.normalize_operation(op.to_dict())
-policy_params = normalized["params"]
-existing_target = policy_params["existing_target"]
-missing_source = policy_params["missing_source"]
+existing_field_action = p.get("existing_field_action")
+if existing_field_action is None:
+    existing_field_action = (
+        "skip_if_identical" if p.get("if_absent") else "append"
+    )
+missing_control_action = p.get(
+    "missing_control_action",
+    "skip_field",
+)
 ```
 
-Keep the existing append and old `if_absent` branches byte-for-byte. Add only:
+Keep the legacy `if_absent` and append branches byte-for-byte. Build the new mutation lines before applying wrappers:
 
 ```python
-if existing_target == "replace":
-    add_lines = [f"delete_tags(record, {lit(tag)})", add_stmt]
+if existing_field_action == "replace_all":
+    mutation_lines = [f"delete_tags(record, {lit(tag)})", add_stmt]
     imports.add("delete_tags")
-elif existing_target == "skip":
-    add_lines = [f"if not record.get_fields({lit(tag)}):", f"    {add_stmt}"]
+elif existing_field_action == "skip_if_tag_exists":
+    mutation_lines = [
+        f"if not record.get_fields({lit(tag)}):",
+        f"    {add_stmt}",
+    ]
+elif existing_field_action == "skip_if_identical":
+    mutation_lines = [
+        f"add_field_if_absent(record, {make_call})",
+    ]
+    imports.add("add_field_if_absent")
 else:
-    add_lines = [add_stmt]
+    mutation_lines = [add_stmt]
 ```
 
-For backward compatibility, if the original params contain `if_absent` and do not contain `existing_target`, retain the existing `add_field_if_absent` output rather than emitting the new tag-level skip branch.
+For Build Field with source tokens, place every mutation line under the existing `if <source guard>:` block. Only then wrap the full lookup/guard block in the optional leader condition. This ensures `replace_all` never deletes an existing field when a source is missing or the leader condition is false.
 
 For missing source failure, append an `else` aligned with the existing token guard:
 
 ```python
 missing = ", ".join(tokens)
-body_lines.extend([
-    "else:",
-    f"    raise ValueError({lit('Build Field requires control field ' + missing)})",
-])
+if missing_control_action == "fail_record":
+    body_lines.extend([
+        "else:",
+        "    raise ValueError("
+        + lit("Build Field requires control field " + missing)
+        + ")",
+    ])
 ```
 
 Update the palette:
 
 ```python
 {
-    "name": "existing_target",
+    "name": "existing_field_action",
     "label": "When this tag already exists",
     "type": "select",
     "options": [
         {"value": "append", "label": "Add another field"},
-        {"value": "replace", "label": "Replace existing fields with this tag"},
-        {"value": "skip", "label": "Leave the record unchanged"},
+        {"value": "replace_all", "label": "Replace every field with this tag"},
+        {"value": "skip_if_tag_exists", "label": "Leave the record unchanged"},
+        {
+            "value": "skip_if_identical",
+            "label": "Add unless an identical field already exists",
+        },
     ],
     "default": "append",
 }
@@ -570,18 +732,31 @@ Build Field also receives:
 
 ```python
 {
-    "name": "missing_source",
+    "name": "missing_control_action",
     "label": "When a source control field is missing",
     "type": "select",
     "options": [
-        {"value": "skip", "label": "Skip this record and report it"},
-        {"value": "fail", "label": "Record a task error"},
+        {"value": "skip_field", "label": "Do not build this field"},
+        {"value": "fail_record", "label": "Record a task error for this record"},
     ],
-    "default": "skip",
+    "default": "skip_field",
 }
 ```
 
-Do not remove `if_absent` reading from `_render_one`; old saved tasks and TASK-178 depend on it.
+In the Build Field palette, replace the raw `subfields` parameter with:
+
+```python
+{
+    "name": "structured_subfields",
+    "label": "Subfields and value segments",
+    "type": "structured_subfields",
+    "required": True,
+}
+```
+
+Update `_default_params_for` so both `subfields` and `structured_subfields` default to `[]`. Add Field retains `subfields`; only Build Field uses `structured_subfields`.
+
+Replace the old `if_absent` palette parameter with `existing_field_action`; never render both controls. Do not remove `if_absent` reading from `_render_one`; unopened legacy tasks and TASK-178 depend on it. The compatibility action's label, “Add unless an identical field already exists,” corrects the old misleading tag-level wording.
 
 - [ ] **Step 4: Run focused and compiler-contract tests**
 
@@ -589,15 +764,15 @@ Run:
 
 ```bash
 docker compose run --rm marcedit-web pytest -q tests/test_task_builder.py tests/test_native_tasks.py tests/test_native_task_contract.py
-docker compose run --rm marcedit-web python -c "from marcedit_web.lib.native_tasks import current_compiler_fingerprint; print(current_compiler_fingerprint())"
+git diff --exit-code main -- marcedit_web/schemas/native-task-compiler-contract-v1.json
 ```
 
-Expected: all tests pass with zero skips, and the fingerprint is exactly the value recorded in Step 1. If it differs, stop: do not update the manifest in TASK-179; restore the old generated shape.
+Expected: all tests pass with zero skips, including `test_checked_in_contract_matches_every_golden_definition`, and the checked-in compiler manifest has no diff. If freshness fails, stop: do not update the manifest in TASK-179; restore the native generated shape.
 
 - [ ] **Step 5: Commit Task 2**
 
 ```bash
-git add marcedit_web/lib/task_builder.py tests/test_task_builder.py
+git add marcedit_web/lib/task_builder.py tests/test_task_builder.py tests/test_native_tasks.py
 git commit -m "feat: add explicit field construction policies"
 ```
 
@@ -622,7 +797,7 @@ git commit -m "feat: add explicit field construction policies"
 Add the local fixtures before the tests:
 
 ```python
-from pymarc import Field, Record
+from pymarc import Field, Record, Subfield
 
 
 def _source_record():
@@ -648,14 +823,14 @@ def smith_035_operation():
                     {"type": "control_field", "tag": "001"},
                 ],
             ]],
-            "existing_target": "append",
-            "missing_source": "skip",
+            "existing_field_action": "append",
+            "missing_control_action": "skip_field",
             "condition": "always",
         },
     }
 
 
-def smith_876_operation(missing_source="skip"):
+def smith_876_operation(missing_control_action="skip_field"):
     return {
         "kind": "build-field",
         "params": {
@@ -675,8 +850,8 @@ def smith_876_operation(missing_source="skip"):
                 ],
                 ["l", [{"type": "text", "value": "Internet"}]],
             ],
-            "existing_target": "append",
-            "missing_source": missing_source,
+            "existing_field_action": "append",
+            "missing_control_action": missing_control_action,
             "condition": "always",
         },
     }
@@ -694,11 +869,31 @@ def test_035_explanation_and_resolved_preview_agree():
     operation = smith_035_operation()
     assert task_authoring.describe_operation(operation) == (
         "Add a 035 field with indicator 1 “9”, a blank indicator 2, "
-        "and subfield a built from 003 and 001."
+        "and subfield a built from 003 and 001. When 035 exists, add "
+        "another field. If a source is missing, do not build this field."
     )
     preview = task_authoring.preview_operation(operation, _source_record())
     assert preview.status == "ready"
     assert preview.mnemonic == "=035  9\\$a(NhCcYBP)SYNTHETIC12345"
+
+
+def test_add_field_explanation_names_values_and_existing_field_action():
+    operation = {
+        "kind": "add-field",
+        "params": {
+            "tag": "877",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["m", "Map"]],
+            "existing_field_action": "replace_all",
+            "missing_control_action": "skip_field",
+        },
+    }
+    assert task_authoring.describe_operation(operation) == (
+        "Add an 877 field with a blank indicator 1, a blank indicator 2, "
+        "and subfield m containing “Map”. When 877 exists, replace every "
+        "field with this tag."
+    )
 
 
 def test_876_preview_keeps_two_subfields_in_order():
@@ -710,14 +905,14 @@ def test_876_preview_keeps_two_subfields_in_order():
     )
 
 
-def test_missing_source_preview_obeys_skip_and_fail_policies():
+def test_missing_control_preview_obeys_skip_and_fail_policies():
     record = Record()
     record.add_field(Field(tag="001", data="123"))
     skipped = task_authoring.preview_operation(
-        smith_876_operation(missing_source="skip"), record
+        smith_876_operation(missing_control_action="skip_field"), record
     )
     failed = task_authoring.preview_operation(
-        smith_876_operation(missing_source="fail"), record
+        smith_876_operation(missing_control_action="fail_record"), record
     )
     assert skipped.status == "skipped"
     assert skipped.message == "Missing required control field 003."
@@ -737,6 +932,49 @@ def test_literal_braces_render_as_literals_in_structured_preview():
     assert "$a{local}" in task_authoring.preview_operation(
         operation, _source_record()
     ).mnemonic
+
+
+def test_unconvertible_legacy_text_is_presented_without_raising():
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["a", "literal {name}"]],
+        },
+    }
+    assert "needs review" in task_authoring.describe_operation(operation)
+    assert task_authoring.render_mnemonic(operation) == (
+        "=876  \\\\$aliteral {name}"
+    )
+    assert "cannot convert" in " ".join(
+        task_authoring.token_annotations(operation)
+    )
+
+
+def test_legacy_if_absent_preview_does_not_skip_a_different_same_tag_field():
+    record = _source_record()
+    record.add_field(
+        Field(
+            tag="876",
+            indicators=[" ", " "],
+            subfields=[Subfield("a", "Different value")],
+        )
+    )
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["a", "Internet"]],
+            "if_absent": True,
+        },
+    }
+    assert task_authoring.preview_operation(
+        operation, record
+    ).status == "ready"
 ```
 
 Add an equivalence test that renders the operation through `task_builder` and runs the compiled body through the existing sandbox. This test encodes why UI preview and execution cannot drift:
@@ -777,6 +1015,47 @@ def test_876_preview_matches_compiled_sandbox_output():
     ).mnemonic == (
         "=876  \\\\$aB(NhCcYBP)SYNTHETIC12345-SC$lInternet"
     )
+
+
+def test_legacy_if_absent_preview_matches_identical_field_execution():
+    record = _source_record()
+    record.add_field(
+        Field(
+            tag="876",
+            indicators=[" ", " "],
+            subfields=[Subfield("a", "Different value")],
+        )
+    )
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["a", "Internet"]],
+            "if_absent": True,
+        },
+    }
+    rendered = task_builder.render_ops_to_python([
+        Operation.from_dict(operation)
+    ])
+    result = sandbox.run_tasks_subprocess(
+        [
+            sandbox.TaskSpec(
+                name="legacy-if-absent-equivalence",
+                body=rendered["body"],
+                imports=rendered["imports"],
+            )
+        ],
+        record.as_marc(),
+    )
+    with result.output_path.open("rb") as stream:
+        output = next(iter(MARCReader(stream)))
+    assert task_authoring.preview_operation(operation, record).status == "ready"
+    assert [field.get_subfields("a") for field in output.get_fields("876")] == [
+        ["Different value"],
+        ["Internet"],
+    ]
 ```
 
 - [ ] **Step 2: Run the tests to verify RED**
@@ -840,10 +1119,27 @@ def _join_words(values: Sequence[str]) -> str:
     return ", ".join(values[:-1]) + ", and " + values[-1]
 
 
+def _legacy_mnemonic(op: Mapping[str, Any]) -> str:
+    params = dict(op.get("params") or {})
+    prefix = "={0}  {1}{2}".format(
+        params.get("tag", "???"),
+        _display_indicator(str(params.get("ind1", " "))),
+        _display_indicator(str(params.get("ind2", " "))),
+    )
+    return prefix + "".join(
+        "${0}{1}".format(code, value)
+        for code, value in list(params.get("subfields") or [])
+    )
+
+
 def describe_operation(op: Mapping[str, Any]) -> str:
-    normalized = normalize_operation(op)
+    try:
+        normalized = normalize_operation(op)
+    except ValueError as exc:
+        return "Build Field needs review: {0}.".format(exc)
     params = normalized["params"]
     tag = params["tag"]
+    article = "an" if tag.startswith("8") else "a"
     ind1 = (
         "a blank indicator 1"
         if params.get("ind1", " ") == " "
@@ -860,11 +1156,11 @@ def describe_operation(op: Mapping[str, Any]) -> str:
         else "structured_subfields"
     )
     codes = [str(code) for code, _value in params[key]]
-    label = "subfield" if len(codes) == 1 else "subfields"
-    description = "Add a {0} field with {1}, {2}, and {3} {4}".format(
-        tag, ind1, ind2, label, _join_words(codes)
-    )
     if normalized["kind"] == "build-field":
+        label = "subfield" if len(codes) == 1 else "subfields"
+        description = "Add {0} {1} field with {2}, {3}, and {4} {5}".format(
+            article, tag, ind1, ind2, label, _join_words(codes)
+        )
         sources = []
         for _code, segments in params["structured_subfields"]:
             for segment in segments:
@@ -875,6 +1171,27 @@ def describe_operation(op: Mapping[str, Any]) -> str:
                     sources.append(segment["tag"])
         if sources:
             description += " built from {0}".format(_join_words(sources))
+    else:
+        values = [
+            "subfield {0} containing “{1}”".format(code, value)
+            for code, value in params["subfields"]
+        ]
+        description = "Add {0} {1} field with {2}, {3}, and {4}".format(
+            article, tag, ind1, ind2, _join_words(values)
+        )
+    existing = {
+        "append": "add another field",
+        "replace_all": "replace every field with this tag",
+        "skip_if_tag_exists": "leave the record unchanged",
+        "skip_if_identical": "add unless an identical field exists",
+    }[params["existing_field_action"]]
+    description += ". When {0} exists, {1}".format(tag, existing)
+    if normalized["kind"] == "build-field":
+        missing = {
+            "skip_field": "do not build this field",
+            "fail_record": "record a task error for this record",
+        }[params["missing_control_action"]]
+        description += ". If a source is missing, {0}".format(missing)
     return description + "."
 
 
@@ -882,7 +1199,10 @@ def render_mnemonic(
     op: Mapping[str, Any],
     record: Optional[Record] = None,
 ) -> str:
-    normalized = normalize_operation(op)
+    try:
+        normalized = normalize_operation(op)
+    except ValueError:
+        return _legacy_mnemonic(op)
     params = normalized["params"]
     if normalized["kind"] == "add-field":
         resolved_subfields = [
@@ -907,7 +1227,15 @@ def render_mnemonic(
 
 
 def token_annotations(op: Mapping[str, Any]) -> tuple[str, ...]:
-    normalized = normalize_operation(op)
+    try:
+        normalized = normalize_operation(op)
+    except ValueError as exc:
+        return (
+            "Cannot interpret this legacy Build Field: {0}".format(exc),
+            "Raw technical value preserved: {0}".format(
+                _legacy_mnemonic(op)
+            ),
+        )
     params = normalized["params"]
     annotations = [
         "={0}: target MARC tag.".format(params["tag"]),
@@ -971,21 +1299,53 @@ def preview_operation(
                 ):
                     missing.append(segment["tag"])
     if missing:
-        status = "error" if params["missing_source"] == "fail" else "skipped"
+        status = (
+            "error"
+            if params["missing_control_action"] == "fail_record"
+            else "skipped"
+        )
         return AuthoringPreview(
             status,
             unresolved,
             "Missing required control field {0}.".format(", ".join(missing)),
         )
-    if (
-        params["existing_target"] == "skip"
-        and candidate.get_fields(params["tag"])
-    ):
+    action = params["existing_field_action"]
+    if action == "skip_if_tag_exists" and candidate.get_fields(params["tag"]):
         return AuthoringPreview(
             "skipped",
             unresolved,
             "Target field {0} already exists.".format(params["tag"]),
         )
+    if action == "skip_if_identical":
+        if normalized["kind"] == "add-field":
+            signature_subfields = tuple(
+                (str(code), str(value))
+                for code, value in params["subfields"]
+            )
+        else:
+            signature_subfields = tuple(
+                (code, _resolve_segments(segments, candidate)[0])
+                for code, segments in params["structured_subfields"]
+            )
+        new_signature = (
+            params.get("ind1", " "),
+            params.get("ind2", " "),
+            signature_subfields,
+        )
+        existing_signatures = {
+            (
+                field.indicators[0],
+                field.indicators[1],
+                tuple((sf.code, sf.value) for sf in field.subfields),
+            )
+            for field in candidate.get_fields(params["tag"])
+        }
+        if new_signature in existing_signatures:
+            return AuthoringPreview(
+                "skipped",
+                unresolved,
+                "An identical {0} field already exists.".format(params["tag"]),
+            )
     return AuthoringPreview(
         "ready",
         render_mnemonic(normalized, candidate),
@@ -1043,7 +1403,7 @@ def test_add_field_uses_rows_instead_of_json_textarea(monkeypatch):
         "ind1": " ",
         "ind2": " ",
         "subfields": [["m", "Map"]],
-        "existing_target": "append",
+        "existing_field_action": "append",
         "condition": "always",
     }
     renderer.render_add_field_params(params, key_prefix="op_0")
@@ -1080,9 +1440,44 @@ def test_operation_panel_shows_plain_mnemonic_annotations_and_preview(monkeypatc
     assert any("Add a 035 field" in text for text in fake.captions)
     assert any("=035" in text for text in fake.code_blocks)
     assert any("control field 003" in text for text in fake.markdown_blocks)
+
+
+def test_unconvertible_legacy_build_renders_raw_value_instead_of_crashing(
+    monkeypatch,
+):
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    operation = {
+        "kind": "build-field",
+        "authoring_error": "cannot convert legacy Build Field text losslessly",
+        "params": {
+            "tag": "876",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["a", "literal {name}"]],
+        },
+    }
+    renderer.render_operation_explanation(operation, _source_record())
+    assert any("cannot convert" in warning for warning in fake.warnings)
+    assert any("literal {name}" in block for block in fake.code_blocks)
+
+
+def test_nested_subfield_and_segment_button_keys_are_unique(monkeypatch):
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    renderer.render_build_field_params(
+        smith_876_operation()["params"],
+        key_prefix="op_0",
+    )
+    assert len(fake.button_keys) == len(set(fake.button_keys))
+    assert any(key.startswith("op_0_sf_0_") for key in fake.button_keys)
+    assert any(
+        key.startswith("op_0_sf_0_seg_0_")
+        for key in fake.button_keys
+    )
 ```
 
-Add an integration test in `test_tasks_workspace_modes.py` proving `_render_form_editor` asks `session.current_store().get(0)` at most once and delegates only Add/Build operations to the focused renderer.
+Add integration tests in `test_tasks_workspace_modes.py` proving `_render_form_editor` asks `session.current_store().get(0)` at most once and delegates only Add/Build operations to the focused renderer. Also prove `_open_editor_for_existing_row` converts exact legacy Build values in memory, removes stale `subfields`/`if_absent`, and preserves an unconvertible operation with `authoring_error` and its original params.
 
 - [ ] **Step 2: Run renderer tests to verify RED**
 
@@ -1098,12 +1493,16 @@ Expected: import or attribute failures because the renderer does not exist.
 
 Create `marcedit_web/render/task_authoring.py`. Use explicit labels and existing `st.columns`, `st.button`, `st.text_input`, `st.selectbox`, `st.caption`, `st.code`, and `st.expander` APIs. Mutate the passed params only after collecting the full row/segment value.
 
+Both renderers own the complete Add/Build card: tag, two indicators, leader condition, `existing_field_action`, subfield controls, and—on Build Field—`missing_control_action`. Delegation therefore does not make any current non-JSON control disappear.
+
 Use key helpers:
 
 ```python
 def _key(prefix: str, *parts: object) -> str:
     return "_".join([prefix] + [str(part) for part in parts])
 ```
+
+Every subfield passes `_key(key_prefix, "sf", subfield_index)` as its child prefix. Every Build segment passes `_key(subfield_prefix, "seg", segment_index)`. `_move_or_remove` receives those nested prefixes, never the top-level operation prefix, so subfield and segment buttons cannot collide.
 
 Use one small button helper:
 
@@ -1134,9 +1533,16 @@ For Build Field, each subfield row owns an ordered `segments` list. Segment type
 {"type": "control_field", "tag": ""}
 ```
 
-The explanation panel renders:
+The explanation panel validates before presenting. An unconvertible operation remains visible and does not call the structured renderer:
 
 ```python
+authoring_error = str(op.get("authoring_error") or "")
+validation_errors = task_authoring.validate_operation(op)
+if authoring_error or validation_errors:
+    message = authoring_error or "; ".join(validation_errors)
+    st.warning(message)
+    st.code(task_authoring.render_mnemonic(op), language="text")
+    return
 st.caption(task_authoring.describe_operation(op))
 st.code(task_authoring.render_mnemonic(op), language="text")
 with st.expander("What this MARC syntax means"):
@@ -1156,8 +1562,20 @@ else:
 In `render/tasks.py`, import the new render module with an unambiguous alias:
 
 ```python
+from marcedit_web.lib import task_authoring
 from marcedit_web.render import task_authoring as task_authoring_render
 ```
+
+In `_open_editor_for_existing_row`, normalize only the parsed form operations:
+
+```python
+parsed_ops = [op.to_dict() for op in parse_result["ops"]]
+st.session_state[K_EDITOR_OPS] = (
+    task_authoring.normalize_operations_for_editor(parsed_ops)
+)
+```
+
+This is an in-memory editor conversion. It does not write SQL. Exact Build conversion removes stale raw `subfields` and legacy `if_absent`; an unconvertible operation keeps both original params plus top-level `authoring_error`.
 
 Obtain the preview record once before the operation loop:
 
@@ -1194,6 +1612,8 @@ if op["kind"] in {"add-field", "build-field"}:
 
 Do not call the generic JSON `subfields` textarea for Add/Build. Leave it available for unrelated old operation parameter types until those receive their own tickets.
 
+When a newly appended blank row blocks save, validation says “Complete or remove blank subfield row N” rather than presenting the blank row as an internal error.
+
 - [ ] **Step 5: Run renderer and workspace tests**
 
 Run:
@@ -1221,11 +1641,14 @@ git commit -m "feat: add guided Add and Build Field controls"
 - Modify: `marcedit_web/lib/marcedit_import.py:145-240`
 - Modify: `tests/test_tasks_workspace_modes.py`
 - Modify: `tests/test_marcedit_import.py`
+- Modify: `tests/test_tasks_export.py`
 
 **Interfaces:**
 - Consumes: `task_authoring.validate_operations`.
+- Consumes: `task_authoring.unresolved_add_build_instructions`.
 - Produces: exact Add conversion only when ignored external columns are empty and the condition is known.
-- Preserves: unresolved external line text in the import result and displays it before refusing persistence.
+- Preserves: existing unresolved tasks for editing while blocking their execution; unrelated historical TODO comments retain current behavior.
+- Preserves: unresolved external line text in new import results and displays it before refusing persistence.
 
 - [ ] **Step 1: Write failing save and import tests**
 
@@ -1240,7 +1663,7 @@ def test_save_blocks_invalid_structured_field_before_sql(monkeypatch, tmp_path):
             "ind1": " ",
             "ind2": " ",
             "subfields": [],
-            "existing_target": "append",
+            "existing_field_action": "append",
             "condition": "always",
         },
     }]
@@ -1252,23 +1675,38 @@ def test_save_blocks_invalid_structured_field_before_sql(monkeypatch, tmp_path):
     ]
 
 
-def test_save_blocks_unresolved_import_marker(monkeypatch, tmp_path):
+def test_existing_unresolved_custom_op_can_be_preserved_during_save(
+    monkeypatch, tmp_path
+):
     fake_st.session_state[tasks_render.K_EDITOR_OPS] = [{
         "kind": "custom",
-        "params": {"code": "# TODO: unresolved external Build Field flags"},
+        "params": {
+            "code": (
+                "# TODO: buildnewfield template '=876  \\\\\\\\$a{001}' "
+                "— recreate with structured Build Field"
+            )
+        },
     }]
     tasks_render._save_callback(tmp_path)
-    assert saved == []
-    assert "unresolved imported instruction" in fake_st.session_state[
-        tasks_render.K_SAVE_ERROR
-    ]
+    assert len(saved) == 1
+
+
+def test_stale_form_errors_do_not_block_code_mode_save(monkeypatch, tmp_path):
+    fake_st.session_state[tasks_render.K_EDITOR_MODE] = "code"
+    fake_st.session_state[tasks_render.K_EDITOR_BODY] = "pass"
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = [{
+        "kind": "add-field",
+        "params": {"tag": "bad", "subfields": []},
+    }]
+    tasks_render._save_callback(tmp_path)
+    assert len(saved) == 1
 ```
 
 Add importer tests:
 
 ```python
 def test_add_with_empty_priority_and_known_condition_is_exact():
-    src = "ADD\t877\t\\\\\\\\$mMap\t\t/=LDR.{8}[e,f].+/\n"
+    src = "ADD\t877\t\\\\$mMap\t\t/=LDR.{8}[e,f].+/\n"
     result = marcedit_import.convert_tasksfile_text(
         src, name="map", description_fallback=""
     )
@@ -1277,7 +1715,7 @@ def test_add_with_empty_priority_and_known_condition_is_exact():
 
 
 def test_add_with_unmapped_numeric_priority_remains_blocking():
-    src = "ADD\t877\t\\\\\\\\$mMap\t106\t/=LDR.{8}[e,f].+/\n"
+    src = "ADD\t877\t\\\\$mMap\t106\t/=LDR.{8}[e,f].+/\n"
     result = marcedit_import.convert_tasksfile_text(
         src, name="map", description_fallback=""
     )
@@ -1294,10 +1732,63 @@ def test_buildnewfield_flags_remain_visible_and_unresolved():
         line + "\n", name="holdings", description_fallback=""
     )
     assert result.unsupported == [line]
-    assert line.split("\t")[1] in result.body
+    assert repr(line.split("\t")[1]) in result.body
+    assert "recreate with structured Build Field" in result.body
 ```
 
 Add UI tests proving `_do_marcedit_import` does not call `task_db.save_task` for a conversion with `unsupported`, displays a bounded list of unresolved lines, and still saves an exact entry from the same archive.
+
+In `tests/test_tasks_export.py`, add:
+
+```python
+def _write_submission_task(tasks_render, root, name, body):
+    path = tasks_render.editor.task_file_path(root, name)
+    path.write_text(
+        tasks_render.editor.serialize_user_task(name, "", body),
+        encoding="utf-8",
+    )
+
+
+def test_unresolved_add_build_task_is_not_submitted(
+    monkeypatch, tmp_path
+):
+    _write_submission_task(
+        tasks_render,
+        tmp_path,
+        "needs-review",
+        "# TODO: buildnewfield template '=876  \\\\\\\\$a{001}' "
+        "— recreate with structured Build Field",
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs),
+    )
+    tasks_render._submit_queued_run(["needs-review"], tmp_path)
+    assert submitted == []
+    assert "cannot run" in fake_st.errors[-1]
+    assert "Build Field" in fake_st.errors[-1]
+
+
+def test_unrelated_historical_todo_does_not_trigger_add_build_gate(
+    monkeypatch, tmp_path
+):
+    _write_submission_task(
+        tasks_render,
+        tmp_path,
+        "replace-review",
+        "# TODO: REPLACE arbitrary regex — hand-translate this line",
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs) or {"id": 7},
+    )
+    tasks_render._submit_queued_run(["replace-review"], tmp_path)
+    assert len(submitted) == 1
+```
 
 - [ ] **Step 2: Run tests to verify RED**
 
@@ -1307,11 +1798,11 @@ Run:
 docker compose run --rm marcedit-web pytest -q tests/test_marcedit_import.py tests/test_tasks_workspace_modes.py -k "structured or unresolved or priority or buildnewfield"
 ```
 
-Expected: current broad Add conversion and direct import persistence fail the new assertions.
+Expected: the numeric-priority Add classification, structured-recreation message, new-import refusal, and execution-preflight assertions fail. The existing Build Field unsupported assertions are characterization checks and remain green.
 
 - [ ] **Step 3: Validate before rendering or persistence**
 
-In `_save_callback`, before `render_ops_to_python`:
+In `_save_callback`, place validation inside the existing `if mode == "form":` branch immediately before `render_ops_to_python`:
 
 ```python
 raw_ops = st.session_state.get(K_EDITOR_OPS, [])
@@ -1322,6 +1813,7 @@ ops = [Operation.from_dict(op) for op in raw_ops]
 ```
 
 Do not mutate session state during validation. A failed save must leave the existing SQL row, task registry, and materialized task file unchanged.
+Do not validate `K_EDITOR_OPS` in code mode; stale form state is irrelevant to a code-mode save.
 
 - [ ] **Step 4: Tighten external classification**
 
@@ -1373,6 +1865,25 @@ def _save_exact_conversion(user: str, conv: ConversionResult) -> bool:
 
 Use it for text imports and each archive entry. Archive reporting distinguishes exact imports from unresolved entries; no unresolved conversion is persisted or executed.
 
+In `_submit_queued_run`, check each parsed body before appending its `TaskSpec`:
+
+```python
+unresolved = task_authoring.unresolved_add_build_instructions(
+    parsed["body"]
+)
+if unresolved:
+    st.error(
+        "Task `{0}` cannot run until its unresolved Add/Build "
+        "instruction is recreated with structured controls: {1}".format(
+            name,
+            unresolved[0],
+        )
+    )
+    return
+```
+
+This execution gate applies to existing persisted and newly materialized tasks. It matches only Add/Build templates, ignored options, unsupported Add conditions, and malformed Add/Build lines. It does not reinterpret unknown verbs, malformed lines from other operation families, arbitrary REPLACE TODOs, or future operation families.
+
 - [ ] **Step 5: Run import, save, and regression tests**
 
 Run:
@@ -1386,7 +1897,7 @@ Expected: all tests pass with zero skips.
 - [ ] **Step 6: Commit Task 5**
 
 ```bash
-git add marcedit_web/lib/marcedit_import.py marcedit_web/render/tasks.py tests/test_marcedit_import.py tests/test_tasks_workspace_modes.py
+git add marcedit_web/lib/marcedit_import.py marcedit_web/render/tasks.py tests/test_marcedit_import.py tests/test_tasks_workspace_modes.py tests/test_tasks_export.py
 git commit -m "fix: block ambiguous external task instructions"
 ```
 
@@ -1417,7 +1928,7 @@ REFERENCE = Path(__file__).parents[1] / "docs" / "task-authoring-syntax.md"
 
 def test_smith_core_instance_fixture_contains_035_and_visible_rda_gap():
     text = (FIXTURES / "smith-core-instance.tasksfile.txt").read_text()
-    assert "=035  9\\\\$a({003}){001}" in text
+    assert "=035  9\\$a({003}){001}" in text
     assert "RDAHELPER" in text
 
 
@@ -1425,7 +1936,7 @@ def test_holdings_fixture_contains_876_and_add_examples():
     text = (
         FIXTURES / "smith-core-holdings-items.tasksfile.txt"
     ).read_text()
-    assert "=876  \\\\\\\\$aB({003}){001}-SC$lInternet" in text
+    assert "=876  \\\\$aB({003}){001}-SC$lInternet" in text
     assert "ADD\t852" in text
     assert "ADD\t877" in text
 
@@ -1519,8 +2030,8 @@ Create `docs/task-authoring-syntax.md` with these sections:
 ## Build Field
 ## Literal text
 ## Source control fields
-## Existing-target choices
-## Missing-source choices
+## Existing-field choices
+## Missing-control-field choices
 ## Supported examples
 ### Build 035 from 003 and 001
 ### Build 876 from literals, 003, and 001
@@ -1544,6 +2055,8 @@ Explain the exact mnemonic tokens:
 - `$lInternet`: subfield l with literal value `Internet`.
 
 State prominently that the structured editor stores typed segments, not an executable raw template; the mnemonic is a transparent technical representation. Document only behavior covered by committed tests. Mark RDAHELPER, unknown external flags, arbitrary `.mrk` regex, and undocumented numeric/pipe-delimited options as not supported.
+
+Document all four form existing-field actions, both missing-control actions, and why legacy “skip identical” differs from “skip when this tag exists.” Add a short developer note that native-v1 `existing_target`/`missing_source` are separate schema vocabulary and must not be pasted into form operation params.
 
 - [ ] **Step 5: Run fixture, docs, import, and pure-model tests**
 
@@ -1596,10 +2109,10 @@ Run:
 ```bash
 python3 -m py_compile marcedit_web/lib/task_authoring.py marcedit_web/lib/task_builder.py marcedit_web/lib/marcedit_import.py marcedit_web/render/task_authoring.py marcedit_web/render/tasks.py
 git diff --check main...HEAD
-docker compose run --rm marcedit-web pytest -q tests/test_task_authoring.py tests/test_task_authoring_render.py tests/test_task_authoring_corpus.py tests/test_task_builder.py tests/test_marcedit_import.py tests/test_tasks_workspace_modes.py tests/test_native_tasks.py tests/test_native_task_contract.py tests/test_task_import_traversal.py
+docker compose run --rm marcedit-web pytest -q tests/test_task_authoring.py tests/test_task_authoring_render.py tests/test_task_authoring_corpus.py tests/test_task_builder.py tests/test_marcedit_import.py tests/test_tasks_workspace_modes.py tests/test_tasks_export.py tests/test_native_tasks.py tests/test_native_task_contract.py tests/test_task_import_traversal.py
 ```
 
-Expected: static checks pass; focused tests pass; every skip is listed and explained. The compiler fingerprint still equals the pre-Task-2 value.
+Expected: static checks pass; focused tests pass; every skip is listed and explained. The recompiling compiler-contract freshness test passes and the checked-in manifest remains unchanged.
 
 - [ ] **Step 2: Build the exact candidate and run the full suite**
 
@@ -1635,7 +2148,8 @@ Use `browser-use` or the in-app browser-control skill because this step requires
 6. Build 876 with `$aB({003}){001}-SC$lInternet`.
 7. Add representative 852 and 877 fields using rows without entering JSON.
 8. Attempt an ambiguous external Build Field import and confirm the original line is visible, the uncertainty is explained, and no executable task is saved.
-9. Confirm no AI prompt, generated prose, or AI network request appears in this workflow.
+9. Open a synthetic preexisting task containing an unresolved Build Field marker, change an unrelated description, save it, and confirm running it is refused with the repair instruction.
+10. Confirm no AI prompt, generated prose, or AI network request appears in this workflow.
 
 Take an accessibility snapshot and screenshot showing the structured 876 operation with mnemonic and preview. Do not include a real vendor record, staff identity, or production URL.
 
@@ -1654,8 +2168,9 @@ Write `docs/superpowers/evidence/task-179-cataloger-browser-smoke.md`:
 - 035 Build Field:
 - 876 Build Field:
 - Save/reopen:
-- Missing-source behavior:
+- Missing-control behavior:
 - Ambiguous import refusal:
+- Existing unresolved task edit/run boundary:
 - AI/network boundary:
 - Accessibility snapshot:
 - Screenshot:
@@ -1671,9 +2186,11 @@ Use `superpowers:requesting-code-review` against the exact `main...HEAD` range. 
 - spec and ticket coverage;
 - no JSON/raw-template requirement in normal Add/Build entry;
 - preview/execution equivalence and non-mutation;
+- legacy identical-field suppression remains distinct from tag-level skip;
 - lossless save/reopen;
 - exact import classification and blocking;
-- TASK-178 fingerprint stability;
+- existing unresolved Add/Build tasks remain editable but cannot be submitted;
+- TASK-178 golden-compiler output and checked-in manifest stability;
 - Python 3.9 compatibility;
 - institutional-corpus privacy;
 - no AI, native schema, database, deployment, service, worker, proxy, or ITS changes; and
@@ -1683,7 +2200,7 @@ Fix findings through new RED/GREEN cycles and rerun affected focused plus full v
 
 - [ ] **Step 7: Complete tracking only after verification and review**
 
-Update TASK-179 by copying the exact commit hashes and command output produced in the preceding steps. Use complete numeric counts and the unchanged fingerprint value; do not use qualitative shorthand:
+Update TASK-179 by copying the exact commit hashes and command output produced in the preceding steps. Use complete numeric counts and the compiler-contract freshness result; do not use qualitative shorthand:
 
 ```markdown
 Status: Completed
@@ -1692,7 +2209,7 @@ Final Evidence:
 - Implementation commits: list every TASK-179 commit hash and subject.
 - Focused Docker: record exact passed, failed, skipped, warning, and duration values plus each skip reason.
 - Full Docker: record exact passed, failed, skipped, warning, and duration values plus each skip reason.
-- Compiler fingerprint: record the exact unchanged SHA-256 value.
+- Compiler contract: record the passing golden-definition freshness test and confirm the checked-in manifest is unchanged.
 - Browser acceptance: `docs/superpowers/evidence/task-179-cataloger-browser-smoke.md`
 - Independent review: record the exact reviewed range and disposition of every finding.
 ```
@@ -1733,9 +2250,9 @@ Execution is complete only when:
 5. Plain language, technical mnemonic, annotations, and first-record preview agree.
 6. Preview is deterministic and proven not to mutate source data or create output.
 7. Save/reopen is lossless for rows, segments, policies, types, and order.
-8. Invalid structured input and unresolved external instructions block persistence before SQL mutation.
-9. Ambiguous external Add/Build flags remain visible and are not guessed or executed.
-10. The TASK-178 compiler fingerprint is unchanged.
+8. Invalid structured input and new unresolved imports block persistence before SQL mutation; stale form state never blocks code-mode save.
+9. Existing unresolved Add/Build instructions remain visible and preservable during unrelated edits, but submission refuses to execute them until recreated. Unrelated historical TODO comments retain current behavior.
+10. TASK-178's golden definitions recompile to the checked-in manifest without a diff; a runtime fingerprint printout is not used as the detector.
 11. The supported syntax reference is synchronized with executable synthetic fixtures.
 12. The local corpus remains untracked, and its optional check either passes with classifications or skips loudly because the corpus is unavailable.
 13. Focused and full Python 3.9 Docker verification completes with every skip disclosed.
