@@ -98,13 +98,18 @@ def save_task(
                 raise NativeTaskStorageError(
                     "native tasks must be saved through the native task API"
                 )
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE tasks SET description = ?, body = ?,"
                 " extra_imports = ?, visibility = ?, revision = revision + 1,"
                 " updated_at = ?"
-                " WHERE owner_email = ? AND name = ?",
+                " WHERE owner_email = ? AND name = ?"
+                " AND definition_json IS NULL",
                 (description, body, extras, visibility, now, owner, name),
             )
+            if cursor.rowcount != 1:
+                raise NativeTaskStorageError(
+                    "native tasks must be saved through the native task API"
+                )
 
 
 def save_native_task(

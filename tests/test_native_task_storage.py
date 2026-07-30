@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -206,6 +207,65 @@ def test_legacy_save_refuses_to_overwrite_native_row():
         )
 
     assert task_db.get_task("alice@example.edu", definition["name"]) == before
+
+
+def test_legacy_save_losing_native_conversion_race_preserves_native_row(
+    monkeypatch,
+):
+    definition = _definition("delete-and-sort.json")
+    task_db.save_task(
+        owner="alice@example.edu",
+        name=definition["name"],
+        description="Legacy",
+        body="pass",
+    )
+    legacy = task_db.get_task("alice@example.edu", definition["name"])
+    original_connect = db.connect
+    state = {"connections": 0, "converted": None}
+
+    class InterleavingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, statement, parameters=()):
+            if (
+                state["converted"] is None
+                and statement.startswith("UPDATE tasks SET description")
+            ):
+                state["converted"] = task_db.save_native_task(
+                    owner="alice@example.edu",
+                    definition=definition,
+                    expected_revision=legacy["revision"],
+                )
+            return self.connection.execute(statement, parameters)
+
+    @contextmanager
+    def interleaving_connect():
+        state["connections"] += 1
+        with original_connect() as connection:
+            if state["connections"] == 1:
+                yield InterleavingConnection(connection)
+            else:
+                yield connection
+
+    monkeypatch.setattr(db, "connect", interleaving_connect)
+
+    with pytest.raises(
+        task_db.NativeTaskStorageError,
+        match="native tasks must be saved through the native task API",
+    ):
+        task_db.save_task(
+            owner="alice@example.edu",
+            name=definition["name"],
+            description="Legacy overwrite",
+            body="legacy overwrite",
+            extra_imports=["from legacy import overwrite"],
+        )
+
+    assert state["converted"] is not None
+    assert task_db.get_task("alice@example.edu", definition["name"]) == (
+        state["converted"]
+    )
 
 
 def test_expected_revision_cannot_create_missing_native_task():
