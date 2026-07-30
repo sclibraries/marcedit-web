@@ -97,7 +97,9 @@ def build_prompt(notes: str) -> str:
     """Build the user prompt that constrains Gemini to safe draft JSON."""
 
     operations = [
-        op for op in task_builder.OPERATIONS_PALETTE if op.get("kind") != "custom"
+        op
+        for op in task_builder.OPERATIONS_PALETTE
+        if ai_task_draft.is_operation_kind_supported(str(op.get("kind", "")))
     ]
     schema = {
         "task_name": "valid-slug",

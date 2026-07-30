@@ -205,6 +205,90 @@ OPERATIONS_PALETTE: list[dict] = [
             {"name": "ignore_case", "label": "Case-insensitive", "type": "bool", "default": False},
         ],
     },
+    {
+        "kind": "guided-find-replace",
+        "label": "Guided find and replace",
+        "summary": "Find and replace text in a selected MARC value.",
+        "params": [
+            {
+                "name": "target_kind",
+                "label": "Target",
+                "type": "select",
+                "options": [
+                    {"value": "control_field", "label": "Control field value"},
+                    {"value": "subfield", "label": "One subfield code"},
+                    {"value": "all_subfields", "label": "All subfield values"},
+                ],
+                "default": "subfield",
+            },
+            {"name": "tag", "label": "Tag", "type": "text", "default": ""},
+            {
+                "name": "subfield",
+                "label": "Subfield code",
+                "type": "subfield_code",
+                "default": "",
+            },
+            {
+                "name": "match_mode",
+                "label": "Match",
+                "type": "select",
+                "options": [
+                    {"value": "contains", "label": "Contains"},
+                    {"value": "starts_with", "label": "Starts with"},
+                    {"value": "ends_with", "label": "Ends with"},
+                    {"value": "whole_value", "label": "Whole value"},
+                    {"value": "raw_regex", "label": "Raw regular expression"},
+                    {"value": "none", "label": "No match (prepend or append)"},
+                ],
+                "default": "contains",
+            },
+            {"name": "find", "label": "Find", "type": "text", "default": ""},
+            {
+                "name": "ignore_case",
+                "label": "Case-insensitive",
+                "type": "bool",
+                "default": False,
+            },
+            {
+                "name": "replacement_mode",
+                "label": "Replace",
+                "type": "select",
+                "options": [
+                    {"value": "matched_text", "label": "Matched text"},
+                    {"value": "whole_value", "label": "Whole selected value"},
+                    {"value": "prepend", "label": "Prepend"},
+                    {"value": "append", "label": "Append"},
+                ],
+                "default": "matched_text",
+            },
+            {
+                "name": "replacement",
+                "label": "Replacement",
+                "type": "text",
+                "default": "",
+            },
+            {
+                "name": "occurrences",
+                "label": "Occurrences",
+                "type": "select",
+                "options": [
+                    {"value": "all", "label": "All"},
+                    {"value": "first", "label": "First"},
+                ],
+                "default": "all",
+            },
+            {
+                "name": "condition",
+                "label": "Apply when",
+                "type": "select",
+                "options": [
+                    {"value": k, "label": v}
+                    for k, v in LEADER_CONDITION_LABELS.items()
+                ],
+                "default": "always",
+            },
+        ],
+    },
     # --- TASK-030 new ops ---------------------------------------------------
     {
         "kind": "copy-field",
@@ -789,6 +873,34 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             set(),
             True,  # needs Subfield import from pymarc
         )
+
+    if op.kind == "guided-find-replace":
+        condition_key = str(p.get("condition", "always"))
+        if condition_key not in LEADER_CONDITIONS:
+            raise ValueError("record condition is not supported")
+        call = (
+            "_guided_replace_result = apply_guided_find_replace("
+            "record, "
+            "target_kind={0}, tag={1}, subfield={2}, match_mode={3}, "
+            "find={4}, ignore_case={5}, replacement_mode={6}, "
+            "replacement={7}, occurrences={8})"
+        ).format(
+            lit(str(p.get("target_kind", ""))),
+            lit(str(p.get("tag", ""))),
+            lit(str(p.get("subfield", ""))),
+            lit(str(p.get("match_mode", ""))),
+            lit(str(p.get("find", ""))),
+            lit(bool(p.get("ignore_case", False))),
+            lit(str(p.get("replacement_mode", ""))),
+            lit(str(p.get("replacement", ""))),
+            lit(str(p.get("occurrences", ""))),
+        )
+        condition_expr = LEADER_CONDITIONS[condition_key]
+        imports = {"apply_guided_find_replace"}
+        if condition_expr:
+            imports |= {"leader_type", "leader_biblevel"}
+            return ([f"if {condition_expr}:", f"    {call}"], imports, False)
+        return ([call], imports, False)
 
     # --- TASK-030: typed ops parity --------------------------------------
 

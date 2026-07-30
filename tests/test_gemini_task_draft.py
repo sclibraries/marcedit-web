@@ -74,6 +74,12 @@ def test_build_prompt_contains_schema_guardrails_allowed_operations_and_notes():
     assert notes in prompt
 
 
+def test_gemini_prompt_does_not_advertise_guided_find_replace():
+    prompt = gemini_task_draft.build_prompt("replace TFeba in 035 a")
+    assert '"guided-find-replace"' not in prompt
+    assert '"subfield-replace"' in prompt
+
+
 def test_model_prompt_uses_canonical_product_identity():
     """Model context must not reintroduce a separate application brand."""
     prompt = gemini_task_draft.build_prompt("Delete all 029 fields.")

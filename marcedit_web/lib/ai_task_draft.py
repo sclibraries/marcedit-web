@@ -56,12 +56,19 @@ _REGEX_PARAMS_BY_KIND = {
     "replace-field-data-by-regex": ("pattern",),
     "delete-856-url-regex": ("pattern",),
 }
-_UNSUPPORTED_AI_OPERATION_KINDS = {"custom"}
+_UNSUPPORTED_AI_OPERATION_KINDS = {
+    "custom",
+    "guided-find-replace",
+}
 _CODE_SHAPED_RE = re.compile(
     r"(__import__|\bimport\b|\bfrom\s+\S+\s+import\b|\bexec\s*\(|"
     r"\beval\s*\(|\bopen\s*\(|\brecord\.[A-Za-z_]\w*\s*\(|"
     r"\bos\.|\bsubprocess\b|\bsys\.|\bPath\s*\()"
 )
+
+
+def is_operation_kind_supported(kind: str) -> bool:
+    return kind not in _UNSUPPORTED_AI_OPERATION_KINDS
 
 
 def parse_ai_task_draft(raw_text: str) -> DraftReview:
@@ -166,7 +173,7 @@ def _validate_operation(raw_op: Any, index: int) -> DraftOperation | RejectedOpe
             index,
             source_text,
         )
-    if kind in _UNSUPPORTED_AI_OPERATION_KINDS:
+    if not is_operation_kind_supported(kind):
         return RejectedOperation(
             kind,
             dict(params),

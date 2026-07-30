@@ -10,6 +10,58 @@ from marcedit_web.lib import task_builder
 from marcedit_web.lib.task_builder import Operation
 
 
+def _guided_op():
+    return task_builder.Operation(
+        kind="guided-find-replace",
+        params={
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "contains",
+            "find": "TFeba",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": "(SCTFEBA)",
+            "occurrences": "all",
+            "condition": "always",
+        },
+    )
+
+
+def test_guided_replace_compiles_to_one_shared_transform_call():
+    rendered = task_builder.render_ops_to_python([_guided_op()])
+
+    assert rendered["imports"] == [
+        "from marcedit_web.lib.transforms import apply_guided_find_replace"
+    ]
+    assert "_guided_replace_result = apply_guided_find_replace(" in (
+        rendered["body"]
+    )
+    assert "match_mode='contains'" in rendered["body"]
+    assert "replacement_mode='matched_text'" in rendered["body"]
+    assert "re.sub" not in rendered["body"]
+
+
+def test_guided_replace_marker_round_trip_is_lossless():
+    rendered = task_builder.render_ops_to_python([_guided_op()])
+    parsed = task_builder.parse_ops_from_source(rendered["body"])
+    assert parsed["form_editable"] is True
+    assert parsed["ops"] == [_guided_op()]
+
+
+def test_guided_replace_leader_condition_wraps_the_transform_call():
+    op = _guided_op()
+    op.params["condition"] = "books"
+    rendered = task_builder.render_ops_to_python([op])
+    lines = rendered["body"].splitlines()
+    assert "if leader_type(record) in 'amt' and leader_biblevel(record) == 'm':" in lines
+    call_index = next(
+        i for i, line in enumerate(lines)
+        if "_guided_replace_result = apply_guided_find_replace(" in line
+    )
+    assert lines[call_index].startswith("    ")
+
+
 def test_palette_kinds_are_all_non_smith():
     kinds = {op["kind"] for op in task_builder.OPERATIONS_PALETTE}
     # Smith-specific palette entries must be gone.

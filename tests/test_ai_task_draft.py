@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from marcedit_web.lib import task_builder
+from marcedit_web.lib import ai_task_draft, task_builder
 from marcedit_web.lib.ai_task_draft import (
     DraftValidationError,
     blocking_issue_count,
@@ -395,6 +395,27 @@ def test_custom_operation_with_python_code_is_rejected():
     assert review.rejected_operations[0].kind == "custom"
     assert review.rejected_operations[0].reason == (
         "custom operations are not supported in AI drafts"
+    )
+
+
+def test_guided_replace_is_rejected_before_ai_param_validation():
+    review = ai_task_draft.parse_ai_task_draft(
+        json.dumps(
+            {
+                "task_name": "guided",
+                "operations": [
+                    {
+                        "kind": "guided-find-replace",
+                        "params": {"invented": {"unchecked": True}},
+                    }
+                ],
+            }
+        )
+    )
+    assert review.operations == ()
+    assert len(review.rejected_operations) == 1
+    assert review.rejected_operations[0].reason == (
+        "guided-find-replace operations are not supported in AI drafts"
     )
 
 

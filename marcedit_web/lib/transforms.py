@@ -530,3 +530,8 @@ def dedupe_035(record: Record) -> None:
     record.remove_fields("035")
     for field in keep:
         record.add_ordered_field(field)
+
+
+# TASK-180 leaf engine re-export. Keep this import at module scope only after
+# guided_replace is verified not to import marcedit_web.lib.
+from marcedit_web.lib.guided_replace import apply_guided_find_replace  # noqa: E402,F401
