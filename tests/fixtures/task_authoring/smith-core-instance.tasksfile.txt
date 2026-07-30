@@ -1,0 +1,3 @@
+#DESCRIPTION#Sanitized Smith CORE Instance authoring fixture
+buildnewfield	=035  9\$a({003}){001}	False	False	True	False
+RDAHELPER

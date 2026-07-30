@@ -1,0 +1,4 @@
+#DESCRIPTION#Sanitized Smith CORE Holdings and Items authoring fixture
+ADD	852	8\$hOnline$tOther scheme$lSCINT
+buildnewfield	=876  \\$aB({003}){001}-SC$lInternet	False	False	True	False
+ADD	877	\\$mMap
