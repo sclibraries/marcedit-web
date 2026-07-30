@@ -19,6 +19,10 @@ class _FakeStreamlit:
         self.session_state = {}
         self.radios: list[dict] = []
         self.dividers = 0
+        self.warnings = []
+        self.errors = []
+        self.successes = []
+        self.code_blocks = []
 
     def radio(self, label, options, horizontal=False, key=None,
               label_visibility=None):
@@ -50,10 +54,19 @@ class _FakeStreamlit:
         return None
 
     def warning(self, value):
-        return None
+        self.warnings.append(str(value))
 
     def markdown(self, value):
         return None
+
+    def error(self, value):
+        self.errors.append(str(value))
+
+    def success(self, value):
+        self.successes.append(str(value))
+
+    def code(self, value, **kwargs):
+        self.code_blocks.append(str(value))
 
     def columns(self, spec):
         count = spec if isinstance(spec, int) else len(spec)
@@ -311,6 +324,194 @@ def test_form_editor_fetches_preview_record_once_and_delegates_add_build(
     assert ("add", "op_0") in calls
     assert ("build", "op_1") in calls
     assert calls.count(("preview", "first-record")) == 2
+
+
+def _wire_successful_save(monkeypatch, tasks_render, saved):
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render, "_ai_draft_save_blocked_for_new_task", lambda: False
+    )
+    monkeypatch.setattr(
+        tasks_render.task_db,
+        "save_task",
+        lambda **kwargs: saved.append(kwargs),
+    )
+    monkeypatch.setattr(
+        tasks_render.task_db, "materialize_to_dir", lambda *args: None
+    )
+    monkeypatch.setattr(
+        tasks_render.tasks, "load_user_tasks", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        tasks_render.task_admin, "is_admin", lambda user: False
+    )
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *args, **kwargs: None)
+
+
+def _form_save_state(tasks_render, operations):
+    return {
+        tasks_render.K_EDITOR_NAME_INPUT: "structured-fields",
+        tasks_render.K_EDITOR_DESCRIPTION_INPUT: "",
+        tasks_render.K_EDITOR_MODE: "form",
+        tasks_render.K_EDITOR_VISIBILITY: "private",
+        tasks_render.K_EDITOR_OPS: operations,
+    }
+
+
+def test_save_blocks_invalid_structured_field_before_sql(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update(
+        _form_save_state(
+            tasks_render,
+            [
+                {
+                    "kind": "add-field",
+                    "params": {
+                        "tag": "877",
+                        "ind1": " ",
+                        "ind2": " ",
+                        "subfields": [],
+                        "existing_field_action": "append",
+                        "condition": "always",
+                    },
+                }
+            ],
+        )
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert "Operation 1" in fake_st.session_state[tasks_render.K_SAVE_ERROR]
+    assert "at least one subfield" in fake_st.session_state[
+        tasks_render.K_SAVE_ERROR
+    ]
+
+
+def test_unconvertible_legacy_build_remains_visible_but_blocks_form_save(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update(
+        _form_save_state(
+            tasks_render,
+            [
+                {
+                    "kind": "build-field",
+                    "authoring_error": (
+                        "cannot convert legacy Build Field text losslessly"
+                    ),
+                    "params": {
+                        "tag": "876",
+                        "ind1": " ",
+                        "ind2": " ",
+                        "subfields": [["a", "literal {name}"]],
+                    },
+                }
+            ],
+        )
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert "cannot convert" in fake_st.session_state[
+        tasks_render.K_SAVE_ERROR
+    ]
+
+
+def test_existing_unresolved_custom_op_can_be_preserved_during_save(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update(
+        _form_save_state(
+            tasks_render,
+            [
+                {
+                    "kind": "custom",
+                    "params": {
+                        "code": (
+                            "# TODO: buildnewfield template "
+                            "'=876  \\\\$a{001}' — recreate with "
+                            "structured Build Field"
+                        )
+                    },
+                }
+            ],
+        )
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert len(saved) == 1
+
+
+def test_stale_form_errors_do_not_block_code_mode_save(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update(
+        {
+            tasks_render.K_EDITOR_NAME_INPUT: "code-task",
+            tasks_render.K_EDITOR_DESCRIPTION_INPUT: "",
+            tasks_render.K_EDITOR_MODE: "code",
+            tasks_render.K_EDITOR_VISIBILITY: "private",
+            tasks_render.K_EDITOR_BODY: "pass",
+            tasks_render.K_EDITOR_OPS: [
+                {
+                    "kind": "add-field",
+                    "params": {"tag": "bad", "subfields": []},
+                }
+            ],
+        }
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert len(saved) == 1
+
+
+def test_new_unresolved_text_import_is_not_persisted(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.quotas, "check_upload", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *args, **kwargs: None)
+    saved = []
+    monkeypatch.setattr(
+        tasks_render.task_db,
+        "save_task",
+        lambda **kwargs: saved.append(kwargs),
+    )
+    upload = SimpleNamespace(
+        name="rda.tasksfile",
+        getvalue=lambda: b"RDAHELPER\n",
+    )
+
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    assert saved == []
+    assert any("Not imported" in warning for warning in fake_st.warnings)
+    assert fake_st.code_blocks == ["RDAHELPER"]
 
 
 def test_save_callback_reports_invalid_form_regex_without_persisting(

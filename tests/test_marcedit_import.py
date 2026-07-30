@@ -43,6 +43,37 @@ def test_build_full_task_file_uses_new_import_path():
     assert "from marc_processing" not in rendered
 
 
+def test_add_with_empty_priority_and_known_condition_is_exact():
+    src = "ADD\t877\t\\\\$mMap\t\t/=LDR.{8}[e,f].+/\n"
+    result = marcedit_import.convert_tasksfile_text(
+        src, name="map", description_fallback=""
+    )
+    assert result.unsupported == []
+    assert "# OP: add-field" in result.body
+
+
+def test_add_with_unmapped_numeric_priority_remains_blocking():
+    src = "ADD\t877\t\\\\$mMap\t106\t/=LDR.{8}[e,f].+/\n"
+    result = marcedit_import.convert_tasksfile_text(
+        src, name="map", description_fallback=""
+    )
+    assert result.unsupported == [src.rstrip()]
+    assert "unresolved ADD option" in result.body
+
+
+def test_buildnewfield_flags_remain_visible_and_unresolved():
+    line = (
+        "buildnewfield\t=876  \\\\$aB({003}){001}-SC$lInternet"
+        "\tFalse\tFalse\tTrue\tFalse"
+    )
+    result = marcedit_import.convert_tasksfile_text(
+        line + "\n", name="holdings", description_fallback=""
+    )
+    assert result.unsupported == [line]
+    assert repr(line.split("\t")[1]) in result.body
+    assert "recreate with structured Build Field" in result.body
+
+
 # ---------------------------------------------------------------------------
 # Stage 19: archive expansion caps
 # ---------------------------------------------------------------------------

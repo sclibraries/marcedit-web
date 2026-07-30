@@ -203,7 +203,16 @@ def _emit_add(parts: list[str]) -> HandlerEmission:
         return HandlerEmission(code=None)
     tag = parts[1].strip()
     data = parts[2]
+    priority = parts[3].strip() if len(parts) > 3 else ""
     condition = parts[4] if len(parts) > 4 else ""
+    unknown_tail = [value for value in parts[5:] if value.strip()]
+    if priority or unknown_tail:
+        return HandlerEmission(
+            code=(
+                "# TODO: unresolved ADD option(s); priority={0!r}, "
+                "trailing={1!r} — recreate with structured Add Field"
+            ).format(priority, unknown_tail),
+        )
     ind1, ind2, subfields = parse_mrk_field_data(data)
     sf_args = ", ".join(
         f"({code!r}, {value!r})" for code, value in subfields
@@ -332,7 +341,10 @@ def _emit_buildnewfield(parts: list[str]) -> HandlerEmission:
     template = parts[1].strip()
     # The Smith convention: `=035  9\$a({003}){001}`
     return HandlerEmission(
-        code=f"# TODO: buildnewfield template {template!r} — hand-translate this line",
+        code=(
+            f"# TODO: buildnewfield template {template!r} — "
+            "recreate with structured Build Field"
+        ),
     )
 
 

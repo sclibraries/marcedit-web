@@ -932,7 +932,13 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
 
     if op.kind == "custom":
         code = p.get("code") or ""
-        return (code.splitlines() or ["pass"], set(), False)
+        lines = code.splitlines() or ["pass"]
+        if all(
+            not line.strip() or line.lstrip().startswith("#")
+            for line in lines
+        ):
+            lines.append("pass")
+        return (lines, set(), False)
 
     # Unknown op kind — render as a no-op + comment so the file stays valid.
     return ([f"# TODO: unknown operation kind {op.kind!r}"], set(), False)

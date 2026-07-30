@@ -503,15 +503,8 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
             for er in archive.entries:
                 if er.success and er.conversion is not None:
                     conv = er.conversion
-                    task_db.save_task(
-                        owner=user,
-                        name=conv.name,
-                        description=conv.description or "",
-                        body=conv.body,
-                        extra_imports=conv.imports,
-                        visibility="private",
-                    )
-                    imported += 1
+                    if _save_exact_conversion(user, conv):
+                        imported += 1
                 elif er.error:
                     st.warning(f"{er.entry_name}: {er.error}")
             st.success(f"Imported {imported} task(s) from `{upl.name}`.")
@@ -530,14 +523,15 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                 name=name,
                 description_fallback=f"Imported from {upl.name}",
             )
-            task_db.save_task(
-                owner=user,
-                name=conv.name,
-                description=conv.description or "",
-                body=conv.body,
-                extra_imports=conv.imports,
-                visibility="private",
-            )
+            if not _save_exact_conversion(user, conv):
+                audit_event(
+                    "tasksfile-rejected",
+                    user=user,
+                    filename=upl.name,
+                    size=len(raw),
+                    reason="unresolved-instructions",
+                )
+                return
             st.success(f"Imported `{conv.name}` from `{upl.name}`.")
             audit_event(
                 "tasksfile-imported",
@@ -564,6 +558,36 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
             reason="exception",
             detail=f"{type(exc).__name__}: {exc}",
         )
+
+
+def _save_exact_conversion(
+    user: str,
+    conv: marcedit_import.ConversionResult,
+) -> bool:
+    if conv.unsupported:
+        st.warning(
+            "Not imported: this task contains unresolved external "
+            "instructions. Recreate the listed Add/Build steps with "
+            "structured controls."
+        )
+        for line in conv.unsupported[:20]:
+            st.code(line, language="text")
+        if len(conv.unsupported) > 20:
+            st.caption(
+                "{0} additional unresolved lines omitted.".format(
+                    len(conv.unsupported) - 20
+                )
+            )
+        return False
+    task_db.save_task(
+        owner=user,
+        name=conv.name,
+        description=conv.description or "",
+        body=conv.body,
+        extra_imports=conv.imports,
+        visibility="private",
+    )
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1196,9 +1220,13 @@ def _save_callback(tasks_dir: Path) -> None:
 
     try:
         if mode == "form":
+            raw_ops = st.session_state.get(K_EDITOR_OPS, [])
+            validation_errors = task_authoring.validate_operations(raw_ops)
+            if validation_errors:
+                raise ValueError("\n".join(validation_errors))
             ops = [
                 Operation.from_dict(op)
-                for op in st.session_state.get(K_EDITOR_OPS, [])
+                for op in raw_ops
             ]
             rendered = task_builder.render_ops_to_python(ops)
             body = rendered["body"]
@@ -1320,6 +1348,16 @@ def _submit_queued_run(selection: list[str], tasks_dir: Path) -> None:
             )
         except (ValueError, FileNotFoundError) as exc:
             st.error(f"Could not load task `{name}`: {exc}")
+            return
+        unresolved = task_authoring.unresolved_add_build_instructions(
+            parsed["body"]
+        )
+        if unresolved:
+            st.error(
+                "Task `{0}` cannot run until its unresolved Add/Build "
+                "instruction is recreated with structured controls: "
+                "{1}".format(name, unresolved[0])
+            )
             return
         specs.append(sandbox.TaskSpec(
             name=name,

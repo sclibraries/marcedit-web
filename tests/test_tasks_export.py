@@ -540,6 +540,71 @@ def test_saved_task_submission_copies_current_quick_load_source(
     assert [spec.name for spec in submitted[0]["task_specs"]] == ["cleanup"]
 
 
+def test_unresolved_add_build_task_is_not_submitted(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {
+            "body": (
+                "# TODO: buildnewfield template '=876  \\\\$a{001}' "
+                "— recreate with structured Build Field"
+            )
+        },
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs),
+    )
+
+    tasks_render._submit_queued_run(["needs-review"], tmp_path)
+
+    assert submitted == []
+    assert "cannot run" in fake_st.errors[-1]
+    assert "Build Field" in fake_st.errors[-1]
+
+
+def test_unrelated_historical_todo_does_not_trigger_add_build_gate(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    source = tmp_path / "current.mrc"
+    source.write_bytes(b"records")
+    store = SimpleNamespace(path=source, count=lambda: 1)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "owner@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_filename", lambda: "vendor.mrc"
+    )
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {
+            "body": (
+                "# TODO: REPLACE arbitrary regex — hand-translate this line"
+            )
+        },
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs) or {"id": 7},
+    )
+
+    tasks_render._submit_queued_run(["replace-review"], tmp_path)
+
+    assert len(submitted) == 1
+
+
 def test_saved_task_run_panel_queues_without_keep_tab_open_warning(
     monkeypatch, tmp_path,
 ):
