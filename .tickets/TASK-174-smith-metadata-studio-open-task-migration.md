@@ -94,12 +94,13 @@ Phase 3:
   raw templates with ordered rows and typed segments, provides deterministic
   explanations and first-record previews, preserves exact save/reopen state,
   and fails closed on ambiguous imports or unknown stored shapes. The final
-  candidate passed 227 focused tests with zero skips; its full Docker run
-  recorded 1,673 passes, the same eight approved build-context identity
-  failures, and 39 disclosed skips. The native compiler manifest remained
-  unchanged. Independent review approved `293ecb6..2e887ee` with zero Critical,
-  Important, or Minor findings, and cataloger browser acceptance completed on
-  synthetic data. TASK-179 is `Completed`; TASK-174 remains `In-Progress`.
+  candidate passed 227 focused tests with zero skips; its full read-only-mounted
+  Docker run recorded 1,691 passes, zero failures, and 29 disclosed
+  environment/build-context skips. The native compiler manifest remained
+  unchanged. Independent review approved `293ecb6..2e887ee` with zero
+  Critical, Important, or Minor findings, and cataloger browser acceptance
+  completed on synthetic data. TASK-179 is `Completed`; TASK-174 remains
+  `In-Progress`.
 - TASK-180: deferred structured Find/Replace and Subfield Edit authoring.
 - TASK-181: deferred explicit deterministic RDA operations.
 - TASK-182: deferred explicit MARC field reordering as both a quick action and

@@ -72,15 +72,15 @@ Final Evidence:
 - Focused Docker: 227 passed, 0 failed, 0 skipped, 0 warnings in 1.96
   seconds, with the syntax reference and untracked institutional corpus mounted
   read-only.
-- Full Docker: 1,673 passed, 8 failed, 39 skipped, 0 warnings in 49.35
+- Full Docker: 1,691 passed, 0 failed, 29 skipped, 0 warnings in 44.49
   seconds against image
   `sha256:075f8a4330d5cb555077391ecfd20f2f5565cafc4c0050e068d2d82e6afd518b`.
-  The eight failures are the user-approved pre-existing product-identity tests
-  that expect repository-root files omitted from the Docker build context.
-  The 39 explicit skips cover deployment/configuration files and Docker CLI
-  unavailable in the image, plus the syntax reference and local corpus absent
-  from the default image run. TASK-179's authoritative mounted suite has no
-  skips.
+  Checked-in documentation, tickets, and the untracked local corpus were
+  mounted read-only so the previously missing product-identity and TASK-179
+  resource checks executed successfully. The 29 explicit skips cover
+  deployment scripts/units, environment and Compose files intentionally absent
+  from the image, plus four Compose-rendering checks that require a Docker CLI
+  inside the test container.
 - Compiler contract: the golden-definition freshness test passed, and
   `marcedit_web/schemas/native-task-compiler-contract-v1.json` is unchanged.
 - Browser acceptance:
