@@ -50,6 +50,7 @@ from marcedit_web.lib import (
     session,
     snapshot_actions,
     task_admin,
+    task_authoring,
     task_builder,
     task_db,
     task_diff,
@@ -61,6 +62,7 @@ from marcedit_web.lib.quick_batch import QuickBatchRequest
 from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
 from marcedit_web.render.batch_status import loaded_batch_status
+from marcedit_web.render import task_authoring as task_authoring_render
 
 logger = logging.getLogger("marcedit_web.render.tasks")
 
@@ -413,9 +415,12 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     parse_result = task_builder.parse_ops_from_source(row["body"])
     if parse_result["form_editable"]:
         st.session_state[K_EDITOR_MODE] = "form"
-        st.session_state[K_EDITOR_OPS] = [
+        parsed_ops = [
             op.to_dict() for op in parse_result["ops"]
         ]
+        st.session_state[K_EDITOR_OPS] = (
+            task_authoring.normalize_operations_for_editor(parsed_ops)
+        )
     else:
         # Hand-written: code mode if admin, else read-only-style notice.
         st.session_state[K_EDITOR_MODE] = "code" if is_admin else "form"
@@ -743,7 +748,10 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
     st.session_state[K_EDITOR_DESCRIPTION] = description
     _sync_editor_widget_inputs(review.task_name, description)
     st.session_state[K_EDITOR_BODY] = ""
-    st.session_state[K_EDITOR_OPS] = ai_task_draft.operations_for_editor(review)
+    draft_ops = ai_task_draft.operations_for_editor(review)
+    st.session_state[K_EDITOR_OPS] = (
+        task_authoring.normalize_operations_for_editor(draft_ops)
+    )
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = True
@@ -934,6 +942,12 @@ def _render_form_editor() -> None:
     )
     ops = st.session_state[K_EDITOR_OPS]
     to_remove: list[int] = []
+    store = session.current_store()
+    preview_record = (
+        store.get(0)
+        if store is not None and store.count()
+        else None
+    )
 
     # Non-admin users mustn't be able to author raw Python through the
     # custom-op textarea. We filter `custom` out of the *add* dropdown
@@ -959,12 +973,30 @@ def _render_form_editor() -> None:
                 )
             else:
                 st.caption(palette_entry.get("summary", ""))
-                # Render each param.
                 params = op.setdefault("params", {})
-                for param in palette_entry["params"]:
-                    _render_param_input(
-                        param, params, key_prefix=f"op_{i}",
-                        is_admin=is_admin,
+                if op["kind"] == "add-field" and not op.get(
+                    "authoring_error"
+                ):
+                    task_authoring_render.render_add_field_params(
+                        params, key_prefix=f"op_{i}"
+                    )
+                elif op["kind"] == "build-field" and not op.get(
+                    "authoring_error"
+                ):
+                    task_authoring_render.render_build_field_params(
+                        params, key_prefix=f"op_{i}"
+                    )
+                elif op["kind"] not in {"add-field", "build-field"}:
+                    for param in palette_entry["params"]:
+                        _render_param_input(
+                            param,
+                            params,
+                            key_prefix=f"op_{i}",
+                            is_admin=is_admin,
+                        )
+                if op["kind"] in {"add-field", "build-field"}:
+                    task_authoring_render.render_operation_explanation(
+                        op, preview_record
                     )
 
             row = st.columns([1, 1, 6])
@@ -1028,6 +1060,10 @@ def _default_params_for(kind: str) -> dict:
             out[param["name"]] = []
         else:
             out[param["name"]] = ""
+    if kind in {"add-field", "build-field"}:
+        return task_authoring.normalize_operation(
+            {"kind": kind, "params": out}
+        )["params"]
     return out
 
 

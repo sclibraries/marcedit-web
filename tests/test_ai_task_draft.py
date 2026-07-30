@@ -569,6 +569,50 @@ def test_ai_draft_save_block_only_applies_to_ai_handoff_editor(monkeypatch):
     assert tasks_render._ai_draft_save_blocked_for_new_task() is True
 
 
+def test_ai_build_draft_is_normalized_only_at_editor_handoff(monkeypatch):
+    sys.modules.setdefault(
+        "streamlit_ace",
+        SimpleNamespace(st_ace=lambda *args, **kwargs: None),
+    )
+    from marcedit_web.render import tasks as tasks_render
+
+    state: dict[str, object] = {}
+    monkeypatch.setattr(tasks_render.st, "session_state", state)
+    review = parse_ai_task_draft(
+        _draft(
+            task_name="legacy-ai-build",
+            operations=[
+                {
+                    "kind": "build-field",
+                    "params": {
+                        "tag": "876",
+                        "ind1": " ",
+                        "ind2": " ",
+                        "subfields": [["a", "B({003}){001}-SC"]],
+                        "condition": "always",
+                        "if_absent": False,
+                    },
+                },
+            ],
+        )
+    )
+
+    tasks_render._open_editor_for_ai_draft(review)
+
+    params = state[tasks_render.K_EDITOR_OPS][0]["params"]
+    assert "subfields" not in params
+    assert "if_absent" not in params
+    assert params["existing_field_action"] == "append"
+    assert params["missing_control_action"] == "skip_field"
+    assert params["structured_subfields"][0][1] == [
+        {"type": "text", "value": "B("},
+        {"type": "control_field", "tag": "003"},
+        {"type": "text", "value": ")"},
+        {"type": "control_field", "tag": "001"},
+        {"type": "text", "value": "-SC"},
+    ]
+
+
 def test_editor_open_helpers_reset_widget_name_and_description(monkeypatch):
     sys.modules.setdefault(
         "streamlit_ace",

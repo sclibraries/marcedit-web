@@ -34,6 +34,37 @@ class _FakeStreamlit:
     def divider(self):
         self.dividers += 1
 
+    def container(self):
+        return self
+
+    def expander(self, label):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def caption(self, value):
+        return None
+
+    def warning(self, value):
+        return None
+
+    def markdown(self, value):
+        return None
+
+    def columns(self, spec):
+        count = spec if isinstance(spec, int) else len(spec)
+        return [self for _ in range(count)]
+
+    def button(self, label, **kwargs):
+        return False
+
+    def selectbox(self, label, options, **kwargs):
+        return options[0]
+
 
 def _tasks_render(monkeypatch, fake_st):
     sys.modules.setdefault(
@@ -135,6 +166,151 @@ def test_open_editor_for_new_forces_build_mode(monkeypatch):
     assert fake_st.session_state[tasks_render.K_FORCE_MODE] == (
         tasks_render.MODE_BUILD
     )
+
+
+def test_new_build_field_defaults_are_structured(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+
+    params = tasks_render._default_params_for("build-field")
+
+    assert "subfields" not in params
+    assert "if_absent" not in params
+    assert params["structured_subfields"] == []
+    assert params["existing_field_action"] == "append"
+    assert params["missing_control_action"] == "skip_field"
+
+
+def test_existing_legacy_build_is_normalized_in_memory(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    rendered = tasks_render.task_builder.render_ops_to_python(
+        [
+            tasks_render.Operation(
+                kind="build-field",
+                params={
+                    "tag": "876",
+                    "ind1": " ",
+                    "ind2": " ",
+                    "subfields": [["a", "B({003}){001}-SC"]],
+                    "condition": "always",
+                    "if_absent": False,
+                },
+            )
+        ]
+    )
+
+    tasks_render._open_editor_for_existing_row(
+        {
+            "name": "legacy-build",
+            "description": "",
+            "body": rendered["body"],
+            "visibility": "private",
+        },
+        is_admin=False,
+    )
+
+    params = fake_st.session_state[tasks_render.K_EDITOR_OPS][0]["params"]
+    assert "subfields" not in params
+    assert "if_absent" not in params
+    assert params["existing_field_action"] == "append"
+    assert params["structured_subfields"][0][1][1] == {
+        "type": "control_field",
+        "tag": "003",
+    }
+
+
+def test_unconvertible_legacy_build_remains_visible_in_memory(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    body = (
+        '# OP: build-field {"tag":"876","ind1":" ","ind2":" ",'
+        '"subfields":[["a","literal {name}"]],"if_absent":false}\n'
+        "pass"
+    )
+
+    tasks_render._open_editor_for_existing_row(
+        {
+            "name": "legacy-braces",
+            "description": "",
+            "body": body,
+            "visibility": "private",
+        },
+        is_admin=False,
+    )
+
+    operation = fake_st.session_state[tasks_render.K_EDITOR_OPS][0]
+    assert operation["params"]["subfields"] == [["a", "literal {name}"]]
+    assert "cannot convert" in operation["authoring_error"]
+
+
+def test_form_editor_fetches_preview_record_once_and_delegates_add_build(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = [
+        {
+            "kind": "add-field",
+            "params": {
+                "tag": "877",
+                "subfields": [["m", "Map"]],
+                "existing_field_action": "append",
+            },
+        },
+        {
+            "kind": "build-field",
+            "params": {
+                "tag": "876",
+                "structured_subfields": [
+                    ["a", [{"type": "text", "value": "Internet"}]]
+                ],
+                "existing_field_action": "append",
+                "missing_control_action": "skip_field",
+            },
+        },
+    ]
+    calls = []
+
+    class Store:
+        def __init__(self):
+            self.get_calls = []
+
+        def count(self):
+            return 1
+
+        def get(self, index):
+            self.get_calls.append(index)
+            return "first-record"
+
+    store = Store()
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(tasks_render.task_admin, "is_admin", lambda user: False)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(
+        tasks_render.task_authoring_render,
+        "render_add_field_params",
+        lambda params, key_prefix: calls.append(("add", key_prefix)),
+    )
+    monkeypatch.setattr(
+        tasks_render.task_authoring_render,
+        "render_build_field_params",
+        lambda params, key_prefix: calls.append(("build", key_prefix)),
+    )
+    monkeypatch.setattr(
+        tasks_render.task_authoring_render,
+        "render_operation_explanation",
+        lambda op, record: calls.append(("preview", record)),
+    )
+
+    tasks_render._render_form_editor()
+
+    assert store.get_calls == [0]
+    assert ("add", "op_0") in calls
+    assert ("build", "op_1") in calls
+    assert calls.count(("preview", "first-record")) == 2
 
 
 def test_save_callback_reports_invalid_form_regex_without_persisting(
