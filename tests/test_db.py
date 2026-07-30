@@ -74,6 +74,20 @@ def test_init_schema_sets_version():
     assert row["version"] == db.SCHEMA_VERSION
 
 
+def test_init_schema_creates_native_task_columns():
+    db.init_schema()
+    with db.connect() as conn:
+        columns = {
+            row["name"]: row
+            for row in conn.execute("PRAGMA table_info(tasks)")
+        }
+    assert {"definition_json", "compiler_fingerprint", "revision"}.issubset(
+        columns
+    )
+    assert columns["revision"]["notnull"] == 1
+    assert columns["revision"]["dflt_value"] == "1"
+
+
 def test_init_schema_creates_indexes():
     db.init_schema()
     with db.connect() as conn:

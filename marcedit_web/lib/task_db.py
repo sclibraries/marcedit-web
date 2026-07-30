@@ -34,12 +34,21 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import sqlite3
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
-from . import db, editor
+from . import db, editor, native_tasks
 
 logger = logging.getLogger("marcedit_web.task_db")
+
+
+class NativeTaskStorageError(RuntimeError):
+    pass
+
+
+class NativeTaskConflict(NativeTaskStorageError):
+    pass
 
 
 def _utc_now() -> str:
@@ -72,7 +81,8 @@ def save_task(
     now = _utc_now()
     with db.connect() as conn:
         existing = conn.execute(
-            "SELECT created_at FROM tasks WHERE owner_email = ? AND name = ?",
+            "SELECT created_at, definition_json FROM tasks"
+            " WHERE owner_email = ? AND name = ?",
             (owner, name),
         ).fetchone()
         if existing is None:
@@ -84,12 +94,111 @@ def save_task(
                 (owner, name, description, body, extras, visibility, now, now),
             )
         else:
+            if existing["definition_json"] is not None:
+                raise NativeTaskStorageError(
+                    "native tasks must be saved through the native task API"
+                )
             conn.execute(
                 "UPDATE tasks SET description = ?, body = ?,"
-                " extra_imports = ?, visibility = ?, updated_at = ?"
+                " extra_imports = ?, visibility = ?, revision = revision + 1,"
+                " updated_at = ?"
                 " WHERE owner_email = ? AND name = ?",
                 (description, body, extras, visibility, now, owner, name),
             )
+
+
+def save_native_task(
+    *,
+    owner: str,
+    definition: Mapping[str, Any],
+    visibility: str = "private",
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    """Atomically store a validated native definition and compiled snapshots."""
+    if visibility not in {"private", "shared"}:
+        raise ValueError(f"invalid visibility {visibility!r}")
+
+    valid = native_tasks.validate_definition(definition)
+    definition_json = native_tasks.canonical_definition_json(valid)
+    compiled = native_tasks.compile_definition(valid)
+    compiler_fingerprint = native_tasks.current_compiler_fingerprint()
+    name = valid["name"]
+    description = valid["description"]
+    extra_imports = "\n".join(compiled.imports)
+    now = _utc_now()
+
+    with db.connect() as conn:
+        existing = conn.execute(
+            "SELECT revision FROM tasks WHERE owner_email = ? AND name = ?",
+            (owner, name),
+        ).fetchone()
+        if existing is None:
+            if expected_revision is not None:
+                raise NativeTaskConflict(
+                    f"expected revision {expected_revision} for missing task"
+                )
+            try:
+                conn.execute(
+                    "INSERT INTO tasks"
+                    "(owner_email, name, description, body, extra_imports,"
+                    " definition_json, compiler_fingerprint, visibility,"
+                    " created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        owner,
+                        name,
+                        description,
+                        compiled.body,
+                        extra_imports,
+                        definition_json,
+                        compiler_fingerprint,
+                        visibility,
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise NativeTaskConflict(
+                    "task changed before the expected revision could be saved"
+                ) from exc
+        else:
+            if expected_revision is None:
+                raise NativeTaskConflict(
+                    "expected revision is required to update an existing task"
+                )
+            cursor = conn.execute(
+                "UPDATE tasks"
+                " SET description = ?,"
+                " body = ?,"
+                " extra_imports = ?,"
+                " definition_json = ?,"
+                " compiler_fingerprint = ?,"
+                " visibility = ?,"
+                " revision = revision + 1,"
+                " updated_at = ?"
+                " WHERE owner_email = ? AND name = ? AND revision = ?",
+                (
+                    description,
+                    compiled.body,
+                    extra_imports,
+                    definition_json,
+                    compiler_fingerprint,
+                    visibility,
+                    now,
+                    owner,
+                    name,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise NativeTaskConflict(
+                    f"task no longer has expected revision {expected_revision}"
+                )
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE owner_email = ? AND name = ?",
+            (owner, name),
+        ).fetchone()
+    return _row_to_dict(row)
 
 
 def get_task(owner: str, name: str) -> dict[str, Any] | None:
@@ -119,7 +228,8 @@ def set_visibility(owner: str, name: str, visibility: str) -> None:
     now = _utc_now()
     with db.connect() as conn:
         conn.execute(
-            "UPDATE tasks SET visibility = ?, updated_at = ?"
+            "UPDATE tasks SET visibility = ?, revision = revision + 1,"
+            " updated_at = ?"
             " WHERE owner_email = ? AND name = ?",
             (visibility, now, owner, name),
         )

@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -153,6 +153,8 @@ def init_schema() -> None:
                 _migrate_to_v12(conn)
             if current_version < 13:
                 _migrate_to_v13(conn)
+            if current_version < 14:
+                _migrate_to_v14(conn)
             from . import job_files
 
             job_files._migrate_uploads_to_job_files(conn)  # noqa: SLF001
@@ -537,6 +539,21 @@ def _migrate_to_v13(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_to_v14(conn: sqlite3.Connection) -> None:
+    """Add native task definitions, compiler fingerprints, and revisions."""
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
+    }
+    if "definition_json" not in columns:
+        conn.execute("ALTER TABLE tasks ADD COLUMN definition_json TEXT")
+    if "compiler_fingerprint" not in columns:
+        conn.execute("ALTER TABLE tasks ADD COLUMN compiler_fingerprint TEXT")
+    if "revision" not in columns:
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
+        )
+
+
 def _seed_folio_profiles(conn: sqlite3.Connection) -> None:
     """Seed default FOLIO profiles and rules without overwriting local edits."""
     import json
@@ -813,6 +830,9 @@ CREATE TABLE IF NOT EXISTS tasks (
                   CHECK(visibility IN ('private','shared')),
     created_at    TEXT    NOT NULL,
     updated_at    TEXT    NOT NULL,
+    definition_json TEXT,
+    compiler_fingerprint TEXT,
+    revision      INTEGER NOT NULL DEFAULT 1,
     UNIQUE(owner_email, name)
 );
 

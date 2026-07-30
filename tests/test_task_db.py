@@ -50,6 +50,7 @@ def test_save_updates_existing_row():
     after = task_db.get_task("alice@example.edu", "t1")
     assert before["id"] == after["id"]  # same row
     assert after["description"] == "v2"
+    assert after["revision"] == before["revision"] + 1
 
 
 def test_delete_returns_true_when_found():
@@ -74,10 +75,15 @@ def test_invalid_visibility_rejected():
 
 def test_set_visibility_toggle():
     _save("alice@example.edu", "t1", visibility="private")
+    created = task_db.get_task("alice@example.edu", "t1")
     task_db.set_visibility("alice@example.edu", "t1", "shared")
-    assert task_db.get_task("alice@example.edu", "t1")["visibility"] == "shared"
+    shared = task_db.get_task("alice@example.edu", "t1")
+    assert shared["visibility"] == "shared"
+    assert shared["revision"] == created["revision"] + 1
     task_db.set_visibility("alice@example.edu", "t1", "private")
-    assert task_db.get_task("alice@example.edu", "t1")["visibility"] == "private"
+    private = task_db.get_task("alice@example.edu", "t1")
+    assert private["visibility"] == "private"
+    assert private["revision"] == shared["revision"] + 1
 
 
 # ---------------------------------------------------------------------------
