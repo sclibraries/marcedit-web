@@ -9,9 +9,12 @@ templates.
 
 The main task page shows each operation as a short, ordered summary instead of
 expanding every form at once. Use **+ Add operation** or a card's **Edit**
-action to open its focused editor. The editor shows **Set up**, **Preview**,
-**Technical details**, and **Reference** tabs only when they apply to that
-operation.
+action to open its focused editor.
+
+The **Workspace** keeps setup controls beside preview results when an operation
+supports preview, so you can adjust settings and inspect the MARC result
+without changing tabs. Operations without preview use the full Workspace.
+**Technical details** and **Reference** remain separate when relevant.
 
 **Keep in task** retains the operation as a draft; it does not guarantee that
 the task can be saved or run. A **Needs attention** card identifies the

@@ -29,6 +29,7 @@ class FakeStreamlit:
         self.dialog_calls = []
         self.wrapper_invocations = 0
         self.tab_calls = []
+        self.column_calls = []
         self.widgets = []
         self.raw_values = []
         self.errors = []
@@ -82,8 +83,9 @@ class FakeStreamlit:
         self.raw_values.append(value)
 
     def columns(self, spec):
+        self.column_calls.append(spec)
         count = spec if isinstance(spec, int) else len(spec)
-        return [self for _index in range(count)]
+        return [_Context() for _index in range(count)]
 
     def rerun(self, **kwargs):
         self.reruns.append(kwargs)
@@ -251,7 +253,7 @@ def test_fragment_rerun_does_not_swallow_unexpected_errors(monkeypatch):
         task_operation_dialog.rerun_fragment_or_app()
 
 
-def test_guided_edit_uses_one_large_nondismissible_dialog_and_all_tabs(
+def test_guided_edit_uses_one_large_nondismissible_split_workspace(
     monkeypatch,
 ):
     fake = FakeStreamlit()
@@ -303,15 +305,16 @@ def test_guided_edit_uses_one_large_nondismissible_dialog_and_all_tabs(
         "dismissible": False,
     }]
     assert fake.tab_calls == [[
-        "Set up", "Preview", "Technical details", "Reference"
+        "Workspace", "Technical details", "Reference"
     ]]
+    assert fake.column_calls == [[5, 6]]
     assert fake.wrapper_invocations == 1
     assert controls[0]["rerun"] is task_operation_dialog.rerun_fragment_or_app
     assert previews
     assert references == ["guided-find-replace"]
 
 
-def test_delete_tag_has_only_setup_and_reference_tabs(monkeypatch):
+def test_delete_tag_has_only_workspace_and_reference_tabs(monkeypatch):
     fake = FakeStreamlit()
     operation = {"kind": "delete-tag", "params": {"tag": "001"}}
     state = task_operation_dialog.new_edit_state(operation, index=0, nonce=4)
@@ -337,7 +340,8 @@ def test_delete_tag_has_only_setup_and_reference_tabs(monkeypatch):
         on_close=lambda: None,
     )
 
-    assert fake.tab_calls == [["Set up", "Reference"]]
+    assert fake.tab_calls == [["Workspace", "Reference"]]
+    assert fake.column_calls == []
 
 
 def test_add_starts_with_alphabetical_selector_and_no_controls(monkeypatch):
@@ -367,6 +371,7 @@ def test_add_starts_with_alphabetical_selector_and_no_controls(monkeypatch):
     assert "custom" not in options
     assert key.startswith("task_operation_dialog_9_")
     assert controls == []
+    assert fake.column_calls == []
 
 
 def test_non_admin_add_excludes_only_custom_and_cancel_preserves_custom_code(
@@ -496,7 +501,7 @@ def test_unknown_draft_is_preserved_and_renderer_failure_is_bounded(monkeypatch)
         on_close=lambda: None,
     )
 
-    assert fake.tab_calls == [["Set up", "Technical details", "Reference"]]
+    assert fake.tab_calls == [["Workspace", "Technical details", "Reference"]]
     assert unknown in fake.raw_values
     assert any("needs migration" in error for error in fake.errors)
     assert state.working_copy == unknown

@@ -435,11 +435,7 @@ def render_active_dialog(
             if current_operation is not None
             else None
         )
-        tab_labels = ["Set up"]
-        if current_operation is not None and _preview_required(
-            current_operation, current_entry
-        ):
-            tab_labels.append("Preview")
+        tab_labels = ["Workspace"]
         if current_operation is not None and _technical_form_required(
             current_operation, current_entry
         ):
@@ -447,7 +443,7 @@ def render_active_dialog(
         tab_labels.append("Reference")
         tabs = dict(zip(tab_labels, st.tabs(tab_labels)))
 
-        with tabs["Set up"]:
+        with tabs["Workspace"]:
             if state.mode == "add" and state.working_copy is None:
                 palette = sorted(
                     task_builder.OPERATIONS_PALETTE,
@@ -472,20 +468,29 @@ def render_active_dialog(
                     # Rebuild the runtime dialog wrapper so its title names
                     # the newly selected operation.
                     st.rerun()
+            elif state.working_copy is not None and _preview_required(
+                current_operation, current_entry
+            ):
+                setup_column, preview_column = st.columns([5, 6])
+                with setup_column:
+                    _render_with_draft_restore(
+                        state,
+                        lambda: render_selected_operation(
+                            state, is_admin=is_admin
+                        ),
+                    )
+                with preview_column:
+                    _render_with_draft_restore(
+                        state,
+                        lambda: _render_preview(
+                            state, store=store, previews=previews
+                        ),
+                    )
             elif state.working_copy is not None:
                 _render_with_draft_restore(
                     state,
                     lambda: render_selected_operation(
                         state, is_admin=is_admin
-                    ),
-                )
-
-        if "Preview" in tabs:
-            with tabs["Preview"]:
-                _render_with_draft_restore(
-                    state,
-                    lambda: _render_preview(
-                        state, store=store, previews=previews
                     ),
                 )
 

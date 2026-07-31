@@ -38,7 +38,7 @@ pass based on non-browser evidence.
 | 2. Main editor omits selector and expanded operation controls | **SKIP** | Requires visible browser state after step 1. |
 | 3. Add six named operations plus an incomplete operation | **SKIP** | Requires interactive browser controls. No synthetic task was persisted. |
 | 4. Alphabetical selector and compact ordered cards | **SKIP** | Requires rendered selector/card inspection. |
-| 5. Context-sensitive tabs; Guided shows all four | **SKIP** | Requires dialog interaction and visible tab inspection. |
+| 5. Split Workspace keeps setup beside preview; secondary tabs remain contextual | **SKIP** | Requires dialog interaction and visible split-layout inspection. |
 | 6. Preview synthetic 035 replacement and observe Current without full MARC | **SKIP** | Requires interactive upload/preview state. No MARC data was loaded. |
 | 7. Reorder Guided card and retain Current | **SKIP** | Requires the preview state from step 6. |
 | 8. Edit, preview draft, cancel/discard, and restore original Current | **SKIP** | Requires a live dialog and preview cache interaction. |
