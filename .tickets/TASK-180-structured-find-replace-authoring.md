@@ -44,3 +44,51 @@ Design:
 
 Plan:
 - `docs/superpowers/plans/2026-07-30-task-180-core-structured-find-replace-authoring.md`
+
+Verification Checkpoint:
+- Candidate implementation commit: `906781c`.
+- Docker image:
+  `sha256:0d32d57f984773b1311582fdf96889c468383320b5231d1f1719a6cddda0953a`.
+- Focused Docker: 401 passed, 0 failed, 0 skipped, and 0 warnings in
+  13.12 seconds.
+- Native contract:
+  `test_checked_in_contract_matches_every_golden_definition` passed 1/1 in
+  0.11 seconds, and
+  `marcedit_web/schemas/native-task-compiler-contract-v1.json` has no diff
+  from `main`.
+- Required complete rebuilt-image Docker run: 1,769 passed, 8 failed,
+  39 skipped, and 0 warnings in 43.61 seconds. All eight failures are
+  pre-existing `tests/test_product_identity.py` checks whose repository-only
+  `README.md`, `Dockerfile`, TASK-176 ticket, and phase-one plan are absent
+  from `/app` in the default image/Compose mounts. The 39 reported skips are:
+  24 deployment/configuration checks for files intentionally absent from the
+  image (2 private-service, 4 deployment-doc, 1 public-service, 1 worker,
+  1 deploy script, 1 install script, 10 preflight script, 1 environment
+  example, 1 ITS setup, 1 watchdog service, and 1 watchdog timer);
+  13 Compose checks (3 pull-file, 4 Docker-CLI-required, 3 `.dockerignore`,
+  and 3 `Dockerfile`); 1 syntax-reference check because the reference is
+  absent from the image; and 1 unavailable institutional-corpus check.
+- Supplementary TASK-179-precedent read-only mounted Docker run:
+  1,811 passed, 0 failed, 5 skipped, and 0 warnings in 43.56 seconds.
+  The five skips are four Compose-rendering checks requiring a Docker CLI
+  inside the container and one unavailable institutional-corpus check;
+  synthetic fixtures remain authoritative.
+- Browser acceptance:
+  `docs/superpowers/evidence/task-180-guided-find-replace-browser-smoke.md`.
+  The isolated service was healthy, but all ten UI checks, the accessibility
+  snapshot, and the screenshot remain unavailable because the required
+  `node_repl js` browser-control runtime was not exposed after two discovery
+  attempts. External Playwright was not substituted.
+- Independent review: exact implementation range `f9b8968..906781c` plus the
+  Task 6 evidence diff has 0 Critical and 3 unresolved Important findings.
+  Target switching can retain an invisible invalid subfield; the whole-value
+  summary does not receive the current discard count and the card lacks the
+  required technical-details/reference section; and engine tests do not yet
+  prove every valid compatibility-table combination plus raw-regex/repeated
+  field first/all behavior. The reviewer assessed the candidate as not ready.
+- Completion is blocked until the required rebuilt-image suite has zero
+  failures (or its eight known repository-file failures receive an explicit
+  acceptance decision), the three Important review findings are resolved
+  through RED/GREEN cycles and re-reviewed, and all ten browser checks are
+  completed with concrete evidence. This checkpoint does not mark TASK-180
+  completed.

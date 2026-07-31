@@ -119,6 +119,62 @@ The structured Add Field rows can represent examples such as:
 =877  \\$mMap
 ```
 
+## Guided Find and Replace
+
+The default changes only matched text. For example, finding `TFeba` in
+035 subfield `a` and replacing it with `(SCTFEBA)` changes:
+
+`TFeba9780020306634` → `(SCTFEBA)9780020306634`
+
+Text before and after the match remains unless **Replace the whole selected
+value** is chosen explicitly.
+
+Targets in this release are control fields 001–009, one subfield code in one
+tag, and all subfield values in one tag. Prepend and append act once per
+selected value and do not use an empty Find.
+
+### Targets and actions
+
+| Target | Matched text | Whole selected value | Prepend | Append |
+| --- | --- | --- | --- | --- |
+| Control-field value 001–009 | Supported | Supported | Supported | Supported |
+| One subfield code in tag 010–999 | Supported | Supported | Supported | Supported |
+| All subfield values in tag 010–999 | Supported | Supported | Supported | Supported |
+
+For **All subfield values in a tag**, each subfield value in every occurrence
+of the tag is selected independently. Values are not concatenated and MARC
+mnemonic punctuation is not searched.
+
+### Match modes and actions
+
+| Match mode | Matched text | Whole selected value | Prepend | Append |
+| --- | --- | --- | --- | --- |
+| Contains | First or every match | Once when value matches | Not used | Not used |
+| Starts with | First match only | Once when value matches | Not used | Not used |
+| Ends with | First match only | Once when value matches | Not used | Not used |
+| Whole value | First match only | Once when value matches | Not used | Not used |
+| Raw regex | First or every match | Once using the first match | Not supported | Not supported |
+| No match condition | Not supported | Not supported | Once per selected value | Once per selected value |
+
+**First occurrence** and **Every occurrence** apply separately within each
+selected value, not once across the record. Contains and raw-regex matched-text
+replacement can therefore change the first match or every match in each
+selected value. Starts-with, ends-with, and whole-value matching can produce
+at most one match per selected value. Whole-selected-value replacement runs
+once when a selected value matches. Prepend and append are literal and run
+once per selected value.
+
+Raw regular expressions are available under the advanced control. They are
+stored exactly with match mode `raw_regex`, validated before save, and must
+receive a current sandbox preview before the task can be submitted. Raw-regex
+whole-selected-value replacement expands capture references from the first
+successful match.
+
+Structural field, tag, indicator, tag-range, and structured-pattern behavior
+is deferred to [TASK-184](../.tickets/TASK-184-structural-find-replace-authoring.md).
+External conversion and compatibility-corpus behavior is deferred to
+[TASK-185](../.tickets/TASK-185-external-find-replace-migration.md).
+
 ## Save, reopen, and preview
 
 Saving preserves operation, subfield, and segment order. Reopening converts
@@ -151,5 +207,5 @@ The following are not supported by the structured Add/Build editor:
 - unknown external task verbs.
 
 Smith Metadata Studio does not guess these meanings. RDA transformations,
-structured Find/Replace, and canonical MARC field reordering are separate
-future task families.
+structural Find/Replace, external task conversion, and canonical MARC field
+reordering are separate future task families.

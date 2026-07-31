@@ -101,7 +101,16 @@ Phase 3:
   Critical, Important, or Minor findings, and cataloger browser acceptance
   completed on synthetic data. TASK-179 is `Completed`; TASK-174 remains
   `In-Progress`.
-- TASK-180: deferred structured Find/Replace and Subfield Edit authoring.
+- TASK-180: structured Find/Replace and Subfield Edit authoring is
+  implemented through an evidence checkpoint but remains `In-Progress`.
+  Focused and native-contract guards pass, and a supplementary
+  TASK-179-precedent read-only-mounted complete suite passes with five
+  disclosed environment/corpus skips. The required rebuilt-image complete
+  suite still has eight known repository-file-availability failures, and all
+  ten browser checks remain unavailable because the required in-app
+  browser-control runtime was not exposed. Independent review also has three
+  unresolved Important findings. TASK-180 is not a completed checkpoint;
+  TASK-184 and TASK-185 remain deferred.
 - TASK-181: deferred explicit deterministic RDA operations.
 - TASK-182: deferred explicit MARC field reordering as both a quick action and
   an optional task step, while View continues to preserve source order under
