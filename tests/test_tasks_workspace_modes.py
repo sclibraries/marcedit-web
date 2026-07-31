@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 class _FakeStreamlit:
     def __init__(self):
@@ -514,6 +516,9 @@ def test_dialog_capability_error_fails_loud_without_opening_wrapper(monkeypatch)
 
     assert fake_st.errors == ["non-dismissible dialogs unavailable"]
     assert calls == []
+    assert not fake_st.session_state[
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED
+    ]
 
 
 def test_reference_button_opens_only_reference_dialog(monkeypatch):
@@ -635,6 +640,57 @@ def test_editor_open_and_close_reset_operation_dialog_lifecycle(monkeypatch):
     fake_st.session_state[tasks_render.K_OPERATION_REFERENCE_REQUESTED] = True
     tasks_render._cancel_callback()
 
+    assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE] is None
+    assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_NONCE] == 0
+    assert not fake_st.session_state[
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED
+    ]
+
+
+def test_clear_my_tasks_resets_operation_dialog_lifecycle_before_rerun(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    fake_st.clicked_labels.add("Clear my tasks")
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    stale = tasks_render.task_operation_dialog.new_add_state(9)
+    fake_st.session_state.update({
+        tasks_render.K_EDITOR_OPEN: True,
+        tasks_render.K_OPERATION_DIALOG_STATE: stale,
+        tasks_render.K_OPERATION_DIALOG_NONCE: 9,
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED: True,
+    })
+    monkeypatch.setattr(
+        fake_st, "metric", lambda *args, **kwargs: None, raising=False
+    )
+    monkeypatch.setattr(
+        fake_st,
+        "rerun",
+        lambda: (_ for _ in ()).throw(RuntimeError("rerun")),
+    )
+    monkeypatch.setattr(
+        tasks_render.task_db,
+        "count_visible",
+        lambda user: {"own": 1, "shared_from_others": 0},
+    )
+    monkeypatch.setattr(
+        tasks_render.task_db,
+        "list_own_tasks",
+        lambda user: [{"name": "cleanup"}],
+    )
+    monkeypatch.setattr(
+        tasks_render.task_db, "delete_task", lambda user, name: None
+    )
+
+    with pytest.raises(RuntimeError, match="rerun"):
+        tasks_render._render_build_mode(
+            Path("/unused"),
+            is_admin=False,
+            current_user_id="cat@smith.edu",
+            registered=[],
+        )
+
+    assert not fake_st.session_state[tasks_render.K_EDITOR_OPEN]
     assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE] is None
     assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_NONCE] == 0
     assert not fake_st.session_state[

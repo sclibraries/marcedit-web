@@ -288,6 +288,7 @@ def _render_build_mode(
                 logger.exception("delete_task failed for %s", t["name"])
                 st.warning(f"Could not delete {t['name']}: {exc}")
         st.session_state[K_EDITOR_OPEN] = False
+        _reset_operation_dialog_state()
         st.rerun()
 
     if not is_admin:
@@ -1056,14 +1057,16 @@ def _render_form_editor() -> None:
     ):
         st.session_state[K_OPERATION_REFERENCE_REQUESTED] = True
 
+    active_state = st.session_state.get(K_OPERATION_DIALOG_STATE)
+    if active_state is not None:
+        st.session_state[K_OPERATION_REFERENCE_REQUESTED] = False
+
     contract_error = task_operation_dialog.dialog_contract_error()
     if contract_error:
         st.error(contract_error)
         return
 
-    active_state = st.session_state.get(K_OPERATION_DIALOG_STATE)
     if active_state is not None:
-        st.session_state[K_OPERATION_REFERENCE_REQUESTED] = False
         task_operation_dialog.render_active_dialog(
             active_state,
             operations=st.session_state.get(K_EDITOR_OPS, []),
