@@ -469,7 +469,9 @@ def render_active_dialog(
                     state.selected_kind = selected_state.selected_kind
                     state.working_copy = selected_state.working_copy
                     state.discard_pending = False
-                    rerun_fragment_or_app()
+                    # Rebuild the runtime dialog wrapper so its title names
+                    # the newly selected operation.
+                    st.rerun()
             elif state.working_copy is not None:
                 _render_with_draft_restore(
                     state,

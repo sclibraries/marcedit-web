@@ -188,7 +188,7 @@ def test_every_palette_kind_enters_the_shared_admin_dialog(kind, monkeypatch):
     assert state.selected_kind == kind
     assert state.working_copy["kind"] == kind
     assert isinstance(state.working_copy["params"], dict)
-    assert fake.reruns == [{"scope": "fragment"}]
+    assert fake.reruns == [{}]
 
 
 def test_dialog_contract_checks_capability_not_version_string():
@@ -427,7 +427,9 @@ def test_non_admin_add_excludes_only_custom_and_cancel_preserves_custom_code(
     assert custom["params"]["code"] == code
 
 
-def test_add_selection_requests_safe_fragment_rerun(monkeypatch):
+def test_add_selection_rebuilds_wrapper_with_selected_operation_title(
+    monkeypatch,
+):
     fake = FakeStreamlit(selections={"Operation": "delete-tag"})
     state = task_operation_dialog.new_add_state(10)
     monkeypatch.setattr(task_operation_dialog, "st", fake)
@@ -451,7 +453,27 @@ def test_add_selection_requests_safe_fragment_rerun(monkeypatch):
         "kind": "delete-tag",
         "params": {"tag": ""},
     }
-    assert fake.reruns == [{"scope": "fragment"}]
+    assert fake.dialog_calls[0]["title"] == "Add operation"
+    assert fake.reruns == [{}]
+
+    fake.dialog_calls.clear()
+    fake.reruns.clear()
+    monkeypatch.setattr(
+        task_operation_dialog,
+        "render_selected_operation",
+        lambda state, *, is_admin: None,
+    )
+    task_operation_dialog.render_active_dialog(
+        state,
+        operations=[],
+        is_admin=False,
+        store=None,
+        previews={},
+        on_keep=lambda operations: None,
+        on_close=lambda: None,
+    )
+
+    assert fake.dialog_calls[0]["title"] == "Add — Delete tag"
 
 
 def test_unknown_draft_is_preserved_and_renderer_failure_is_bounded(monkeypatch):
