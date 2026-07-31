@@ -2,9 +2,30 @@
 
 from __future__ import annotations
 
+import pytest
 from pymarc import Field, Record
 
 from marcedit_web.lib.guided_replace_preview import GuidedReplacePreview
+
+
+class GuardedSessionState(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.instantiated_widget_keys = set()
+
+    def begin_run(self):
+        self.instantiated_widget_keys.clear()
+
+    def mark_widget(self, key):
+        if key is not None:
+            self.instantiated_widget_keys.add(key)
+
+    def __setitem__(self, key, value):
+        if key in self.instantiated_widget_keys:
+            raise AssertionError(
+                "cannot write an instantiated widget key: {0}".format(key)
+            )
+        super().__setitem__(key, value)
 
 
 class FakeStreamlit:
@@ -16,14 +37,19 @@ class FakeStreamlit:
         selectbox_values=None,
         session_state=None,
         text_values=None,
+        guard_widget_state=False,
     ):
         self.pressed = set(pressed or ())
         self.checked = None if checked is None else set(checked)
         self.selectbox_values = dict(selectbox_values or {})
         self.text_values = dict(text_values or {})
-        self.session_state = (
-            session_state if session_state is not None else {}
-        )
+        if guard_widget_state and not isinstance(
+            session_state, GuardedSessionState
+        ):
+            session_state = GuardedSessionState(session_state or {})
+        self.session_state = session_state if session_state is not None else {}
+        if isinstance(self.session_state, GuardedSessionState):
+            self.session_state.begin_run()
         self.text_input_labels = []
         self.text_area_labels = []
         self.selectbox_labels = []
@@ -45,7 +71,10 @@ class FakeStreamlit:
 
     def text_input(self, label, value="", **kwargs):
         self.text_input_labels.append(label)
-        self.widget_keys.append(kwargs.get("key"))
+        key = kwargs.get("key")
+        self.widget_keys.append(key)
+        if isinstance(self.session_state, GuardedSessionState):
+            self.session_state.mark_widget(key)
         return self.text_values.get(label, value)
 
     def text_area(self, label, value="", **kwargs):
@@ -62,7 +91,9 @@ class FakeStreamlit:
             label,
             self.session_state.get(key, options[index]),
         )
-        self.session_state[key] = selected
+        dict.__setitem__(self.session_state, key, selected)
+        if isinstance(self.session_state, GuardedSessionState):
+            self.session_state.mark_widget(key)
         return selected
 
     def checkbox(self, label, value=False, key=None, **kwargs):
@@ -72,12 +103,16 @@ class FakeStreamlit:
             selected = key in self.checked
         else:
             selected = self.session_state.get(key, False)
-        self.session_state[key] = selected
+        dict.__setitem__(self.session_state, key, selected)
+        if isinstance(self.session_state, GuardedSessionState):
+            self.session_state.mark_widget(key)
         return selected
 
     def radio(self, label, options, index=0, key=None, **kwargs):
         self.radio_labels.append(label)
         self.widget_keys.append(key)
+        if isinstance(self.session_state, GuardedSessionState):
+            self.session_state.mark_widget(key)
         return options[index]
 
     def metric(self, label, value, **kwargs):
@@ -89,6 +124,8 @@ class FakeStreamlit:
     def button(self, label, key=None, **kwargs):
         self.button_keys.append(key)
         self.widget_keys.append(key)
+        if isinstance(self.session_state, GuardedSessionState):
+            self.session_state.mark_widget(key)
         return key in self.pressed
 
     def caption(self, value):
@@ -249,9 +286,12 @@ def test_loaded_inconsistent_hidden_subfield_remains_fail_loud(monkeypatch):
     ) == ("Subfield code must be empty for this target.",)
 
 
-def test_prepend_hides_find_and_occurrence_controls(monkeypatch):
+@pytest.mark.parametrize("replacement_mode", ["prepend", "append"])
+def test_prepend_append_hide_find_regex_and_occurrence_controls(
+    monkeypatch, replacement_mode
+):
     fake = FakeStreamlit(
-        selectbox_values={"What should it change?": "prepend"}
+        selectbox_values={"What should it change?": replacement_mode}
     )
     renderer = _renderer(monkeypatch, fake)
     params = _guided_operation()["params"]
@@ -259,9 +299,13 @@ def test_prepend_hides_find_and_occurrence_controls(monkeypatch):
     renderer.render_guided_find_replace_params(params, key_prefix="op_0")
 
     assert "Find" not in fake.text_input_labels
+    assert (
+        "Write a regular expression directly" not in fake.checkbox_labels
+    )
     assert "First or every match?" not in fake.radio_labels
     assert params["match_mode"] == "none"
     assert params["find"] == ""
+    assert params["occurrences"] == "all"
 
 
 def test_raw_regex_is_explicit_and_preserves_entered_strings(monkeypatch):
@@ -288,48 +332,108 @@ def test_leaving_raw_mode_requires_confirmation_before_discard(monkeypatch):
         find=r"^(TFeba)(\d+)$",
         replacement=r"(SCTFEBA)\2",
     )["params"]
-    first = FakeStreamlit()
+    shared_state = GuardedSessionState()
+    first = FakeStreamlit(
+        pressed={"op_0_mode_switch_discard"},
+        session_state=shared_state,
+        guard_widget_state=True,
+    )
     renderer = _renderer(monkeypatch, first)
     renderer.render_guided_find_replace_params(params, key_prefix="op_0")
     assert params["match_mode"] == "raw_regex"
     assert params["find"] == r"^(TFeba)(\d+)$"
     assert any("discard" in text.lower() for text in first.warnings)
 
-    confirmed = FakeStreamlit(pressed={"op_0_mode_switch_discard"})
+    confirmed = FakeStreamlit(
+        session_state=shared_state,
+        guard_widget_state=True,
+    )
     renderer = _renderer(monkeypatch, confirmed)
     renderer.render_guided_find_replace_params(
         params, key_prefix="op_0"
     )
     assert params["match_mode"] == "contains"
     assert params["find"] == ""
+    assert confirmed.warnings == []
 
 
-def test_keep_raw_mode_cancels_prepend_switch_on_next_rerun(monkeypatch):
+@pytest.mark.parametrize(
+    ("previous_action", "requested_action"),
+    [("matched_text", "prepend"), ("whole_value", "append")],
+)
+def test_keep_raw_mode_cancels_prepend_append_without_widget_state_write(
+    monkeypatch, previous_action, requested_action
+):
     params = _guided_operation(
         match_mode="raw_regex",
         find=r"^(TFeba)(\d+)$",
         replacement=r"(SCTFEBA)\2",
+        replacement_mode=previous_action,
+        occurrences="first" if previous_action == "whole_value" else "all",
     )["params"]
-    shared_state = {}
+    shared_state = GuardedSessionState()
     first = FakeStreamlit(
         pressed={"op_0_mode_switch_keep"},
         checked={"op_0_advanced_regex"},
-        selectbox_values={"What should it change?": "prepend"},
+        selectbox_values={"What should it change?": requested_action},
         session_state=shared_state,
+        guard_widget_state=True,
     )
     renderer = _renderer(monkeypatch, first)
 
     renderer.render_guided_find_replace_params(params, key_prefix="op_0")
 
-    rerun = FakeStreamlit(session_state=shared_state)
+    rerun = FakeStreamlit(
+        session_state=shared_state,
+        guard_widget_state=True,
+    )
     renderer = _renderer(monkeypatch, rerun)
     renderer.render_guided_find_replace_params(params, key_prefix="op_0")
 
     assert rerun.warnings == []
-    assert params["replacement_mode"] == "matched_text"
+    assert params["replacement_mode"] == previous_action
     assert params["match_mode"] == "raw_regex"
     assert params["find"] == r"^(TFeba)(\d+)$"
     assert params["replacement"] == r"(SCTFEBA)\2"
+
+
+@pytest.mark.parametrize("requested_action", ["prepend", "append"])
+def test_discard_raw_mode_canonicalizes_prepend_append_without_stale_state(
+    monkeypatch, requested_action
+):
+    params = _guided_operation(
+        match_mode="raw_regex",
+        find=r"^(TFeba)(\d+)$",
+        replacement=r"(SCTFEBA)\2",
+    )["params"]
+    shared_state = GuardedSessionState()
+    first = FakeStreamlit(
+        pressed={"op_0_mode_switch_discard"},
+        checked={"op_0_advanced_regex"},
+        selectbox_values={"What should it change?": requested_action},
+        session_state=shared_state,
+        guard_widget_state=True,
+    )
+    renderer = _renderer(monkeypatch, first)
+
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    rerun = FakeStreamlit(
+        session_state=shared_state,
+        guard_widget_state=True,
+    )
+    renderer = _renderer(monkeypatch, rerun)
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    assert params["replacement_mode"] == requested_action
+    assert params["match_mode"] == "none"
+    assert params["find"] == ""
+    assert params["occurrences"] == "all"
+    assert params["replacement"] == r"(SCTFEBA)\2"
+    assert (
+        "Write a regular expression directly" not in rerun.checkbox_labels
+    )
+    assert "op_0_preserved_raw_find" not in shared_state
 
 
 def test_guided_widget_keys_are_unique_and_operation_scoped(monkeypatch):

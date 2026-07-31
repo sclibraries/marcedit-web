@@ -296,6 +296,34 @@ def render_guided_find_replace_params(
 ) -> None:
     """Render progressive controls for one guided value replacement."""
 
+    replacement_mode_key = _key(key_prefix, "replacement_mode")
+    advanced_key = _key(key_prefix, "advanced_regex")
+    preserved_key = _key(key_prefix, "preserved_raw_find")
+    pending_key = _key(key_prefix, "pending_mode_switch")
+    pending = st.session_state.pop(pending_key, None)
+    if isinstance(pending, Mapping):
+        if pending.get("action") == "keep":
+            st.session_state[advanced_key] = True
+            st.session_state[replacement_mode_key] = pending[
+                "previous_replacement_mode"
+            ]
+        elif pending.get("action") == "discard":
+            requested_mode = pending["requested_replacement_mode"]
+            params["replacement_mode"] = requested_mode
+            params["match_mode"] = (
+                "none"
+                if requested_mode in {"prepend", "append"}
+                else "contains"
+            )
+            params["find"] = ""
+            if requested_mode in {"prepend", "append"}:
+                params["occurrences"] = "all"
+                st.session_state.pop(advanced_key, None)
+            else:
+                st.session_state[advanced_key] = False
+            st.session_state[replacement_mode_key] = requested_mode
+        st.session_state.pop(preserved_key, None)
+
     previous_target_kind = str(params.get("target_kind") or "subfield")
     params["target_kind"] = _select_policy(
         "Where should Smith Metadata Studio look?",
@@ -325,7 +353,6 @@ def render_guided_find_replace_params(
     previous_replacement_mode = str(
         params.get("replacement_mode") or "matched_text"
     )
-    replacement_mode_key = _key(key_prefix, "replacement_mode")
     requested_replacement_mode = _select_policy(
         "What should it change?",
         previous_replacement_mode,
@@ -333,12 +360,13 @@ def render_guided_find_replace_params(
         key=replacement_mode_key,
     )
     previous_match_mode = str(params.get("match_mode") or "contains")
-    advanced_key = _key(key_prefix, "advanced_regex")
-    requested_raw = st.checkbox(
-        "Write a regular expression directly",
-        value=previous_match_mode == "raw_regex",
-        key=advanced_key,
-    )
+    requested_raw = False
+    if requested_replacement_mode not in {"prepend", "append"}:
+        requested_raw = st.checkbox(
+            "Write a regular expression directly",
+            value=previous_match_mode == "raw_regex",
+            key=advanced_key,
+        )
 
     leaving_raw = (
         previous_match_mode == "raw_regex"
@@ -348,7 +376,6 @@ def render_guided_find_replace_params(
         )
     )
     if leaving_raw:
-        preserved_key = _key(key_prefix, "preserved_raw_find")
         st.session_state[preserved_key] = params.get("find", "")
         st.warning(
             "Switching modes will discard the current regular expression."
@@ -357,27 +384,18 @@ def render_guided_find_replace_params(
             "Keep current mode",
             key=_key(key_prefix, "mode_switch_keep"),
         ):
-            st.session_state[advanced_key] = True
-            st.session_state[replacement_mode_key] = (
-                previous_replacement_mode
-            )
+            st.session_state[pending_key] = {
+                "action": "keep",
+                "previous_replacement_mode": previous_replacement_mode,
+            }
         if st.button(
             "Discard matching text and switch",
             key=_key(key_prefix, "mode_switch_discard"),
         ):
-            params["replacement_mode"] = requested_replacement_mode
-            params["match_mode"] = (
-                "none"
-                if requested_replacement_mode in {"prepend", "append"}
-                else "contains"
-            )
-            params["find"] = ""
-            params["occurrences"] = (
-                "all"
-                if requested_replacement_mode in {"prepend", "append"}
-                else params.get("occurrences", "all")
-            )
-            st.session_state.pop(preserved_key, None)
+            st.session_state[pending_key] = {
+                "action": "discard",
+                "requested_replacement_mode": requested_replacement_mode,
+            }
         return
 
     params["replacement_mode"] = requested_replacement_mode
