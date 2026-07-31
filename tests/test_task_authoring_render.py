@@ -671,6 +671,89 @@ def test_stale_guided_preview_hides_all_preview_evidence(
     assert fake.warnings == []
 
 
+@pytest.mark.parametrize("stale_by", ["identity", "revision"])
+def test_stale_failed_guided_preview_requests_refresh_without_old_error(
+    monkeypatch, stale_by
+):
+    operation = _guided_operation()
+
+    class Store:
+        revision = 4
+
+    store = Store()
+    previous_store = Store()
+    preview = GuidedReplacePreview(
+        request=operation["params"],
+        store_id=id(previous_store) if stale_by == "identity" else id(store),
+        store_revision=3 if stale_by == "revision" else store.revision,
+        error="old source failed",
+    )
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+
+    renderer.render_guided_replace_preview(
+        operation,
+        store,
+        {key: preview},
+        key_prefix="op_0",
+    )
+
+    assert any("stale" in text.lower() for text in fake.infos)
+    assert fake.errors == []
+
+
+def test_current_failed_guided_preview_shows_current_error(monkeypatch):
+    operation = _guided_operation()
+
+    class Store:
+        revision = 4
+
+    store = Store()
+    preview = GuidedReplacePreview(
+        request=operation["params"],
+        store_id=id(store),
+        store_revision=store.revision,
+        error="current source failed",
+    )
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+
+    renderer.render_guided_replace_preview(
+        operation,
+        store,
+        {key: preview},
+        key_prefix="op_0",
+    )
+
+    assert fake.errors == ["current source failed"]
+    assert not any("stale" in text.lower() for text in fake.infos)
+
+
+def test_no_file_failed_guided_preview_remains_current(monkeypatch):
+    operation = _guided_operation()
+    preview = GuidedReplacePreview(
+        request=operation["params"],
+        store_id=None,
+        store_revision=None,
+        error="No loaded file is available to preview.",
+    )
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+
+    renderer.render_guided_replace_preview(
+        operation,
+        None,
+        {key: preview},
+        key_prefix="op_0",
+    )
+
+    assert fake.errors == ["No loaded file is available to preview."]
+    assert not any("stale" in text.lower() for text in fake.infos)
+
+
 def test_preview_without_revision_provenance_is_stale(monkeypatch):
     operation = _guided_operation()
     store = object()

@@ -647,12 +647,30 @@ def render_guided_replace_preview(
             "before running it."
         )
         return 0
+    if (
+        preview.error is not None
+        and store is None
+        and preview.store_id is None
+        and preview.store_revision is None
+    ):
+        st.error(preview.error)
+        return 0
+    current_revision = getattr(store, "revision", None)
+    if (
+        preview.store_id != id(store)
+        or preview.store_revision is None
+        or current_revision is None
+        or preview.store_revision != current_revision
+    ):
+        st.info(
+            "This preview is stale because the source changed. "
+            "Preview this operation again."
+        )
+        return 0
     if preview.error is not None:
         st.error(preview.error)
         return 0
-    if store is None or not guided_replace_preview.is_current(
-        preview, store, operation
-    ):
+    if not guided_replace_preview.is_current(preview, store, operation):
         st.info(
             "This preview is stale because the source changed. "
             "Preview this operation again."

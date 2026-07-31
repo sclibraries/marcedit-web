@@ -56,9 +56,10 @@ class FakeStreamlit:
         self.tab_calls.append(list(labels))
         return [_Context() for _label in labels]
 
-    def selectbox(self, label, *, options, key, **kwargs):
+    def selectbox(self, label, *, options, key, index=0, **kwargs):
         self.widgets.append(("selectbox", label, list(options), key))
-        return self.selections.get(label)
+        default = None if index is None else options[index]
+        return self.selections.get(label, default)
 
     def button(self, label, *, key, **kwargs):
         self.widgets.append(("button", label, None, key))
@@ -157,6 +158,43 @@ def test_add_kind_uses_existing_defaults_and_incomplete_draft_can_be_kept():
     assert kept[0]["kind"] == "guided-find-replace"
     assert kept[0]["params"]["replacement_mode"] == "matched_text"
     assert task_authoring.validate_operation(kept[0])
+
+
+def _add_subfield_position_parameter():
+    entry = task_operation_dialog._palette_entry("add-subfield")
+    return next(
+        parameter
+        for parameter in entry["params"]
+        if parameter["name"] == "position"
+    )
+
+
+def test_generic_select_render_preserves_unsupported_value(monkeypatch):
+    fake = FakeStreamlit()
+    params = {"position": "future"}
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+
+    task_operation_dialog.render_param_input(
+        _add_subfield_position_parameter(),
+        params,
+        key_prefix="operation_1",
+    )
+
+    assert params["position"] == "future"
+
+
+def test_generic_select_render_can_repair_unsupported_value(monkeypatch):
+    fake = FakeStreamlit(selections={"Position": "start"})
+    params = {"position": "future"}
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+
+    task_operation_dialog.render_param_input(
+        _add_subfield_position_parameter(),
+        params,
+        key_prefix="operation_1",
+    )
+
+    assert params["position"] == "start"
 
 
 @pytest.mark.parametrize(

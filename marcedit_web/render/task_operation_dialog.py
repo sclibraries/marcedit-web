@@ -222,17 +222,24 @@ def render_param_input(
             )
     elif parameter_type == "select":
         options = [option["value"] for option in parameter.get("options", [])]
-        labels = {
-            option["value"]: option["label"]
-            for option in parameter.get("options", [])
-        }
         if current not in options and options:
-            current = options[0]
+            options.insert(0, current)
+
+        def option_label(value):
+            return next(
+                (
+                    option["label"]
+                    for option in parameter.get("options", [])
+                    if option["value"] == value
+                ),
+                "{0} (unsupported)".format(value),
+            )
+
         params[name] = st.selectbox(
             label,
             options=options,
             index=options.index(current) if current in options else 0,
-            format_func=lambda value: labels.get(value, value),
+            format_func=option_label,
             help=help_text,
             key=key,
         )
@@ -290,7 +297,7 @@ def render_selected_operation(
     *,
     is_admin: bool,
 ) -> None:
-    """Delegate Set up controls without replacing the modal draft."""
+    """Delegate Workspace controls without replacing the modal draft."""
 
     operation = state.working_copy
     if operation is None:

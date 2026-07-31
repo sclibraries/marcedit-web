@@ -350,6 +350,17 @@ def validate_operation(
                 errors.append(
                     "{0} is required".format(parameter["label"])
                 )
+            elif (
+                parameter["type"] == "select"
+                and parameter["name"] in params
+                and value not in tuple(
+                    option["value"]
+                    for option in parameter.get("options", [])
+                )
+            ):
+                errors.append(
+                    "{0} is not supported".format(parameter["label"])
+                )
         return tuple(errors)
     try:
         normalized = normalize_operation(op)

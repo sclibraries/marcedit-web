@@ -478,6 +478,23 @@ def test_every_palette_required_value_is_validated_before_save_or_run():
     )
 
 
+@pytest.mark.parametrize("unsupported", ["future", ["future"]])
+def test_generic_palette_select_rejects_unsupported_value(unsupported):
+    operation = {
+        "kind": "add-subfield",
+        "params": {
+            "tag": "245",
+            "code": "a",
+            "value": "Title",
+            "position": unsupported,
+        },
+    }
+
+    assert task_authoring.validate_operation(operation) == (
+        "Position is not supported",
+    )
+
+
 def test_unknown_and_unresolved_operations_need_attention_losslessly():
     unknown = {"kind": "future-operation", "params": {"opaque": 1}}
     unresolved = {
