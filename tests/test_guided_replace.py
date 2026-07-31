@@ -45,20 +45,58 @@ def _params(**changes):
     return params
 
 
-def _valid_params_for(target_kind, replacement_mode):
-    params = _params(
-        target_kind=target_kind,
-        replacement_mode=replacement_mode,
-    )
+def _matrix_record_for_target(target_kind):
+    record = Record()
     if target_kind == "control_field":
-        params.update(tag="001", subfield="")
+        record.add_field(Field(tag="001", data="TFeba-TFeba"))
+    else:
+        second_value = (
+            "TFeba-TFeba"
+            if target_kind == "all_subfields"
+            else "leave-z-alone"
+        )
+        record.add_field(
+            Field(
+                tag="035",
+                indicators=[" ", " "],
+                subfields=[
+                    Subfield(code="a", value="TFeba-TFeba"),
+                    Subfield(code="z", value=second_value),
+                ],
+            )
+        )
+    return record
+
+
+def _target_params(target_kind, **changes):
+    if target_kind == "control_field":
+        params = _params(
+            target_kind=target_kind,
+            tag="001",
+            subfield="",
+        )
     elif target_kind == "all_subfields":
-        params.update(tag="035", subfield="")
-    if replacement_mode in ("prepend", "append"):
-        params.update(match_mode="none", find="", occurrences="all")
-    elif replacement_mode == "whole_value":
-        params.update(occurrences="first")
+        params = _params(target_kind=target_kind, subfield="")
+    else:
+        params = _params(target_kind=target_kind)
+    params.update(changes)
     return params
+
+
+def _selected_values_for_assertion(record, target_kind):
+    if target_kind == "control_field":
+        return [record["001"].data]
+    if target_kind == "subfield":
+        return [
+            value
+            for field in record.get_fields("035")
+            for value in field.get_subfields("a")
+        ]
+    return [
+        subfield.value
+        for field in record.get_fields("035")
+        for subfield in field.subfields
+    ]
 
 
 def test_matched_text_default_preserves_identifier_after_035_match():
@@ -158,38 +196,394 @@ def test_match_modes_replace_only_the_matched_text(
 
 
 @pytest.mark.parametrize(
-    "target_kind",
-    ["control_field", "subfield", "all_subfields"],
+    ("target_kind", "selected_count"),
+    [
+        ("control_field", 1),
+        ("subfield", 1),
+        ("all_subfields", 2),
+    ],
+    ids=[
+        "control-value-keeps-actions-orthogonal",
+        "one-subfield-code-keeps-actions-orthogonal",
+        "all-subfield-values-keep-actions-orthogonal",
+    ],
 )
 @pytest.mark.parametrize(
-    "replacement_mode",
-    ["matched_text", "whole_value", "prepend", "append"],
+    ("replacement_mode", "changes", "expected", "matches_per_value"),
+    [
+        (
+            "matched_text",
+            {},
+            "(SCTFEBA)-(SCTFEBA)",
+            2,
+        ),
+        (
+            "whole_value",
+            {"replacement": "whole", "occurrences": "first"},
+            "whole",
+            1,
+        ),
+        (
+            "prepend",
+            {
+                "match_mode": "none",
+                "find": "",
+                "replacement": "before:",
+            },
+            "before:TFeba-TFeba",
+            0,
+        ),
+        (
+            "append",
+            {
+                "match_mode": "none",
+                "find": "",
+                "replacement": ":after",
+            },
+            "TFeba-TFeba:after",
+            0,
+        ),
+    ],
+    ids=[
+        "matched-text-preserves-unmatched-value-parts",
+        "whole-selected-value-replaces-once",
+        "prepend-runs-once-without-find",
+        "append-runs-once-without-find",
+    ],
 )
-def test_every_target_action_cell_is_supported(
-    target_kind, replacement_mode
+def test_every_target_action_cell_validates_and_executes_independently(
+    target_kind,
+    selected_count,
+    replacement_mode,
+    changes,
+    expected,
+    matches_per_value,
 ):
-    params = _valid_params_for(target_kind, replacement_mode)
+    record = _matrix_record_for_target(target_kind)
+    params = _target_params(
+        target_kind,
+        replacement_mode=replacement_mode,
+        **changes,
+    )
+
     assert guided_replace.validate_request(**params) == ()
 
+    result = guided_replace.apply_guided_find_replace(record, **params)
 
-def test_first_and_all_are_per_selected_value_not_per_record():
+    assert _selected_values_for_assertion(record, target_kind) == [
+        expected
+    ] * selected_count
+    if target_kind == "subfield":
+        assert record["035"]["z"] == "leave-z-alone"
+    assert result == {
+        "matched_values": selected_count,
+        "changed_values": selected_count,
+        "matched_occurrences": selected_count * matches_per_value,
+    }
+
+
+@pytest.mark.parametrize(
+    (
+        "match_mode",
+        "replacement_mode",
+        "value",
+        "find",
+        "replacement",
+        "occurrences",
+        "expected",
+        "matched_occurrences",
+    ),
+    [
+        (
+            "contains",
+            "matched_text",
+            "xTFeba-TFebay",
+            "TFeba",
+            "C",
+            "all",
+            "xC-Cy",
+            2,
+        ),
+        (
+            "contains",
+            "whole_value",
+            "xTFeba-TFebay",
+            "TFeba",
+            "whole",
+            "first",
+            "whole",
+            1,
+        ),
+        (
+            "starts_with",
+            "matched_text",
+            "TFeba-TFeba",
+            "TFeba",
+            "S",
+            "first",
+            "S-TFeba",
+            1,
+        ),
+        (
+            "starts_with",
+            "whole_value",
+            "TFeba-TFeba",
+            "TFeba",
+            "whole",
+            "first",
+            "whole",
+            1,
+        ),
+        (
+            "ends_with",
+            "matched_text",
+            "TFeba-TFeba",
+            "TFeba",
+            "E",
+            "first",
+            "TFeba-E",
+            1,
+        ),
+        (
+            "ends_with",
+            "whole_value",
+            "TFeba-TFeba",
+            "TFeba",
+            "whole",
+            "first",
+            "whole",
+            1,
+        ),
+        (
+            "whole_value",
+            "matched_text",
+            "TFeba",
+            "TFeba",
+            "exact",
+            "first",
+            "exact",
+            1,
+        ),
+        (
+            "whole_value",
+            "whole_value",
+            "TFeba",
+            "TFeba",
+            "whole",
+            "first",
+            "whole",
+            1,
+        ),
+        (
+            "raw_regex",
+            "matched_text",
+            "TFeba12-TFeba34",
+            r"TFeba(\d+)",
+            r"id-\1",
+            "all",
+            "id-12-id-34",
+            2,
+        ),
+        (
+            "raw_regex",
+            "whole_value",
+            "TFeba12-TFeba34",
+            r"TFeba(\d+)",
+            r"first-\1",
+            "first",
+            "first-12",
+            1,
+        ),
+        (
+            "none",
+            "prepend",
+            "TFeba",
+            "",
+            "before:",
+            "all",
+            "before:TFeba",
+            0,
+        ),
+        (
+            "none",
+            "append",
+            "TFeba",
+            "",
+            ":after",
+            "all",
+            "TFeba:after",
+            0,
+        ),
+    ],
+    ids=[
+        "contains-matched-text-replaces-every-match",
+        "contains-whole-value-replaces-once-after-match",
+        "starts-with-matched-text-replaces-prefix-only",
+        "starts-with-whole-value-replaces-once-after-prefix-match",
+        "ends-with-matched-text-replaces-suffix-only",
+        "ends-with-whole-value-replaces-once-after-suffix-match",
+        "whole-match-matched-text-replaces-the-exact-value",
+        "whole-match-whole-value-replaces-once-after-exact-match",
+        "raw-regex-matched-text-expands-every-capture",
+        "raw-regex-whole-value-expands-the-first-capture",
+        "no-condition-prepend-runs-once",
+        "no-condition-append-runs-once",
+    ],
+)
+def test_every_match_action_cell_validates_and_executes_with_intent(
+    match_mode,
+    replacement_mode,
+    value,
+    find,
+    replacement,
+    occurrences,
+    expected,
+    matched_occurrences,
+):
+    record = Record()
+    record.add_field(
+        Field(
+            tag="035",
+            indicators=[" ", " "],
+            subfields=[Subfield(code="a", value=value)],
+        )
+    )
+    params = _params(
+        match_mode=match_mode,
+        find=find,
+        replacement_mode=replacement_mode,
+        replacement=replacement,
+        occurrences=occurrences,
+    )
+
+    assert guided_replace.validate_request(**params) == ()
+
+    result = guided_replace.apply_guided_find_replace(record, **params)
+
+    assert record["035"]["a"] == expected
+    assert result == {
+        "matched_values": 1,
+        "changed_values": 1,
+        "matched_occurrences": matched_occurrences,
+    }
+
+
+@pytest.mark.parametrize(
+    ("occurrences", "expected", "matched_occurrences"),
+    [
+        ("first", "id-12-TFeba34", 1),
+        ("all", "id-12-id-34", 2),
+    ],
+    ids=[
+        "first-expands-only-the-first-raw-capture",
+        "all-expands-every-raw-capture",
+    ],
+)
+def test_raw_regex_first_and_all_expand_captures_per_selected_value(
+    occurrences,
+    expected,
+    matched_occurrences,
+):
     record = Record()
     record.add_field(
         Field(
             tag="035",
             indicators=[" ", " "],
             subfields=[
-                Subfield(code="a", value="TFeba-TFeba"),
-                Subfield(code="a", value="TFeba-TFeba"),
+                Subfield(code="a", value="TFeba12-TFeba34"),
             ],
         )
     )
-    params = _params(occurrences="first")
-    guided_replace.apply_guided_find_replace(record, **params)
-    assert record["035"].get_subfields("a") == [
-        "(SCTFEBA)-TFeba",
-        "(SCTFEBA)-TFeba",
-    ]
+    params = _params(
+        match_mode="raw_regex",
+        find=r"TFeba(\d+)",
+        replacement=r"id-\1",
+        occurrences=occurrences,
+    )
+
+    result = guided_replace.apply_guided_find_replace(record, **params)
+
+    assert record["035"]["a"] == expected
+    assert result == {
+        "matched_values": 1,
+        "changed_values": 1,
+        "matched_occurrences": matched_occurrences,
+    }
+
+
+@pytest.mark.parametrize(
+    ("target_kind", "selected_count"),
+    [
+        ("control_field", 1),
+        ("subfield", 4),
+        ("all_subfields", 4),
+    ],
+    ids=[
+        "control-field-has-one-independent-selected-value",
+        "repeated-fields-and-codes-each-select-a-value",
+        "all-subfields-across-repeated-fields-each-select-a-value",
+    ],
+)
+@pytest.mark.parametrize(
+    ("occurrences", "expected", "matches_per_value"),
+    [
+        ("first", "(SCTFEBA)-TFeba", 1),
+        ("all", "(SCTFEBA)-(SCTFEBA)", 2),
+    ],
+    ids=[
+        "first-means-first-in-each-selected-value",
+        "all-means-all-in-each-selected-value",
+    ],
+)
+def test_occurrence_scope_is_per_selected_value_across_target_boundaries(
+    target_kind,
+    selected_count,
+    occurrences,
+    expected,
+    matches_per_value,
+):
+    record = Record()
+    if target_kind == "control_field":
+        record.add_field(Field(tag="001", data="TFeba-TFeba"))
+    else:
+        for field_number in range(2):
+            if target_kind == "subfield":
+                subfields = [
+                    Subfield(code="a", value="TFeba-TFeba"),
+                    Subfield(code="a", value="TFeba-TFeba"),
+                    Subfield(
+                        code="z",
+                        value="leave-z-{0}".format(field_number),
+                    ),
+                ]
+            else:
+                subfields = [
+                    Subfield(code="a", value="TFeba-TFeba"),
+                    Subfield(code="z", value="TFeba-TFeba"),
+                ]
+            record.add_field(
+                Field(
+                    tag="035",
+                    indicators=[" ", " "],
+                    subfields=subfields,
+                )
+            )
+    params = _target_params(target_kind, occurrences=occurrences)
+
+    result = guided_replace.apply_guided_find_replace(record, **params)
+
+    assert _selected_values_for_assertion(record, target_kind) == [
+        expected
+    ] * selected_count
+    if target_kind == "subfield":
+        assert [
+            field["z"] for field in record.get_fields("035")
+        ] == ["leave-z-0", "leave-z-1"]
+    assert result == {
+        "matched_values": selected_count,
+        "changed_values": selected_count,
+        "matched_occurrences": selected_count * matches_per_value,
+    }
 
 
 def test_ignore_case_matches_without_changing_unmatched_text_case():
