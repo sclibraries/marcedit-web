@@ -192,6 +192,25 @@ def unresolved_add_build_instructions(body: str) -> tuple[str, ...]:
     )
 
 
+def submission_preflight_issues(body: str) -> tuple[str, ...]:
+    """Return pure marker-aware issues that block task submission."""
+
+    issues = list(unresolved_add_build_instructions(body))
+    parsed = task_builder.parse_ops_from_source(body)
+    if parsed["form_editable"]:
+        for index, op in enumerate(parsed["ops"], start=1):
+            if (
+                op.kind == "subfield-replace"
+                and str(op.params.get("find", "")) == ""
+            ):
+                issues.append(
+                    "Operation {0} is a saved Subfield Replace with an empty "
+                    "Find value. Recreate it with an explicit guided action "
+                    "before running this task.".format(index)
+                )
+    return tuple(issues)
+
+
 def validate_operations(
     ops: Sequence[Mapping[str, Any]],
 ) -> tuple[str, ...]:

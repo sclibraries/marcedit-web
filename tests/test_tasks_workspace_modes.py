@@ -652,6 +652,41 @@ def test_new_unresolved_text_import_is_not_persisted(monkeypatch, tmp_path):
     assert fake_st.code_blocks == ["RDAHELPER"]
 
 
+def test_empty_find_import_is_not_persisted(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.quotas, "check_upload", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        tasks_render, "audit_event", lambda *args, **kwargs: None
+    )
+    saved = []
+    monkeypatch.setattr(
+        tasks_render.task_db,
+        "save_task",
+        lambda **kwargs: saved.append(kwargs),
+    )
+    upload = SimpleNamespace(
+        name="empty-find.tasksfile",
+        getvalue=lambda: (
+            b"SUBFIELD_EDIT\t856\ty\t\t"
+            b"Smith: Link to resource\t101|0\n"
+        ),
+    )
+
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    assert saved == []
+    assert any("Not imported" in text for text in fake_st.warnings)
+    assert fake_st.code_blocks == [
+        "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0"
+    ]
+
+
 def test_save_callback_reports_invalid_form_regex_without_persisting(
     monkeypatch, tmp_path,
 ):

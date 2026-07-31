@@ -94,6 +94,58 @@ def test_buildnewfield_flags_remain_visible_and_unresolved():
     assert "recreate with structured Build Field" in result.body
 
 
+def test_empty_find_subfield_edit_is_unresolved_not_python_replace():
+    source = (
+        "#DESCRIPTION#Synthetic empty-find safety\n"
+        "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0\n"
+    )
+    result = marcedit_import.convert_tasksfile_text(
+        source,
+        name="empty-find",
+        description_fallback="",
+    )
+
+    assert result.unsupported == [
+        "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0",
+    ]
+    assert "sf.value.replace(''," not in result.body
+    assert "# OP: custom" in result.body
+    assert "empty Find has no proven external meaning" in result.body
+
+
+def test_unproven_caret_b_subfield_edit_remains_unresolved():
+    source = (
+        "SUBFIELD_EDIT\t856\tu\t^b\t"
+        "http://libproxy.smith.edu/login?url=\t0|0\n"
+    )
+    result = marcedit_import.convert_tasksfile_text(
+        source,
+        name="caret-b",
+        description_fallback="",
+    )
+    assert result.unsupported == [
+        "SUBFIELD_EDIT\t856\tu\t^b\t"
+        "http://libproxy.smith.edu/login?url=\t0|0",
+    ]
+    assert "unproven external syntax '^b'" in result.body
+    assert "sf.value.replace('^b'," not in result.body
+
+
+def test_nonempty_subfield_edit_keeps_legacy_import_contract():
+    source = "SUBFIELD_EDIT\t035\ta\tTFeba\t(SCTFEBA)\t0|0\n"
+    result = marcedit_import.convert_tasksfile_text(
+        source,
+        name="nonempty",
+        description_fallback="",
+    )
+    assert result.unsupported == []
+    assert (
+        '# OP: subfield-replace {"code": "a", "find": "TFeba", '
+        '"replace": "(SCTFEBA)", "tag": "035"}'
+    ) in result.body
+    assert "sf.value.replace('TFeba', '(SCTFEBA)')" in result.body
+
+
 # ---------------------------------------------------------------------------
 # Stage 19: archive expansion caps
 # ---------------------------------------------------------------------------

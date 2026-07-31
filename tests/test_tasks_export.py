@@ -777,6 +777,33 @@ def test_unresolved_add_build_task_is_not_submitted(monkeypatch, tmp_path):
     assert "Build Field" in fake_st.errors[-1]
 
 
+def test_saved_empty_find_marker_is_not_submitted(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    body = (
+        '# OP: subfield-replace {"code": "y", "find": "", '
+        '"replace": "Smith: Link to resource", "tag": "856"}\n'
+        "pass"
+    )
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": body},
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs),
+    )
+
+    tasks_render._submit_queued_run(["empty-find"], tmp_path)
+
+    assert submitted == []
+    assert "empty Find value" in fake_st.errors[-1]
+
+
 def test_unrelated_historical_todo_does_not_trigger_add_build_gate(
     monkeypatch, tmp_path
 ):

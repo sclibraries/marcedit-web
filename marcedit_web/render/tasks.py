@@ -1385,14 +1385,13 @@ def _submit_queued_run(selection: list[str], tasks_dir: Path) -> None:
         except (ValueError, FileNotFoundError) as exc:
             st.error(f"Could not load task `{name}`: {exc}")
             return
-        unresolved = task_authoring.unresolved_add_build_instructions(
+        preflight_issues = task_authoring.submission_preflight_issues(
             parsed["body"]
         )
-        if unresolved:
+        if preflight_issues:
             st.error(
-                "Task `{0}` cannot run until its unresolved Add/Build "
-                "instruction is recreated with structured controls: "
-                "{1}".format(name, unresolved[0])
+                "Task `{0}` cannot run until this saved instruction is "
+                "resolved: {1}".format(name, preflight_issues[0])
             )
             return
         parsed_ops = task_builder.parse_ops_from_source(parsed["body"])

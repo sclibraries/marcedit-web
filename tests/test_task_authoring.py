@@ -308,6 +308,30 @@ def test_only_unresolved_add_build_markers_are_execution_blocking(line):
     ) == ()
 
 
+def test_submission_preflight_composes_add_build_and_empty_find_issues():
+    body = "\n".join(
+        [
+            '# OP: custom {"code": "# TODO: buildnewfield template \'x\'"}',
+            "# TODO: buildnewfield template 'x' — recreate",
+            (
+                "# OP: subfield-replace "
+                '{"code": "y", "find": "", '
+                '"replace": "Smith", "tag": "856"}'
+            ),
+            "pass",
+        ]
+    )
+    issues = task_authoring.submission_preflight_issues(body)
+    assert len(issues) == 2
+    assert "buildnewfield" in issues[0]
+    assert "empty Find" in issues[1]
+
+
+def test_preflight_does_not_pattern_match_arbitrary_python_source():
+    body = "text = \"sf.value.replace('', 'X')\"\npass"
+    assert task_authoring.submission_preflight_issues(body) == ()
+
+
 def test_move_item_preserves_order_and_rejects_out_of_range_moves():
     assert task_authoring.move_item(["a", "b", "c"], 1, -1) == [
         "b", "a", "c"

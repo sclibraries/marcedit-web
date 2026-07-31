@@ -399,6 +399,21 @@ def _emit_subfield_edit(parts: list[str]) -> HandlerEmission:
     code = parts[2].strip()
     find = parts[3]
     replace = parts[4]
+    if find == "":
+        return HandlerEmission(
+            code=(
+                "# TODO: SUBFIELD_EDIT has an empty Find value; "
+                "empty Find has no proven external meaning — recreate it "
+                "with an explicit guided action"
+            ),
+        )
+    if find == "^b":
+        return HandlerEmission(
+            code=(
+                "# TODO: SUBFIELD_EDIT uses unproven external syntax '^b'; "
+                "recreate it with an explicit guided action"
+            ),
+        )
     body = (
         f"for f in record.get_fields({lit(tag)}):\n"
         f"    f.subfields = [\n"
