@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import io
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ class GuidedReplacePreview:
     after: str = ""
     result: Optional[dict] = None
     error: Optional[str] = None
+    condition_skipped: bool = False
 
 
 def _normalized(operation: Mapping[str, Any]) -> dict:
@@ -86,7 +88,15 @@ def build_preview(
     store_revision = getattr(store, "revision", None)
     try:
         normalized = _normalized(operation)
-    except (TypeError, ValueError) as exc:
+    except (
+        OSError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        MemoryError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as exc:
         return GuidedReplacePreview(
             request={},
             store_id=store_id,
@@ -94,27 +104,36 @@ def build_preview(
             error=_bounded_error("Preview validation failed: {0}".format(exc)),
         )
 
-    if store.count() == 0:
-        return GuidedReplacePreview(
-            request=normalized["params"],
-            store_id=store_id,
-            store_revision=store_revision,
-            error="No loaded record is available to preview.",
-        )
-
-    source_record = store.get(0)
-    if source_record is None:
-        return GuidedReplacePreview(
-            request=normalized["params"],
-            store_id=store_id,
-            store_revision=store_revision,
-            error="No loaded record is available to preview.",
-        )
-    source_record = copy.deepcopy(source_record)
-
-    before = _format_selected_values(source_record, normalized["params"])
-    workdir = Path(tempfile.mkdtemp(prefix="marcedit-guided-preview-"))
+    before = ""
+    workdir = None
     try:
+        if store.count() == 0:
+            return GuidedReplacePreview(
+                request=normalized["params"],
+                store_id=store_id,
+                store_revision=store_revision,
+                error="No loaded record is available to preview.",
+            )
+
+        source_record = store.get(0)
+        if source_record is None:
+            return GuidedReplacePreview(
+                request=normalized["params"],
+                store_id=store_id,
+                store_revision=store_revision,
+                error="No loaded record is available to preview.",
+            )
+        source_record = copy.deepcopy(source_record)
+        before = _format_selected_values(
+            source_record, normalized["params"]
+        )
+        condition_skipped = not task_authoring.record_matches_condition(
+            source_record,
+            normalized["params"]["condition"],
+        )
+        workdir = Path(
+            tempfile.mkdtemp(prefix="marcedit-guided-preview-")
+        )
         rendered = task_builder.render_ops_to_python([
             task_builder.Operation.from_dict(normalized)
         ])
@@ -164,8 +183,17 @@ def build_preview(
                 output_records[0], normalized["params"]
             ),
             result=dict(captured),
+            condition_skipped=condition_skipped,
         )
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (
+        OSError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        MemoryError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as exc:
         return GuidedReplacePreview(
             request=normalized["params"],
             store_id=store_id,
@@ -174,7 +202,8 @@ def build_preview(
             error=_bounded_error("Preview failed: {0}".format(exc)),
         )
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        if workdir is not None:
+            shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _record_bytes(record) -> bytes:

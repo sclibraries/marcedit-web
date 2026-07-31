@@ -1,6 +1,7 @@
 import copy
 import io
 from pathlib import Path
+import subprocess
 
 import pymarc
 import pytest
@@ -221,8 +222,22 @@ def test_many_large_selected_values_have_bounded_visible_display(tmp_path):
     )
 
 
-def test_preview_condition_mismatch_returns_zero_counts(tmp_path):
+def test_preview_condition_mismatch_runs_sandbox_and_returns_zero_counts(
+    tmp_path, monkeypatch
+):
     store = _store_with_035(tmp_path, "TFeba123")
+    calls = []
+    real_run = guided_replace_preview.sandbox.run_tasks_subprocess
+
+    def run_tasks_subprocess(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(
+        guided_replace_preview.sandbox,
+        "run_tasks_subprocess",
+        run_tasks_subprocess,
+    )
 
     preview = guided_replace_preview.build_preview(
         store, _guided_operation(condition="serials")
@@ -234,6 +249,25 @@ def test_preview_condition_mismatch_returns_zero_counts(tmp_path):
         "changed_values": 0,
         "matched_occurrences": 0,
     }
+    assert preview.condition_skipped is True
+    assert preview.before == preview.after
+    assert len(calls) == 1
+
+
+def test_genuine_zero_match_is_not_a_condition_skip(tmp_path):
+    store = _store_with_035(tmp_path, "OTHER123")
+
+    preview = guided_replace_preview.build_preview(
+        store, _guided_operation(condition="always")
+    )
+
+    assert preview.error is None
+    assert preview.result == {
+        "matched_values": 0,
+        "changed_values": 0,
+        "matched_occurrences": 0,
+    }
+    assert preview.condition_skipped is False
     assert preview.before == preview.after
 
 
@@ -314,3 +348,111 @@ def test_preview_always_removes_its_temporary_directory(
     guided_replace_preview.build_preview(store, _guided_operation())
 
     assert not Path(preview_dir).exists()
+
+
+def test_preview_temp_creation_failure_is_bounded_and_not_cleaned(
+    tmp_path, monkeypatch
+):
+    store = _store_with_035(tmp_path, "TFeba123")
+    cleanup_calls = []
+    monkeypatch.setattr(
+        guided_replace_preview.tempfile,
+        "mkdtemp",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            OSError("disk unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        guided_replace_preview.shutil,
+        "rmtree",
+        lambda *args, **kwargs: cleanup_calls.append((args, kwargs)),
+    )
+
+    preview = guided_replace_preview.build_preview(
+        store, _guided_operation(match_mode="raw_regex")
+    )
+
+    assert "disk unavailable" in preview.error
+    assert len(preview.error.encode("utf-8")) <= (
+        sandbox.MAX_ERROR_MESSAGE_BYTES
+    )
+    assert not guided_replace_preview.is_current(
+        preview, store, _guided_operation(match_mode="raw_regex")
+    )
+    assert cleanup_calls == []
+
+
+def test_preview_preexec_failure_is_bounded_and_cleans_tempdir(
+    tmp_path, monkeypatch
+):
+    store = _store_with_035(tmp_path, "TFeba123")
+    preview_dir = tmp_path / "preview"
+
+    def make_preview_dir(**_kwargs):
+        preview_dir.mkdir()
+        return str(preview_dir)
+
+    monkeypatch.setattr(
+        guided_replace_preview.tempfile,
+        "mkdtemp",
+        make_preview_dir,
+    )
+    monkeypatch.setattr(
+        guided_replace_preview.sandbox,
+        "run_tasks_subprocess",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            subprocess.SubprocessError("x" * 10000)
+        ),
+    )
+
+    preview = guided_replace_preview.build_preview(
+        store, _guided_operation(match_mode="raw_regex")
+    )
+
+    assert preview.error is not None
+    assert len(preview.error.encode("utf-8")) <= (
+        sandbox.MAX_ERROR_MESSAGE_BYTES
+    )
+    assert not guided_replace_preview.is_current(
+        preview, store, _guided_operation(match_mode="raw_regex")
+    )
+    assert not preview_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [MemoryError("memory"), RecursionError("deep")],
+)
+def test_preview_serialization_resource_failure_is_bounded_and_cleans(
+    tmp_path, monkeypatch, failure
+):
+    store = _store_with_035(tmp_path, "TFeba123")
+    preview_dir = tmp_path / "preview"
+
+    def make_preview_dir(**_kwargs):
+        preview_dir.mkdir()
+        return str(preview_dir)
+
+    monkeypatch.setattr(
+        guided_replace_preview.tempfile,
+        "mkdtemp",
+        make_preview_dir,
+    )
+    monkeypatch.setattr(
+        guided_replace_preview,
+        "_record_bytes",
+        lambda _record: (_ for _ in ()).throw(failure),
+    )
+
+    preview = guided_replace_preview.build_preview(
+        store, _guided_operation()
+    )
+
+    assert str(failure) in preview.error
+    assert len(preview.error.encode("utf-8")) <= (
+        sandbox.MAX_ERROR_MESSAGE_BYTES
+    )
+    assert not guided_replace_preview.is_current(
+        preview, store, _guided_operation()
+    )
+    assert not preview_dir.exists()

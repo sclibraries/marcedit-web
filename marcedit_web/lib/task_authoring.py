@@ -496,7 +496,9 @@ def _resolve_segments(
     return "".join(parts), tuple(dict.fromkeys(missing))
 
 
-def _record_matches_condition(record: Record, condition: str) -> bool:
+def record_matches_condition(record: Record, condition: str) -> bool:
+    """Return whether ``record`` meets one supported Apply-when choice."""
+
     record_type = leader_type(record)
     bibliographic_level = leader_biblevel(record)
     if condition == "always":
@@ -775,7 +777,7 @@ def preview_operation(
     candidate = copy.deepcopy(record)
     params = normalized["params"]
     condition = params.get("condition", "always")
-    if not _record_matches_condition(candidate, condition):
+    if not record_matches_condition(candidate, condition):
         return AuthoringPreview(
             "skipped",
             unresolved,

@@ -626,7 +626,20 @@ def render_guided_replace_preview(
             matched_occurrences,
         )
     )
-    if matched_values == 0:
+    if preview.condition_skipped:
+        condition = str(
+            operation.get("params", {}).get("condition", "always")
+        )
+        condition_label = task_builder.LEADER_CONDITION_LABELS.get(
+            condition, condition
+        )
+        st.info(
+            "The first loaded record was skipped because Apply when is "
+            "“{0}” and the record does not meet that condition.".format(
+                condition_label
+            )
+        )
+    elif matched_values == 0:
         st.info("Preview found zero matches in the first loaded record.")
     discard_count = guided_replace_previewed_discard_count(
         operation, store, previews

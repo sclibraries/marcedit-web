@@ -544,6 +544,39 @@ def test_guided_preview_does_not_rerun_sandbox_and_reports_zero_matches(
     assert any("zero matches" in text.lower() for text in fake.infos)
 
 
+def test_condition_skipped_preview_names_condition_without_zero_match(
+    monkeypatch,
+):
+    operation = _guided_operation(condition="serials")
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    preview = GuidedReplacePreview(
+        request=operation["params"],
+        store_id=7,
+        store_revision=0,
+        before="035 $aTFeba123",
+        after="035 $aTFeba123",
+        result={
+            "matched_values": 0,
+            "changed_values": 0,
+            "matched_occurrences": 0,
+        },
+        condition_skipped=True,
+    )
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+    cache = {key: preview}
+
+    renderer.render_guided_replace_preview(
+        operation, object(), cache, key_prefix="op_0"
+    )
+
+    assert any(
+        "skipped" in text.lower() and "serial" in text.lower()
+        for text in fake.infos
+    )
+    assert not any("zero matches" in text.lower() for text in fake.infos)
+
+
 def test_oversized_guided_preview_request_is_not_cached(monkeypatch):
     operation = _guided_operation(
         replacement="x" * 3000,
