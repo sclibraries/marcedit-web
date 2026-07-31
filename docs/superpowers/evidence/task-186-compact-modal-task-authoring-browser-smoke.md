@@ -3,7 +3,8 @@
 ## Candidate and safety boundary
 
 - Initial candidate implementation commit: `d0c5a8e`; current reviewed code
-  candidate after corrective review: `dd9f364`.
+  candidate after the split-Workspace amendment and corrective review:
+  `4703736`.
 - Initial rebuilt image: `marcedit-web:dev`,
   `sha256:87bae70bb6349dd033cde397ac88bba32de0483d5b3bb73349f23599047a97ec`.
 - Browser target: the repository's loopback-only local service at
@@ -142,6 +143,26 @@ zero failures and 5 reported skips**: four Docker-CLI checks unavailable
 inside the container and the unavailable institutional corpus check.
 Independent re-review reported no remaining Critical or Important findings
 and assessed the code as ready for real browser acceptance.
+
+### Split-Workspace amendment verification
+
+Commit `c75118d` combined setup and preview in one Workspace. Whole-branch
+review then found two Important correctness issues in unsupported select-value
+preservation and stale failed-preview evidence. Commit `4703736` corrected
+both with RED-first tests. Scoped re-review reported no remaining Critical or
+Important findings.
+
+Final root-controlled verification after `4703736` produced:
+
+- focused Docker suite: **214 passed, zero skipped**;
+- complete read-only mounted-source Docker suite: **1,987 passed, zero
+  failed, 5 reported skips**;
+- native compiler freshness guard: **1 passed**; and
+- compiler-manifest, whitespace, and worktree checks: clean.
+
+The five complete-suite skips remain four Docker-CLI checks unavailable inside
+the container and one unavailable institutional corpus check. None is treated
+as a pass. Browser acceptance remains 0 PASS, 0 FAIL, 14 SKIP.
 
 ## Independent review
 

@@ -111,3 +111,23 @@ Post-checkpoint corrective review (2026-07-31):
 - Browser acceptance remains 0 passed, 0 failed, and 14 skipped. The ticket
   remains `In-Progress`; TASK-174 is unchanged and merge/release readiness is
   still blocked by that browser gate.
+
+Split-Workspace amendment (2026-07-31):
+- Commit `c75118d` replaced separate Set up and Preview tabs with one
+  Workspace: preview-capable operations render setup and preview together in
+  a 5/6 column split, while other operations and the initial Add selector
+  remain full-width.
+- Whole-branch review found two Important pre-acceptance issues: unsupported
+  generic select values could be silently coerced, and stale failed-preview
+  evidence could be displayed as current. Commit `4703736` fixed both with
+  RED-first regression coverage.
+- Final focused Docker suite: 214 passed and zero skipped.
+- Final read-only mounted-source complete suite: 1,987 passed, zero failed,
+  and 5 explicitly reported skips (four Docker-CLI checks unavailable inside
+  the container and one unavailable institutional corpus check).
+- Native compiler freshness guard: 1 passed; compiler manifest unchanged.
+- Final scoped re-review reported no unresolved Critical or Important
+  findings and assessed the code as ready for real browser acceptance.
+- Browser acceptance remains 0 passed, 0 failed, and 14 skipped. The ticket
+  remains `In-Progress`; TASK-174 is unchanged and merge/release readiness is
+  still blocked only by that browser gate.
