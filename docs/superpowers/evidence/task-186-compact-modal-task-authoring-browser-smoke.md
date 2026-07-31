@@ -2,8 +2,9 @@
 
 ## Candidate and safety boundary
 
-- Candidate implementation commit: `d0c5a8e`.
-- Rebuilt image: `marcedit-web:dev`,
+- Initial candidate implementation commit: `d0c5a8e`; current reviewed code
+  candidate after corrective review: `dd9f364`.
+- Initial rebuilt image: `marcedit-web:dev`,
   `sha256:87bae70bb6349dd033cde397ac88bba32de0483d5b3bb73349f23599047a97ec`.
 - Browser target: the repository's loopback-only local service at
   `http://127.0.0.1:8501`, using the documented local private-unit development
@@ -126,6 +127,22 @@ The native compiler freshness guard passed **1 test** in 0.09 seconds, and
 marcedit_web/schemas/native-task-compiler-contract-v1.json` was empty.
 `git diff --check main...` also reported no whitespace errors.
 
+### Post-review corrective verification
+
+Whole-branch review found three Important issues in editor lifecycle,
+malformed-parameter validation, and failed-preview staleness. Commit
+`f842453` corrected those issues and added nested deep-copy coverage. Re-review
+then found that the no-loaded-file failure context was being labeled Stale;
+commit `dd9f364` restored Failed for that current `None`/`None`/`None` context
+while preserving Stale after store identity or revision changes.
+
+After `dd9f364`, the focused Docker suite passed **121 tests with no skips**.
+The complete read-only mounted-source Docker suite passed **1,979 tests with
+zero failures and 5 reported skips**: four Docker-CLI checks unavailable
+inside the container and the unavailable institutional corpus check.
+Independent re-review reported no remaining Critical or Important findings
+and assessed the code as ready for real browser acceptance.
+
 ## Independent review
 
 The read-only review covered the TASK-186 implementation range
@@ -141,9 +158,10 @@ a fragment rerun, which could retain the wrapper's initial `Add operation`
 title. A focused regression test failed before the fix; `d0c5a8e` now requests
 a full-app rerun and verifies the next wrapper title is
 `Add — Delete tag`. The focused modal integration suite passed **106 tests**.
-Read-only re-review reported **zero Critical, zero Important, and zero Minor
-findings** and assessed the implementation as ready. Browser acceptance remains
-a separate incomplete release gate.
+That checkpoint re-review reported **zero Critical, zero Important, and zero
+Minor findings**. The later whole-branch review and corrections are recorded
+in the post-review verification section above. Browser acceptance remains a
+separate incomplete release gate.
 
 ## Release disposition
 
