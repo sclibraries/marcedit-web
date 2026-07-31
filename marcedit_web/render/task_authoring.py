@@ -388,6 +388,7 @@ def render_guided_find_replace_params(
                 "action": "keep",
                 "previous_replacement_mode": previous_replacement_mode,
             }
+            st.rerun()
         if st.button(
             "Discard matching text and switch",
             key=_key(key_prefix, "mode_switch_discard"),
@@ -396,6 +397,7 @@ def render_guided_find_replace_params(
                 "action": "discard",
                 "requested_replacement_mode": requested_replacement_mode,
             }
+            st.rerun()
         return
 
     params["replacement_mode"] = requested_replacement_mode

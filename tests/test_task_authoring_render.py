@@ -8,6 +8,10 @@ from pymarc import Field, Record
 from marcedit_web.lib.guided_replace_preview import GuidedReplacePreview
 
 
+class RerunRequested(Exception):
+    pass
+
+
 class GuardedSessionState(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -38,11 +42,13 @@ class FakeStreamlit:
         session_state=None,
         text_values=None,
         guard_widget_state=False,
+        raise_on_rerun=False,
     ):
         self.pressed = set(pressed or ())
         self.checked = None if checked is None else set(checked)
         self.selectbox_values = dict(selectbox_values or {})
         self.text_values = dict(text_values or {})
+        self.raise_on_rerun = raise_on_rerun
         if guard_widget_state and not isinstance(
             session_state, GuardedSessionState
         ):
@@ -157,6 +163,8 @@ class FakeStreamlit:
 
     def rerun(self):
         self.rerun_count += 1
+        if self.raise_on_rerun:
+            raise RerunRequested
 
 
 def _renderer(monkeypatch, fake):
@@ -337,9 +345,14 @@ def test_leaving_raw_mode_requires_confirmation_before_discard(monkeypatch):
         pressed={"op_0_mode_switch_discard"},
         session_state=shared_state,
         guard_widget_state=True,
+        raise_on_rerun=True,
     )
     renderer = _renderer(monkeypatch, first)
-    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+    with pytest.raises(RerunRequested):
+        renderer.render_guided_find_replace_params(
+            params, key_prefix="op_0"
+        )
+    assert first.rerun_count == 1
     assert params["match_mode"] == "raw_regex"
     assert params["find"] == r"^(TFeba)(\d+)$"
     assert any("discard" in text.lower() for text in first.warnings)
@@ -378,10 +391,15 @@ def test_keep_raw_mode_cancels_prepend_append_without_widget_state_write(
         selectbox_values={"What should it change?": requested_action},
         session_state=shared_state,
         guard_widget_state=True,
+        raise_on_rerun=True,
     )
     renderer = _renderer(monkeypatch, first)
 
-    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+    with pytest.raises(RerunRequested):
+        renderer.render_guided_find_replace_params(
+            params, key_prefix="op_0"
+        )
+    assert first.rerun_count == 1
 
     rerun = FakeStreamlit(
         session_state=shared_state,
@@ -413,10 +431,15 @@ def test_discard_raw_mode_canonicalizes_prepend_append_without_stale_state(
         selectbox_values={"What should it change?": requested_action},
         session_state=shared_state,
         guard_widget_state=True,
+        raise_on_rerun=True,
     )
     renderer = _renderer(monkeypatch, first)
 
-    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+    with pytest.raises(RerunRequested):
+        renderer.render_guided_find_replace_params(
+            params, key_prefix="op_0"
+        )
+    assert first.rerun_count == 1
 
     rerun = FakeStreamlit(
         session_state=shared_state,
