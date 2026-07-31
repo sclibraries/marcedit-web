@@ -73,8 +73,10 @@ automated tests are not substitutes for browser acceptance.
   `d94cd86`, and `5ea7e1b`; scoped re-reviews were clean. `5ea7e1b` hides
   stale preview evidence when the current request no longer matches it.
   `d94cd86` also records condition-skipped preview as an explicit successful
-  preview outcome. This does not convert any unchecked browser item into a
-  pass.
+  preview outcome. Final whole-branch review of `f9b8968..0c1c14a` found
+  zero Critical, Important, or Minor findings and assessed the code as ready
+  for cataloger browser testing. This does not convert any unchecked browser
+  item into a pass.
 - TASK-180 remains `In-Progress`. A cataloger must complete all ten checks
   through the approved in-app browser-control runtime (or an explicitly
   approved manual browser session), record the metrics and save/reopen
