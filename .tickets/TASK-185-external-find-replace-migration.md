@@ -33,4 +33,4 @@ Success Criteria:
 Status: Todo
 
 Design:
-- Not yet written; required before implementation.
+- `docs/superpowers/specs/2026-07-31-task-185-external-task-migration-design.md`

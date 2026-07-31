@@ -24,3 +24,6 @@ Success Criteria:
 - Independent review has no unresolved Critical or Important findings.
 
 Status: Todo
+
+Design:
+- `docs/superpowers/specs/2026-07-31-task-181-explicit-rda-operations-design.md`

@@ -30,4 +30,4 @@ Success Criteria:
 Status: Todo
 
 Design:
-- Not yet written; required before implementation.
+- `docs/superpowers/specs/2026-07-31-task-184-structural-find-replace-authoring-design.md`

@@ -28,3 +28,6 @@ Context:
 - The first configuration to test is `viewer`, which Streamlit documents as
   hiding developer options from viewers.
 - Reference: https://docs.streamlit.io/develop/concepts/architecture/app-chrome
+
+Design:
+- `docs/superpowers/specs/2026-07-31-task-175-streamlit-activity-header-design.md`
