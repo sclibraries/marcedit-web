@@ -98,9 +98,17 @@ One large dialog component handles both adding and editing:
 The dialog is non-dismissible: X, escape, and outside-click closure do not
 silently discard work. Streamlit's dialog capability is a runtime contract.
 The implementation must require `streamlit>=1.50,<2` and add a
-preflight/contract test for `dismissible=False`; it must not silently degrade
-to unsafe dismissal. This changes only an application dependency and requires
-no ITS-managed service definition or startup change.
+preflight/contract test asserting `dismissible` is present in
+`inspect.signature(st.dialog).parameters`; it must not silently degrade to
+unsafe dismissal. Both `requirements.txt` and `pyproject.toml` change. This is
+an application dependency update and requires no ITS-managed service
+definition or startup change.
+
+Dialog titles name Add or Edit and the selected cataloger-facing operation.
+Because existing repository dialogs use static decorators, the implementation
+must deliberately create the wrapper at runtime with
+`st.dialog(title, width="large", dismissible=False)(render_function)` and
+invoke only that one dialog wrapper in the script run.
 
 Each modal opening receives a fresh widget-key namespace. Modal state contains
 the mode (add/edit), source index when editing, selected kind, opening value,
@@ -118,10 +126,13 @@ The dialog separates concerns into tabs:
 - **Technical details** contains stored parameters, generated matching
   behavior, unresolved source information, and documentation links when those
   details exist.
+- **Reference** contains the selected operation's read-only reference entry
+  and syntax-documentation link without opening another dialog.
 
 Tabs that have no meaningful content are omitted. Simple operations therefore
-show only **Set up** rather than empty Preview or Technical tabs. Existing
-operation-specific renderers remain authoritative inside the tab shell.
+show only **Set up** and **Reference** rather than empty Preview or Technical
+tabs. Existing operation-specific renderers remain authoritative inside the
+tab shell after receiving the correct caller-provided rerun behavior.
 
 ## Drafts, Validation, and Save Gates
 
@@ -158,13 +169,15 @@ partial MARC output does not make cards tall or misleading.
 ## Operation Reference Dialog
 
 **Browse operation reference** opens a separate read-only large dialog. It is
-reachable from both the main task page and Add-operation dialog. Operations
-are alphabetical by displayed label and include the current short summary.
+reachable only from the main task page because Streamlit prohibits opening a
+second dialog during the same script run. Operations are alphabetical by
+displayed label and include the current short summary.
 
 The dialog provides a case-insensitive text filter over displayed operation
 labels and summaries using native Streamlit controls and no custom JavaScript.
-Each operation dialog links directly to its matching reference entry and the
-maintained syntax documentation. The reference never changes task state.
+The already-open Add/Edit operation dialog presents the selected operation's
+same content in its **Reference** tab. It never calls the separate dialog,
+never nests dialogs, and never changes task state.
 
 ## Component Boundaries
 
@@ -174,10 +187,21 @@ than growing another full editor inside it:
 - a focused card renderer owns card presentation and card actions;
 - a focused operation-dialog renderer owns temporary draft state, tabs,
   dismissal safety, and Keep/Cancel transitions;
-- existing task-authoring renderers own operation-specific controls;
+- existing task-authoring renderers own operation-specific controls and accept
+  an optional rerun callable that defaults to `st.rerun` for current inline
+  callers;
 - existing validators, summaries, compiler, and preview helpers remain the
   single sources of behavioral truth; and
 - a focused read-only reference dialog owns alphabetical browsing.
+
+The modal caller supplies a rerun callable that uses
+`st.rerun(scope="fragment")` for operation-control interactions. A renderer
+must not hardcode fragment scope: fragment rerun is invalid during a full-app
+rerun and would break existing inline callers. Keep, Cancel, and other actions
+that intentionally close the dialog continue to request a full-app rerun. All
+eight current `st.rerun()` sites in `render/task_authoring.py` are routed
+through the injected callable, covering Add/Build row and segment actions plus
+guided mode transitions.
 
 No generic abstraction should be introduced beyond what the shared card and
 dialog shells require. Simple operation renderers continue using the current
@@ -188,8 +212,9 @@ palette parameter definitions.
 - Dialog titles name Add or Edit and the selected operation.
 - Buttons use text labels; arrows retain accessible help text.
 - Status is conveyed with words as well as color.
-- Focus begins at the operation selector for Add and the first setup control
-  for Edit.
+- The operation selector for Add and first setup control for Edit are rendered
+  first in DOM order, making them the first natural keyboard tab stops;
+  Streamlit provides no programmatic focus API.
 - Keyboard users can traverse every control and reach Keep/Cancel.
 - Destructive Remove and dirty Cancel require confirmation.
 - The operation order remains visible outside the dialog.
@@ -203,6 +228,11 @@ Intent-focused tests cover:
 - Edit isolation, Keep replacement, clean Cancel, and dirty-Cancel
   confirmation;
 - non-dismissible dialog configuration and the minimum Streamlit contract;
+- runtime dialog-title wrapping with exactly one dialog invocation per script
+  run;
+- identical operation-renderer behavior under default app reruns and injected
+  dialog-fragment reruns, including every current add/move/remove and guided
+  mode-switch path;
 - fresh widget namespaces across modal openings and reordered operations;
 - every form-mode operation kind entering the shared modal shell;
 - card summaries, target badges, validation states, and preview states;
@@ -210,8 +240,9 @@ Intent-focused tests cover:
   changes;
 - invalid and unresolved cards blocking task save and execution without data
   loss;
-- Add selector and operation reference alphabetical order;
-- operation-reference navigation without task mutation;
+- Add selector and standalone operation-reference alphabetical order;
+- the in-dialog Reference tab and standalone reference dialog sharing content
+  without nesting dialogs or mutating task state;
 - unchanged code mode, form serialization, compiler output, AI boundaries,
   imports, sharing, and execution behavior; and
 - failure containment when one dialog renderer or preview raises.
@@ -232,8 +263,9 @@ and code-mode behavior.
 The modal redesign does not require an ITS service-file, systemd, proxy,
 directory, or routing update. If the deployed Python environment lacks the
 required Streamlit 1.50 dialog contract, application dependency installation
-must correct it before rollout; preflight fails loud rather than starting a
-partial or unsafe modal implementation.
+from the updated `requirements.txt` and `pyproject.toml` must correct it before
+rollout; the signature preflight fails loud rather than starting a partial or
+unsafe modal implementation.
 
 ## Alternatives Considered
 

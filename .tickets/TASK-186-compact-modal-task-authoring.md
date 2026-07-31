@@ -12,8 +12,11 @@ Scope:
   behavior.
 - Put editable controls, preview evidence, and technical details into focused
   dialog tabs when those surfaces apply to the selected operation.
-- Add a read-only alphabetical operation-reference dialog reachable from the
-  task page and Add-operation dialog.
+- Add a read-only alphabetical operation-reference dialog on the task page and
+  a Reference tab inside the already-open Add/Edit operation dialog.
+- Update `requirements.txt` and `pyproject.toml` to require
+  `streamlit>=1.50,<2`, and adapt operation renderers to accept the correct
+  app- or fragment-scoped rerun behavior from their caller.
 - Preserve incomplete or unresolved operation drafts visibly and losslessly;
   block final task save and execution until every operation is valid.
 - Keep code mode, task storage, generated Python, AI drafting, imports,
@@ -29,14 +32,16 @@ Success Criteria:
   the previous operation and confirms before discarding dirty state.
 - Cards show a plain-language summary, validation/preview status, concise
   target information, and edit/reorder/remove actions.
-- Modal tabs separate Set up, Preview, and Technical details; unsupported tabs
-  are omitted rather than empty.
+- Modal tabs separate Set up, Preview, Technical details, and Reference;
+  unsupported tabs are omitted rather than empty.
 - Invalid and unresolved operations remain visible as Needs attention cards,
   but task save and execution fail loud until corrected.
 - Operation and preview meaning survives reordering, save/reopen, imported
   task review, and modal cancellation without stale widget-state leakage.
 - The application requires `streamlit>=1.50,<2` for safe non-dismissible
   dialogs; dependency and preflight checks fail loud if unavailable.
+- Existing operation renderers behave identically inside and outside the
+  dialog shell, including add/move/remove and mode-switch reruns.
 - Focused and complete Docker suites pass with every skip reported, and
   cataloger browser acceptance confirms substantially reduced page scrolling.
 - Independent review has no unresolved Critical or Important findings.
