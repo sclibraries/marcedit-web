@@ -156,6 +156,21 @@ def test_unknown_and_unresolved_cards_preserve_technical_identity():
     )
 
 
+def test_malformed_known_params_remain_lossless_and_need_attention():
+    operation = {"kind": "delete-tag", "params": ["opaque"]}
+    original = copy.deepcopy(operation)
+
+    view = task_operation_cards.operation_card_view(
+        operation, position=1, store=None, previews={}
+    )
+
+    assert view.kind == "delete-tag"
+    assert view.label == "Delete tag"
+    assert view.validation_status == "Needs attention"
+    assert view.validation_errors == ("operation parameters must be an object",)
+    assert operation == original
+
+
 @pytest.mark.parametrize(
     ("case", "expected"),
     [
@@ -250,6 +265,7 @@ class FakeStreamlit:
         self.markdowns = []
         self.captions = []
         self.buttons = []
+        self.rerun_calls = 0
 
     def container(self, **kwargs):
         self.containers.append(kwargs)
@@ -269,6 +285,9 @@ class FakeStreamlit:
         call = {"label": label, **kwargs}
         self.buttons.append(call)
         return kwargs.get("key") in self.clicked
+
+    def rerun(self):
+        self.rerun_calls += 1
 
 
 def _render(monkeypatch, fake, operations, changes, edits):
@@ -342,6 +361,7 @@ def test_remove_requires_a_second_confirm_click(monkeypatch):
 
     assert changes == []
     assert fake.session_state == {"cards_pending_remove": 0}
+    assert fake.rerun_calls == 1
 
     fake.clicked = {"cards_0_confirm_remove"}
     _render(monkeypatch, fake, operations, changes, [])

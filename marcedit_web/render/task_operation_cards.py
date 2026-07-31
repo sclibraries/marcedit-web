@@ -102,10 +102,18 @@ def operation_card_view(
 
     kind = str(operation.get("kind") or "")
     entry = _palette_entry(kind)
-    validation_errors = task_authoring.validate_operation(
-        operation,
-        validate_raw_syntax=False,
-    )
+    params = operation.get("params", {})
+    if (
+        entry is not None
+        and not operation.get("authoring_error")
+        and not isinstance(params, Mapping)
+    ):
+        validation_errors = ("operation parameters must be an object",)
+    else:
+        validation_errors = task_authoring.validate_operation(
+            operation,
+            validate_raw_syntax=False,
+        )
     return OperationCardView(
         position=position,
         kind=kind,
@@ -257,3 +265,5 @@ def render_operation_cards(
                 return
             if remove_clicked:
                 st.session_state[pending_key] = index
+                st.rerun()
+                return
