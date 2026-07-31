@@ -64,6 +64,7 @@ from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
 from marcedit_web.render.batch_status import loaded_batch_status
 from marcedit_web.render import task_authoring as task_authoring_render
+from marcedit_web.render import task_operation_dialog
 
 logger = logging.getLogger("marcedit_web.render.tasks")
 
@@ -1106,133 +1107,18 @@ def _palette_entry(kind: str) -> dict | None:
 
 
 def _default_params_for(kind: str) -> dict:
-    if kind == "guided-find-replace":
-        return {
-            "target_kind": "subfield",
-            "tag": "",
-            "subfield": "",
-            "match_mode": "contains",
-            "find": "",
-            "ignore_case": False,
-            "replacement_mode": "matched_text",
-            "replacement": "",
-            "occurrences": "all",
-            "value_scope": "all",
-            "condition": "always",
-        }
-    entry = _palette_entry(kind)
-    if entry is None:
-        return {}
-    out = {}
-    for param in entry["params"]:
-        if "default" in param:
-            out[param["name"]] = param["default"]
-        elif param["type"] == "bool":
-            out[param["name"]] = False
-        elif param["type"] == "subfields":
-            out[param["name"]] = []
-        else:
-            out[param["name"]] = ""
-    if kind in {"add-field", "build-field"}:
-        return task_authoring.normalize_operation(
-            {"kind": kind, "params": out}
-        )["params"]
-    return out
+    return task_operation_dialog.default_params_for(kind)
 
 
 def _render_param_input(
     param: dict, params: dict, *, key_prefix: str, is_admin: bool = False
 ) -> None:
-    """Render one form widget for one operation parameter.
-
-    ``is_admin`` gates the ``code`` ptype: for non-admins, the textarea
-    is replaced by a read-only ``st.code`` block. This protects the
-    "form-builder only for standard users" trust model against imported
-    tasks that already carry a ``custom`` op — the existing code is
-    visible, but the cataloger can't modify it from the form editor.
-    """
-    name = param["name"]
-    label = param["label"]
-    ptype = param["type"]
-    help_text = param.get("help") or param.get("placeholder") or None
-    key = f"{key_prefix}_{name}"
-
-    current = params.get(name, param.get("default", ""))
-
-    if ptype == "text":
-        params[name] = st.text_input(
-            label, value=current, placeholder=param.get("placeholder", ""),
-            help=help_text, key=key,
-        )
-    elif ptype == "bool":
-        params[name] = st.checkbox(
-            label, value=bool(current), help=help_text, key=key,
-        )
-    elif ptype == "indicator":
-        params[name] = st.text_input(
-            label, value=str(current)[:1] or " ", max_chars=1,
-            help=help_text or "Single character; space for blank.",
-            key=key,
-        )
-    elif ptype == "subfield_code":
-        params[name] = st.text_input(
-            label, value=str(current)[:1], max_chars=1,
-            help=help_text or "Single character: a-z or 0-9.",
-            key=key,
-        )
-    elif ptype == "subfields":
-        # Subfields are a list of (code, value) pairs. Render as a JSON
-        # textarea for compactness; a richer per-row editor can come in
-        # v3.5.
-        raw = st.text_area(
-            label,
-            value=json.dumps(current or [], ensure_ascii=False, indent=2),
-            help=(
-                'JSON list of [code, value] pairs. Example: '
-                '`[["a", "Title"], ["c", "by Author"]]`. '
-                + (help_text or "")
-            ),
-            key=key,
-        )
-        try:
-            params[name] = json.loads(raw)
-        except json.JSONDecodeError:
-            st.warning(
-                f"`{label}`: not valid JSON; previous value preserved."
-            )
-    elif ptype == "select":
-        options = [opt["value"] for opt in param.get("options", [])]
-        labels = {opt["value"]: opt["label"] for opt in param.get("options", [])}
-        if current not in options and options:
-            current = options[0]
-        params[name] = st.selectbox(
-            label, options=options,
-            index=options.index(current) if current in options else 0,
-            format_func=lambda v: labels.get(v, v),
-            help=help_text,
-            key=key,
-        )
-    elif ptype == "code":
-        # Reached for the `custom` op. Add-op dropdown filters this out
-        # for non-admins, but imported tasks (e.g. via MarcEdit
-        # tasksfile import that fell through to `custom`) can still
-        # carry one. For non-admins we render read-only so the existing
-        # code stays visible but can't be mutated. ``params[name]``
-        # is intentionally left unchanged in that branch.
-        if is_admin:
-            params[name] = st.text_area(
-                label, value=str(current or ""),
-                help=help_text or "Raw Python; runs in the sandbox.",
-                key=key,
-                height=200,
-            )
-        else:
-            st.caption(
-                f"**{label}** — read-only (admin Code-view required to edit)"
-            )
-            st.code(str(current or "# (empty)"), language="python")
-    else:
-        st.warning(f"Unsupported param type `{ptype}` for {name}.")
+    task_operation_dialog.render_param_input(
+        param,
+        params,
+        key_prefix=key_prefix,
+        is_admin=is_admin,
+    )
 
 
 # ---------------------------------------------------------------------------
