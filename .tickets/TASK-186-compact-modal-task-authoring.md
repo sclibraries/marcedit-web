@@ -55,4 +55,4 @@ Design:
 - `docs/superpowers/specs/2026-07-31-task-186-compact-modal-task-authoring-design.md`
 
 Plan:
-- Not written yet.
+- `docs/superpowers/plans/2026-07-31-task-186-compact-modal-task-authoring.md`

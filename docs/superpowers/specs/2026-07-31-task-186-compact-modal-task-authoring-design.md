@@ -161,7 +161,10 @@ Tasks page must not crash or discard it.
 Existing request-keyed preview caching remains authoritative. Preview currency
 continues to depend on the normalized request, store identity, and store
 revision. Moving a card does not affect any of those values. Editing parameters
-or changing the source marks prior evidence stale.
+creates a different request and therefore returns the card to **Not
+previewed**. Changing the source makes cached evidence for the same request
+**Stale**. This distinction avoids inventing a positional or per-card preview
+identity alongside the authoritative request key.
 
 Cards show status only. Full evidence stays in the Preview tab so stale or
 partial MARC output does not make cards tall or misleading.
@@ -240,8 +243,8 @@ Intent-focused tests cover:
 - fresh widget namespaces across modal openings and reordered operations;
 - every form-mode operation kind entering the shared modal shell;
 - card summaries, target badges, validation states, and preview states;
-- current preview surviving reorder and becoming stale after parameter/source
-  changes;
+- current preview surviving reorder, returning to Not previewed after a
+  parameter change, and becoming stale after a source change;
 - dirty Cancel restoring the original operation's prior preview status while
   request-keyed preview evidence created only for the discarded draft remains
   ineligible for display as current;
