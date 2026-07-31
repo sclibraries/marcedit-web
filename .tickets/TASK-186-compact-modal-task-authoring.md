@@ -88,3 +88,20 @@ Verification checkpoint (2026-07-31):
   implementation as ready.
 - Disposition: `DONE_WITH_CONCERNS`. The ticket remains `In-Progress` because
   the cataloger browser gate is incomplete. TASK-174 is not advanced.
+
+Post-checkpoint corrective review (2026-07-31):
+- Whole-branch review found three Important issues: cross-editor removal
+  confirmation state, malformed non-object operation parameters, and stale
+  failed-preview status after a source change.
+- Commit `f842453` corrected all three and added nested deep-copy coverage.
+  Re-review found one no-file preview-status edge case; commit `dd9f364`
+  corrected it with a regression test.
+- Final focused Docker suite: 121 passed and zero skipped.
+- Final read-only mounted-source complete suite: 1,979 passed, zero failed,
+  and 5 explicitly reported skips (four Docker-CLI checks unavailable inside
+  the container and one unavailable institutional corpus check).
+- Final independent re-review reported no unresolved Critical or Important
+  findings and assessed the code as ready for real browser acceptance.
+- Browser acceptance remains 0 passed, 0 failed, and 14 skipped. The ticket
+  remains `In-Progress`; TASK-174 is unchanged and merge/release readiness is
+  still blocked by that browser gate.
