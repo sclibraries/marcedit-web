@@ -84,6 +84,13 @@ def _preview_status(
     preview = previews.get(cache_key)
     if preview is None:
         return "Not previewed"
+    if (
+        preview.error is not None
+        and store is None
+        and preview.store_id is None
+        and preview.store_revision is None
+    ):
+        return "Failed"
     current_revision = getattr(store, "revision", None)
     if (
         preview.store_id != id(store)

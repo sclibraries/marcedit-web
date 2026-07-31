@@ -240,6 +240,27 @@ def test_failed_guided_preview_becomes_stale_when_source_changes(
     assert view.preview_status == "Stale"
 
 
+def test_failed_guided_preview_without_loaded_file_remains_failed():
+    operation = guided_operation()
+    preview = guided_replace_preview.GuidedReplacePreview(
+        request=copy.deepcopy(operation["params"]),
+        store_id=None,
+        store_revision=None,
+        error="No loaded file is available to preview.",
+    )
+
+    view = task_operation_cards.operation_card_view(
+        operation,
+        position=1,
+        store=None,
+        previews={
+            guided_replace_preview.preview_cache_key(operation): preview
+        },
+    )
+
+    assert view.preview_status == "Failed"
+
+
 def test_invalid_guided_request_reports_attention_without_preview_crash():
     view = task_operation_cards.operation_card_view(
         guided_operation(tag=""), position=1, store=STORE, previews={}
