@@ -1,8 +1,8 @@
 # TASK-180 Guided Find and Replace Browser Smoke Evidence
 
-- Candidate implementation commit: `d94cd86`
+- Candidate implementation commit: `5ea7e1b`
 - Current Docker candidate image identifier:
-  `sha256:8809c09975d60c14b7d1c9f6da66ce06bf7b5b66cbcfed0bc30e6564f54df032`
+  `sha256:4f867a65b63805f682a374c55c512d8d4bfd48c84858d922a56dfe0780916e97`
 - Browser URL: `http://localhost:8501`
 - Service status: the isolated `task-180-marcedit-web` harness was healthy and
   `/_stcore/health` returned `ok` during the initial Task 6 attempt at
@@ -22,7 +22,7 @@
   skill. The only discovered browser automation was a separate Playwright
   server, which that skill explicitly forbids as a substitute. Controller
   discovery reconfirmed the same limitation after commits `9c6dca1`,
-  `cc7cf4d`, `5af4fad`, `3051485`, `d7e9a20`, and `d94cd86`.
+  `cc7cf4d`, `5af4fad`, `3051485`, `d7e9a20`, `d94cd86`, and `5ea7e1b`.
 
 ## Acceptance Checklist
 
@@ -68,11 +68,13 @@ automated tests are not substitutes for browser acceptance.
 
 - Browser acceptance is incomplete. No external Playwright, Computer Use, or
   alternate browser automation was substituted.
-- All eight Important implementation/test findings from the review rounds
+- All nine Important implementation/test findings from the review rounds
   were resolved by `9c6dca1`, `cc7cf4d`, `5af4fad`, `3051485`, `d7e9a20`,
-  and `d94cd86`; scoped re-reviews were clean. `d94cd86` also records
-  condition-skipped preview as an explicit successful preview outcome. This
-  does not convert any unchecked browser item into a pass.
+  `d94cd86`, and `5ea7e1b`; scoped re-reviews were clean. `5ea7e1b` hides
+  stale preview evidence when the current request no longer matches it.
+  `d94cd86` also records condition-skipped preview as an explicit successful
+  preview outcome. This does not convert any unchecked browser item into a
+  pass.
 - TASK-180 remains `In-Progress`. A cataloger must complete all ten checks
   through the approved in-app browser-control runtime (or an explicitly
   approved manual browser session), record the metrics and save/reopen

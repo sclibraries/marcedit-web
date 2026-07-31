@@ -108,11 +108,12 @@ Phase 3:
   disclosed environment/corpus skips. The required rebuilt-image complete
   suite still has eight known repository-file-availability failures, and all
   ten browser checks remain unavailable because the required in-app
-  browser-control runtime was not exposed. All eight Important findings were
+  browser-control runtime was not exposed. All nine Important findings were
   resolved by `9c6dca1`, `cc7cf4d`, `5af4fad`, `3051485`, `d7e9a20`, and
-  `d94cd86`, with clean scoped re-reviews; `d94cd86` also makes
-  condition-skipped preview an explicit successful outcome. TASK-180 is not a
-  completed checkpoint; TASK-184 and TASK-185 remain deferred.
+  `d94cd86`, plus stale-preview correction `5ea7e1b`, with clean scoped
+  re-reviews; `d94cd86` also makes condition-skipped preview an explicit
+  successful outcome. TASK-180 is not a completed checkpoint; TASK-184 and
+  TASK-185 remain deferred.
 - TASK-181: deferred explicit deterministic RDA operations.
 - TASK-182: deferred explicit MARC field reordering as both a quick action and
   an optional task step, while View continues to preserve source order under
