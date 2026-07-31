@@ -64,7 +64,11 @@ from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
 from marcedit_web.render.batch_status import loaded_batch_status
 from marcedit_web.render import task_authoring as task_authoring_render
-from marcedit_web.render import task_operation_dialog
+from marcedit_web.render import (
+    task_operation_cards,
+    task_operation_dialog,
+    task_operation_reference,
+)
 
 logger = logging.getLogger("marcedit_web.render.tasks")
 
@@ -132,6 +136,9 @@ K_AI_DRAFT_ERROR = "tasks_ai_draft_error"
 K_AI_DRAFT_BLOCKING_ACK = "tasks_ai_draft_blocking_ack"
 K_QB_DOWNLOAD_READY = "quick_batch_download_ready"
 K_GUIDED_REPLACE_PREVIEWS = "task_guided_replace_previews"
+K_OPERATION_DIALOG_STATE = "tasks_operation_dialog_state"
+K_OPERATION_DIALOG_NONCE = "tasks_operation_dialog_nonce"
+K_OPERATION_REFERENCE_REQUESTED = "tasks_operation_reference_requested"
 
 # TASK-143: workspace mode switcher.
 MODE_RUN = "Run"
@@ -195,6 +202,9 @@ def render() -> None:
     st.session_state.setdefault(K_EDITOR_VISIBILITY, "private")
     st.session_state.setdefault(K_EDITOR_FROM_AI_DRAFT, False)
     st.session_state.setdefault(K_EDITOR_AI_DRAFT_REVIEW, None)
+    st.session_state.setdefault(K_OPERATION_DIALOG_STATE, None)
+    st.session_state.setdefault(K_OPERATION_DIALOG_NONCE, 0)
+    st.session_state.setdefault(K_OPERATION_REFERENCE_REQUESTED, False)
 
     # Load the materialized dir so the importer sees the user's tasks.
     tasks.load_user_tasks(tasks_dir, force_reload=False)
@@ -372,6 +382,12 @@ def _render_build_mode(
 # ---------------------------------------------------------------------------
 
 
+def _reset_operation_dialog_state() -> None:
+    st.session_state[K_OPERATION_DIALOG_STATE] = None
+    st.session_state[K_OPERATION_DIALOG_NONCE] = 0
+    st.session_state[K_OPERATION_REFERENCE_REQUESTED] = False
+
+
 def _open_editor_for_new() -> None:
     """Open the editor for a brand-new task in form mode."""
     st.session_state[K_FORCE_MODE] = MODE_BUILD
@@ -393,6 +409,7 @@ def _open_editor_for_new() -> None:
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+    _reset_operation_dialog_state()
 
 
 def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
@@ -414,6 +431,7 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+    _reset_operation_dialog_state()
 
     parse_result = task_builder.parse_ops_from_source(row["body"])
     if parse_result["form_editable"]:
@@ -783,6 +801,7 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = True
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = review
+    _reset_operation_dialog_state()
 
 
 def _ai_draft_save_blocked_for_new_task() -> bool:
@@ -820,6 +839,7 @@ def _clear_ai_draft_review() -> None:
         st.session_state[K_EDITOR_OPEN] = False
         st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
         st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+        _reset_operation_dialog_state()
 
 
 def _store_ai_draft_error(message: str) -> None:
@@ -951,38 +971,68 @@ def _render_code_editor() -> None:
         st.session_state[K_EDITOR_BODY] = new_body
 
 
+def _next_operation_dialog_nonce() -> int:
+    nonce = int(st.session_state.get(K_OPERATION_DIALOG_NONCE, 0)) + 1
+    st.session_state[K_OPERATION_DIALOG_NONCE] = nonce
+    return nonce
+
+
+def _open_add_operation_dialog() -> None:
+    st.session_state[K_OPERATION_DIALOG_STATE] = (
+        task_operation_dialog.new_add_state(_next_operation_dialog_nonce())
+    )
+
+
+def _open_edit_operation_dialog(index: int) -> None:
+    operations = st.session_state.get(K_EDITOR_OPS, [])
+    if index < 0 or index >= len(operations):
+        return
+    st.session_state[K_OPERATION_DIALOG_STATE] = (
+        task_operation_dialog.new_edit_state(
+            operations[index],
+            index=index,
+            nonce=_next_operation_dialog_nonce(),
+        )
+    )
+
+
+def _close_operation_dialog() -> None:
+    st.session_state[K_OPERATION_DIALOG_STATE] = None
+
+
+def _close_operation_reference_dialog() -> None:
+    st.session_state[K_OPERATION_REFERENCE_REQUESTED] = False
+
+
+def _replace_editor_operations(operations: list[dict]) -> None:
+    st.session_state[K_EDITOR_OPS] = copy.deepcopy(operations)
+
+
+def _change_editor_operations(operations: list[dict]) -> None:
+    _replace_editor_operations(operations)
+    st.rerun()
+
+
+def _keep_dialog_operations(operations: list[dict]) -> None:
+    _replace_editor_operations(operations)
+    _close_operation_dialog()
+
+
 def _render_form_editor() -> None:
-    """Render the operation-palette form editor.
-
-    The op list lives in ``st.session_state[K_EDITOR_OPS]`` as a
-    list of dicts (``Operation.to_dict()`` shape). Save converts it
-    back to Python via ``task_builder.render_ops_to_python``.
-    """
+    """Coordinate compact operation cards and at most one dialog wrapper."""
     st.caption(
-        "Pick operations from the dropdown below. Each operation runs in "
-        "order against every record. See the **operation reference** "
-        "expander for what each does."
+        "Operations run in order against every record. Add or edit one in a "
+        "focused dialog."
     )
 
-    is_admin = task_admin.is_admin(
-        session.current_user_id()
-    )
-    ops = st.session_state[K_EDITOR_OPS]
+    is_admin = task_admin.is_admin(session.current_user_id())
+    operations = st.session_state.get(K_EDITOR_OPS, [])
     previews = st.session_state.setdefault(K_GUIDED_REPLACE_PREVIEWS, {})
-    to_remove: list[int] = []
     store = session.current_store()
-    preview_record = (
-        store.get(0)
-        if store is not None and store.count()
-        else None
-    )
 
-    # Non-admin users mustn't be able to author raw Python through the
-    # custom-op textarea. We filter `custom` out of the *add* dropdown
-    # below, but an imported/pre-existing task may already carry one;
-    # warn the cataloger so they understand the editor is read-only on
-    # that op.
-    if not is_admin and any(op.get("kind") == "custom" for op in ops):
+    if not is_admin and any(
+        operation.get("kind") == "custom" for operation in operations
+    ):
         st.warning(
             "This task contains a **`custom`** op with raw Python. You're "
             "not an admin, so its code is shown read-only. Save will "
@@ -990,108 +1040,44 @@ def _render_form_editor() -> None:
             "admin or use a typed op above."
         )
 
-    for i, op in enumerate(ops):
-        with st.container():
-            st.markdown(f"**{i + 1}. `{op['kind']}`**")
-            palette_entry = _palette_entry(op["kind"])
-            if palette_entry is None:
-                st.warning(
-                    f"Unknown operation kind `{op['kind']}` — was it "
-                    "renamed? Remove and re-add to fix."
-                )
-            else:
-                st.caption(palette_entry.get("summary", ""))
-                params = op.setdefault("params", {})
-                if op["kind"] == "add-field" and not op.get(
-                    "authoring_error"
-                ):
-                    task_authoring_render.render_add_field_params(
-                        params, key_prefix=f"op_{i}"
-                    )
-                elif op["kind"] == "build-field" and not op.get(
-                    "authoring_error"
-                ):
-                    task_authoring_render.render_build_field_params(
-                        params, key_prefix=f"op_{i}"
-                    )
-                elif op["kind"] == "guided-find-replace" and not op.get(
-                    "authoring_error"
-                ):
-                    task_authoring_render.render_guided_find_replace_params(
-                        params, key_prefix=f"op_{i}"
-                    )
-                    summary = st.empty()
-                    task_authoring_render.render_guided_replace_technical_details(
-                        op
-                    )
-                    discard_count = (
-                        task_authoring_render.render_guided_replace_preview(
-                            op,
-                            store,
-                            previews,
-                            key_prefix=f"op_{i}",
-                        )
-                    )
-                    summary.caption(
-                        task_authoring.describe_guided_replace(
-                            op,
-                            previewed_discard_count=discard_count,
-                        )
-                    )
-                elif op["kind"] not in {
-                    "add-field",
-                    "build-field",
-                    "guided-find-replace",
-                }:
-                    for param in palette_entry["params"]:
-                        _render_param_input(
-                            param,
-                            params,
-                            key_prefix=f"op_{i}",
-                            is_admin=is_admin,
-                        )
-                if op["kind"] in {"add-field", "build-field"}:
-                    task_authoring_render.render_operation_explanation(
-                        op, preview_record
-                    )
-
-            row = st.columns([1, 1, 6])
-            if row[0].button("↑", key=f"op_up_{i}", disabled=i == 0):
-                ops[i - 1], ops[i] = ops[i], ops[i - 1]
-                st.rerun()
-            if row[1].button("↓", key=f"op_down_{i}", disabled=i == len(ops) - 1):
-                ops[i + 1], ops[i] = ops[i], ops[i + 1]
-                st.rerun()
-            if row[2].button("Remove", key=f"op_rm_{i}"):
-                to_remove.append(i)
-            st.divider()
-
-    if to_remove:
-        for i in reversed(to_remove):
-            ops.pop(i)
-        st.rerun()
-
-    display_palette = sorted(
-        OPERATIONS_PALETTE,
-        key=lambda entry: entry["label"].casefold(),
+    task_operation_cards.render_operation_cards(
+        operations,
+        store=store,
+        previews=previews,
+        on_edit=_open_edit_operation_dialog,
+        on_change=_change_editor_operations,
     )
-    add_options = [op["kind"] for op in display_palette]
-    if not is_admin:
-        add_options = [k for k in add_options if k != "custom"]
-    col_pick, col_btn = st.columns([4, 1])
-    new_kind = col_pick.selectbox(
-        "Add operation",
-        options=add_options,
-        format_func=lambda k: _palette_entry(k)["label"] if _palette_entry(k) else k,
-        key="tasks_form_add_kind",
-    )
-    if col_btn.button("+ Add", key="tasks_form_add_btn"):
-        ops.append({"kind": new_kind, "params": _default_params_for(new_kind)})
-        st.rerun()
 
-    with st.expander("Operation reference"):
-        for entry in display_palette:
-            st.markdown(f"**{entry['label']}** (`{entry['kind']}`) — {entry['summary']}")
+    if st.button("+ Add operation", key="tasks_form_add_operation"):
+        _open_add_operation_dialog()
+    if st.button(
+        "Browse operation reference",
+        key="tasks_form_operation_reference",
+    ):
+        st.session_state[K_OPERATION_REFERENCE_REQUESTED] = True
+
+    contract_error = task_operation_dialog.dialog_contract_error()
+    if contract_error:
+        st.error(contract_error)
+        return
+
+    active_state = st.session_state.get(K_OPERATION_DIALOG_STATE)
+    if active_state is not None:
+        st.session_state[K_OPERATION_REFERENCE_REQUESTED] = False
+        task_operation_dialog.render_active_dialog(
+            active_state,
+            operations=st.session_state.get(K_EDITOR_OPS, []),
+            is_admin=is_admin,
+            store=store,
+            previews=previews,
+            on_keep=_keep_dialog_operations,
+            on_close=_close_operation_dialog,
+        )
+    elif st.session_state.get(K_OPERATION_REFERENCE_REQUESTED, False):
+        task_operation_reference.open_reference_dialog(
+            include_custom=is_admin,
+            on_close=_close_operation_reference_dialog,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1212,6 +1198,7 @@ def _save_callback(tasks_dir: Path) -> None:
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
+    _reset_operation_dialog_state()
     st.session_state[K_SAVE_SUCCESS] = f"Saved `{name}`."
     is_admin = task_admin.is_admin(user)
     audit_event(
@@ -1240,6 +1227,7 @@ def _cancel_callback() -> None:
     st.session_state[K_EDITOR_OPEN] = False
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+    _reset_operation_dialog_state()
 
 
 # ---------------------------------------------------------------------------

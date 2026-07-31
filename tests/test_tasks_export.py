@@ -804,6 +804,68 @@ def test_saved_empty_find_marker_is_not_submitted(monkeypatch, tmp_path):
     assert "empty Find value" in fake_st.errors[-1]
 
 
+def test_incomplete_saved_marker_is_not_submitted_and_reports_ordinal(
+    monkeypatch, tmp_path,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {
+            "body": '# OP: delete-tag {"tag":""}\npass',
+        },
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs),
+    )
+
+    tasks_render._submit_queued_run(["incomplete-delete"], tmp_path)
+
+    assert submitted == []
+    assert "Operation 1: Tag is required" in fake_st.errors[-1]
+
+
+def test_valid_saved_marker_keeps_existing_queue_path(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    source = tmp_path / "current.mrc"
+    source.write_bytes(b"records")
+    store = SimpleNamespace(path=source, count=lambda: 1)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "owner@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_filename", lambda: "vendor.mrc"
+    )
+    body = '# OP: delete-tag {"tag":"029"}\ndelete_tags(record, "029")'
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": body},
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs) or {"id": 46},
+    )
+
+    tasks_render._submit_queued_run(["valid-delete"], tmp_path)
+
+    assert len(submitted) == 1
+    assert [spec.name for spec in submitted[0]["task_specs"]] == [
+        "valid-delete"
+    ]
+    assert submitted[0]["task_specs"][0].body == body
+
+
 def test_unrelated_historical_todo_does_not_trigger_add_build_gate(
     monkeypatch, tmp_path
 ):

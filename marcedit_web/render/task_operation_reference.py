@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import streamlit as st
 
@@ -71,7 +71,9 @@ def render_reference_browser(
         render_reference_entry(entry)
 
 
-def open_reference_dialog(*, include_custom: bool) -> None:
+def open_reference_dialog(
+    *, include_custom: bool, on_close: Callable[[], None]
+) -> None:
     """Open the standalone operation-reference dialog."""
 
     def render() -> None:
@@ -79,6 +81,9 @@ def open_reference_dialog(*, include_custom: bool) -> None:
             include_custom=include_custom,
             key_prefix="tasks_operation_reference",
         )
+        if st.button("Close", key="tasks_operation_reference_close"):
+            on_close()
+            st.rerun()
 
     st.dialog(
         "Operation reference",

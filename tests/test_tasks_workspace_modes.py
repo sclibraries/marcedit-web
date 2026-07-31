@@ -18,6 +18,8 @@ from types import SimpleNamespace
 class _FakeStreamlit:
     def __init__(self):
         self.session_state = {}
+        self.button_labels = []
+        self.clicked_labels = set()
         self.radios: list[dict] = []
         self.dividers = 0
         self.warnings = []
@@ -25,6 +27,7 @@ class _FakeStreamlit:
         self.successes = []
         self.code_blocks = []
         self.captions = []
+        self.rerun_called = False
 
     def radio(self, label, options, horizontal=False, key=None,
               label_visibility=None):
@@ -78,10 +81,14 @@ class _FakeStreamlit:
         return [self for _ in range(count)]
 
     def button(self, label, **kwargs):
-        return False
+        self.button_labels.append(label)
+        return label in self.clicked_labels
 
     def selectbox(self, label, options, **kwargs):
         return options[0]
+
+    def rerun(self):
+        self.rerun_called = True
 
 
 def _tasks_render(monkeypatch, fake_st):
@@ -307,171 +314,234 @@ def test_invalid_persisted_condition_remains_visible_without_form_coercion(
     assert "record condition" in operation["authoring_error"]
 
 
-def test_form_editor_fetches_preview_record_once_and_delegates_guided_card(
-    monkeypatch,
-):
-    fake_st = _FakeStreamlit()
-    tasks_render = _tasks_render(monkeypatch, fake_st)
-    fake_st.session_state[tasks_render.K_EDITOR_OPS] = [
-        {
-            "kind": "add-field",
-            "params": {
-                "tag": "877",
-                "subfields": [["m", "Map"]],
-                "existing_field_action": "append",
-            },
-        },
-        {
-            "kind": "build-field",
-            "params": {
-                "tag": "876",
-                "structured_subfields": [
-                    ["a", [{"type": "text", "value": "Internet"}]]
-                ],
-                "existing_field_action": "append",
-                "missing_control_action": "skip_field",
-            },
-        },
-        {
-            "kind": "guided-find-replace",
-            "params": {
-                "target_kind": "subfield",
-                "tag": "035",
-                "subfield": "a",
-                "match_mode": "contains",
-                "find": "TFeba",
-                "ignore_case": False,
-                "replacement_mode": "matched_text",
-                "replacement": "(SCTFEBA)",
-                "occurrences": "all",
-                "condition": "always",
-            },
-        },
-    ]
-    calls = []
-
-    class Store:
-        def __init__(self):
-            self.get_calls = []
-
-        def count(self):
-            return 1
-
-        def get(self, index):
-            self.get_calls.append(index)
-            return "first-record"
-
-    store = Store()
+def _wire_compact_form(monkeypatch, tasks_render, calls, *, store=None):
     monkeypatch.setattr(
         tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
     )
     monkeypatch.setattr(tasks_render.task_admin, "is_admin", lambda user: False)
     monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
     monkeypatch.setattr(
+        tasks_render.task_operation_dialog,
+        "dialog_contract_error",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        tasks_render.task_operation_reference,
+        "open_reference_dialog",
+        lambda **kwargs: calls.append(("reference", kwargs)),
+    )
+
+
+def test_form_editor_renders_cards_and_main_actions_without_inline_controls(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operations = [
+        {"kind": "delete-tag", "params": {"tag": "029"}},
+        {"kind": "guided-find-replace", "params": {"tag": "035"}},
+    ]
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = operations
+    calls = []
+    store = SimpleNamespace(
+        count=lambda: 1,
+        get=lambda index: (_ for _ in ()).throw(
+            AssertionError("compact page must not fetch a preview record")
+        ),
+    )
+    _wire_compact_form(monkeypatch, tasks_render, calls, store=store)
+    monkeypatch.setattr(
+        tasks_render.task_operation_cards,
+        "render_operation_cards",
+        lambda ops, **kwargs: calls.append(("cards", list(ops))),
+    )
+    monkeypatch.setattr(
         tasks_render.task_authoring_render,
         "render_add_field_params",
-        lambda params, key_prefix: calls.append(("add", key_prefix)),
-    )
-    monkeypatch.setattr(
-        tasks_render.task_authoring_render,
-        "render_build_field_params",
-        lambda params, key_prefix: calls.append(("build", key_prefix)),
-    )
-    monkeypatch.setattr(
-        tasks_render.task_authoring_render,
-        "render_guided_find_replace_params",
-        lambda params, key_prefix: calls.append(("guided", key_prefix)),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        tasks_render.task_authoring_render,
-        "render_operation_explanation",
-        lambda op, record: calls.append(("preview", record)),
-    )
-    monkeypatch.setattr(
-        tasks_render.task_authoring_render,
-        "render_guided_replace_preview",
-        lambda *args, **kwargs: calls.append(("guided-preview", "op_2"))
-        or 4,
-    )
-    monkeypatch.setattr(
-        tasks_render.task_authoring_render,
-        "render_guided_replace_technical_details",
-        lambda op: calls.append(("guided-technical", op["kind"])),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        tasks_render.task_authoring,
-        "describe_guided_replace",
-        lambda op, previewed_discard_count=0: calls.append(
-            ("guided-summary", previewed_discard_count)
-        )
-        or "summary with {0} previewed values".format(
-            previewed_discard_count
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("controls must not render inline")
         ),
     )
 
     tasks_render._render_form_editor()
 
-    assert store.get_calls == [0]
-    assert ("add", "op_0") in calls
-    assert ("build", "op_1") in calls
-    assert ("guided", "op_2") in calls
-    assert calls.count(("preview", "first-record")) == 2
-    assert ("guided-technical", "guided-find-replace") in calls
-    assert ("guided-summary", 4) in calls
-    assert calls.index(("guided-preview", "op_2")) < calls.index(
-        ("guided-summary", 4)
-    )
-    assert any("4 previewed values" in caption for caption in fake_st.captions)
+    assert calls == [("cards", operations)]
+    assert "+ Add operation" in fake_st.button_labels
+    assert "Browse operation reference" in fake_st.button_labels
 
 
-def test_form_editor_orders_operation_choices_and_reference_by_label(
-    monkeypatch,
-):
-    """Catalogers should find operations by their displayed names."""
-
-    class OrderingStreamlit(_FakeStreamlit):
-        def __init__(self):
-            super().__init__()
-            self.selectboxes = []
-            self.markdowns = []
-
-        def selectbox(self, label, options, **kwargs):
-            labels = [kwargs.get("format_func", str)(value) for value in options]
-            self.selectboxes.append((label, list(options), labels))
-            return options[0]
-
-        def markdown(self, value):
-            self.markdowns.append(str(value))
-
-    fake_st = OrderingStreamlit()
+def test_form_editor_add_opens_transactional_dialog(monkeypatch):
+    fake_st = _FakeStreamlit()
+    fake_st.clicked_labels.add("+ Add operation")
     tasks_render = _tasks_render(monkeypatch, fake_st)
     fake_st.session_state[tasks_render.K_EDITOR_OPS] = []
-    palette = [
-        {"kind": "guided", "label": "Guided find and replace", "summary": "G"},
-        {"kind": "add", "label": "Add field", "summary": "A"},
-        {"kind": "build", "label": "Build field from template", "summary": "B"},
-    ]
-    monkeypatch.setattr(tasks_render, "OPERATIONS_PALETTE", palette)
+    calls = []
+    _wire_compact_form(monkeypatch, tasks_render, calls)
     monkeypatch.setattr(
-        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+        tasks_render.task_operation_cards,
+        "render_operation_cards",
+        lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(tasks_render.task_admin, "is_admin", lambda user: False)
-    monkeypatch.setattr(tasks_render.session, "current_store", lambda: None)
+    monkeypatch.setattr(
+        tasks_render.task_operation_dialog,
+        "render_active_dialog",
+        lambda state, **kwargs: calls.append(("dialog", state)),
+    )
 
     tasks_render._render_form_editor()
 
-    add_operation = next(call for call in fake_st.selectboxes if call[0] == "Add operation")
-    assert add_operation[2] == [
-        "Add field",
-        "Build field from template",
-        "Guided find and replace",
+    state = fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE]
+    assert state.mode == "add"
+    assert state.nonce == 1
+    assert calls == [("dialog", state)]
+
+
+def test_form_editor_card_change_replaces_coordinator_state(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operations = [
+        {"kind": "delete-tag", "params": {"tag": "029"}},
+        {"kind": "delete-tag", "params": {"tag": "999"}},
     ]
-    assert fake_st.markdowns == [
-        "**Add field** (`add`) — A",
-        "**Build field from template** (`build`) — B",
-        "**Guided find and replace** (`guided`) — G",
+    replacement = [operations[1]]
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = operations
+    calls = []
+    _wire_compact_form(monkeypatch, tasks_render, calls)
+
+    def render_cards(_ops, **kwargs):
+        kwargs["on_change"](replacement)
+
+    monkeypatch.setattr(
+        tasks_render.task_operation_cards, "render_operation_cards", render_cards
+    )
+    tasks_render._render_form_editor()
+
+    assert fake_st.session_state[tasks_render.K_EDITOR_OPS] == replacement
+    assert fake_st.session_state[tasks_render.K_EDITOR_OPS] is not replacement
+    assert fake_st.rerun_called
+
+
+def test_form_editor_edit_opens_isolated_transactional_dialog(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operations = [
+        {"kind": "delete-tag", "params": {"tag": "029"}},
+        {"kind": "delete-tag", "params": {"tag": "999"}},
+    ]
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = operations
+    calls = []
+    _wire_compact_form(monkeypatch, tasks_render, calls)
+
+    def render_cards(_ops, **kwargs):
+        kwargs["on_edit"](1)
+
+    monkeypatch.setattr(
+        tasks_render.task_operation_cards, "render_operation_cards", render_cards
+    )
+    monkeypatch.setattr(
+        tasks_render.task_operation_dialog,
+        "render_active_dialog",
+        lambda state, **kwargs: calls.append(("dialog", state)),
+    )
+
+    tasks_render._render_form_editor()
+
+    state = fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE]
+    assert state.mode == "edit"
+    assert state.source_index == 1
+    assert state.working_copy == operations[1]
+    assert calls == [("dialog", state)]
+
+
+def test_active_operation_dialog_suppresses_stale_reference_request(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    state = tasks_render.task_operation_dialog.new_add_state(4)
+    fake_st.session_state.update({
+        tasks_render.K_EDITOR_OPS: [],
+        tasks_render.K_OPERATION_DIALOG_STATE: state,
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED: True,
+    })
+    calls = []
+    _wire_compact_form(monkeypatch, tasks_render, calls)
+    monkeypatch.setattr(
+        tasks_render.task_operation_cards,
+        "render_operation_cards",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_render.task_operation_dialog,
+        "render_active_dialog",
+        lambda active, **kwargs: calls.append(("dialog", active)),
+    )
+
+    tasks_render._render_form_editor()
+
+    assert calls == [("dialog", state)]
+    assert not fake_st.session_state[
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED
+    ]
+
+
+def test_dialog_capability_error_fails_loud_without_opening_wrapper(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update({
+        tasks_render.K_EDITOR_OPS: [],
+        tasks_render.K_OPERATION_DIALOG_STATE:
+            tasks_render.task_operation_dialog.new_add_state(1),
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED: True,
+    })
+    calls = []
+    _wire_compact_form(monkeypatch, tasks_render, calls)
+    monkeypatch.setattr(
+        tasks_render.task_operation_cards,
+        "render_operation_cards",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_render.task_operation_dialog,
+        "dialog_contract_error",
+        lambda: "non-dismissible dialogs unavailable",
+    )
+    monkeypatch.setattr(
+        tasks_render.task_operation_dialog,
+        "render_active_dialog",
+        lambda *args, **kwargs: calls.append(("dialog", {})),
+    )
+
+    tasks_render._render_form_editor()
+
+    assert fake_st.errors == ["non-dismissible dialogs unavailable"]
+    assert calls == []
+
+
+def test_reference_button_opens_only_reference_dialog(monkeypatch):
+    fake_st = _FakeStreamlit()
+    fake_st.clicked_labels.add("Browse operation reference")
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = []
+    calls = []
+    _wire_compact_form(monkeypatch, tasks_render, calls)
+    monkeypatch.setattr(
+        tasks_render.task_operation_cards,
+        "render_operation_cards",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_render.task_operation_dialog,
+        "render_active_dialog",
+        lambda *args, **kwargs: calls.append(("dialog", {})),
+    )
+
+    tasks_render._render_form_editor()
+
+    assert len(calls) == 1
+    assert calls[0][0] == "reference"
+    assert calls[0][1]["include_custom"] is False
+    calls[0][1]["on_close"]()
+    assert not fake_st.session_state[
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED
     ]
 
 
@@ -507,6 +577,69 @@ def _form_save_state(tasks_render, operations):
         tasks_render.K_EDITOR_VISIBILITY: "private",
         tasks_render.K_EDITOR_OPS: operations,
     }
+
+
+def test_incomplete_kept_card_blocks_task_save_with_ordinal(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update(
+        _form_save_state(
+            tasks_render,
+            [{"kind": "delete-tag", "params": {"tag": ""}}],
+        )
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert "Operation 1: Tag is required" in fake_st.session_state[
+        tasks_render.K_SAVE_ERROR
+    ]
+
+
+def test_editor_open_and_close_reset_operation_dialog_lifecycle(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    stale = tasks_render.task_operation_dialog.new_add_state(9)
+    fake_st.session_state.update({
+        tasks_render.K_OPERATION_DIALOG_STATE: stale,
+        tasks_render.K_OPERATION_DIALOG_NONCE: 9,
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED: True,
+    })
+
+    tasks_render._open_editor_for_new()
+
+    assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE] is None
+    assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_NONCE] == 0
+    assert not fake_st.session_state[
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED
+    ]
+
+    fake_st.session_state.update({
+        tasks_render.K_EDITOR_FROM_AI_DRAFT: True,
+        tasks_render.K_OPERATION_DIALOG_STATE: stale,
+        tasks_render.K_OPERATION_DIALOG_NONCE: 9,
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED: True,
+    })
+    tasks_render._clear_ai_draft_review()
+
+    assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE] is None
+    assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_NONCE] == 0
+    assert not fake_st.session_state[
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED
+    ]
+
+    fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE] = stale
+    fake_st.session_state[tasks_render.K_OPERATION_REFERENCE_REQUESTED] = True
+    tasks_render._cancel_callback()
+
+    assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE] is None
+    assert fake_st.session_state[tasks_render.K_OPERATION_DIALOG_NONCE] == 0
+    assert not fake_st.session_state[
+        tasks_render.K_OPERATION_REFERENCE_REQUESTED
+    ]
 
 
 def test_valid_raw_regex_saves_without_file_or_preview(monkeypatch, tmp_path):

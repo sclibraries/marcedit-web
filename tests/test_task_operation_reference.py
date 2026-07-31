@@ -5,13 +5,15 @@ from marcedit_web.render import task_operation_reference
 
 
 class FakeStreamlit:
-    def __init__(self, query=""):
+    def __init__(self, query="", *, clicked=()):
         self.query = query
+        self.clicked = set(clicked)
         self.text_inputs = []
         self.markdowns = []
         self.captions = []
         self.writes = []
         self.dialog_calls = []
+        self.rerun_calls = 0
 
     def text_input(self, label, **kwargs):
         self.text_inputs.append({"label": label, **kwargs})
@@ -39,6 +41,12 @@ class FakeStreamlit:
             return render
 
         return decorate
+
+    def button(self, label, **kwargs):
+        return label in self.clicked
+
+    def rerun(self):
+        self.rerun_calls += 1
 
 
 def test_reference_entries_are_alphabetical_and_search_label_or_summary():
@@ -100,7 +108,10 @@ def test_reference_dialog_renders_searchable_alphabetical_browser(
         lambda entry: rendered_labels.append(entry["label"]),
     )
 
-    task_operation_reference.open_reference_dialog(include_custom=False)
+    task_operation_reference.open_reference_dialog(
+        include_custom=False,
+        on_close=lambda: None,
+    )
 
     assert fake.dialog_calls == [{
         "title": "Operation reference",
@@ -118,3 +129,17 @@ def test_reference_dialog_renders_searchable_alphabetical_browser(
         for entry in task_builder.OPERATIONS_PALETTE
         if entry["label"] in rendered_labels
     )
+
+
+def test_reference_dialog_close_clears_parent_state_and_reruns(monkeypatch):
+    fake = FakeStreamlit(clicked={"Close"})
+    closed = []
+    monkeypatch.setattr(task_operation_reference, "st", fake)
+
+    task_operation_reference.open_reference_dialog(
+        include_custom=False,
+        on_close=lambda: closed.append(True),
+    )
+
+    assert closed == [True]
+    assert fake.rerun_calls == 1
