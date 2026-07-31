@@ -56,3 +56,35 @@ Design:
 
 Plan:
 - `docs/superpowers/plans/2026-07-31-task-186-compact-modal-task-authoring.md`
+
+Verification checkpoint (2026-07-31):
+- Reviewed implementation head: `d0c5a8e` (title correction after `235f4ca`).
+- Rebuilt candidate image:
+  `sha256:87bae70bb6349dd033cde397ac88bba32de0483d5b3bb73349f23599047a97ec`.
+- Dependency preflight: Streamlit `1.50.0`; the live `st.dialog` signature
+  includes `dismissible`, so the non-dismissible dialog capability assertion
+  passed.
+- Rebuilt image-only complete suite: 1,931 passed, 8 failed, and 39 skipped in
+  86.89 seconds. The eight known failures require repository identity files
+  omitted from `/app` (`README.md`, `Dockerfile`, the TASK-176 ticket, and the
+  TASK-174 phase-one plan). All 39 build-context, Docker-CLI, reference, and
+  absent-corpus skips are itemized in the browser evidence.
+- Read-only mounted-source complete suite: 1,973 passed, zero failed, and 5
+  skipped in 81.47 seconds. Four skips require a Docker CLI inside the
+  networkless container; one skip requires the unavailable institutional
+  MarcEdit Tasks corpus. Synthetic fixtures remain authoritative.
+- Native compiler freshness guard: 1 passed in 0.09 seconds; the checked-in
+  compiler contract has no diff from `main`.
+- Browser acceptance: 0 passed, 0 failed, and 14 skipped. The required
+  `browser-use` executable was absent and the approved in-app browser
+  controller was not exposed, so no browser assertion or role-specific
+  workflow was treated as passed. No screenshot was captured.
+- Evidence:
+  `docs/superpowers/evidence/task-186-compact-modal-task-authoring-browser-smoke.md`.
+- Independent review: one Important Add-title finding was reproduced with a
+  failing focused test and resolved by `d0c5a8e`; the 106-test focused modal
+  suite passed. Re-review against the corrected TASK-186 implementation range
+  reported zero Critical, Important, or Minor findings and assessed the
+  implementation as ready.
+- Disposition: `DONE_WITH_CONCERNS`. The ticket remains `In-Progress` because
+  the cataloger browser gate is incomplete. TASK-174 is not advanced.

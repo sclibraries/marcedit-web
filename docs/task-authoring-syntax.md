@@ -5,6 +5,28 @@ Metadata Studio. It explains the technical MARC representation shown beside
 the structured editor. The editor stores typed values, not executable mnemonic
 templates.
 
+## Working with operation cards
+
+The main task page shows each operation as a short, ordered summary instead of
+expanding every form at once. Use **+ Add operation** or a card's **Edit**
+action to open its focused editor. The editor shows **Set up**, **Preview**,
+**Technical details**, and **Reference** tabs only when they apply to that
+operation.
+
+**Keep in task** retains the operation as a draft; it does not guarantee that
+the task can be saved or run. A **Needs attention** card identifies the
+numbered operation that must be corrected before saving or running. Canceling
+a clean editor closes it directly. Canceling after changes asks for
+confirmation and leaves the task unchanged if the edits are discarded.
+
+Preview status belongs to the exact preview request and source record.
+Reordering a card does not change what its preview means, and canceling a
+draft does not replace the kept operation's preview status. The standalone
+operation reference is read-only and lists operations alphabetically.
+
+The cards and dialogs supplement the MARC syntax and technical examples in
+this guide; they do not hide or replace them.
+
 ## What the structured editor stores
 
 Add Field stores a target tag, two indicators, ordered subfield-code and
