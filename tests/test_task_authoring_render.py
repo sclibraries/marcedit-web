@@ -250,6 +250,11 @@ def _guided_operation(**changes):
     return {"kind": "guided-find-replace", "params": params}
 
 
+class _PreviewStore:
+    def __init__(self, revision=0):
+        self.revision = revision
+
+
 def test_guided_default_shows_plain_find_without_regex(monkeypatch):
     fake = FakeStreamlit()
     renderer = _renderer(monkeypatch, fake)
@@ -478,10 +483,11 @@ def test_guided_preview_runs_only_on_button_and_replaces_request_cache(
     operation = _guided_operation()
     fake = FakeStreamlit(pressed={"op_0_preview"})
     renderer = _renderer(monkeypatch, fake)
+    store = _PreviewStore()
     preview = GuidedReplacePreview(
-        request=operation,
-        store_id=7,
-        store_revision=0,
+        request=operation["params"],
+        store_id=id(store),
+        store_revision=store.revision,
         before="035 $aTFeba123",
         after="035 $a(SCTFEBA)123",
         result={
@@ -499,7 +505,7 @@ def test_guided_preview_runs_only_on_button_and_replaces_request_cache(
     cache = {}
 
     renderer.render_guided_replace_preview(
-        operation, object(), cache, key_prefix="op_0"
+        operation, store, cache, key_prefix="op_0"
     )
 
     assert len(calls) == 1
@@ -517,10 +523,11 @@ def test_guided_preview_does_not_rerun_sandbox_and_reports_zero_matches(
     operation = _guided_operation()
     fake = FakeStreamlit()
     renderer = _renderer(monkeypatch, fake)
+    store = _PreviewStore()
     preview = GuidedReplacePreview(
-        request=operation,
-        store_id=7,
-        store_revision=0,
+        request=operation["params"],
+        store_id=id(store),
+        store_revision=store.revision,
         result={
             "matched_values": 0,
             "changed_values": 0,
@@ -538,7 +545,7 @@ def test_guided_preview_does_not_rerun_sandbox_and_reports_zero_matches(
     )
 
     renderer.render_guided_replace_preview(
-        operation, object(), cache, key_prefix="op_0"
+        operation, store, cache, key_prefix="op_0"
     )
 
     assert any("zero matches" in text.lower() for text in fake.infos)
@@ -550,10 +557,11 @@ def test_condition_skipped_preview_names_condition_without_zero_match(
     operation = _guided_operation(condition="serials")
     fake = FakeStreamlit()
     renderer = _renderer(monkeypatch, fake)
+    store = _PreviewStore()
     preview = GuidedReplacePreview(
         request=operation["params"],
-        store_id=7,
-        store_revision=0,
+        store_id=id(store),
+        store_revision=store.revision,
         before="035 $aTFeba123",
         after="035 $aTFeba123",
         result={
@@ -567,7 +575,7 @@ def test_condition_skipped_preview_names_condition_without_zero_match(
     cache = {key: preview}
 
     renderer.render_guided_replace_preview(
-        operation, object(), cache, key_prefix="op_0"
+        operation, store, cache, key_prefix="op_0"
     )
 
     assert any(
@@ -575,6 +583,132 @@ def test_condition_skipped_preview_names_condition_without_zero_match(
         for text in fake.infos
     )
     assert not any("zero matches" in text.lower() for text in fake.infos)
+
+
+@pytest.mark.parametrize("stale_by", ["identity", "revision"])
+def test_stale_guided_preview_hides_all_preview_evidence(
+    monkeypatch, stale_by
+):
+    operation = _guided_operation(
+        replacement_mode="whole_value",
+        occurrences="first",
+    )
+
+    class Store:
+        revision = 4
+
+    store = Store()
+    previous_store = Store()
+    stale_store_id = (
+        id(previous_store) if stale_by == "identity" else id(store)
+    )
+    stale_revision = 3 if stale_by == "revision" else store.revision
+    preview = GuidedReplacePreview(
+        request=operation["params"],
+        store_id=stale_store_id,
+        store_revision=stale_revision,
+        before="STALE BEFORE",
+        after="STALE AFTER",
+        result={
+            "matched_values": 9,
+            "changed_values": 8,
+            "matched_occurrences": 7,
+        },
+    )
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+
+    discard_count = renderer.render_guided_replace_preview(
+        operation,
+        store,
+        {key: preview},
+        key_prefix="op_0",
+    )
+
+    assert discard_count == 0
+    assert any(
+        "stale" in text.lower()
+        and "source" in text.lower()
+        and "preview" in text.lower()
+        for text in fake.infos
+    )
+    assert fake.captions == []
+    assert fake.code_blocks == []
+    assert fake.markdown_blocks == []
+    assert fake.warnings == []
+
+
+def test_preview_without_revision_provenance_is_stale(monkeypatch):
+    operation = _guided_operation()
+    store = object()
+    preview = GuidedReplacePreview(
+        request=operation["params"],
+        store_id=id(store),
+        store_revision=None,
+        before="STALE BEFORE",
+        after="STALE AFTER",
+        result={
+            "matched_values": 1,
+            "changed_values": 1,
+            "matched_occurrences": 1,
+        },
+    )
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+
+    discard_count = renderer.render_guided_replace_preview(
+        operation,
+        store,
+        {key: preview},
+        key_prefix="op_0",
+    )
+
+    assert discard_count == 0
+    assert any("stale" in text.lower() for text in fake.infos)
+    assert fake.captions == []
+    assert fake.code_blocks == []
+    assert fake.markdown_blocks == []
+    assert fake.warnings == []
+
+
+def test_current_literal_guided_preview_remains_visible(monkeypatch):
+    operation = _guided_operation(match_mode="contains")
+
+    class Store:
+        revision = 4
+
+    store = Store()
+    preview = GuidedReplacePreview(
+        request=operation["params"],
+        store_id=id(store),
+        store_revision=store.revision,
+        before="035 $aTFeba123",
+        after="035 $a(SCTFEBA)123",
+        result={
+            "matched_values": 1,
+            "changed_values": 1,
+            "matched_occurrences": 1,
+        },
+    )
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+
+    renderer.render_guided_replace_preview(
+        operation,
+        store,
+        {key: preview},
+        key_prefix="op_0",
+    )
+
+    assert any("Matched values: 1" in text for text in fake.captions)
+    assert fake.code_blocks[-2:] == [
+        "035 $aTFeba123",
+        "035 $a(SCTFEBA)123",
+    ]
+    assert not any("stale" in text.lower() for text in fake.infos)
 
 
 def test_oversized_guided_preview_request_is_not_cached(monkeypatch):

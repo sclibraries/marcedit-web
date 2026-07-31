@@ -613,6 +613,14 @@ def render_guided_replace_preview(
     if preview.error is not None:
         st.error(preview.error)
         return 0
+    if store is None or not guided_replace_preview.is_current(
+        preview, store, operation
+    ):
+        st.info(
+            "This preview is stale because the source changed. "
+            "Preview this operation again."
+        )
+        return 0
 
     result = preview.result or {}
     matched_values = int(result.get("matched_values", 0))

@@ -70,10 +70,13 @@ def is_current(
         normalized = _normalized(operation)
     except (TypeError, ValueError):
         return False
+    current_revision = getattr(store, "revision", None)
     return (
         preview.error is None
+        and preview.store_revision is not None
+        and current_revision is not None
         and preview.store_id == id(store)
-        and preview.store_revision == getattr(store, "revision", None)
+        and preview.store_revision == current_revision
         and preview.request == normalized["params"]
     )
 
