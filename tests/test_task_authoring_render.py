@@ -12,6 +12,18 @@ class RerunRequested(Exception):
     pass
 
 
+INTERACTIONS = (
+    ("add-field", "move-subfield"),
+    ("add-field", "add-subfield"),
+    ("build-field", "move-subfield"),
+    ("build-field", "add-subfield"),
+    ("build-field", "move-segment"),
+    ("build-field", "add-segment"),
+    ("guided-find-replace", "enter-raw-regex"),
+    ("guided-find-replace", "leave-raw-regex"),
+)
+
+
 class GuardedSessionState(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -930,3 +942,75 @@ def test_nested_subfield_and_segment_button_keys_are_unique(monkeypatch):
         key.startswith("op_0_sf_0_seg_0_")
         for key in fake.button_keys
     )
+
+
+@pytest.mark.parametrize(("kind", "action"), INTERACTIONS)
+def test_operation_control_actions_use_the_caller_rerun(
+    monkeypatch, kind, action
+):
+    pressed = {
+        ("add-field", "move-subfield"): "op_0_sf_1_1_up",
+        ("add-field", "add-subfield"): "op_0_add_subfield",
+        ("build-field", "move-subfield"): "op_0_sf_1_1_up",
+        ("build-field", "add-subfield"): "op_0_add_subfield",
+        ("build-field", "move-segment"): "op_0_sf_0_seg_1_1_up",
+        ("build-field", "add-segment"): "op_0_sf_0_add_segment",
+        (
+            "guided-find-replace",
+            "enter-raw-regex",
+        ): "op_0_mode_switch_keep",
+        (
+            "guided-find-replace",
+            "leave-raw-regex",
+        ): "op_0_mode_switch_discard",
+    }[(kind, action)]
+    fake = FakeStreamlit(pressed={pressed}, checked=set())
+    renderer = _renderer(monkeypatch, fake)
+    calls = []
+
+    if kind == "add-field":
+        params = {
+            "tag": "877",
+            "subfields": [["a", "first"], ["b", "second"]],
+        }
+        renderer.render_add_field_params(
+            params,
+            key_prefix="op_0",
+            rerun=lambda: calls.append("rerun"),
+        )
+    elif kind == "build-field":
+        params = _smith_876_operation()["params"]
+        params["structured_subfields"][0][1].append(
+            {"type": "text", "value": "second"}
+        )
+        renderer.render_build_field_params(
+            params,
+            key_prefix="op_0",
+            rerun=lambda: calls.append("rerun"),
+        )
+    else:
+        params = _guided_operation(
+            match_mode="raw_regex",
+            find=r"^(TFeba)(\d+)$",
+        )["params"]
+        renderer.render_guided_find_replace_params(
+            params,
+            key_prefix="op_0",
+            rerun=lambda: calls.append("rerun"),
+        )
+
+    assert calls == ["rerun"]
+
+
+def test_operation_control_default_rerun_resolves_at_call_time(monkeypatch):
+    fake = FakeStreamlit(pressed={"op_0_add_subfield"})
+    renderer = _renderer(monkeypatch, fake)
+    calls = []
+    monkeypatch.setattr(renderer.st, "rerun", lambda: calls.append("rerun"))
+
+    renderer.render_add_field_params(
+        {"tag": "877", "subfields": [["a", "first"]]},
+        key_prefix="op_0",
+    )
+
+    assert calls == ["rerun"]

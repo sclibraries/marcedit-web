@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 import streamlit as st
 from pymarc import Record
@@ -56,6 +56,10 @@ GUIDED_VALUE_SCOPE_OPTIONS = (
 
 def _key(prefix: str, *parts: object) -> str:
     return "_".join([prefix] + [str(part) for part in parts])
+
+
+def _request_rerun(rerun: Optional[Callable[[], None]]) -> None:
+    (rerun or st.rerun)()
 
 
 def _select_policy(
@@ -146,7 +150,12 @@ def _move_or_remove(
     return items, False
 
 
-def render_add_field_params(params: dict, *, key_prefix: str) -> None:
+def render_add_field_params(
+    params: dict,
+    *,
+    key_prefix: str,
+    rerun: Optional[Callable[[], None]] = None,
+) -> None:
     """Render one complete row-based Add Field card."""
 
     _render_common_params(params, key_prefix=key_prefix)
@@ -175,12 +184,12 @@ def render_add_field_params(params: dict, *, key_prefix: str) -> None:
         )
         if changed:
             params["subfields"] = moved
-            st.rerun()
+            _request_rerun(rerun)
             return
     params["subfields"] = collected
     if st.button("Add subfield", key=_key(key_prefix, "add_subfield")):
         params["subfields"].append(["", ""])
-        st.rerun()
+        _request_rerun(rerun)
 
 
 def _render_segment(
@@ -228,7 +237,12 @@ def _render_segment(
     }
 
 
-def render_build_field_params(params: dict, *, key_prefix: str) -> None:
+def render_build_field_params(
+    params: dict,
+    *,
+    key_prefix: str,
+    rerun: Optional[Callable[[], None]] = None,
+) -> None:
     """Render one complete typed-segment Build Field card."""
 
     _render_common_params(params, key_prefix=key_prefix)
@@ -265,7 +279,7 @@ def render_build_field_params(params: dict, *, key_prefix: str) -> None:
             if changed:
                 rows[subfield_index] = [code, moved]
                 params["structured_subfields"] = rows
-                st.rerun()
+                _request_rerun(rerun)
                 return
         if st.button(
             "Add segment",
@@ -274,7 +288,7 @@ def render_build_field_params(params: dict, *, key_prefix: str) -> None:
             collected_segments.append({"type": "text", "value": ""})
             rows[subfield_index] = [code, collected_segments]
             params["structured_subfields"] = rows
-            st.rerun()
+            _request_rerun(rerun)
             return
         collected_rows.append([code, collected_segments])
         moved, changed = _move_or_remove(
@@ -284,20 +298,21 @@ def render_build_field_params(params: dict, *, key_prefix: str) -> None:
         )
         if changed:
             params["structured_subfields"] = moved
-            st.rerun()
+            _request_rerun(rerun)
             return
     params["structured_subfields"] = collected_rows
     if st.button("Add subfield", key=_key(key_prefix, "add_subfield")):
         params["structured_subfields"].append(
             ["", [{"type": "text", "value": ""}]]
         )
-        st.rerun()
+        _request_rerun(rerun)
 
 
 def render_guided_find_replace_params(
     params: dict,
     *,
     key_prefix: str,
+    rerun: Optional[Callable[[], None]] = None,
 ) -> None:
     """Render progressive controls for one guided value replacement."""
 
@@ -394,7 +409,7 @@ def render_guided_find_replace_params(
                 "action": "keep",
                 "previous_replacement_mode": previous_replacement_mode,
             }
-            st.rerun()
+            _request_rerun(rerun)
         if st.button(
             "Discard matching text and switch",
             key=_key(key_prefix, "mode_switch_discard"),
@@ -403,7 +418,7 @@ def render_guided_find_replace_params(
                 "action": "discard",
                 "requested_replacement_mode": requested_replacement_mode,
             }
-            st.rerun()
+            _request_rerun(rerun)
         return
 
     params["replacement_mode"] = requested_replacement_mode

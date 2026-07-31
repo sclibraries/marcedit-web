@@ -11,7 +11,7 @@ requires-python = ">=3.9,<3.10"
 license = { text = "MIT" }
 authors = [{ name = "Smith College Libraries" }]
 dependencies = [
-    "streamlit>=1.37,<2",
+    "streamlit>=1.50,<2",
     "pymarc>=5.1.2,<6",
     "streamlit-ace>=0.1.1,<0.2",
     # Required for st.login / st.user OAuth flow (TASK-047). Pinned to

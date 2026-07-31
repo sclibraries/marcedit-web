@@ -458,6 +458,39 @@ def test_blank_subfield_row_names_the_cataloger_action():
     assert "Complete or remove blank subfield row 1" in errors
 
 
+def test_every_palette_required_value_is_validated_before_save_or_run():
+    operation = {"kind": "delete-tag", "params": {"tag": ""}}
+
+    assert task_authoring.validate_operation(operation) == (
+        "Tag is required",
+    )
+
+
+def test_unknown_and_unresolved_operations_need_attention_losslessly():
+    unknown = {"kind": "future-operation", "params": {"opaque": 1}}
+    unresolved = {
+        "kind": "build-field",
+        "params": {"subfields": [["a", "literal {name}"]]},
+        "authoring_error": "cannot convert literal braces",
+    }
+
+    assert task_authoring.validate_operation(unknown) == (
+        "operation kind is not supported: future-operation",
+    )
+    assert task_authoring.validate_operation(unresolved) == (
+        "cannot convert literal braces",
+    )
+    assert unknown["params"] == {"opaque": 1}
+
+
+def test_submission_preflight_reports_marker_operation_ordinal():
+    body = '# OP: delete-tag {"tag":""}\ndelete_tags(record, "")'
+
+    assert task_authoring.submission_preflight_issues(body) == (
+        "Operation 1: Tag is required",
+    )
+
+
 def _source_record():
     record = Record()
     record.add_field(Field(tag="001", data="SYNTHETIC12345"))

@@ -202,6 +202,7 @@ def submission_preflight_issues(body: str) -> tuple[str, ...]:
     """Return pure marker-aware issues that block task submission."""
 
     issues = list(unresolved_add_build_instructions(body))
+    superseded_issues = set()
     parsed = task_builder.parse_ops_from_source(body)
     if parsed["form_editable"]:
         for index, op in enumerate(parsed["ops"], start=1):
@@ -214,7 +215,19 @@ def submission_preflight_issues(body: str) -> tuple[str, ...]:
                     "Find value. Recreate it with an explicit guided action "
                     "before running this task.".format(index)
                 )
-    return tuple(issues)
+                superseded_issues.add(
+                    "Operation {0}: Find is required".format(index)
+                )
+        issues.extend(
+            validate_operations(
+                [operation.to_dict() for operation in parsed["ops"]]
+            )
+        )
+    return tuple(
+        issue
+        for issue in dict.fromkeys(issues)
+        if issue not in superseded_issues
+    )
 
 
 def validate_operations(
@@ -268,6 +281,19 @@ def validate_operation(
     """Return actionable validation errors for one structured operation."""
 
     kind = str(op.get("kind") or "")
+    authoring_error = op.get("authoring_error")
+    if authoring_error:
+        return (str(authoring_error),)
+    entry = next(
+        (
+            item
+            for item in task_builder.OPERATIONS_PALETTE
+            if item["kind"] == kind
+        ),
+        None,
+    )
+    if entry is None:
+        return ("operation kind is not supported: {0}".format(kind),)
     if kind == "guided-find-replace":
         try:
             normalized = normalize_guided_replace_operation(op)
@@ -314,7 +340,15 @@ def validate_operation(
             )
         return tuple(errors)
     if kind not in {"add-field", "build-field"}:
-        return ()
+        params = op.get("params") or {}
+        errors = []
+        for parameter in entry["params"]:
+            value = params.get(parameter["name"])
+            if parameter.get("required") and value in (None, "", []):
+                errors.append(
+                    "{0} is required".format(parameter["label"])
+                )
+        return tuple(errors)
     try:
         normalized = normalize_operation(op)
     except ValueError as exc:

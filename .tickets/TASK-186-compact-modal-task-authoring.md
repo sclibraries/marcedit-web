@@ -49,7 +49,7 @@ Success Criteria:
   cataloger browser acceptance confirms substantially reduced page scrolling.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: Todo
+Status: In-Progress
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-186-compact-modal-task-authoring-design.md`
