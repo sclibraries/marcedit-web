@@ -47,6 +47,11 @@ GUIDED_REPLACEMENT_OPTIONS = (
     ("prepend", "prepend"),
     ("append", "append"),
 )
+GUIDED_VALUE_SCOPE_OPTIONS = (
+    ("all", "Every selected value"),
+    ("first", "First selected value"),
+    ("last", "Last selected value"),
+)
 
 
 def _key(prefix: str, *parts: object) -> str:
@@ -318,6 +323,7 @@ def render_guided_find_replace_params(
             params["find"] = ""
             if requested_mode in {"prepend", "append"}:
                 params["occurrences"] = "all"
+                params["value_scope"] = "all"
                 st.session_state.pop(advanced_key, None)
             else:
                 st.session_state[advanced_key] = False
@@ -465,6 +471,20 @@ def render_guided_find_replace_params(
     else:
         params["occurrences"] = "first"
 
+    if params["replacement_mode"] in {"prepend", "append"}:
+        params["value_scope"] = _select_policy(
+            "Which selected values should change?",
+            str(params.get("value_scope") or "all"),
+            GUIDED_VALUE_SCOPE_OPTIONS,
+            key=_key(key_prefix, "value_scope"),
+        )
+        st.caption(
+            "First and last follow current MARC record order, including "
+            "field and subfield order."
+        )
+    else:
+        params["value_scope"] = "all"
+
     condition_values = list(task_builder.LEADER_CONDITIONS)
     current_condition = str(params.get("condition") or "always")
     if current_condition not in condition_values:
@@ -540,6 +560,7 @@ def render_guided_replace_technical_details(
             "replacement_mode",
             "replacement",
             "occurrences",
+            "value_scope",
             "condition",
         )
     )
@@ -552,13 +573,14 @@ def render_guided_replace_technical_details(
         "Saved choices:\n{0}\n\n"
         "Generated match pattern: {1}\n"
         "Case handling: {2}\n"
-        "Replacement behavior: {3}; occurrences={4}"
+        "Replacement behavior: {3}; occurrences={4}; value_scope={5}"
     ).format(
         saved_choices,
         _guided_match_pattern(params),
         case_behavior,
         params["replacement_mode"],
         params["occurrences"],
+        params["value_scope"],
     )
     with st.expander("Technical matching details"):
         st.code(technical, language="text")

@@ -19,10 +19,18 @@ Scope:
   structural field/tag/indicator changes, tag ranges, and structured patterns
   to TASK-184 and TASK-185.
 - Keep the work deterministic and reviewable; do not add AI task generation.
+- Present operation choices and the operation reference alphabetically by
+  cataloger-facing label so guided operations are easy to locate.
+- Let prepend and append apply to every, first, or last selected MARC value;
+  first and last follow the record's current field/subfield order.
 
 Success Criteria:
 - Catalogers can express the Smith 035 TFeba replacement through labeled
   controls and preview the identifier-preserving result before execution.
+- The operation selector and operation reference are alphabetized by their
+  displayed labels without changing operation kinds or execution behavior.
+- Repeated fields are safe to preview and prepend/append can target every,
+  first, or last selected value without overloading text-match occurrence.
 - Replacement scope and preservation behavior are explicit and covered by
   intent-focused tests.
 - Advanced raw regex remains available, round-trips exactly, and requires a
@@ -44,6 +52,18 @@ Design:
 
 Plan:
 - `docs/superpowers/plans/2026-07-30-task-180-core-structured-find-replace-authoring.md`
+
+Cataloger Acceptance Refinement (2026-07-31):
+- The operation selector and reference are alphabetized by displayed label.
+- Prepend and append support every, first, or last selected MARC value without
+  overloading text-match occurrence.
+- Browser acceptance confirmed last-value append changed only the final
+  repeated `035$a`.
+- Focused Docker: 269 passed, 0 failed, 0 skipped in 3.27 seconds.
+- Native compiler-contract freshness: 1 passed, 0 failed; the checked-in
+  native manifest remains unchanged from `main`.
+- Diff and Python syntax checks passed. The complete Docker suite and final
+  review remain required before TASK-180 can be marked Completed.
 
 Verification Checkpoint:
 - Candidate implementation commit: `5ea7e1b`.

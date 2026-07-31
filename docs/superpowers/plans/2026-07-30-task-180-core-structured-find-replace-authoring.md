@@ -1994,6 +1994,22 @@ with:
 - accessibility snapshot status; and
 - every deviation or unavailable check stated explicitly.
 
+- [ ] **Step 7A: Refine prepend/append scope after cataloger acceptance**
+
+- [ ] Add RED engine tests proving prepend/append can change every, first, or
+  last selected value while text-match `occurrences` retains its existing
+  per-value meaning.
+- [ ] Add RED normalization/compiler tests proving missing `value_scope`
+  defaults to `all` and an explicit value round-trips into the shared engine
+  call.
+- [ ] Add RED form tests for the separate **Which selected values should
+  change?** control and its MARC-order warning.
+- [ ] Implement the minimum `value_scope` validation, selection, authoring,
+  compiler, summary, and preview-request plumbing needed to make those tests
+  pass.
+- [ ] Re-run the focused guided-engine, authoring, rendering, compiler, export,
+  and workspace-mode Docker tests with every skip reported.
+
 - [ ] **Step 8: Request independent code review**
 
 Use `superpowers:requesting-code-review`. Provide the TASK-180 ticket, design,
@@ -2085,3 +2101,5 @@ The implementation is ready to merge only when:
 14. Focused and complete Docker suites pass with every skip reported.
 15. Synthetic browser acceptance passes.
 16. Independent review has no unresolved Critical or Important findings.
+17. Prepend and append can target every, first, or last selected value, with
+    first/last explicitly defined by current MARC field/subfield order.

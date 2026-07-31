@@ -244,6 +244,7 @@ def _guided_operation(**changes):
         "replacement_mode": "matched_text",
         "replacement": "(SCTFEBA)",
         "occurrences": "all",
+        "value_scope": "all",
         "condition": "always",
     }
     params.update(changes)
@@ -319,6 +320,25 @@ def test_prepend_append_hide_find_regex_and_occurrence_controls(
     assert params["match_mode"] == "none"
     assert params["find"] == ""
     assert params["occurrences"] == "all"
+
+
+def test_append_can_target_last_selected_value_and_explains_record_order(
+    monkeypatch,
+):
+    fake = FakeStreamlit(
+        selectbox_values={
+            "What should it change?": "append",
+            "Which selected values should change?": "last",
+        }
+    )
+    renderer = _renderer(monkeypatch, fake)
+    params = _guided_operation()["params"]
+
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    assert params["value_scope"] == "last"
+    assert "Which selected values should change?" in fake.selectbox_labels
+    assert any("record order" in caption for caption in fake.captions)
 
 
 def test_raw_regex_is_explicit_and_preserves_entered_strings(monkeypatch):

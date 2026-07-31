@@ -23,6 +23,7 @@ def _guided_op():
             "replacement_mode": "matched_text",
             "replacement": "(SCTFEBA)",
             "occurrences": "all",
+            "value_scope": "last",
             "condition": "always",
         },
     )
@@ -39,6 +40,7 @@ def test_guided_replace_compiles_to_one_shared_transform_call():
     )
     assert "match_mode='contains'" in rendered["body"]
     assert "replacement_mode='matched_text'" in rendered["body"]
+    assert "value_scope='last'" in rendered["body"]
     assert "re.sub" not in rendered["body"]
 
 

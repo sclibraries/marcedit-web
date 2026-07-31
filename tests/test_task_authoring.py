@@ -20,6 +20,7 @@ def _guided_operation(**changes):
         "replacement_mode": "matched_text",
         "replacement": "(SCTFEBA)",
         "occurrences": "all",
+        "value_scope": "all",
         "condition": "always",
     }
     params.update(changes)
@@ -66,6 +67,29 @@ def test_unknown_guided_parameter_blocks_lossy_round_trip():
     assert task_authoring.validate_operation(operation) == (
         "operation parameters contain unexpected keys: future_option",
     )
+
+
+def test_guided_operation_without_selected_value_scope_defaults_to_all():
+    operation = _guided_operation(replacement_mode="append", match_mode="none", find="")
+    del operation["params"]["value_scope"]
+
+    normalized = task_authoring.normalize_guided_replace_operation(operation)
+
+    assert normalized["params"]["value_scope"] == "all"
+
+
+def test_prepend_append_summary_names_last_value_and_record_order():
+    summary = task_authoring.describe_guided_replace(
+        _guided_operation(
+            replacement_mode="append",
+            match_mode="none",
+            find="",
+            value_scope="last",
+        )
+    )
+
+    assert "last selected 035 subfield a" in summary
+    assert "record order" in summary
 
 
 def test_guided_operation_editor_normalization_is_lossless():

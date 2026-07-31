@@ -121,6 +121,7 @@ The new operation uses the form editor's flat parameter convention:
     "replacement_mode": "matched_text",
     "replacement": "(SCTFEBA)",
     "occurrences": "all",
+    "value_scope": "all",
     "condition": "always"
   }
 }
@@ -139,6 +140,8 @@ saved intent.
 Existing operation kinds retain their current code generation and execution
 behavior. Opening an old task never changes its kind. TASK-180 does not offer
 legacy conversion; TASK-185 owns that review and confirmation workflow.
+Guided operations saved before `value_scope` existed normalize it to `all`,
+which preserves their established behavior.
 
 ## Cataloger Workflow
 
@@ -223,8 +226,10 @@ For matched-text replacement, **First occurrence** changes the first match in
 each selected value and **Every occurrence** changes every match in each
 selected value. Whole-selected-value replacement acts once per value that
 matches. Prepend and append act once per selected value without a Find
-condition. The occurrence control is disabled for all three because it cannot
-change their result.
+condition. Their separate **Which selected values should change?** control
+offers **Every selected value**, **First selected value**, and **Last selected
+value**. First and last refer to the record's current MARC field/subfield order
+and never reuse the text-match `occurrences` setting.
 
 When **All subfield values in a tag** is selected, each subfield value is a
 separate selected value. The operation does not concatenate subfields or
@@ -256,6 +261,11 @@ value in every field occurrence with the selected tag.
 | Whole value | First match only | Once when value matches | Not used | Not used |
 | Raw regex | First or every match | Once using the first match | Not supported | Not supported |
 | No match condition | Not supported | Not supported | Once per selected value | Once per selected value |
+
+Prepend and append additionally support `value_scope` values `all`, `first`,
+and `last`. This scope is applied after target selection. Other replacement
+actions require `value_scope="all"` so the two occurrence concepts cannot be
+silently confused.
 
 Raw-regex whole-selected-value replacement expands capture references from the
 first successful match. Prepend and append text is literal and is applied once;
@@ -332,7 +342,9 @@ After:  035 $a(SCTFEBA)9780020306634
 Whole-selected-value replacement says that the complete value will be
 discarded. When the operation can affect multiple selected values, the summary
 and preview state how many previewed values will be discarded. Prepend and
-append say that existing data is retained.
+append say that existing data is retained and whether every, the first, or the
+last selected value will change. The UI warns that first/last uses the record's
+current MARC order.
 
 Technical details remain visible and link to `docs/task-authoring-syntax.md`.
 TASK-180 adds the core operation syntax there; TASK-183 owns the complete
@@ -404,6 +416,8 @@ Save and preview validation block when:
 - a required subfield code is invalid;
 - Find is empty for matched-text or whole-selected-value replacement;
 - prepend or append carries a hidden Find or regex value;
+- `value_scope` is unknown, or a non-prepend/append action carries a scope
+  other than `all`;
 - a match or replacement mode is unknown;
 - a raw expression is invalid;
 - a replacement refers to an undefined regex capture;

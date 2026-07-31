@@ -278,6 +278,17 @@ OPERATIONS_PALETTE: list[dict] = [
                 "default": "all",
             },
             {
+                "name": "value_scope",
+                "label": "Selected values",
+                "type": "select",
+                "options": [
+                    {"value": "all", "label": "Every selected value"},
+                    {"value": "first", "label": "First selected value"},
+                    {"value": "last", "label": "Last selected value"},
+                ],
+                "default": "all",
+            },
+            {
                 "name": "condition",
                 "label": "Apply when",
                 "type": "select",
@@ -883,7 +894,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             "record, "
             "target_kind={0}, tag={1}, subfield={2}, match_mode={3}, "
             "find={4}, ignore_case={5}, replacement_mode={6}, "
-            "replacement={7}, occurrences={8})"
+            "replacement={7}, occurrences={8}, value_scope={9})"
         ).format(
             lit(str(p.get("target_kind", ""))),
             lit(str(p.get("tag", ""))),
@@ -894,6 +905,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             lit(str(p.get("replacement_mode", ""))),
             lit(str(p.get("replacement", ""))),
             lit(str(p.get("occurrences", ""))),
+            lit(str(p.get("value_scope", "all"))),
         )
         condition_expr = LEADER_CONDITIONS[condition_key]
         imports = {"apply_guided_find_replace"}

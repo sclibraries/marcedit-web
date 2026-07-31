@@ -213,6 +213,7 @@ def test_new_guided_find_replace_defaults_match_storage_contract(monkeypatch):
         "replacement_mode": "matched_text",
         "replacement": "",
         "occurrences": "all",
+        "value_scope": "all",
         "condition": "always",
     }
 
@@ -423,6 +424,55 @@ def test_form_editor_fetches_preview_record_once_and_delegates_guided_card(
         ("guided-summary", 4)
     )
     assert any("4 previewed values" in caption for caption in fake_st.captions)
+
+
+def test_form_editor_orders_operation_choices_and_reference_by_label(
+    monkeypatch,
+):
+    """Catalogers should find operations by their displayed names."""
+
+    class OrderingStreamlit(_FakeStreamlit):
+        def __init__(self):
+            super().__init__()
+            self.selectboxes = []
+            self.markdowns = []
+
+        def selectbox(self, label, options, **kwargs):
+            labels = [kwargs.get("format_func", str)(value) for value in options]
+            self.selectboxes.append((label, list(options), labels))
+            return options[0]
+
+        def markdown(self, value):
+            self.markdowns.append(str(value))
+
+    fake_st = OrderingStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = []
+    palette = [
+        {"kind": "guided", "label": "Guided find and replace", "summary": "G"},
+        {"kind": "add", "label": "Add field", "summary": "A"},
+        {"kind": "build", "label": "Build field from template", "summary": "B"},
+    ]
+    monkeypatch.setattr(tasks_render, "OPERATIONS_PALETTE", palette)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(tasks_render.task_admin, "is_admin", lambda user: False)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: None)
+
+    tasks_render._render_form_editor()
+
+    add_operation = next(call for call in fake_st.selectboxes if call[0] == "Add operation")
+    assert add_operation[2] == [
+        "Add field",
+        "Build field from template",
+        "Guided find and replace",
+    ]
+    assert fake_st.markdowns == [
+        "**Add field** (`add`) — A",
+        "**Build field from template** (`build`) — B",
+        "**Guided find and replace** (`guided`) — G",
+    ]
 
 
 def _wire_successful_save(monkeypatch, tasks_render, saved):

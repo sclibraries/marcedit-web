@@ -133,6 +133,11 @@ Targets in this release are control fields 001–009, one subfield code in one
 tag, and all subfield values in one tag. Prepend and append act once per
 selected value and do not use an empty Find.
 
+For prepend and append, **Which selected values should change?** can apply the
+action to every, the first, or the last selected value. First and last follow
+the record's current MARC field and subfield order. This selected-value scope
+is separate from first/every text-match occurrence within one value.
+
 ### Targets and actions
 
 | Target | Matched text | Whole selected value | Prepend | Append |
@@ -162,7 +167,7 @@ replacement can therefore change the first match or every match in each
 selected value. Starts-with, ends-with, and whole-value matching can produce
 at most one match per selected value. Whole-selected-value replacement runs
 once when a selected value matches. Prepend and append are literal and run
-once per selected value.
+once per selected value unless first or last selected-value scope is chosen.
 
 Raw regular expressions are available under the advanced control. They are
 stored exactly with match mode `raw_regex`, validated before save, and must

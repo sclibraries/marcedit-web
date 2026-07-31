@@ -19,6 +19,7 @@ MATCH_MODES = (
 )
 REPLACEMENT_MODES = ("matched_text", "whole_value", "prepend", "append")
 OCCURRENCE_MODES = ("first", "all")
+VALUE_SCOPES = ("all", "first", "last")
 
 
 def validate_request(
@@ -32,6 +33,7 @@ def validate_request(
     replacement_mode: str,
     replacement: str,
     occurrences: str,
+    value_scope: str = "all",
 ) -> Tuple[str, ...]:
     errors = []
     text_values = {
@@ -43,6 +45,7 @@ def validate_request(
         "Replacement mode": replacement_mode,
         "Replacement": replacement,
         "Occurrence mode": occurrences,
+        "Selected-value scope": value_scope,
     }
     for label, value in text_values.items():
         if not isinstance(value, str):
@@ -73,6 +76,8 @@ def validate_request(
         errors.append("Replacement mode is not supported.")
     if occurrences not in OCCURRENCE_MODES:
         errors.append("Occurrence mode is not supported.")
+    if value_scope not in VALUE_SCOPES:
+        errors.append("Selected-value scope is not supported.")
     if replacement_mode in ("prepend", "append"):
         if match_mode != "none" or find:
             errors.append(
@@ -93,6 +98,14 @@ def validate_request(
         )
     elif match_mode == "none":
         errors.append("Match mode 'none' is only valid for prepend or append.")
+    if (
+        value_scope in VALUE_SCOPES
+        and replacement_mode not in ("prepend", "append")
+        and value_scope != "all"
+    ):
+        errors.append(
+            "Selected-value scope is only available for prepend or append."
+        )
     if replacement_mode == "whole_value" and occurrences != "first":
         errors.append(
             "Whole-selected-value replacement requires occurrence mode "
@@ -202,6 +215,7 @@ def apply_guided_find_replace(
     replacement_mode: str,
     replacement: str,
     occurrences: str,
+    value_scope: str = "all",
 ) -> dict:
     errors = validate_request(
         target_kind=target_kind,
@@ -213,6 +227,7 @@ def apply_guided_find_replace(
         replacement_mode=replacement_mode,
         replacement=replacement,
         occurrences=occurrences,
+        value_scope=value_scope,
     )
     if errors:
         raise ValueError("; ".join(errors))
@@ -227,9 +242,12 @@ def apply_guided_find_replace(
         "changed_values": 0,
         "matched_occurrences": 0,
     }
-    for field, subfield_index, value in _selected_values(
-        record, target_kind, tag, subfield
-    ):
+    selected_values = list(_selected_values(record, target_kind, tag, subfield))
+    if value_scope == "first":
+        selected_values = selected_values[:1]
+    elif value_scope == "last":
+        selected_values = selected_values[-1:]
+    for field, subfield_index, value in selected_values:
         matched, new_value, matched_occurrences = _replace_value(
             value,
             matcher=matcher,

@@ -40,6 +40,7 @@ _GUIDED_REPLACE_PARAMS = {
     "replacement_mode",
     "replacement",
     "occurrences",
+    "value_scope",
     "condition",
 }
 _GUIDED_REPLACE_DEFAULTS = {
@@ -52,6 +53,7 @@ _GUIDED_REPLACE_DEFAULTS = {
     "replacement_mode": "matched_text",
     "replacement": "",
     "occurrences": "all",
+    "value_scope": "all",
     "condition": "always",
 }
 
@@ -286,6 +288,7 @@ def validate_operation(
                 replacement_mode=params["replacement_mode"],
                 replacement=params["replacement"],
                 occurrences=params["occurrences"],
+                value_scope=params["value_scope"],
             )
         )
         if params["condition"] not in task_builder.LEADER_CONDITIONS:
@@ -548,13 +551,26 @@ def describe_guided_replace(
         "selected MARC values",
     )
     replacement_mode = params["replacement_mode"]
+    value_scope = params["value_scope"]
+    scoped_target = target
+    if value_scope in {"first", "last"}:
+        singular_target = {
+            "control_field": "{0} control field".format(params["tag"]),
+            "subfield": "{0} subfield {1}".format(
+                params["tag"], params["subfield"]
+            ),
+            "all_subfields": "subfield in a {0} field".format(params["tag"]),
+        }.get(params["target_kind"], "MARC value")
+        scoped_target = "the {0} selected {1} in record order".format(
+            value_scope, singular_target
+        )
     if replacement_mode == "prepend":
         return "In {0}, prepend “{1}”.".format(
-            target, params["replacement"]
+            scoped_target, params["replacement"]
         )
     if replacement_mode == "append":
         return "In {0}, append “{1}”.".format(
-            target, params["replacement"]
+            scoped_target, params["replacement"]
         )
 
     occurrence = "first" if params["occurrences"] == "first" else "every"

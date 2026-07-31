@@ -1070,7 +1070,11 @@ def _render_form_editor() -> None:
             ops.pop(i)
         st.rerun()
 
-    add_options = [op["kind"] for op in OPERATIONS_PALETTE]
+    display_palette = sorted(
+        OPERATIONS_PALETTE,
+        key=lambda entry: entry["label"].casefold(),
+    )
+    add_options = [op["kind"] for op in display_palette]
     if not is_admin:
         add_options = [k for k in add_options if k != "custom"]
     col_pick, col_btn = st.columns([4, 1])
@@ -1085,7 +1089,7 @@ def _render_form_editor() -> None:
         st.rerun()
 
     with st.expander("Operation reference"):
-        for entry in OPERATIONS_PALETTE:
+        for entry in display_palette:
             st.markdown(f"**{entry['label']}** (`{entry['kind']}`) — {entry['summary']}")
 
 
@@ -1113,6 +1117,7 @@ def _default_params_for(kind: str) -> dict:
             "replacement_mode": "matched_text",
             "replacement": "",
             "occurrences": "all",
+            "value_scope": "all",
             "condition": "always",
         }
     entry = _palette_entry(kind)

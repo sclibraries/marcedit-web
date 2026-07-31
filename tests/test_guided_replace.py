@@ -40,6 +40,7 @@ def _params(**changes):
         "replacement_mode": "matched_text",
         "replacement": "(SCTFEBA)",
         "occurrences": "all",
+        "value_scope": "all",
     }
     params.update(changes)
     return params
@@ -128,6 +129,72 @@ def test_prepend_has_no_find_or_regex_and_runs_once_per_selected_value():
     )
     assert result["matched_values"] == 2
     assert result["matched_occurrences"] == 0
+
+
+def test_preexisting_generated_call_without_value_scope_still_changes_all():
+    """Earlier saved task bodies retain their established all-values scope."""
+
+    record = _record()
+    params = _params(
+        match_mode="none",
+        find="",
+        replacement_mode="append",
+        replacement="(SCTFEBA)",
+    )
+    del params["value_scope"]
+
+    result = guided_replace.apply_guided_find_replace(record, **params)
+
+    assert result["changed_values"] == 2
+
+
+@pytest.mark.parametrize("replacement_mode", ["prepend", "append"])
+@pytest.mark.parametrize(
+    ("value_scope", "changed_indexes"),
+    [("all", {0, 1}), ("first", {0}), ("last", {1})],
+)
+def test_prepend_append_scope_selects_repeated_035_values_in_record_order(
+    replacement_mode, value_scope, changed_indexes
+):
+    """Catalogers must be able to avoid changing every repeated 035$a."""
+
+    record = _record()
+    before = [field["a"] for field in record.get_fields("035")]
+    replacement = "(SCTFEBA)"
+
+    result = guided_replace.apply_guided_find_replace(
+        record,
+        **_params(
+            match_mode="none",
+            find="",
+            replacement_mode=replacement_mode,
+            replacement=replacement,
+            value_scope=value_scope,
+        ),
+    )
+
+    after = [field["a"] for field in record.get_fields("035")]
+    for index, original in enumerate(before):
+        expected = original
+        if index in changed_indexes:
+            expected = (
+                replacement + original
+                if replacement_mode == "prepend"
+                else original + replacement
+            )
+        assert after[index] == expected
+    assert result["changed_values"] == len(changed_indexes)
+
+
+def test_selected_value_scope_is_validated_separately_from_text_occurrence():
+    assert guided_replace.validate_request(
+        **_params(value_scope="middle")
+    ) == ("Selected-value scope is not supported.",)
+    assert guided_replace.validate_request(
+        **_params(value_scope="first")
+    ) == (
+        "Selected-value scope is only available for prepend or append.",
+    )
 
 
 def test_empty_find_is_rejected_for_matched_text():
