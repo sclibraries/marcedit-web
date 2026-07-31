@@ -1019,14 +1019,23 @@ def _render_form_editor() -> None:
                     task_authoring_render.render_guided_find_replace_params(
                         params, key_prefix=f"op_{i}"
                     )
-                    st.caption(
-                        task_authoring.describe_guided_replace(op)
+                    summary = st.empty()
+                    task_authoring_render.render_guided_replace_technical_details(
+                        op
                     )
-                    task_authoring_render.render_guided_replace_preview(
-                        op,
-                        store,
-                        previews,
-                        key_prefix=f"op_{i}",
+                    discard_count = (
+                        task_authoring_render.render_guided_replace_preview(
+                            op,
+                            store,
+                            previews,
+                            key_prefix=f"op_{i}",
+                        )
+                    )
+                    summary.caption(
+                        task_authoring.describe_guided_replace(
+                            op,
+                            previewed_discard_count=discard_count,
+                        )
                     )
                 elif op["kind"] not in {
                     "add-field",

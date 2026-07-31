@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any, Mapping, Optional
 
 import streamlit as st
@@ -295,12 +296,18 @@ def render_guided_find_replace_params(
 ) -> None:
     """Render progressive controls for one guided value replacement."""
 
+    previous_target_kind = str(params.get("target_kind") or "subfield")
     params["target_kind"] = _select_policy(
         "Where should Smith Metadata Studio look?",
-        str(params.get("target_kind") or "subfield"),
+        previous_target_kind,
         GUIDED_TARGET_OPTIONS,
         key=_key(key_prefix, "target_kind"),
     )
+    if (
+        params["target_kind"] != previous_target_kind
+        and params["target_kind"] != "subfield"
+    ):
+        params["subfield"] = ""
     params["tag"] = st.text_input(
         "Tag",
         value=str(params.get("tag", "")),
@@ -451,20 +458,111 @@ def render_guided_find_replace_params(
     )
 
 
+def guided_replace_previewed_discard_count(
+    operation: Mapping[str, Any],
+    store,
+    previews: Mapping[str, guided_replace_preview.GuidedReplacePreview],
+) -> int:
+    """Return the whole-value discard count from a current preview."""
+
+    if (
+        store is None
+        or operation.get("params", {}).get("replacement_mode")
+        != "whole_value"
+    ):
+        return 0
+    try:
+        cache_key = guided_replace_preview.preview_cache_key(operation)
+    except (TypeError, ValueError):
+        return 0
+    preview = previews.get(cache_key)
+    if (
+        preview is None
+        or not guided_replace_preview.is_current(preview, store, operation)
+    ):
+        return 0
+    return int((preview.result or {}).get("matched_values", 0))
+
+
+def _guided_match_pattern(params: Mapping[str, Any]) -> str:
+    match_mode = params["match_mode"]
+    if match_mode == "none":
+        return "(none; prepend and append do not match text)"
+    if match_mode == "raw_regex":
+        return str(params["find"])
+    pattern = re.escape(str(params["find"]))
+    if match_mode == "starts_with":
+        return "^" + pattern
+    if match_mode == "ends_with":
+        return pattern + "$"
+    if match_mode == "whole_value":
+        return "^" + pattern + "$"
+    return pattern
+
+
+def render_guided_replace_technical_details(
+    operation: Mapping[str, Any],
+) -> None:
+    """Show saved guided choices and their generated matching behavior."""
+
+    params = task_authoring.normalize_guided_replace_operation(
+        operation
+    )["params"]
+    saved_choices = "\n".join(
+        "{0}={1}".format(name, params[name])
+        for name in (
+            "target_kind",
+            "tag",
+            "subfield",
+            "match_mode",
+            "find",
+            "ignore_case",
+            "replacement_mode",
+            "replacement",
+            "occurrences",
+            "condition",
+        )
+    )
+    case_behavior = (
+        "case-insensitive"
+        if params["ignore_case"]
+        else "case-sensitive"
+    )
+    technical = (
+        "Saved choices:\n{0}\n\n"
+        "Generated match pattern: {1}\n"
+        "Case handling: {2}\n"
+        "Replacement behavior: {3}; occurrences={4}"
+    ).format(
+        saved_choices,
+        _guided_match_pattern(params),
+        case_behavior,
+        params["replacement_mode"],
+        params["occurrences"],
+    )
+    with st.expander("Technical matching details"):
+        st.code(technical, language="text")
+        st.markdown(
+            "[Open the task authoring syntax reference]"
+            "(https://github.com/sclibraries/marcedit-web/blob/main/"
+            "docs/task-authoring-syntax.md)"
+        )
+
+
 def render_guided_replace_preview(
     operation: Mapping[str, Any],
     store,
     previews: dict,
     *,
     key_prefix: str,
-) -> None:
+) -> int:
     """Render one request-keyed preview without running it on rerenders."""
 
     try:
         cache_key = guided_replace_preview.preview_cache_key(operation)
     except (TypeError, ValueError) as exc:
         st.error("Preview validation failed: {0}".format(exc))
-        return
+        return 0
 
     if st.button(
         "Preview this operation",
@@ -491,10 +589,10 @@ def render_guided_replace_preview(
             "Preview this operation against the first loaded record "
             "before running it."
         )
-        return
+        return 0
     if preview.error is not None:
         st.error(preview.error)
-        return
+        return 0
 
     result = preview.result or {}
     matched_values = int(result.get("matched_values", 0))
@@ -510,19 +608,19 @@ def render_guided_replace_preview(
     )
     if matched_values == 0:
         st.info("Preview found zero matches in the first loaded record.")
-    if (
-        operation.get("params", {}).get("replacement_mode")
-        == "whole_value"
-        and matched_values
-    ):
+    discard_count = guided_replace_previewed_discard_count(
+        operation, store, previews
+    )
+    if discard_count:
         st.warning(
             "This operation will replace {0} whole selected value(s) "
-            "in the preview record.".format(matched_values)
+            "in the preview record.".format(discard_count)
         )
     st.markdown("**Before**")
     st.code(preview.before or "(no selected values)", language="text")
     st.markdown("**After**")
     st.code(preview.after or "(no selected values)", language="text")
+    return discard_count
 
 
 def render_operation_explanation(

@@ -42,6 +42,9 @@ class _FakeStreamlit:
     def container(self):
         return self
 
+    def empty(self):
+        return self
+
     def expander(self, label):
         return self
 
@@ -383,6 +386,28 @@ def test_form_editor_fetches_preview_record_once_and_delegates_guided_card(
         "render_operation_explanation",
         lambda op, record: calls.append(("preview", record)),
     )
+    monkeypatch.setattr(
+        tasks_render.task_authoring_render,
+        "render_guided_replace_preview",
+        lambda *args, **kwargs: calls.append(("guided-preview", "op_2"))
+        or 4,
+    )
+    monkeypatch.setattr(
+        tasks_render.task_authoring_render,
+        "render_guided_replace_technical_details",
+        lambda op: calls.append(("guided-technical", op["kind"])),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        tasks_render.task_authoring,
+        "describe_guided_replace",
+        lambda op, previewed_discard_count=0: calls.append(
+            ("guided-summary", previewed_discard_count)
+        )
+        or "summary with {0} previewed values".format(
+            previewed_discard_count
+        ),
+    )
 
     tasks_render._render_form_editor()
 
@@ -391,7 +416,12 @@ def test_form_editor_fetches_preview_record_once_and_delegates_guided_card(
     assert ("build", "op_1") in calls
     assert ("guided", "op_2") in calls
     assert calls.count(("preview", "first-record")) == 2
-    assert any("replace every" in caption for caption in fake_st.captions)
+    assert ("guided-technical", "guided-find-replace") in calls
+    assert ("guided-summary", 4) in calls
+    assert calls.index(("guided-preview", "op_2")) < calls.index(
+        ("guided-summary", 4)
+    )
+    assert any("4 previewed values" in caption for caption in fake_st.captions)
 
 
 def _wire_successful_save(monkeypatch, tasks_render, saved):

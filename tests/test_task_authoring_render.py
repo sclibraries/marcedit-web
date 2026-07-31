@@ -218,6 +218,37 @@ def test_guided_default_shows_plain_find_without_regex(monkeypatch):
     assert params["match_mode"] == "contains"
 
 
+def test_explicit_target_switch_clears_now_hidden_subfield(monkeypatch):
+    fake = FakeStreamlit(
+        selectbox_values={
+            "Where should Smith Metadata Studio look?": "control_field"
+        }
+    )
+    renderer = _renderer(monkeypatch, fake)
+    params = _guided_operation()["params"]
+
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    assert params["target_kind"] == "control_field"
+    assert params["subfield"] == ""
+
+
+def test_loaded_inconsistent_hidden_subfield_remains_fail_loud(monkeypatch):
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+    params = _guided_operation(
+        target_kind="control_field",
+        tag="001",
+    )["params"]
+
+    renderer.render_guided_find_replace_params(params, key_prefix="op_0")
+
+    assert params["subfield"] == "a"
+    assert renderer.task_authoring.validate_operation(
+        {"kind": "guided-find-replace", "params": params}
+    ) == ("Subfield code must be empty for this target.",)
+
+
 def test_prepend_hides_find_and_occurrence_controls(monkeypatch):
     fake = FakeStreamlit(
         selectbox_values={"What should it change?": "prepend"}
@@ -402,6 +433,82 @@ def test_oversized_guided_preview_request_is_not_cached(monkeypatch):
     assert any(
         "request" in message.lower() and "limit" in message.lower()
         for message in fake.errors
+    )
+
+
+def test_only_current_successful_whole_value_preview_supplies_discard_count(
+    monkeypatch,
+):
+    operation = _guided_operation(
+        replacement_mode="whole_value",
+        occurrences="first",
+    )
+
+    class Store:
+        revision = 4
+
+    store = Store()
+    renderer = _renderer(monkeypatch, FakeStreamlit())
+    key = renderer.guided_replace_preview.preview_cache_key(operation)
+    current = GuidedReplacePreview(
+        request=operation["params"],
+        store_id=id(store),
+        store_revision=4,
+        result={"matched_values": 3},
+    )
+
+    assert renderer.guided_replace_previewed_discard_count(
+        operation, store, {key: current}
+    ) == 3
+    assert renderer.guided_replace_previewed_discard_count(
+        operation,
+        store,
+        {
+            key: GuidedReplacePreview(
+                request=operation["params"],
+                store_id=id(store),
+                store_revision=3,
+                result={"matched_values": 9},
+            )
+        },
+    ) == 0
+    assert renderer.guided_replace_previewed_discard_count(
+        operation,
+        store,
+        {
+            key: GuidedReplacePreview(
+                request=operation["params"],
+                store_id=id(store),
+                store_revision=4,
+                result={"matched_values": 9},
+                error="preview failed",
+            )
+        },
+    ) == 0
+    assert renderer.guided_replace_previewed_discard_count(
+        operation, store, {}
+    ) == 0
+
+
+def test_guided_technical_details_show_saved_choices_pattern_and_docs_link(
+    monkeypatch,
+):
+    fake = FakeStreamlit()
+    renderer = _renderer(monkeypatch, fake)
+
+    renderer.render_guided_replace_technical_details(_guided_operation())
+
+    technical = "\n".join(fake.code_blocks)
+    assert "target_kind=subfield" in technical
+    assert "match_mode=contains" in technical
+    assert "Generated match pattern: TFeba" in technical
+    assert any(
+        (
+            "https://github.com/sclibraries/marcedit-web/blob/main/"
+            "docs/task-authoring-syntax.md"
+        )
+        in block
+        for block in fake.markdown_blocks
     )
 
 
