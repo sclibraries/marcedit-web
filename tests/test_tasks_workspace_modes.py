@@ -648,6 +648,55 @@ def test_editor_open_and_close_reset_operation_dialog_lifecycle(monkeypatch):
     ]
 
 
+def test_pending_remove_confirmation_does_not_cross_task_lifecycles(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[
+        tasks_render.K_OPERATION_CARDS_PENDING_REMOVE
+    ] = 0
+
+    tasks_render._cancel_callback()
+
+    assert (
+        tasks_render.K_OPERATION_CARDS_PENDING_REMOVE
+        not in fake_st.session_state
+    )
+
+    fake_st.session_state[
+        tasks_render.K_OPERATION_CARDS_PENDING_REMOVE
+    ] = 0
+    tasks_render._open_editor_for_new()
+
+    assert (
+        tasks_render.K_OPERATION_CARDS_PENDING_REMOVE
+        not in fake_st.session_state
+    )
+
+
+def test_form_save_reports_non_object_params_by_ordinal_without_persisting(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operation = {"kind": "delete-tag", "params": ["opaque"]}
+    original = copy.deepcopy(operation)
+    fake_st.session_state.update(
+        _form_save_state(tasks_render, [operation])
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert fake_st.session_state[tasks_render.K_SAVE_ERROR] == (
+        "Operation 1: operation parameters must be an object"
+    )
+    assert operation == original
+
+
 def test_clear_my_tasks_resets_operation_dialog_lifecycle_before_rerun(
     monkeypatch,
 ):

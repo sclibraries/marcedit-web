@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 from pymarc import Field, MARCReader, Record, Subfield
 
@@ -67,6 +69,16 @@ def test_unknown_guided_parameter_blocks_lossy_round_trip():
     assert task_authoring.validate_operation(operation) == (
         "operation parameters contain unexpected keys: future_option",
     )
+
+
+def test_generic_operation_rejects_non_object_params_without_mutation():
+    operation = {"kind": "delete-tag", "params": ["opaque"]}
+    original = copy.deepcopy(operation)
+
+    assert task_authoring.validate_operation(operation) == (
+        "operation parameters must be an object",
+    )
+    assert operation == original
 
 
 def test_guided_operation_without_selected_value_scope_defaults_to_all():

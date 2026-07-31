@@ -84,6 +84,14 @@ def _preview_status(
     preview = previews.get(cache_key)
     if preview is None:
         return "Not previewed"
+    current_revision = getattr(store, "revision", None)
+    if (
+        preview.store_id != id(store)
+        or preview.store_revision is None
+        or current_revision is None
+        or preview.store_revision != current_revision
+    ):
+        return "Stale"
     if preview.error is not None:
         return "Failed"
     if guided_replace_preview.is_current(preview, store, operation):

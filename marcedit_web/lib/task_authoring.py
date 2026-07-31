@@ -284,6 +284,8 @@ def validate_operation(
     authoring_error = op.get("authoring_error")
     if authoring_error:
         return (str(authoring_error),)
+    if not isinstance(op.get("params", {}), Mapping):
+        return ("operation parameters must be an object",)
     entry = next(
         (
             item

@@ -69,10 +69,16 @@ def test_reference_entries_are_alphabetical_and_search_label_or_summary():
 def test_reference_entries_are_copies_not_palette_aliases():
     entries = task_operation_reference.reference_entries(include_custom=True)
     entries[0]["label"] = "changed"
+    entries[0]["params"][0]["label"] = "nested change"
 
     assert all(
         entry["label"] != "changed"
         for entry in task_builder.OPERATIONS_PALETTE
+    )
+    assert all(
+        parameter["label"] != "nested change"
+        for entry in task_builder.OPERATIONS_PALETTE
+        for parameter in entry["params"]
     )
 
 

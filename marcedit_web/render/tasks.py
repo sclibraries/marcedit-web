@@ -139,6 +139,7 @@ K_GUIDED_REPLACE_PREVIEWS = "task_guided_replace_previews"
 K_OPERATION_DIALOG_STATE = "tasks_operation_dialog_state"
 K_OPERATION_DIALOG_NONCE = "tasks_operation_dialog_nonce"
 K_OPERATION_REFERENCE_REQUESTED = "tasks_operation_reference_requested"
+K_OPERATION_CARDS_PENDING_REMOVE = "task_operation_cards_pending_remove"
 
 # TASK-143: workspace mode switcher.
 MODE_RUN = "Run"
@@ -387,6 +388,7 @@ def _reset_operation_dialog_state() -> None:
     st.session_state[K_OPERATION_DIALOG_STATE] = None
     st.session_state[K_OPERATION_DIALOG_NONCE] = 0
     st.session_state[K_OPERATION_REFERENCE_REQUESTED] = False
+    st.session_state.pop(K_OPERATION_CARDS_PENDING_REMOVE, None)
 
 
 def _open_editor_for_new() -> None:
