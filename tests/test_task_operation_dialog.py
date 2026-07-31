@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from streamlit.errors import StreamlitAPIException
+from streamlit.runtime.scriptrunner_utils.exceptions import StopException
 
 from marcedit_web.lib import (
     guided_replace_preview,
@@ -331,6 +332,33 @@ def test_add_starts_with_alphabetical_selector_and_no_controls(monkeypatch):
     assert controls == []
 
 
+def test_add_selection_requests_safe_fragment_rerun(monkeypatch):
+    fake = FakeStreamlit(selections={"Operation": "delete-tag"})
+    state = task_operation_dialog.new_add_state(10)
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+    monkeypatch.setattr(
+        task_operation_dialog.task_operation_reference,
+        "render_reference_entry",
+        lambda entry: None,
+    )
+
+    task_operation_dialog.render_active_dialog(
+        state,
+        operations=[],
+        is_admin=False,
+        store=None,
+        previews={},
+        on_keep=lambda operations: None,
+        on_close=lambda: None,
+    )
+
+    assert state.working_copy == {
+        "kind": "delete-tag",
+        "params": {"tag": ""},
+    }
+    assert fake.reruns == [{"scope": "fragment"}]
+
+
 def test_unknown_draft_is_preserved_and_renderer_failure_is_bounded(monkeypatch):
     fake = FakeStreamlit()
     unknown = {
@@ -377,6 +405,73 @@ def test_unknown_draft_is_preserved_and_renderer_failure_is_bounded(monkeypatch)
     )
     assert any("could not be displayed: broken" in error for error in fake.errors)
     assert guided.working_copy == preserved
+
+
+def test_bounded_renderer_failure_restores_pre_render_draft(monkeypatch):
+    fake = FakeStreamlit()
+    original = {"kind": "delete-tag", "params": {"tag": "001"}}
+    state = task_operation_dialog.new_edit_state(original, index=0, nonce=13)
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+
+    def mutate_then_fail(state, *, is_admin):
+        state.working_copy["params"]["tag"] = "partial mutation"
+        state.working_copy["params"]["nested"] = [{"changed": True}]
+        raise ValueError("broken after mutation")
+
+    monkeypatch.setattr(
+        task_operation_dialog,
+        "render_selected_operation",
+        mutate_then_fail,
+    )
+    monkeypatch.setattr(
+        task_operation_dialog.task_operation_reference,
+        "render_reference_entry",
+        lambda entry: None,
+    )
+
+    task_operation_dialog.render_active_dialog(
+        state,
+        operations=[original],
+        is_admin=False,
+        store=None,
+        previews={},
+        on_keep=lambda operations: None,
+        on_close=lambda: None,
+    )
+
+    assert state.working_copy == original
+    assert state.working_copy is not original
+    assert any("broken after mutation" in error for error in fake.errors)
+
+
+def test_streamlit_control_flow_is_not_swallowed_or_rolled_back(monkeypatch):
+    fake = FakeStreamlit()
+    original = {"kind": "delete-tag", "params": {"tag": "001"}}
+    state = task_operation_dialog.new_edit_state(original, index=0, nonce=14)
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+
+    def mutate_then_stop(state, *, is_admin):
+        state.working_copy["params"]["tag"] = "intentional mutation"
+        raise StopException()
+
+    monkeypatch.setattr(
+        task_operation_dialog,
+        "render_selected_operation",
+        mutate_then_stop,
+    )
+
+    with pytest.raises(StopException):
+        task_operation_dialog.render_active_dialog(
+            state,
+            operations=[original],
+            is_admin=False,
+            store=None,
+            previews={},
+            on_keep=lambda operations: None,
+            on_close=lambda: None,
+        )
+
+    assert state.working_copy["params"]["tag"] == "intentional mutation"
 
 
 def test_malformed_guided_technical_renderer_failure_is_bounded(monkeypatch):
@@ -523,6 +618,36 @@ def test_confirmed_discard_closes_and_clean_cancel_closes(monkeypatch):
 
         assert closed == [True]
         assert fake.reruns == [{}]
+
+
+def test_keep_editing_clears_discard_state_and_reruns_fragment(monkeypatch):
+    fake = FakeStreamlit(pressed={"Keep editing"})
+    operation = {"kind": "delete-tag", "params": {"tag": "001"}}
+    state = task_operation_dialog.new_edit_state(operation, index=0, nonce=25)
+    state.working_copy["params"]["tag"] = "003"
+    state.discard_pending = True
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+    monkeypatch.setattr(
+        task_operation_dialog, "render_param_input", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        task_operation_dialog.task_operation_reference,
+        "render_reference_entry",
+        lambda entry: None,
+    )
+
+    task_operation_dialog.render_active_dialog(
+        state,
+        operations=[operation],
+        is_admin=False,
+        store=None,
+        previews={},
+        on_keep=lambda operations: None,
+        on_close=lambda: None,
+    )
+
+    assert state.discard_pending is False
+    assert fake.reruns == [{"scope": "fragment"}]
 
 
 def test_all_dialog_widget_keys_use_nonce_not_source_index(monkeypatch):

@@ -388,6 +388,20 @@ def _render_reference(entry, *, include_custom: bool) -> None:
         task_operation_reference.render_reference_entry(reference_entry)
 
 
+def _render_with_draft_restore(
+    state: OperationDialogState,
+    render: Callable[[], None],
+) -> None:
+    """Restore the modal draft when a bounded renderer failure occurs."""
+
+    snapshot = copy.deepcopy(state.working_copy)
+    try:
+        render()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        state.working_copy = snapshot
+        st.error("This operation could not be displayed: {0}".format(exc))
+
+
 def render_active_dialog(
     state: OperationDialogState,
     *,
@@ -455,31 +469,30 @@ def render_active_dialog(
                     state.selected_kind = selected_state.selected_kind
                     state.working_copy = selected_state.working_copy
                     state.discard_pending = False
+                    rerun_fragment_or_app()
             elif state.working_copy is not None:
-                try:
-                    render_selected_operation(state, is_admin=is_admin)
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                    st.error(
-                        "This operation could not be displayed: {0}".format(exc)
-                    )
+                _render_with_draft_restore(
+                    state,
+                    lambda: render_selected_operation(
+                        state, is_admin=is_admin
+                    ),
+                )
 
         if "Preview" in tabs:
             with tabs["Preview"]:
-                try:
-                    _render_preview(state, store=store, previews=previews)
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                    st.error(
-                        "This operation could not be displayed: {0}".format(exc)
-                    )
+                _render_with_draft_restore(
+                    state,
+                    lambda: _render_preview(
+                        state, store=store, previews=previews
+                    ),
+                )
 
         if "Technical details" in tabs and state.working_copy is not None:
             with tabs["Technical details"]:
-                try:
-                    _render_technical(state.working_copy)
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                    st.error(
-                        "This operation could not be displayed: {0}".format(exc)
-                    )
+                _render_with_draft_restore(
+                    state,
+                    lambda: _render_technical(state.working_copy),
+                )
 
         with tabs["Reference"]:
             _render_reference(current_entry, include_custom=is_admin)
@@ -507,6 +520,7 @@ def render_active_dialog(
                 "Keep editing", key=_key(state, "keep_editing")
             ):
                 state.discard_pending = False
+                rerun_fragment_or_app()
 
     wrapper = st.dialog(
         title,
