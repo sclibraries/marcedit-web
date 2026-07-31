@@ -3,7 +3,7 @@
 **Ticket:**
 [TASK-186](../../../.tickets/TASK-186-compact-modal-task-authoring.md)
 
-**Status:** Approved design; implementation plan not yet written.
+**Status:** Approved design amendment; implementation plan revision pending.
 
 ## Context
 
@@ -25,6 +25,8 @@ previously allowed version supports it.
 
 - Make a multi-operation task readable without expanding every form.
 - Give one operation enough space for guided controls and MARC preview.
+- Let catalogers adjust an operation and review its output without switching
+  back and forth between tabs.
 - Preserve plain-language meaning, validation, and preview state on the main
   task page.
 - Make Add/Edit transactional so cancellation never mutates the task draft.
@@ -115,14 +117,27 @@ the mode (add/edit), source index when editing, selected kind, opening value,
 working copy, and a monotonically increasing nonce. Operation parameters do
 not gain UI-only identifiers, and task serialization remains unchanged.
 
-## Dialog Tabs
+## Dialog Workspace and Tabs
 
-The dialog separates concerns into tabs:
+The primary **Workspace** tab keeps authoring and evidence together:
 
-- **Set up** contains editable cataloger-facing controls and actionable
-  validation messages.
-- **Preview** contains the complete before/after MARC view, counts, preview
-  errors, and refresh action when that operation supports preview.
+- For preview-capable operations, the Workspace uses two columns: setup on the
+  left at approximately 45 percent and preview on the right at approximately
+  55 percent. Setup contains editable cataloger-facing controls and actionable
+  validation messages. Preview contains its refresh action, status, counts,
+  errors, and complete before/after MARC view.
+- The preview column remains visible before a file is loaded and explains what
+  the cataloger must do next. It does not silently disappear or require a tab
+  change.
+- Operations without preview support use the full Workspace width for setup;
+  they do not receive an empty second column.
+- Before an Add operation type is selected, the alphabetical operation
+  selector uses the full Workspace width.
+- Streamlit's native responsive column behavior may stack the two regions on
+  narrow screens; no custom JavaScript or fixed-pixel layout is introduced.
+
+The remaining tabs separate secondary information:
+
 - **Technical details** contains stored parameters, generated matching
   behavior, unresolved source information, and documentation links when those
   details exist.
@@ -130,9 +145,10 @@ The dialog separates concerns into tabs:
   and syntax-documentation link without opening another dialog.
 
 Tabs that have no meaningful content are omitted. Simple operations therefore
-show only **Set up** and **Reference** rather than empty Preview or Technical
-tabs. Existing operation-specific renderers remain authoritative inside the
-tab shell after receiving the correct caller-provided rerun behavior.
+show only **Workspace** and **Reference** rather than an empty Technical tab or
+preview column. Existing operation-specific renderers remain authoritative
+inside the Workspace after receiving the correct caller-provided rerun
+behavior.
 
 ## Drafts, Validation, and Save Gates
 
@@ -166,8 +182,8 @@ previewed**. Changing the source makes cached evidence for the same request
 **Stale**. This distinction avoids inventing a positional or per-card preview
 identity alongside the authoritative request key.
 
-Cards show status only. Full evidence stays in the Preview tab so stale or
-partial MARC output does not make cards tall or misleading.
+Cards show status only. Full evidence stays in the Workspace preview column so
+stale or partial MARC output does not make cards tall or misleading.
 
 ## Operation Reference Dialog
 
@@ -235,6 +251,11 @@ Intent-focused tests cover:
 - non-dismissible dialog configuration and the minimum Streamlit contract;
 - runtime dialog-title wrapping with exactly one dialog invocation per script
   run;
+- a two-column Workspace for every preview-capable operation, with setup and
+  preview rendered together and a full-width Workspace for operations without
+  preview support;
+- visible no-file preview guidance and request-keyed preview status updates
+  without switching tabs;
 - identical operation-renderer behavior under default app reruns and injected
   dialog-fragment reruns, including every current add/move/remove and guided
   mode-switch path;
@@ -261,7 +282,9 @@ Docker browser acceptance builds a synthetic task with several real-world
 operations, edits and reorders them, retains one incomplete draft, previews a
 guided replacement, resolves the draft, saves/reopens, and confirms that the
 main page remains a compact ordered list without continuous form scrolling.
-Every skipped check is reported.
+It also confirms that a cataloger can change guided settings and inspect the
+resulting MARC in the adjacent preview column without changing tabs. Every
+skipped check is reported.
 
 ## Rollout and Dependencies
 
@@ -290,8 +313,15 @@ This minimizes visual density but adds more clicks and hides relationships
 between settings. It is unnecessary because progressive controls already hide
 irrelevant fields.
 
+### Separate Set up and Preview tabs
+
+This gives each surface the full dialog width, but forces catalogers to switch
+back and forth while adjusting an operation and checking its effect. That
+interaction hides the relationship between the selected settings and their
+MARC output, so the approved design uses one split Workspace instead.
+
 ### Inline mini-previews on every card
 
 This keeps evidence visible but recreates tall cards and makes stale preview
 content easy to mistake for current results. Status belongs on cards; evidence
-belongs in the Preview tab.
+belongs in the dialog Workspace.

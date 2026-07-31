@@ -10,8 +10,9 @@ Scope:
 - Apply the same card/dialog shell to every form-mode operation while reusing
   existing operation controls, validation, preview, compiler, and execution
   behavior.
-- Put editable controls, preview evidence, and technical details into focused
-  dialog tabs when those surfaces apply to the selected operation.
+- Put editable controls and preview evidence together in a split Workspace
+  when preview applies, while keeping technical details and reference content
+  in focused secondary tabs.
 - Add a read-only alphabetical operation-reference dialog on the task page and
   a Reference tab inside the already-open Add/Edit operation dialog.
 - Update `requirements.txt` and `pyproject.toml` to require
@@ -32,8 +33,13 @@ Success Criteria:
   the previous operation and confirms before discarding dirty state.
 - Cards show a plain-language summary, validation/preview status, concise
   target information, and edit/reorder/remove actions.
-- Modal tabs separate Set up, Preview, Technical details, and Reference;
-  unsupported tabs are omitted rather than empty.
+- Preview-capable operations show setup and preview together in an
+  approximately 45/55 split Workspace; operations without preview use the full
+  Workspace width, and unsupported secondary tabs are omitted rather than
+  empty.
+- The preview region remains visible before a file is loaded and lets a
+  cataloger change settings and inspect refreshed MARC output without changing
+  tabs.
 - Invalid and unresolved operations remain visible as Needs attention cards,
   but task save and execution fail loud until corrected.
 - Operation and preview meaning survives reordering, save/reopen, imported
