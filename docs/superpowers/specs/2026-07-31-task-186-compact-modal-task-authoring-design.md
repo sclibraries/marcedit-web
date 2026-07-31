@@ -197,11 +197,13 @@ than growing another full editor inside it:
 The modal caller supplies a rerun callable that uses
 `st.rerun(scope="fragment")` for operation-control interactions. A renderer
 must not hardcode fragment scope: fragment rerun is invalid during a full-app
-rerun and would break existing inline callers. Keep, Cancel, and other actions
-that intentionally close the dialog continue to request a full-app rerun. All
-eight current `st.rerun()` sites in `render/task_authoring.py` are routed
-through the injected callable, covering Add/Build row and segment actions plus
-guided mode transitions.
+rerun and would break existing inline callers. The modal callable catches
+`streamlit.errors.StreamlitAPIException` from an unavailable fragment context
+and falls back to plain `st.rerun()` at app scope. Keep, Cancel, and other
+actions that intentionally close the dialog continue to request a full-app
+rerun. All eight current `st.rerun()` sites in `render/task_authoring.py` are
+routed through the injected callable, covering Add/Build row and segment
+actions plus guided mode transitions.
 
 No generic abstraction should be introduced beyond what the shared card and
 dialog shells require. Simple operation renderers continue using the current
@@ -233,11 +235,16 @@ Intent-focused tests cover:
 - identical operation-renderer behavior under default app reruns and injected
   dialog-fragment reruns, including every current add/move/remove and guided
   mode-switch path;
+- successful app-scope fallback when Streamlit rejects fragment scope during a
+  full-app rerun;
 - fresh widget namespaces across modal openings and reordered operations;
 - every form-mode operation kind entering the shared modal shell;
 - card summaries, target badges, validation states, and preview states;
 - current preview surviving reorder and becoming stale after parameter/source
   changes;
+- dirty Cancel restoring the original operation's prior preview status while
+  request-keyed preview evidence created only for the discarded draft remains
+  ineligible for display as current;
 - invalid and unresolved cards blocking task save and execution without data
   loss;
 - Add selector and standalone operation-reference alphabetical order;

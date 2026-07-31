@@ -41,7 +41,10 @@ Success Criteria:
 - The application requires `streamlit>=1.50,<2` for safe non-dismissible
   dialogs; dependency and preflight checks fail loud if unavailable.
 - Existing operation renderers behave identically inside and outside the
-  dialog shell, including add/move/remove and mode-switch reruns.
+  dialog shell, including add/move/remove and mode-switch reruns; fragment
+  reruns fall back safely to app scope when fragment context is unavailable.
+- Cancel restores the original operation's preview status and never presents
+  preview evidence generated only for a discarded modal draft as current.
 - Focused and complete Docker suites pass with every skip reported, and
   cataloger browser acceptance confirms substantially reduced page scrolling.
 - Independent review has no unresolved Critical or Important findings.
