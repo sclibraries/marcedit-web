@@ -6,9 +6,9 @@
 
 **Design:** [TASK-186 design](../specs/2026-07-31-task-186-compact-modal-task-authoring-design.md)
 
-**Goal:** Replace long inline task-operation forms with compact ordered cards and one transactional large dialog for adding or editing any form-mode operation.
+**Goal:** Replace long inline task-operation forms with compact ordered cards and one transactional large dialog whose split Workspace keeps setup controls beside preview evidence.
 
-**Architecture:** Keep `render/tasks.py` as the form-editor coordinator and keep the existing operation dictionaries as the only saved representation. Add focused card, dialog, and reference render modules; the dialog deep-copies one operation into session state and commits only on **Keep in task**. Existing validators, compiler, guided-preview cache, and operation-specific controls remain authoritative, with renderer reruns supplied by the caller so modal interactions use fragment scope safely.
+**Architecture:** Keep `render/tasks.py` as the form-editor coordinator and keep the existing operation dictionaries as the only saved representation. Focused card, dialog, and reference modules own presentation; the dialog deep-copies one operation into session state, places setup and preview together in a responsive 45/55 Workspace when preview applies, and commits only on **Keep in task**. Existing validators, compiler, guided-preview cache, and operation-specific controls remain authoritative, with renderer reruns supplied by the caller so modal interactions use fragment scope safely.
 
 **Tech Stack:** Python 3.9, Streamlit `>=1.50,<2`, pymarc 5.x, pytest 8.x, existing task compiler and subprocess sandbox, SQLite task storage, and Docker Compose.
 
@@ -18,6 +18,7 @@
 - Require `streamlit>=1.50,<2` in both `requirements.txt` and `pyproject.toml`; do not use a version-string comparison in place of the `st.dialog` signature contract.
 - Assert at runtime and in tests that `dismissible` exists in `inspect.signature(st.dialog).parameters`; fail loud if the contract is unavailable.
 - Open at most one Streamlit dialog per script run. The standalone operation reference is reachable only from the main page; an open Add/Edit dialog renders reference content as a tab and never opens a second dialog.
+- Preview-capable operations render setup and preview together in one approximately 45/55 Workspace. Operations without preview use the full Workspace width; no empty preview column is rendered.
 - Create the operation dialog at runtime with `st.dialog(title, width="large", dismissible=False)(render_function)` so the title can name Add/Edit and the selected operation.
 - Keep operation storage, `# OP:` markers, generated Python, compiler output, preview request identity, database schema, and task ordering semantics unchanged.
 - Keep code mode, Quick operations, AI drafting, imported-task semantics, authorization, sharing, workers, services, Compose topology, routes, deployment, cron, and ITS-managed configuration unchanged.
@@ -43,13 +44,13 @@
 - Modify `marcedit_web/render/task_authoring.py`: route all eight operation-control reruns through an optional caller-supplied callable.
 - Create `marcedit_web/render/task_operation_reference.py`: alphabetical/filterable reference entries and one shared entry renderer for standalone-dialog and in-operation-tab use.
 - Create `marcedit_web/render/task_operation_cards.py`: pure card view models plus compact card rendering and confirmed remove/reorder/edit actions.
-- Create `marcedit_web/render/task_operation_dialog.py`: modal state, draft transitions, dialog capability preflight, safe fragment rerun, setup/preview/technical/reference tabs, and dynamic wrapper invocation.
+- Create `marcedit_web/render/task_operation_dialog.py`: modal state, draft transitions, dialog capability preflight, safe fragment rerun, split setup/preview Workspace, secondary technical/reference tabs, and dynamic wrapper invocation.
 - Modify `marcedit_web/render/tasks.py`: replace inline operation forms with cards/buttons, invoke one active dialog, retain task-level save/cancel, and keep code mode unchanged.
 - Modify `tests/test_task_authoring.py`: required/unknown/unresolved validation and submission-preflight behavior.
 - Modify `tests/test_task_authoring_render.py`: injected rerun behavior for all eight existing interaction sites.
 - Create `tests/test_task_operation_reference.py`: alphabetical/filter behavior and shared-content rendering.
 - Create `tests/test_task_operation_cards.py`: summary, target, validation, preview, reorder, and removal behavior.
-- Create `tests/test_task_operation_dialog.py`: state isolation, contract checks, fallback rerun, modal tabs, one-dialog invocation, and cancellation invariants.
+- Create `tests/test_task_operation_dialog.py`: state isolation, contract checks, fallback rerun, split Workspace layout, secondary tabs, one-dialog invocation, and cancellation invariants.
 - Modify `tests/test_tasks_workspace_modes.py`: compact editor integration, code-mode characterization, save blocking, and fresh modal namespaces.
 - Modify `tests/test_tasks_export.py`: marker-aware invalid-operation submission block and unchanged valid execution path.
 - Exercise unchanged `tests/test_task_builder.py`, `tests/test_guided_replace_preview.py`, `tests/test_ai_task_draft.py`, `tests/test_gemini_task_draft.py`, `tests/test_note_task_draft.py`, and `tests/test_marcedit_import.py` as behavior contracts.
@@ -1011,7 +1012,7 @@ git commit -m "test: cover modal authoring across task operations"
 Add a short “Working with operation cards” section that states:
 
 - the main page shows ordered summaries rather than full forms;
-- **+ Add operation** and **Edit** open Set up/Preview/Technical details/Reference tabs only when relevant;
+- **+ Add operation** and **Edit** open a Workspace with setup beside preview when preview applies, plus Technical details and Reference tabs when relevant;
 - **Keep in task** retains a draft but does not guarantee it can be saved or run;
 - **Needs attention** identifies the numbered operation that must be fixed;
 - Cancel does not change the task and confirms before discarding edits;
@@ -1071,7 +1072,7 @@ Start the rebuilt app using the repository's documented local-auth bypass only; 
 2. Confirm the main editor has no operation selector or expanded operation controls.
 3. Add at least six operations, including Add field, Build field from template, Guided find and replace, Delete tag, Sort fields by tag, and one deliberately incomplete operation.
 4. Confirm the selector is alphabetical and each kept operation becomes one short ordered card.
-5. Confirm simple operations omit empty Preview/Technical tabs; Guided shows all four tabs.
+5. Confirm Guided shows setup and preview together in an approximately 45/55 Workspace, while simple operations use the full Workspace width and omit empty preview/Technical surfaces.
 6. Preview a synthetic 035 replacement and confirm its card says Current without showing full MARC.
 7. Reorder the Guided card and confirm Current remains.
 8. Edit its replacement, preview the draft, Cancel, confirm discard, and verify the restored card shows the original Current status—not the discarded draft's preview.
@@ -1126,13 +1127,173 @@ Expected: complete suite passes with exact skip reporting, no whitespace errors,
 
 ---
 
+### Task 8: Combine setup and preview in one split Workspace
+
+**Files:**
+- Modify: `marcedit_web/render/task_operation_dialog.py`
+- Modify: `tests/test_task_operation_dialog.py`
+- Modify: `docs/task-authoring-syntax.md`
+- Modify: `docs/superpowers/evidence/task-186-compact-modal-task-authoring-browser-smoke.md`
+
+**Interfaces:**
+- Preserves: `_preview_required(operation, entry) -> bool` as the single decision for whether a preview surface exists.
+- Preserves: `_render_with_draft_restore(state, render) -> None` independently around setup and preview so a bounded failure in one side does not silently mutate the modal draft.
+- Changes: `render_active_dialog(...)` renders tab labels `Workspace`, optional `Technical details`, and `Reference`; it no longer emits separate `Set up` or `Preview` tabs.
+- Contract: preview-capable operations call `st.columns([5, 6])` once inside Workspace and render setup on the left and preview on the right. Other operations and the initial Add selector do not create preview columns.
+
+- [ ] **Step 1: Write failing split-Workspace tests**
+
+Extend `FakeStreamlit` in `tests/test_task_operation_dialog.py` to record column specifications while returning context-manager objects:
+
+```python
+def __init__(self, *, selections=None, pressed=()):
+    # Existing fields remain unchanged.
+    self.column_calls = []
+
+def columns(self, spec):
+    self.column_calls.append(spec)
+    count = spec if isinstance(spec, int) else len(spec)
+    return [_Context() for _index in range(count)]
+```
+
+Rename the existing guided-dialog test and change its assertions to:
+
+```python
+assert fake.tab_calls == [[
+    "Workspace", "Technical details", "Reference"
+]]
+assert fake.column_calls == [[5, 6]]
+assert controls
+assert previews
+```
+
+Change the simple-operation assertion to:
+
+```python
+assert fake.tab_calls == [["Workspace", "Reference"]]
+assert fake.column_calls == []
+```
+
+In the initial Add-selector test, also assert `fake.column_calls == []`. Keep
+the guided test's `store=None`: the recorded preview delegate call proves the
+right-hand surface remains present even before a file is loaded.
+
+- [ ] **Step 2: Run the focused tests to verify RED**
+
+Run:
+
+```bash
+docker compose run --rm marcedit-web pytest -q \
+  tests/test_task_operation_dialog.py \
+  -k 'guided_edit or delete_tag or add_starts'
+```
+
+Expected: FAIL because the current dialog emits separate `Set up` and
+`Preview` tabs and never calls `st.columns([5, 6])` for the primary workflow.
+
+- [ ] **Step 3: Implement the minimum split Workspace**
+
+In `render_active_dialog`, build tab labels as follows:
+
+```python
+tab_labels = ["Workspace"]
+if current_operation is not None and _technical_form_required(
+    current_operation, current_entry
+):
+    tab_labels.append("Technical details")
+tab_labels.append("Reference")
+tabs = dict(zip(tab_labels, st.tabs(tab_labels)))
+```
+
+Inside `tabs["Workspace"]`, keep the current full-width Add selector. When a
+working copy exists and `_preview_required(...)` is true, render:
+
+```python
+setup_column, preview_column = st.columns([5, 6])
+with setup_column:
+    _render_with_draft_restore(
+        state,
+        lambda: render_selected_operation(state, is_admin=is_admin),
+    )
+with preview_column:
+    _render_with_draft_restore(
+        state,
+        lambda: _render_preview(
+            state, store=store, previews=previews
+        ),
+    )
+```
+
+When preview is unsupported, render only `render_selected_operation` at full
+Workspace width. Remove the separate Preview-tab branch. Do not change preview
+caching, validation, renderer rerun injection, draft copying, or Keep/Cancel.
+
+- [ ] **Step 4: Update cataloger documentation and browser acceptance wording**
+
+In `docs/task-authoring-syntax.md`, replace the separate Set up/Preview tab
+description with:
+
+```markdown
+The **Workspace** keeps setup controls beside preview results when an operation
+supports preview, so you can adjust settings and inspect the MARC result
+without changing tabs. Operations without preview use the full Workspace.
+**Technical details** and **Reference** remain separate when relevant.
+```
+
+In the browser evidence matrix, replace the old four-tab check with an
+unperformed check for the split Workspace. Keep its result `SKIP`; this task
+does not convert automated layout tests into browser evidence.
+
+- [ ] **Step 5: Run focused and complete verification**
+
+Run:
+
+```bash
+docker compose run --rm marcedit-web pytest -ra \
+  tests/test_task_operation_dialog.py \
+  tests/test_task_authoring_render.py \
+  tests/test_task_operation_cards.py \
+  tests/test_tasks_workspace_modes.py
+docker compose run --rm -v "$PWD:/app:ro" marcedit-web pytest -ra
+docker compose run --rm marcedit-web pytest -q \
+  tests/test_native_task_contract.py::test_checked_in_contract_matches_every_golden_definition
+git diff --exit-code -- \
+  marcedit_web/schemas/native-task-compiler-contract-v1.json
+git diff --check
+```
+
+Expected: all focused tests pass with no silent skips; the complete suite has
+zero failures and reports every skip; the native compiler contract passes and
+its manifest remains unchanged.
+
+- [ ] **Step 6: Request review and commit the amendment**
+
+Request focused review of the layout diff. Require confirmation that setup and
+preview render in the same Workspace, no-preview operations remain full-width,
+the Add selector remains full-width, failure containment remains independent,
+and no storage/preview/compiler semantics changed. Resolve every Critical or
+Important finding with a failing regression test.
+
+```bash
+git add marcedit_web/render/task_operation_dialog.py \
+  tests/test_task_operation_dialog.py \
+  docs/task-authoring-syntax.md \
+  docs/superpowers/evidence/task-186-compact-modal-task-authoring-browser-smoke.md
+git commit -m "feat: show task setup beside preview"
+```
+
+Keep TASK-186 `In-Progress` and TASK-174 unchanged until the real browser
+acceptance matrix passes.
+
+---
+
 ## Success-Criteria Traceability
 
 - Compact ordered list and reduced scrolling: Tasks 3, 5, and 7 browser acceptance.
 - Alphabetical Add selector: Tasks 2, 4, and 5.
 - Isolated Edit, Keep, clean Cancel, dirty confirmation: Task 4.
 - Summary, target, validation, preview, and actions on cards: Task 3.
-- Set up/Preview/Technical details/Reference tab omission: Task 4.
+- Split setup/preview Workspace and secondary-tab omission: Tasks 4 and 8.
 - Invalid/unresolved visible but save/submission blocked: Tasks 1, 3, and 5.
 - Reorder/save/reopen/import/cancel identity: Tasks 3, 4, 6, and 7.
 - Streamlit `>=1.50,<2` and signature preflight: Tasks 1, 4, and 7.
