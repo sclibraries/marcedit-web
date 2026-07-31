@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, TypeVar
 
 from pymarc import Record
-from marcedit_web.lib import guided_replace, task_builder
+from marcedit_web.lib import (
+    guided_replace,
+    guided_replace_validation,
+    task_builder,
+)
 from marcedit_web.lib.transforms import (
     is_control_tag,
     leader_biblevel,
@@ -254,7 +258,11 @@ def _validate_code(value: object, label: str) -> list[str]:
     return []
 
 
-def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
+def validate_operation(
+    op: Mapping[str, Any],
+    *,
+    validate_raw_syntax: bool = True,
+) -> tuple[str, ...]:
     """Return actionable validation errors for one structured operation."""
 
     kind = str(op.get("kind") or "")
@@ -264,6 +272,9 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
         except ValueError as exc:
             return (str(exc),)
         params = normalized["params"]
+        size_error = guided_replace_validation.request_size_error(params)
+        if size_error is not None:
+            return (size_error,)
         errors = list(
             guided_replace.validate_request(
                 target_kind=params["target_kind"],
@@ -284,6 +295,18 @@ def validate_operation(op: Mapping[str, Any]) -> tuple[str, ...]:
             errors.append(
                 "operation parameters contain unexpected keys: {0}".format(
                     ", ".join(unexpected)
+                )
+            )
+        if (
+            not errors
+            and validate_raw_syntax
+            and params["match_mode"] == "raw_regex"
+        ):
+            errors.extend(
+                guided_replace_validation.validate_raw_regex(
+                    find=params["find"],
+                    replacement=params["replacement"],
+                    ignore_case=params["ignore_case"],
                 )
             )
         return tuple(errors)

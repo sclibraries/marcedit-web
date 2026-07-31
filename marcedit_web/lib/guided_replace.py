@@ -106,12 +106,6 @@ def validate_request(
         errors.append(
             "This anchored match mode requires occurrence mode 'first'."
         )
-    if match_mode == "raw_regex" and find:
-        try:
-            compiled = re.compile(find, re.IGNORECASE if ignore_case else 0)
-            compiled.sub(replacement, "")
-        except re.error as exc:
-            errors.append("Regular expression is invalid: {0}".format(exc))
     return tuple(errors)
 
 

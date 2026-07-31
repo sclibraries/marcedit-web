@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import io
-import json
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ import pymarc
 
 from marcedit_web.lib import (
     guided_replace,
+    guided_replace_validation,
     sandbox,
     task_authoring,
     task_builder,
@@ -23,8 +23,6 @@ from marcedit_web.lib import (
 
 _MAX_ERROR_CHARS = 1024
 _MAX_ERROR_BYTES = 2048
-_MAX_REQUEST_CHARS = sandbox.MAX_ERROR_MESSAGE_CHARS
-_MAX_REQUEST_BYTES = sandbox.MAX_ERROR_MESSAGE_BYTES
 _MAX_DISPLAY_BYTES = sandbox.MAX_STDERR_BYTES
 
 
@@ -41,37 +39,22 @@ class GuidedReplacePreview:
 
 def _normalized(operation: Mapping[str, Any]) -> dict:
     normalized = task_authoring.normalize_operation(operation)
-    errors = task_authoring.validate_operation(normalized)
+    errors = task_authoring.validate_operation(
+        normalized,
+        validate_raw_syntax=False,
+    )
     if errors:
         raise ValueError("; ".join(errors))
-    _canonical_request_json(normalized)
     return normalized
-
-
-def _canonical_request_json(normalized: Mapping[str, Any]) -> str:
-    request_json = json.dumps(
-        normalized["params"],
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    if (
-        len(request_json) > _MAX_REQUEST_CHARS
-        or len(request_json.encode("utf-8")) > _MAX_REQUEST_BYTES
-    ):
-        raise ValueError(
-            "Preview request exceeds the {0}-character/{1}-byte limit.".format(
-                _MAX_REQUEST_CHARS,
-                _MAX_REQUEST_BYTES,
-            )
-        )
-    return request_json
 
 
 def preview_cache_key(operation: Mapping[str, Any]) -> str:
     """Return canonical normalized request JSON for the session cache."""
 
     normalized = _normalized(operation)
-    return _canonical_request_json(normalized)
+    return guided_replace_validation.canonical_request_json(
+        normalized["params"]
+    )
 
 
 def is_current(

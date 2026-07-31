@@ -739,7 +739,17 @@ def test_unknown_modes_fail_validation(key, value, expected):
     assert expected in errors
 
 
-def test_raw_regex_invalid_capture_is_rejected_before_execution():
+def test_raw_regex_validation_is_structural_and_does_not_compile(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        guided_replace.re,
+        "compile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("raw syntax belongs in the sandbox")
+        ),
+    )
+
     errors = guided_replace.validate_request(
         **_params(
             match_mode="raw_regex",
@@ -747,10 +757,8 @@ def test_raw_regex_invalid_capture_is_rejected_before_execution():
             replacement=r"\2",
         )
     )
-    assert any(
-        error.startswith("Regular expression is invalid:")
-        for error in errors
-    )
+
+    assert errors == ()
 
 
 def test_validation_failure_does_not_mutate_input_record():

@@ -9,6 +9,7 @@ editor is never rendered invisibly.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -626,6 +627,164 @@ def test_valid_guided_raw_regex_saves_without_a_loaded_file(
 
     assert len(saved) == 1
     assert tasks_render.K_SAVE_ERROR not in fake_st.session_state
+
+
+def test_invalid_guided_raw_capture_blocks_save_without_loaded_file(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operation = {
+        "kind": "guided-find-replace",
+        "params": {
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "raw_regex",
+            "find": r"(TFeba)",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": r"\2",
+            "occurrences": "all",
+            "condition": "always",
+        },
+    }
+    fake_st.session_state.update(
+        _form_save_state(tasks_render, [operation])
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: None)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert "invalid group reference" in fake_st.session_state[
+        tasks_render.K_SAVE_ERROR
+    ]
+
+
+def test_guided_raw_validation_timeout_blocks_save_without_crashing(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operation = {
+        "kind": "guided-find-replace",
+        "params": {
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "raw_regex",
+            "find": "TFeba",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": "replacement",
+            "occurrences": "all",
+            "condition": "always",
+        },
+    }
+    fake_st.session_state.update(
+        _form_save_state(tasks_render, [operation])
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.task_authoring.guided_replace_validation,
+        "validate_raw_regex",
+        lambda **_kwargs: (
+            "Regular expression validation timed out in the sandbox.",
+        ),
+    )
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert "timed out" in fake_st.session_state[
+        tasks_render.K_SAVE_ERROR
+    ]
+
+
+def test_guided_raw_preexec_failure_blocks_save_without_crashing(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operation = {
+        "kind": "guided-find-replace",
+        "params": {
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "raw_regex",
+            "find": "TFeba",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": "replacement",
+            "occurrences": "all",
+            "condition": "always",
+        },
+    }
+    fake_st.session_state.update(
+        _form_save_state(tasks_render, [operation])
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.task_authoring.guided_replace_validation.sandbox,
+        "run_tasks_subprocess",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.SubprocessError("preexec failed")
+        ),
+    )
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert "preexec failed" in fake_st.session_state[
+        tasks_render.K_SAVE_ERROR
+    ]
+
+
+def test_oversized_guided_raw_save_fails_before_syntax_launch(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operation = {
+        "kind": "guided-find-replace",
+        "params": {
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "raw_regex",
+            "find": "TFeba",
+            "ignore_case": False,
+            "replacement_mode": "matched_text",
+            "replacement": "x" * 3000,
+            "occurrences": "all",
+            "condition": "always",
+        },
+    }
+    fake_st.session_state.update(
+        _form_save_state(tasks_render, [operation])
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.task_authoring.guided_replace_validation,
+        "validate_raw_regex",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("oversized request must not launch validation")
+        ),
+    )
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    error = fake_st.session_state[tasks_render.K_SAVE_ERROR]
+    assert "request" in error.lower()
+    assert "limit" in error.lower()
 
 
 def test_stale_form_errors_do_not_block_code_mode_save(monkeypatch, tmp_path):

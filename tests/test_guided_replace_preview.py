@@ -138,6 +138,25 @@ def test_preview_cache_key_is_canonical_normalized_request_json():
     )
 
 
+def test_raw_preview_cache_key_does_not_launch_syntax_validation(
+    monkeypatch,
+):
+    operation = _guided_operation(
+        match_mode="raw_regex",
+        find=r"^(TFeba)(\d+)$",
+        replacement=r"(SCTFEBA)\2",
+    )
+    monkeypatch.setattr(
+        guided_replace_preview.guided_replace_validation,
+        "validate_raw_regex",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("cache currency must not launch the sandbox")
+        ),
+    )
+
+    assert guided_replace_preview.preview_cache_key(operation)
+
+
 def test_oversized_request_fails_loud_and_is_never_current(
     tmp_path, monkeypatch
 ):

@@ -79,6 +79,88 @@ def test_guided_operation_editor_normalization_is_lossless():
     ) == [operation]
 
 
+def test_raw_operation_validation_does_not_compile_in_parent(
+    monkeypatch,
+):
+    operation = _guided_operation(
+        match_mode="raw_regex",
+        find=r"^(TFeba)(\d+)$",
+        replacement=r"(SCTFEBA)\2",
+    )
+    monkeypatch.setattr(
+        task_authoring.guided_replace.re,
+        "compile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("raw syntax belongs in the sandbox")
+        ),
+    )
+
+    assert task_authoring.validate_operation(operation) == ()
+
+
+@pytest.mark.parametrize("field", ["find", "replacement"])
+def test_oversized_raw_request_is_rejected_before_syntax_launch(
+    monkeypatch, field,
+):
+    changes = {
+        "match_mode": "raw_regex",
+        "find": "TFeba",
+        "replacement": "replacement",
+        field: "x" * 3000,
+    }
+    operation = _guided_operation(**changes)
+    called = []
+    monkeypatch.setattr(
+        task_authoring.guided_replace_validation,
+        "validate_raw_regex",
+        lambda **kwargs: called.append(kwargs) or (),
+    )
+
+    errors = task_authoring.validate_operation(operation)
+
+    assert any(
+        "request" in error.lower() and "limit" in error.lower()
+        for error in errors
+    )
+    assert called == []
+
+
+def test_deeply_nested_raw_pattern_is_reported_from_sandbox():
+    errors = task_authoring.validate_operation(
+        _guided_operation(
+            match_mode="raw_regex",
+            find="(" * 500,
+            replacement="x",
+        )
+    )
+
+    assert len(errors) == 1
+    assert "RecursionError" in errors[0]
+    assert len(errors[0].encode("utf-8")) <= sandbox.MAX_ERROR_MESSAGE_BYTES
+
+
+def test_editor_open_retains_raw_sandbox_validation_error(
+    monkeypatch,
+):
+    operation = _guided_operation(
+        match_mode="raw_regex",
+        find="TFeba",
+        replacement="replacement",
+    )
+    monkeypatch.setattr(
+        task_authoring.guided_replace_validation,
+        "validate_raw_regex",
+        lambda **_kwargs: (
+            "Regular expression validation could not start: launcher failed",
+        ),
+    )
+
+    normalized = task_authoring.normalize_operations_for_editor([operation])
+
+    assert len(normalized) == 1
+    assert "launcher failed" in normalized[0]["authoring_error"]
+
+
 def test_legacy_build_value_becomes_typed_segments_without_losing_literals():
     assert task_authoring.legacy_value_to_segments(
         "B({003}){001}-SC"
