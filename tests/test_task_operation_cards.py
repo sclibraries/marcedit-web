@@ -259,17 +259,12 @@ def test_mixed_operation_reorder_preserves_every_synthetic_payload():
             "authoring_error": "synthetic operation needs review",
         },
     ]
+    expected = copy.deepcopy(operations)
+    expected[3], expected[4] = expected[4], expected[3]
 
     reordered = task_operation_cards.move_operation(operations, 4, -1)
 
-    assert reordered == [
-        operations[0],
-        operations[1],
-        operations[2],
-        operations[4],
-        operations[3],
-        operations[5],
-    ]
+    assert reordered == expected
     assert operations[3]["params"] == {"tag": "949"}
     assert operations[4]["params"] == {
         "code": "record.leader = record.leader"

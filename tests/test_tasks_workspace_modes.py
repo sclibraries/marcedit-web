@@ -9,6 +9,7 @@ editor is never rendered invisibly.
 
 from __future__ import annotations
 
+import copy
 import subprocess
 import sys
 from pathlib import Path
@@ -895,16 +896,25 @@ def test_synthetic_mixed_task_blocks_unresolved_then_round_trips_after_removal(
             "authoring_error": "synthetic operation needs review",
         },
     ]
+    expected_operations = copy.deepcopy(operations)
+    expected_operations[3]["params"]["tag"] = "949"
+    expected_operations[3], expected_operations[4] = (
+        expected_operations[4],
+        expected_operations[3],
+    )
+    source_operations = copy.deepcopy(operations)
     edit_state = tasks_render.task_operation_dialog.new_edit_state(
-        operations[3], index=3, nonce=1
+        source_operations[3], index=3, nonce=1
     )
     edit_state.working_copy["params"]["tag"] = "949"
     operations = tasks_render.task_operation_dialog.keep_in_task(
-        operations, edit_state
+        source_operations, edit_state
     )
     operations = tasks_render.task_operation_cards.move_operation(
         operations, 4, -1
     )
+    assert source_operations[3]["params"]["tag"] == "999"
+    assert operations == expected_operations
     fake_st.session_state.update(_form_save_state(tasks_render, operations))
     saved = []
     _wire_successful_save(monkeypatch, tasks_render, saved)
@@ -919,6 +929,8 @@ def test_synthetic_mixed_task_blocks_unresolved_then_round_trips_after_removal(
     valid_operations = tasks_render.task_operation_cards.remove_operation(
         operations, 5
     )
+    expected_valid_operations = expected_operations[:5]
+    assert valid_operations == expected_valid_operations
     fake_st.session_state[tasks_render.K_EDITOR_OPS] = valid_operations
     fake_st.session_state.pop(tasks_render.K_SAVE_ERROR)
 
@@ -928,16 +940,9 @@ def test_synthetic_mixed_task_blocks_unresolved_then_round_trips_after_removal(
     parsed = tasks_render.task_builder.parse_ops_from_source(saved[0]["body"])
     assert parsed["form_editable"] is True
     assert parsed["reason"] is None
-    assert [operation.to_dict() for operation in parsed["ops"]] == [
-        operations[0],
-        operations[1],
-        operations[2],
-        operations[3],
-        {
-            "kind": "delete-tag",
-            "params": {"tag": "949"},
-        },
-    ]
+    assert [
+        operation.to_dict() for operation in parsed["ops"]
+    ] == expected_valid_operations
 
 
 def test_valid_guided_raw_regex_saves_without_a_loaded_file(

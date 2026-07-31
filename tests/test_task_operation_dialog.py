@@ -161,14 +161,34 @@ def test_add_kind_uses_existing_defaults_and_incomplete_draft_can_be_kept():
     "kind",
     [entry["kind"] for entry in task_builder.OPERATIONS_PALETTE],
 )
-def test_every_palette_kind_enters_the_shared_admin_dialog(kind):
-    state = task_operation_dialog.select_add_kind(
-        task_operation_dialog.new_add_state(1), kind
+def test_every_palette_kind_enters_the_shared_admin_dialog(kind, monkeypatch):
+    fake = FakeStreamlit(selections={"Operation": kind})
+    state = task_operation_dialog.new_add_state(1)
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+    monkeypatch.setattr(
+        task_operation_dialog.task_operation_reference,
+        "render_reference_entry",
+        lambda entry: None,
     )
 
+    task_operation_dialog.render_active_dialog(
+        state,
+        operations=[],
+        is_admin=True,
+        store=None,
+        previews={},
+        on_keep=lambda operations: None,
+        on_close=lambda: None,
+    )
+
+    assert sorted(fake.widgets[0][2]) == sorted(
+        entry["kind"]
+        for entry in task_builder.OPERATIONS_PALETTE
+    )
     assert state.selected_kind == kind
     assert state.working_copy["kind"] == kind
     assert isinstance(state.working_copy["params"], dict)
+    assert fake.reruns == [{"scope": "fragment"}]
 
 
 def test_dialog_contract_checks_capability_not_version_string():
@@ -602,6 +622,9 @@ def test_each_delegated_renderer_failure_is_bounded_and_transactional(
             "find": "old",
             "replacement": "new",
         })
+    state.working_copy["params"]["rollback_probe"] = {
+        "nested": {"value": "original"}
+    }
     before_render = copy.deepcopy(state.working_copy)
     kept = []
     closed = []
@@ -627,6 +650,9 @@ def test_each_delegated_renderer_failure_is_bounded_and_transactional(
     )
 
     def raise_bounded_exception(*args, **kwargs):
+        probe = state.working_copy["params"]["rollback_probe"]
+        probe["nested"]["value"] = "mutated"
+        probe["nested"]["added"] = ["must", "roll", "back"]
         raise exception
 
     monkeypatch.setattr(
@@ -654,6 +680,9 @@ def test_each_delegated_renderer_failure_is_bounded_and_transactional(
         "This operation could not be displayed: {0}".format(exception)
     ]
     assert state.working_copy == before_render
+    assert state.working_copy["params"]["rollback_probe"] == {
+        "nested": {"value": "original"}
+    }
     assert kept == []
     assert closed == []
 
