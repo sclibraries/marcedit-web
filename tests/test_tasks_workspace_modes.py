@@ -829,6 +829,117 @@ def test_existing_unresolved_custom_op_can_be_preserved_during_save(
     assert len(saved) == 1
 
 
+def test_synthetic_mixed_task_blocks_unresolved_then_round_trips_after_removal(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    operations = [
+        {
+            "kind": "add-field",
+            "params": {
+                "tag": "650",
+                "ind1": " ",
+                "ind2": "0",
+                "subfields": [["a", "Synthetic topic"]],
+                "condition": "always",
+                "existing_field_action": "append",
+            },
+        },
+        {
+            "kind": "build-field",
+            "params": {
+                "tag": "035",
+                "ind1": " ",
+                "ind2": " ",
+                "structured_subfields": [[
+                    "a",
+                    [
+                        {"type": "text", "value": "("},
+                        {"type": "control_field", "tag": "003"},
+                        {"type": "text", "value": ")"},
+                        {"type": "control_field", "tag": "001"},
+                    ],
+                ]],
+                "condition": "always",
+                "existing_field_action": "append",
+                "missing_control_action": "skip_field",
+            },
+        },
+        {
+            "kind": "guided-find-replace",
+            "params": {
+                "target_kind": "subfield",
+                "tag": "245",
+                "subfield": "a",
+                "match_mode": "contains",
+                "find": "Synthetic old",
+                "ignore_case": False,
+                "replacement_mode": "matched_text",
+                "replacement": "Synthetic new",
+                "occurrences": "all",
+                "value_scope": "all",
+                "condition": "always",
+            },
+        },
+        {"kind": "delete-tag", "params": {"tag": "999"}},
+        {
+            "kind": "custom",
+            "params": {
+                "code": "record.leader = record.leader  # synthetic"
+            },
+        },
+        {
+            "kind": "future-operation",
+            "params": {"opaque": ["keep", {"nested": True}]},
+            "authoring_error": "synthetic operation needs review",
+        },
+    ]
+    edit_state = tasks_render.task_operation_dialog.new_edit_state(
+        operations[3], index=3, nonce=1
+    )
+    edit_state.working_copy["params"]["tag"] = "949"
+    operations = tasks_render.task_operation_dialog.keep_in_task(
+        operations, edit_state
+    )
+    operations = tasks_render.task_operation_cards.move_operation(
+        operations, 4, -1
+    )
+    fake_st.session_state.update(_form_save_state(tasks_render, operations))
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert fake_st.session_state[tasks_render.K_SAVE_ERROR] == (
+        "Operation 6: synthetic operation needs review"
+    )
+
+    valid_operations = tasks_render.task_operation_cards.remove_operation(
+        operations, 5
+    )
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = valid_operations
+    fake_st.session_state.pop(tasks_render.K_SAVE_ERROR)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert len(saved) == 1
+    parsed = tasks_render.task_builder.parse_ops_from_source(saved[0]["body"])
+    assert parsed["form_editable"] is True
+    assert parsed["reason"] is None
+    assert [operation.to_dict() for operation in parsed["ops"]] == [
+        operations[0],
+        operations[1],
+        operations[2],
+        operations[3],
+        {
+            "kind": "delete-tag",
+            "params": {"tag": "949"},
+        },
+    ]
+
+
 def test_valid_guided_raw_regex_saves_without_a_loaded_file(
     monkeypatch, tmp_path
 ):

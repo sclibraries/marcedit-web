@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+
 import pytest
 from streamlit.errors import StreamlitAPIException
 from streamlit.runtime.scriptrunner_utils.exceptions import StopException
@@ -7,6 +9,7 @@ from streamlit.runtime.scriptrunner_utils.exceptions import StopException
 from marcedit_web.lib import (
     guided_replace_preview,
     task_authoring,
+    task_builder,
 )
 from marcedit_web.render import task_operation_cards, task_operation_dialog
 
@@ -152,6 +155,20 @@ def test_add_kind_uses_existing_defaults_and_incomplete_draft_can_be_kept():
     assert kept[0]["kind"] == "guided-find-replace"
     assert kept[0]["params"]["replacement_mode"] == "matched_text"
     assert task_authoring.validate_operation(kept[0])
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [entry["kind"] for entry in task_builder.OPERATIONS_PALETTE],
+)
+def test_every_palette_kind_enters_the_shared_admin_dialog(kind):
+    state = task_operation_dialog.select_add_kind(
+        task_operation_dialog.new_add_state(1), kind
+    )
+
+    assert state.selected_kind == kind
+    assert state.working_copy["kind"] == kind
+    assert isinstance(state.working_copy["params"], dict)
 
 
 def test_dialog_contract_checks_capability_not_version_string():
@@ -332,6 +349,64 @@ def test_add_starts_with_alphabetical_selector_and_no_controls(monkeypatch):
     assert controls == []
 
 
+def test_non_admin_add_excludes_only_custom_and_cancel_preserves_custom_code(
+    monkeypatch,
+):
+    fake = FakeStreamlit()
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+    monkeypatch.setattr(
+        task_operation_dialog.task_operation_reference,
+        "render_reference_entry",
+        lambda entry: None,
+    )
+
+    task_operation_dialog.render_active_dialog(
+        task_operation_dialog.new_add_state(10),
+        operations=[],
+        is_admin=False,
+        store=None,
+        previews={},
+        on_keep=lambda operations: None,
+        on_close=lambda: None,
+    )
+
+    selectable_kinds = fake.widgets[0][2]
+    assert set(selectable_kinds) == {
+        entry["kind"]
+        for entry in task_builder.OPERATIONS_PALETTE
+        if entry["kind"] != "custom"
+    }
+
+    code = "record.leader = record.leader  # synthetic"
+    custom = {"kind": "custom", "params": {"code": code}}
+    state = task_operation_dialog.new_edit_state(custom, index=0, nonce=11)
+    fake = FakeStreamlit(pressed={"Cancel"})
+    kept = []
+    closed = []
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+    monkeypatch.setattr(
+        task_operation_dialog.task_operation_reference,
+        "render_reference_entry",
+        lambda entry: None,
+    )
+
+    task_operation_dialog.render_active_dialog(
+        state,
+        operations=[custom],
+        is_admin=False,
+        store=None,
+        previews={},
+        on_keep=kept.append,
+        on_close=lambda: closed.append(True),
+    )
+
+    assert code in fake.raw_values
+    assert kept == []
+    assert closed == [True]
+    assert state.working_copy == custom
+    assert custom["params"]["code"] == code
+
+
 def test_add_selection_requests_safe_fragment_rerun(monkeypatch):
     fake = FakeStreamlit(selections={"Operation": "delete-tag"})
     state = task_operation_dialog.new_add_state(10)
@@ -448,6 +523,8 @@ def test_streamlit_control_flow_is_not_swallowed_or_rolled_back(monkeypatch):
     fake = FakeStreamlit()
     original = {"kind": "delete-tag", "params": {"tag": "001"}}
     state = task_operation_dialog.new_edit_state(original, index=0, nonce=14)
+    kept = []
+    closed = []
     monkeypatch.setattr(task_operation_dialog, "st", fake)
 
     def mutate_then_stop(state, *, is_admin):
@@ -467,11 +544,118 @@ def test_streamlit_control_flow_is_not_swallowed_or_rolled_back(monkeypatch):
             is_admin=False,
             store=None,
             previews={},
-            on_keep=lambda operations: None,
-            on_close=lambda: None,
+            on_keep=kept.append,
+            on_close=lambda: closed.append(True),
         )
 
     assert state.working_copy["params"]["tag"] == "intentional mutation"
+    assert fake.errors == []
+    assert kept == []
+    assert closed == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "renderer_name", "exception"),
+    [
+        ("add-field", "render_add_field_params", OSError("add failed")),
+        (
+            "build-field",
+            "render_build_field_params",
+            RuntimeError("build failed"),
+        ),
+        (
+            "guided-find-replace",
+            "render_guided_find_replace_params",
+            TypeError("guided setup failed"),
+        ),
+        (
+            "guided-find-replace",
+            "render_guided_replace_preview",
+            ValueError("guided preview failed"),
+        ),
+        (
+            "add-field",
+            "render_operation_explanation",
+            OSError("field preview failed"),
+        ),
+        (
+            "guided-find-replace",
+            "render_guided_replace_technical_details",
+            RuntimeError("technical details failed"),
+        ),
+    ],
+)
+def test_each_delegated_renderer_failure_is_bounded_and_transactional(
+    monkeypatch,
+    kind,
+    renderer_name,
+    exception,
+):
+    fake = FakeStreamlit()
+    state = task_operation_dialog.select_add_kind(
+        task_operation_dialog.new_add_state(40), kind
+    )
+    if kind == "guided-find-replace":
+        state.working_copy["params"].update({
+            "tag": "245",
+            "subfield": "a",
+            "find": "old",
+            "replacement": "new",
+        })
+    before_render = copy.deepcopy(state.working_copy)
+    kept = []
+    closed = []
+    delegated_renderers = (
+        "render_add_field_params",
+        "render_build_field_params",
+        "render_guided_find_replace_params",
+        "render_guided_replace_preview",
+        "render_operation_explanation",
+        "render_guided_replace_technical_details",
+    )
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+    for delegated_name in delegated_renderers:
+        monkeypatch.setattr(
+            task_operation_dialog.task_authoring_render,
+            delegated_name,
+            lambda *args, **kwargs: None,
+        )
+    monkeypatch.setattr(
+        task_operation_dialog.task_authoring_render,
+        "guided_replace_previewed_discard_count",
+        lambda *args, **kwargs: 0,
+    )
+
+    def raise_bounded_exception(*args, **kwargs):
+        raise exception
+
+    monkeypatch.setattr(
+        task_operation_dialog.task_authoring_render,
+        renderer_name,
+        raise_bounded_exception,
+    )
+    monkeypatch.setattr(
+        task_operation_dialog.task_operation_reference,
+        "render_reference_entry",
+        lambda entry: None,
+    )
+
+    task_operation_dialog.render_active_dialog(
+        state,
+        operations=[],
+        is_admin=True,
+        store=None,
+        previews={},
+        on_keep=kept.append,
+        on_close=lambda: closed.append(True),
+    )
+
+    assert fake.errors == [
+        "This operation could not be displayed: {0}".format(exception)
+    ]
+    assert state.working_copy == before_render
+    assert kept == []
+    assert closed == []
 
 
 def test_malformed_guided_technical_renderer_failure_is_bounded(monkeypatch):

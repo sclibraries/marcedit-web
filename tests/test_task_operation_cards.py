@@ -243,6 +243,42 @@ def test_reorder_and_remove_copy_the_list_without_rewriting_operations():
     assert removed[0] is operations[0]
 
 
+def test_mixed_operation_reorder_preserves_every_synthetic_payload():
+    operations = [
+        add_operation(),
+        build_operation(),
+        guided_operation(),
+        {"kind": "delete-tag", "params": {"tag": "949"}},
+        {
+            "kind": "custom",
+            "params": {"code": "record.leader = record.leader"},
+        },
+        {
+            "kind": "future-operation",
+            "params": {"opaque": ["keep", {"nested": True}]},
+            "authoring_error": "synthetic operation needs review",
+        },
+    ]
+
+    reordered = task_operation_cards.move_operation(operations, 4, -1)
+
+    assert reordered == [
+        operations[0],
+        operations[1],
+        operations[2],
+        operations[4],
+        operations[3],
+        operations[5],
+    ]
+    assert operations[3]["params"] == {"tag": "949"}
+    assert operations[4]["params"] == {
+        "code": "record.leader = record.leader"
+    }
+    assert operations[5]["params"] == {
+        "opaque": ["keep", {"nested": True}]
+    }
+
+
 class FakeColumn:
     def __init__(self, streamlit):
         self.streamlit = streamlit
