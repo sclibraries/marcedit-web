@@ -569,7 +569,7 @@ def _save_exact_conversion(
     if conv.unsupported:
         st.warning(
             "Not imported: this task contains unresolved external "
-            "instructions. Recreate the listed Add/Build steps with "
+            "instructions. Recreate each listed instruction with explicit "
             "structured controls."
         )
         for line in conv.unsupported[:20]:

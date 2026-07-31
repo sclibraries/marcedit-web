@@ -681,7 +681,11 @@ def test_empty_find_import_is_not_persisted(monkeypatch, tmp_path):
     tasks_render._do_marcedit_import(upload, tmp_path)
 
     assert saved == []
-    assert any("Not imported" in text for text in fake_st.warnings)
+    refusal = next(
+        text for text in fake_st.warnings if "Not imported" in text
+    )
+    assert "unresolved external instructions" in refusal
+    assert "Add/Build" not in refusal
     assert fake_st.code_blocks == [
         "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0"
     ]
