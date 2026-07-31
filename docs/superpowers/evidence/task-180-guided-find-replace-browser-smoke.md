@@ -1,8 +1,8 @@
 # TASK-180 Guided Find and Replace Browser Smoke Evidence
 
-- Candidate implementation commit: `cc7cf4d`
+- Candidate implementation commit: `3051485`
 - Current Docker candidate image identifier:
-  `sha256:a18d1383729a5eafe4d983b9afa7fbd5c50d588961960d6aed64a950458a62fb`
+  `sha256:07fba2cd5a25be910b9426c6b198ee8ee0eb36c8ccc5a6f1e83b248ddb3e3c9e`
 - Browser URL: `http://localhost:8501`
 - Service status: the isolated `task-180-marcedit-web` harness was healthy and
   `/_stcore/health` returned `ok` during the initial Task 6 attempt at
@@ -21,8 +21,8 @@
   did not expose the `node_repl js` tool needed by the in-app browser-control
   skill. The only discovered browser automation was a separate Playwright
   server, which that skill explicitly forbids as a substitute. Controller
-  discovery reconfirmed the same limitation after commits `9c6dca1` and
-  `cc7cf4d`.
+  discovery reconfirmed the same limitation after commits `9c6dca1`,
+  `cc7cf4d`, `5af4fad`, and `3051485`.
 
 ## Acceptance Checklist
 
@@ -68,9 +68,10 @@ automated tests are not substitutes for browser acceptance.
 
 - Browser acceptance is incomplete. No external Playwright, Computer Use, or
   alternate browser automation was substituted.
-- The three Important implementation/test findings from the initial review
-  were resolved by `9c6dca1` and `cc7cf4d`; scoped re-reviews were clean.
-  This does not convert any unchecked browser item into a pass.
+- All six Important implementation/test findings from the two review rounds
+  were resolved by `9c6dca1`, `cc7cf4d`, `5af4fad`, and `3051485`; scoped
+  re-reviews were clean. This does not convert any unchecked browser item
+  into a pass.
 - TASK-180 remains `In-Progress`. A cataloger must complete all ten checks
   through the approved in-app browser-control runtime (or an explicitly
   approved manual browser session), record the metrics and save/reopen

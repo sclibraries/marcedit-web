@@ -46,18 +46,19 @@ Plan:
 - `docs/superpowers/plans/2026-07-30-task-180-core-structured-find-replace-authoring.md`
 
 Verification Checkpoint:
-- Candidate implementation commit: `cc7cf4d`.
+- Candidate implementation commit: `3051485`.
 - Docker image:
-  `sha256:a18d1383729a5eafe4d983b9afa7fbd5c50d588961960d6aed64a950458a62fb`.
-- Focused Docker: 424 passed, 0 failed, 0 skipped, and 0 warnings in
-  15.28 seconds.
+  `sha256:07fba2cd5a25be910b9426c6b198ee8ee0eb36c8ccc5a6f1e83b248ddb3e3c9e`.
+- Focused Docker: 445 passed, 0 failed, 0 skipped, and 0 warnings in
+  13.83 seconds. This set includes
+  `tests/test_guided_replace_validation.py`.
 - Native contract:
   `test_checked_in_contract_matches_every_golden_definition` passed 1/1 in
-  0.16 seconds, and
+  0.10 seconds, and
   `marcedit_web/schemas/native-task-compiler-contract-v1.json` has no diff
   from `main`.
-- Required complete rebuilt-image Docker run: 1,792 passed, 8 failed,
-  39 skipped, and 0 warnings in 92.18 seconds. All eight failures are
+- Required complete rebuilt-image Docker run: 1,813 passed, 8 failed,
+  39 skipped, and 0 warnings in 66.89 seconds. All eight failures are
   pre-existing `tests/test_product_identity.py` checks whose repository-only
   `README.md`, `Dockerfile`, TASK-176 ticket, and phase-one plan are absent
   from `/app` in the default image/Compose mounts. The 39 reported skips are:
@@ -69,7 +70,7 @@ Verification Checkpoint:
   and 3 `Dockerfile`); 1 syntax-reference check because the reference is
   absent from the image; and 1 unavailable institutional-corpus check.
 - Supplementary TASK-179-precedent read-only mounted Docker run:
-  1,834 passed, 0 failed, 5 skipped, and 0 warnings in 66.90 seconds.
+  1,855 passed, 0 failed, 5 skipped, and 0 warnings in 44.63 seconds.
   The five skips are four Compose-rendering checks requiring a Docker CLI
   inside the container and one unavailable institutional-corpus check;
   synthetic fixtures remain authoritative.
@@ -80,13 +81,16 @@ Verification Checkpoint:
   controller discovery reconfirmed that the required `node_repl js`
   browser-control runtime is not exposed. External Playwright was not
   substituted.
-- Independent review: the initial review found 0 Critical and 3 Important
-  findings. Commit `9c6dca1` resolved hidden target-switch state plus the
-  discard-count and technical-transparency gaps; commit `cc7cf4d` completed
-  compatibility-matrix and repeated-value occurrence coverage. Both scoped
-  re-reviews were clean, with no remaining Critical or Important findings.
-  The final whole-branch review remains assigned to the parent controller
-  after this verification rerun.
+- Independent review: two review rounds found 0 Critical and 6 Important
+  findings in total. Commit `9c6dca1` resolved hidden target-switch state plus
+  discard-count and technical-transparency gaps; `cc7cf4d` completed
+  compatibility-matrix and repeated-value occurrence coverage; `5af4fad`
+  moved raw pattern/replacement validation into the bounded sandbox; and
+  `3051485` resolved the two remaining UI-state findings for hidden controls
+  and Streamlit-safe mode transitions. Scoped re-reviews of all four commits
+  were clean, with no remaining Critical or Important findings. The final
+  whole-branch review remains assigned to the parent controller after this
+  verification rerun.
 - Completion is blocked until the required rebuilt-image suite has zero
   failures (or its eight known repository-file failures receive an explicit
   acceptance decision) and all ten browser checks are completed with concrete
