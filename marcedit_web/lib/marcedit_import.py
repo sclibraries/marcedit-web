@@ -331,9 +331,9 @@ def _emit_delete(parts: list[str]) -> HandlerEmission:
 # to `set_008_form_of_item`. Anything else becomes a TODO.
 _KNOWN_REPLACE = {
     # 008 byte 23 form-of-item -> 'o' for record types acdijmoprt + bibs cmsi
-    (r"(=008.{25}).{1}(.+)", r"$1o$2"): "set_008_form_of_item(record)",
+    (r"(=008.{25}).{1}(.+)", r"$1o$2"): 23,
     # 008 byte 29 form-of-item -> 'o' for record types efgk (visual + maps)
-    (r"(=008.{31}).{1}(.+)", r"$1o$2"): "set_008_form_of_item(record)",
+    (r"(=008.{31}).{1}(.+)", r"$1o$2"): 29,
 }
 
 
@@ -347,13 +347,13 @@ def _emit_replace(parts: list[str]) -> HandlerEmission:
     if len(parts) < 3:
         return HandlerEmission(code=None)
     find, replace = parts[1], parts[2]
-    expr = _KNOWN_REPLACE.get((find, replace))
-    if expr is not None:
+    position = _KNOWN_REPLACE.get((find, replace))
+    if position is not None:
         return HandlerEmission(
-            code=expr,
+            code=f"set_008_form_of_item(record, position={position})",
             imports={"set_008_form_of_item"},
             op_kind="set-008-form",
-            op_params={},
+            op_params={"position": str(position)},
         )
     return HandlerEmission(
         code=(

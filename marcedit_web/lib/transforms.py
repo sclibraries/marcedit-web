@@ -41,7 +41,12 @@ def leader_biblevel(record: Record) -> str:
     return record.leader[7]
 
 
-def set_008_form_of_item(record: Record, form: str = "o") -> None:
+def set_008_form_of_item(
+    record: Record,
+    form: str = "o",
+    *,
+    position: int | None = None,
+) -> None:
     """Set the 008 form-of-item position to `form` based on leader.
 
     For record types {a,c,d,i,j,m,o,p,r,t} with bib levels {c,m,s,i} the
@@ -52,16 +57,19 @@ def set_008_form_of_item(record: Record, form: str = "o") -> None:
     if field_008 is None:
         return
 
-    rtype = leader_type(record)
-    blevel = leader_biblevel(record)
     data = field_008.data
 
-    if rtype in "acdijmoprt" and blevel in "cmsi":
-        position = 23
-    elif rtype in "efgk":
-        position = 29
-    else:
-        return
+    if position is None:
+        rtype = leader_type(record)
+        blevel = leader_biblevel(record)
+        if rtype in "acdijmoprt" and blevel in "cmsi":
+            position = 23
+        elif rtype in "efgk":
+            position = 29
+        else:
+            return
+    elif position not in {23, 29}:
+        raise ValueError("008 form-of-item position must be 23 or 29")
 
     if len(data) > position:
         field_008.data = data[:position] + form + data[position + 1 :]
@@ -203,6 +211,40 @@ def add_field_if_absent(record: Record, field: Field) -> bool:
 # --- Field sort --------------------------------------------------------------
 
 
+def count_tag_inversions(tags: list[int]) -> int:
+    """Count out-of-order pairs in O(n log n) time without mutation."""
+    work = list(tags)
+    buffer = [0] * len(work)
+
+    def count(start: int, end: int) -> int:
+        if end - start < 2:
+            return 0
+        middle = (start + end) // 2
+        inversions = count(start, middle) + count(middle, end)
+        left, right, target = start, middle, start
+        while left < middle and right < end:
+            if work[left] <= work[right]:
+                buffer[target] = work[left]
+                left += 1
+            else:
+                buffer[target] = work[right]
+                right += 1
+                inversions += middle - left
+            target += 1
+        while left < middle:
+            buffer[target] = work[left]
+            left += 1
+            target += 1
+        while right < end:
+            buffer[target] = work[right]
+            right += 1
+            target += 1
+        work[start:end] = buffer[start:end]
+        return inversions
+
+    return count(0, len(work))
+
+
 def canonical_field_order(
     record: Record, *, record_number: int | None = None
 ) -> tuple[bool, int]:
@@ -215,17 +257,12 @@ def canonical_field_order(
     tags: list[int] = []
     for field in record.fields:
         if len(field.tag) != 3 or not field.tag.isascii() or not field.tag.isdigit():
-            location = f"record {record_number}: " if record_number else ""
+            location = f"record {record_number}: " if record_number is not None else ""
             raise ValueError(f"{location}field tag {field.tag!r} is not three ASCII digits")
         tags.append(int(field.tag))
     # Count all out-of-order pairs for a useful preview summary, not only
     # adjacent inversions.
-    inversions = sum(
-        1
-        for index, left in enumerate(tags)
-        for right in tags[index + 1 :]
-        if left > right
-    )
+    inversions = count_tag_inversions(tags)
     ordered = sorted(record.fields, key=lambda field: int(field.tag))
     changed = ordered != record.fields
     if changed:

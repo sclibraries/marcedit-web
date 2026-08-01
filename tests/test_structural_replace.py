@@ -113,7 +113,7 @@ def test_control_range_allows_only_same_class_retagging():
         target_kind="tag_range",
         start_tag="001",
         end_tag="009",
-        match_mode="contains",
+        match_mode="all",
         find="",
         action="retag",
         destination_tag="010",
@@ -123,7 +123,7 @@ def test_control_range_allows_only_same_class_retagging():
         target_kind="tag_range",
         start_tag="001",
         end_tag="009",
-        match_mode="contains",
+        match_mode="all",
         find="",
         action="retag",
         destination_tag="009",
@@ -150,3 +150,71 @@ def test_named_structured_pattern_captures_round_trip():
     record = _record()
     structural_replace.apply_structural_find_replace(record, **request)
     assert record.get("035").get_subfields("a") == ["(SCTFEBA)9780203066140"]
+
+
+def test_matched_text_replacement_rejects_empty_find_before_execution():
+    errors = structural_replace.validate_request(
+        target_kind="subfield",
+        tag="035",
+        subfield="a",
+        match_mode="contains",
+        find="",
+        action="replace_matched_text",
+        replacement="X",
+    )
+    assert any("Find text is required" in error for error in errors)
+
+
+def test_structural_pattern_requires_at_least_one_piece():
+    errors = structural_replace.validate_request(
+        target_kind="subfield",
+        tag="035",
+        subfield="a",
+        match_mode="structured",
+        pattern_pieces=[],
+        replacement_pieces=[],
+        action="replace_matched_text",
+    )
+    assert any("pattern piece is required" in error for error in errors)
+
+
+def test_empty_find_does_not_implicitly_mean_every_field_for_retag():
+    errors = structural_replace.validate_request(
+        target_kind="field_tag",
+        tag="035",
+        match_mode="contains",
+        find="",
+        action="retag",
+        destination_tag="936",
+    )
+    assert any("Find text is required" in error for error in errors)
+
+
+def test_explicit_all_mode_retags_and_preserves_source_position():
+    record = _record()
+    before_tags = [field.tag for field in record.fields]
+    result = structural_replace.apply_structural_find_replace(
+        record,
+        target_kind="field_tag",
+        tag="035",
+        match_mode="all",
+        find="",
+        action="retag",
+        destination_tag="936",
+    )
+    assert result["changed_fields"] == 1
+    assert [field.tag for field in record.fields] == ["936", "245"]
+    assert before_tags == ["035", "245"]
+
+
+def test_invalid_raw_regex_capture_reference_is_a_validation_error():
+    errors = structural_replace.validate_request(
+        target_kind="subfield",
+        tag="035",
+        subfield="a",
+        match_mode="raw_regex",
+        find="(TFeba)",
+        action="replace_matched_text",
+        replacement=r"\9",
+    )
+    assert any("replacement" in error and "group" in error for error in errors)

@@ -30,6 +30,8 @@ Success Criteria:
 
 Status: Completed
 
+Review remediation: TASK-188
+
 Plan: `docs/superpowers/plans/2026-08-01-task-183-cataloger-operation-reference.md`
 
 Design:
@@ -41,3 +43,10 @@ Implementation checkpoint (2026-08-01):
   before/after examples for every palette operation.
 - Added freshness, search, and rendering tests; the complete mounted-source
   Docker suite passes (`2042 passed, 5 skipped`).
+
+TASK-188 review remediation (2026-08-01):
+- RDA carrier, relator preservation, 264 publication indicator, and explicit
+  008-position behavior are reflected in the registry and regenerated guide.
+- A runtime image that intentionally omits the generated repository guide now
+  reports one loud freshness-test skip; the mounted-source check remains
+  authoritative and passing.

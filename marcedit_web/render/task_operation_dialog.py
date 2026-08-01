@@ -365,20 +365,24 @@ def render_selected_operation(
         target = params.get("target_kind", "data_field")
         action = params.get("action", "replace_matched_text")
         match_mode = params.get("match_mode", "contains")
-        visible = {"target_kind", "match_mode", "ignore_case", "occurrences"}
+        visible = {
+            "target_kind", "match_mode", "action", "ignore_case", "occurrences",
+        }
         if target == "tag_range":
             visible.update({"start_tag", "end_tag"})
         else:
             visible.add("tag")
         if target == "subfield":
             visible.add("subfield")
-        if target in {"subfield", "all_subfields", "data_field", "tag_range"}:
-            if match_mode == "structured":
-                visible.update({"pattern_pieces", "replacement_pieces"})
-            else:
-                visible.add("find")
+        if match_mode == "structured":
+            visible.add("pattern_pieces")
+            if action == "replace_matched_text":
+                visible.add("replacement_pieces")
+        elif match_mode != "all":
+            visible.add("find")
         if action == "replace_matched_text":
-            visible.add("replacement")
+            if match_mode != "structured":
+                visible.add("replacement")
         elif action == "replace_field":
             visible.update({"replacement_ind1", "replacement_ind2", "replacement_subfields"})
         elif action == "retag":

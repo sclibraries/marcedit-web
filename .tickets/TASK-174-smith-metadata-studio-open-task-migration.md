@@ -33,6 +33,8 @@ Success Criteria:
 
 Status: Completed
 
+Review remediation: TASK-188
+
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-open-task-migration-design.md`
 
@@ -107,7 +109,8 @@ Phase 3:
   Focused and native-contract guards pass, and a supplementary
   TASK-179-precedent read-only-mounted complete suite passes with five
   disclosed environment/corpus skips. The required rebuilt-image complete
-  suite still has eight known repository-file-availability failures, and all
+  suite had eight known repository-file-availability failures at that
+  checkpoint. TASK-188 makes the ninth repository-file check a loud skip, and all
   ten browser checks remain unavailable because the required in-app
   browser-control runtime was not exposed. All nine Important findings were
   resolved by `9c6dca1`, `cc7cf4d`, `5af4fad`, `3051485`, `d7e9a20`, and
@@ -150,6 +153,18 @@ Final implementation checkpoint (2026-08-01):
   authoritative).
 - `git diff --check` passes. No production service, route, worker, proxy,
   authentication, or ITS-managed configuration was changed.
+
+TASK-188 review remediation (2026-08-01):
+- Checkpoint commit `c1dab43` preserves the previously uncommitted child-task
+  implementation before remediation.
+- Empty structural matches, invalid regex captures, incorrect RDA carrier
+  defaults, destructive unknown policies, caret-prefixed external syntax,
+  fixed-position 008 conversion, nested codegen literals, ordering cost, and
+  modal structural controls now have focused fail-closed regression coverage.
+- The authoritative mounted-source suite passes `2065 passed, 5 skipped`.
+  The Compose-like image run reports `2022 passed, 40 skipped, 8 failed`; all
+  eight failures are the previously accepted product-identity checks whose
+  repository-only inputs are intentionally absent from the runtime image.
 
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.

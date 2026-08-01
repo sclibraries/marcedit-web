@@ -55,6 +55,16 @@ def test_structural_find_replace_codegen_and_marker_round_trip():
     assert parsed["ops"][0].params == op.params
 
 
+def test_structural_find_replace_codegen_rejects_nonliteral_nested_values():
+    op = Operation(
+        kind="structural-find-replace",
+        params={"pattern_pieces": [{"value": object()}]},
+    )
+
+    with pytest.raises(TypeError, match="data_lit"):
+        task_builder._render_one(op)
+
+
 def test_guided_replace_compiles_to_one_shared_transform_call():
     rendered = task_builder.render_ops_to_python([_guided_op()])
 
@@ -116,6 +126,14 @@ def test_palette_kinds_are_all_non_smith():
         "custom",
     }:
         assert kept in kinds, f"{kept} should still be in palette"
+
+
+def test_set_008_form_can_compile_an_explicit_imported_position():
+    out = task_builder.render_ops_to_python([
+        Operation(kind="set-008-form", params={"position": "29"}),
+    ])
+
+    assert "set_008_form_of_item(record, position=29)" in out["body"]
 
 
 def test_render_delete_tag_emits_op_marker_and_call():

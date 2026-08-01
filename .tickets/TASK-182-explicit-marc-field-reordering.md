@@ -34,6 +34,8 @@ Success Criteria:
 
 Status: Completed
 
+Review remediation: TASK-188
+
 Plan: `docs/superpowers/plans/2026-08-01-task-182-canonical-field-reordering.md`
 
 Design:
@@ -46,3 +48,9 @@ Implementation checkpoint (2026-08-01):
 - Verified quick/task equivalence, preview non-mutation, and history paths in
   focused tests and the complete mounted-source Docker suite (`2042 passed,
   5 skipped`).
+
+TASK-188 review remediation (2026-08-01):
+- The shared inversion count is now O(n log n), quick preview uses that same
+  implementation, and malformed-tag diagnostics retain record number zero.
+- Structural retagging deliberately preserves source position; catalogers add
+  this explicit operation when canonical order is required afterward.

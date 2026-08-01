@@ -25,6 +25,8 @@ Success Criteria:
 
 Status: Completed
 
+Review remediation: TASK-188
+
 Plan: `docs/superpowers/plans/2026-08-01-task-181-explicit-rda-operations.md`
 
 Design:
@@ -36,3 +38,12 @@ Implementation checkpoint (2026-08-01):
   reporting without guessed material mappings.
 - Verified by `tests/test_rda_operations.py` and the complete mounted-source
   Docker suite (`2042 passed, 5 skipped`).
+
+TASK-188 review remediation (2026-08-01):
+- Leader/06 content classification now combines explicit 007 carrier evidence;
+  print text receives unmediated/volume while `007=cr` receives
+  computer/online resource, and unsupported carrier evidence fails before
+  mutation.
+- 260 promotion sets 264 indicator 2 to publication (`1`), reviewed
+  abbreviations match complete tokens, `$4` relator codes are retained while a
+  missing `$e` is added once, and unknown existing-field policies fail closed.

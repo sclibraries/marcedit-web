@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 from pymarc import Field, Record, Subfield
 
@@ -16,11 +17,15 @@ class MaterialMapping:
 
 
 MATERIAL_MAPPINGS = {
-    "text": MaterialMapping("text", ("text", "txt"), ("computer", "c"), ("online resource", "cr")),
-    "computer": MaterialMapping("computer", ("computer program", "cop"), ("computer", "c"), ("online resource", "cr")),
-    "audio": MaterialMapping("audio", ("spoken word", "spw"), ("audio", "s"), ("online resource", "cr")),
-    "video": MaterialMapping("video", ("two-dimensional moving image", "tdi"), ("video", "v"), ("online resource", "cr")),
-    "map": MaterialMapping("map", ("cartographic image", "cri"), ("computer", "c"), ("online resource", "cr")),
+    "text_print": MaterialMapping("text_print", ("text", "txt"), ("unmediated", "n"), ("volume", "nc")),
+    "text_online": MaterialMapping("text_online", ("text", "txt"), ("computer", "c"), ("online resource", "cr")),
+    "computer_online": MaterialMapping("computer_online", ("computer program", "cop"), ("computer", "c"), ("online resource", "cr")),
+    "audio_online": MaterialMapping("audio_online", ("spoken word", "spw"), ("computer", "c"), ("online resource", "cr")),
+    "audio_disc": MaterialMapping("audio_disc", ("spoken word", "spw"), ("audio", "s"), ("audio disc", "sd")),
+    "video_online": MaterialMapping("video_online", ("two-dimensional moving image", "tdi"), ("computer", "c"), ("online resource", "cr")),
+    "video_disc": MaterialMapping("video_disc", ("two-dimensional moving image", "tdi"), ("video", "v"), ("videodisc", "vd")),
+    "map_sheet": MaterialMapping("map_sheet", ("cartographic image", "cri"), ("unmediated", "n"), ("sheet", "nb")),
+    "map_online": MaterialMapping("map_online", ("cartographic image", "cri"), ("computer", "c"), ("online resource", "cr")),
 }
 
 
@@ -29,17 +34,28 @@ def classify_material(record: Record) -> tuple[str | None, str]:
     leader_type = str(record.leader)[6]
     seven = record.get("007")
     seven_data = str(getattr(seven, "data", "") or "")
-    if leader_type in {"e", "f"}:
-        return "map", f"Leader/06={leader_type}"
-    if leader_type == "g" or seven_data.startswith("v"):
-        return "video", f"Leader/06={leader_type}, 007/00={seven_data[:1] or '?'}"
-    if leader_type in {"i", "j"} or seven_data.startswith("s"):
-        return "audio", f"Leader/06={leader_type}, 007/00={seven_data[:1] or '?'}"
-    if leader_type == "m":
-        return "computer", "Leader/06=m"
-    if leader_type in {"a", "t"}:
-        return "text", f"Leader/06={leader_type}"
-    return None, f"Leader/06={leader_type!r} has no unambiguous mapping"
+    evidence = f"Leader/06={leader_type}, 007/00-01={seven_data[:2] or '(absent)'}"
+    content = {
+        "a": "text", "t": "text", "e": "map", "f": "map",
+        "g": "video", "i": "audio", "j": "audio", "m": "computer",
+    }.get(leader_type)
+    if content is None:
+        return None, f"{evidence} has no unambiguous supported content mapping"
+
+    carrier = seven_data[:2]
+    if carrier == "cr":
+        return f"{content}_online", evidence
+    if carrier == "sd" and content == "audio":
+        return "audio_disc", evidence
+    if carrier == "vd" and content == "video":
+        return "video_disc", evidence
+    if seven_data.startswith("a") and content == "map":
+        return "map_sheet", evidence
+    if not seven_data and content == "text":
+        return "text_print", evidence
+    if not seven_data and content == "map":
+        return "map_sheet", evidence
+    return None, f"{evidence} has no unambiguous media/carrier mapping"
 
 
 def _fields_for(mapping: MaterialMapping) -> list[Field]:
@@ -54,7 +70,7 @@ def apply_material_classification(
     record: Record,
     *,
     mode: str = "classify",
-    fixed_material: str = "text",
+    fixed_material: str = "text_print",
     existing_field_action: str = "preserve",
 ) -> dict:
     """Add deterministic 336/337/338 fields and report evidence."""
@@ -64,6 +80,8 @@ def apply_material_classification(
         material, evidence = fixed_material, "cataloger-selected fixed mapping"
     else:
         raise ValueError("material classification mode must be classify or fixed")
+    if existing_field_action not in {"preserve", "replace"}:
+        raise ValueError("existing field action must be preserve or replace")
     if material is None:
         raise ValueError(f"ambiguous material classification: {evidence}")
     if material not in MATERIAL_MAPPINGS:
@@ -118,7 +136,8 @@ def expand_abbreviations(record: Record, tag: str = "300", code: str = "a") -> i
                 continue
             value = subfield.value
             for source, target in ABBREVIATION_MAP.items():
-                value = value.replace(source, target)
+                pattern = rf"(?<!\w){re.escape(source)}(?!\w)"
+                value = re.sub(pattern, target, value)
             if value != subfield.value:
                 field.subfields[index] = Subfield(code, value)
                 changed += 1
@@ -131,7 +150,7 @@ RELATOR_MAP = {"aut": "author", "edt": "editor", "trl": "translator", "pbl": "pu
 SMITH_RDA_PROFILE = (
     {"kind": "rda-classify-material", "params": {
         "mode": "classify",
-        "fixed_material": "text",
+        "fixed_material": "text_print",
         "existing_field_action": "preserve",
     }},
     {"kind": "rda-mark-rda", "params": {}},
@@ -153,10 +172,16 @@ def smith_profile_operations() -> list[dict]:
 def normalize_relators(record: Record) -> int:
     changed = 0
     for field in record.fields:
-        for index, subfield in enumerate(field.subfields):
+        existing_terms = {
+            subfield.value.casefold()
+            for subfield in field.subfields
+            if subfield.code == "e"
+        }
+        for subfield in list(field.subfields):
             replacement = RELATOR_MAP.get(subfield.value.casefold()) if subfield.code == "4" else None
-            if replacement is not None:
-                field.subfields[index] = Subfield("e", replacement)
+            if replacement is not None and replacement.casefold() not in existing_terms:
+                field.subfields.append(Subfield("e", replacement))
+                existing_terms.add(replacement.casefold())
                 changed += 1
     return changed
 
@@ -169,5 +194,6 @@ def promote_260(record: Record) -> int:
     record.remove_fields("260")
     for field in fields:
         field.tag = "264"
+        field.indicators = [field.indicator1, "1"]
         record.add_ordered_field(field)
     return len(fields)

@@ -429,7 +429,7 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Inputs:** `mode`, `fixed_material`, `existing_field_action`
 
-**Behavior:** Classifies text, computer, audio, video, or map material and adds only missing fields unless replacement is selected.
+**Behavior:** Combines content evidence from Leader/06 with explicit 007 media/carrier evidence; print text and maps use physical carriers, while 007 cr identifies online resources.
 
 **Preserves:** Existing 336/337/338 fields are preserved by default.
 
@@ -437,7 +437,7 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Error behavior:** Unsupported material values and ambiguous evidence block the operation before adoption.
 
-**Before:** `Leader/06=m`
+**Before:** `Leader/06=m; 007 cr`
 
 **After:** `336 $a computer program $b cop
 337 $a computer $b c
@@ -503,15 +503,15 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Operation kind:** `rda-normalize-relators`
 
-**Purpose:** Convert reviewed $4 relator codes to explicit $e terms.
+**Purpose:** Add explicit $e terms for reviewed $4 relator codes while retaining the codes.
 
 **When to use:** Use when local policy prefers spelled-out relator terms.
 
 **Inputs:** none
 
-**Behavior:** Maps only the reviewed aut, edt, trl, and pbl codes.
+**Behavior:** Maps only the reviewed aut, edt, trl, and pbl codes, adding a missing term once.
 
-**Preserves:** Unknown relator values and unrelated subfields remain unchanged.
+**Preserves:** The original $4 code, existing relator terms, unknown values, and unrelated subfields remain unchanged.
 
 **Skip behavior:** Fields without a reviewed code are unchanged.
 
@@ -519,7 +519,7 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Before:** `100 1  $a Doe $4 aut`
 
-**After:** `100 1  $a Doe $e author`
+**After:** `100 1  $a Doe $4 aut $e author`
 
 **Stored representation:** The operation kind selects the checked-in mapping table.
 
@@ -535,7 +535,7 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Inputs:** none
 
-**Behavior:** Moves every 260 field to 264 when the record has no 264.
+**Behavior:** Moves every 260 field to 264 with second indicator 1 (publication) when the record has no 264.
 
 **Preserves:** Subfields and their relative order are preserved.
 
@@ -545,7 +545,7 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Before:** `260    $a Boston : $b Press, $c 2024`
 
-**After:** `264    $a Boston : $b Press, $c 2024`
+**After:** `264  1 $a Boston : $b Press, $c 2024`
 
 **Stored representation:** The operation kind encodes the safe promotion rule.
 
@@ -633,27 +633,27 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Operation kind:** `set-008-form`
 
-**Purpose:** Mark the record as an online resource by writing 'o' into 008 (byte 23 or 29, leader-dependent).
+**Purpose:** Mark form of item as online at one explicit 008 byte or at the byte selected from the Leader.
 
-**When to use:** Use set 008 form-of-item to 'o' (online) when that specific MARC change is required.
+**When to use:** Use the Leader option for normal cataloger authoring; imported proven external patterns retain their original fixed position 23 or 29.
 
-**Inputs:** none
+**Inputs:** `position`
 
-**Behavior:** Mark the record as an online resource by writing 'o' into 008 (byte 23 or 29, leader-dependent).
+**Behavior:** Writes o at byte 23 or 29. An explicit position is independent of Leader type, preserving the proven external instruction exactly.
 
-**Preserves:** Unrelated fields and values remain unchanged.
+**Preserves:** Every other 008 byte and all other fields remain unchanged.
 
-**Skip behavior:** Records that do not match the operation are unchanged.
+**Skip behavior:** Leader-based mode leaves unsupported record types unchanged; missing or short 008 fields are unchanged.
 
-**Error behavior:** Invalid inputs are reported before the task is saved or run.
+**Error behavior:** Any position other than Leader, 23, or 29 fails before generated task execution.
 
 **Before:** `008 230101s2023    xx            000 0 eng d`
 
 **After:** `008 230101s2023    xx o          000 0 eng d`
 
-**Stored representation:** Structured `set-008-form` parameters validated by the task form.
+**Stored representation:** Structured position choice: Leader, 23, or 29.
 
-**Related:** none
+**Related:** `sort-fields`
 
 ## Set indicators
 

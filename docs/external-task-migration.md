@@ -11,8 +11,12 @@ subfield code converts to the guided operation. It is case-sensitive,
 replaces all matched text, and preserves text before and after each match.
 
 The two proven 008 form-of-item `REPLACE` signatures convert to **Set 008
-form-of-item**. A `SORTBY` line whose scope is `ALL` converts to **Sort fields
-by tag**; other sort flags remain blocking until their meaning is proven.
+form-of-item** with their original fixed position: byte 23 for the `{25}`
+signature and byte 29 for the `{31}` signature. The conversion does not
+reselect a position from each record's Leader, so mixed-type batches retain
+the external instruction's position-fixed meaning. A `SORTBY` line whose
+scope is `ALL` converts to **Sort fields by tag**; other sort flags remain
+blocking until their meaning is proven.
 
 ## Choice required
 
@@ -25,6 +29,7 @@ remains blocked.
 
 ## Unresolved
 
-`^b`, arbitrary regex over MarcEdit's `.mrk` text, undocumented numeric flags,
-`RDAHELPER`, and unknown verbs remain visible and blocking. The importer does
-not claim compatibility with undocumented external behavior.
+Any caret-prefixed Find syntax, arbitrary regex over MarcEdit's `.mrk` text,
+undocumented numeric flags, `RDAHELPER`, and unknown verbs remain visible and
+blocking. The importer does not claim compatibility with undocumented
+external behavior.

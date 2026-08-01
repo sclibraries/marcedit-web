@@ -32,6 +32,8 @@ Success Criteria:
 
 Status: Completed
 
+Review remediation: TASK-188
+
 Design:
 - `docs/superpowers/specs/2026-07-31-task-185-external-task-migration-design.md`
 
@@ -46,3 +48,10 @@ Implementation checkpoint (2026-08-01):
   Unproven syntax remains intentionally blocking.
 - Focused migration/workspace tests and the complete mounted-source Docker
   suite pass (`2042 passed, 5 skipped`).
+
+TASK-188 review remediation (2026-08-01):
+- Every caret-prefixed Find remains unresolved, and `ADAPTER_REGISTRY` is now
+  the executable dispatch source for the supported instruction families.
+- The two proven 008 `REPLACE` patterns retain fixed byte 23 or 29 in their
+  stored operation. They no longer become the leader-dependent default, so a
+  mixed-type batch preserves the external position-fixed instruction exactly.

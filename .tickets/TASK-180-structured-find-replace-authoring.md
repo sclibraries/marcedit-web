@@ -116,8 +116,8 @@ Verification Checkpoint:
   remaining Critical or Important findings. Final whole-branch review of
   `f9b8968..0c1c14a` found zero Critical, Important, or Minor findings and
   assessed the code as ready for cataloger browser testing.
-- Completion is blocked until the required rebuilt-image suite has zero
-  failures (or its eight known repository-file failures receive an explicit
+- Completion was blocked until the required rebuilt-image suite had zero
+  failures (or its then-known eight repository-file failures received an explicit
   acceptance decision) and all ten browser checks are completed with concrete
   evidence. This checkpoint does not mark TASK-180 completed.
 
@@ -126,14 +126,16 @@ Completion update (2026-08-01):
   in the local Docker deployment. The cataloger confirmed the guided repeated
   `035$a` workflow, including selecting the final repeated value for append,
   produced the expected result; the follow-up report was “This worked.”
-- The current read-only mounted-source Docker suite passes 1,988 tests with
+- The completion-checkpoint read-only mounted-source Docker suite passed 1,988 tests with
   five explicitly reported skips: four Docker-CLI-dependent Compose checks
   and the unavailable institutional MarcEdit Tasks corpus. Synthetic fixtures
   remain authoritative for the corpus-independent contract.
-- The rebuilt-image run's eight failures are repository-file availability
-  checks for files intentionally omitted from `/app`; the mounted-source run
-  is the authoritative application verification. This environment limitation
-  is accepted and disclosed rather than counted as a hidden pass.
+- The rebuilt-image checkpoint had eight repository-file availability
+  failures for files intentionally omitted from `/app`. TASK-188 makes the
+  generated operation-reference freshness check a loud skip rather than a
+  ninth failure. Its Compose-like run records `2022 passed, 40 skipped, 8
+  failed`, with the same eight accepted product-identity file-availability
+  failures.
 - Native compiler freshness passes and the checked-in manifest is unchanged.
 - Independent review of the implementation range reported no unresolved
   Critical or Important findings. TASK-180 is now completed; TASK-184 and

@@ -27,7 +27,7 @@ import pymarc
 import pytest
 
 from marcedit_web.lib import marcedit_import, task_builder
-from marcedit_web.lib.codegen_safety import lit
+from marcedit_web.lib.codegen_safety import data_lit, lit
 from marcedit_web.lib.sandbox import TaskSpec, run_tasks_subprocess
 
 
@@ -101,6 +101,26 @@ def test_lit_rejects_arbitrary_classes():
 def test_lit_rejects_functions():
     with pytest.raises(TypeError):
         lit(lambda: None)
+
+
+def test_data_lit_roundtrips_nested_operation_parameters():
+    value = {
+        "pattern_pieces": [
+            {"type": "literal", "value": "TFeba"},
+            {"type": "digits", "name": "isbn"},
+        ],
+        "ignore_case": False,
+    }
+
+    assert ast.literal_eval(data_lit(value)) == value
+
+
+def test_data_lit_rejects_arbitrary_nested_objects():
+    class Custom:
+        pass
+
+    with pytest.raises(TypeError, match="data_lit"):
+        data_lit({"pattern_pieces": [Custom()]})
 
 
 # ---------------------------------------------------------------------------

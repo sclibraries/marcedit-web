@@ -131,6 +131,22 @@ def test_unproven_caret_b_subfield_edit_remains_unresolved():
     assert "sf.value.replace('^b'," not in result.body
 
 
+def test_unproven_caret_prefixed_subfield_edit_remains_unresolved():
+    source = (
+        "SUBFIELD_EDIT\t856\tu\t^bhttp://\t"
+        "http://libproxy.smith.edu/login?url=\t0|0\n"
+    )
+
+    result = marcedit_import.convert_tasksfile_text(
+        source,
+        name="caret-prefix",
+        description_fallback="",
+    )
+
+    assert result.unsupported == [source.rstrip("\n")]
+    assert "caret-prefixed syntax is not proven" in result.body
+
+
 def test_nonempty_subfield_edit_maps_to_guided_contract():
     source = "SUBFIELD_EDIT\t035\ta\tTFeba\t(SCTFEBA)\t0|0\n"
     result = marcedit_import.convert_tasksfile_text(

@@ -29,6 +29,8 @@ Success Criteria:
 
 Status: Completed
 
+Review remediation: TASK-188
+
 Plan: `docs/superpowers/plans/2026-08-01-task-184-structural-find-replace-authoring.md`
 
 Design:
@@ -40,3 +42,12 @@ Implementation checkpoint (2026-08-01):
   modal preview, and compiler round-trip coverage.
 - Verified the compatibility cells, preview non-mutation, and full Docker suite
   (`2042 passed, 5 skipped`).
+
+TASK-188 review remediation (2026-08-01):
+- Empty textual and structured matches fail before execution. Retag and
+  indicator operations can target every selected field only through the
+  explicit `all` match mode, and invalid raw-regex capture references fail
+  during validation.
+- Structural generated code uses recursive literal validation, retag source
+  position is explicitly preserved, and the modal exposes both action and
+  match controls for field-tag and indicator workflows.

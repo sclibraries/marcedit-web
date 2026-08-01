@@ -58,3 +58,30 @@ def lit(value: Any) -> str:
             "only literal-type values may be spliced into generated code."
         )
     return ast.unparse(ast.Constant(value=value))
+
+
+def data_lit(value: Any) -> str:
+    """Render nested operation data without invoking arbitrary ``repr``.
+
+    Structured operation parameters may contain dictionaries and lists, which
+    :func:`lit` deliberately rejects. Build those containers recursively while
+    retaining the same fail-loud boundary for every leaf value.
+    """
+    if type(value) in _ATOMIC_LITERAL_TYPES:
+        return lit(value)
+    if type(value) is list:
+        return "[" + ", ".join(data_lit(item) for item in value) + "]"
+    if type(value) is tuple:
+        items = [data_lit(item) for item in value]
+        suffix = "," if len(items) == 1 else ""
+        return "(" + ", ".join(items) + suffix + ")"
+    if type(value) is dict:
+        pairs = (
+            f"{data_lit(key)}: {data_lit(item)}"
+            for key, item in value.items()
+        )
+        return "{" + ", ".join(pairs) + "}"
+    raise TypeError(
+        f"data_lit() does not accept {type(value).__name__}; "
+        "only nested literal-type data may be spliced into generated code."
+    )

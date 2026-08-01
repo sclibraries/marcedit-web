@@ -31,6 +31,8 @@ Success Criteria:
 
 Status: Completed
 
+Review remediation: TASK-188
+
 Design:
 - `docs/superpowers/specs/2026-07-31-task-187-persistent-import-diagnostics-design.md`
 
@@ -44,13 +46,15 @@ Implementation checkpoint (2026-08-01):
 - Focused workspace tests and the complete mounted-source Docker suite pass
   (`2042 passed, 5 skipped`).
 
-Process and status review (2026-08-01):
-- The implementation is present in the isolated `task-186` worktree but is
-  not yet committed or completed.
-- The mounted-source Docker suite currently passes 1,988 tests with five
-  explicitly reported skips; the native compiler contract is fresh.
-- Completion remains blocked by the remediation plan's RED/GREEN matrix:
-  malformed session payloads can still raise, the required unresolved-warning
-  copy is not preserved, Dismiss does not immediately rerun, and the focused
-  tests do not yet cover successful archives, mixed archives, quota failures,
-  unexpected exceptions, replacement, and lifecycle reset.
+Historical remediation review (superseded 2026-08-01):
+- Before implementation, the review identified malformed session payloads,
+  warning-copy persistence, dismissal rerun behavior, and missing outcome
+  coverage as blockers. The implementation checkpoint above records their
+  resolution; checkpoint commit `c1dab43` preserves the completed work.
+- TASK-188 reopened this ticket only to remove contradictory historical text
+  and rerun final verification after the broader review fixes.
+
+TASK-188 verification (2026-08-01):
+- The contradictory pre-implementation blocker paragraph is now explicitly
+  historical. Dismissal clears the durable result and reruns immediately, as
+  verified in the existing focused tests.

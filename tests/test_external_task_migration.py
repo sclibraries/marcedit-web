@@ -42,6 +42,15 @@ def test_unproven_external_syntax_remains_blocking():
     assert "not proven" in item.reason
 
 
+def test_any_unproven_caret_prefixed_find_remains_blocking():
+    line = "SUBFIELD_EDIT\t856\tu\t^bhttp://\thttps://proxy/\t0|0"
+
+    item = migration.adapt_instruction(line)
+
+    assert item.status == "unresolved"
+    assert "caret-prefixed" in item.reason
+
+
 def test_review_preserves_source_order_and_unknown_lines():
     review = migration.build_review("DELETE\t001\nSUBFIELD_EDIT\t035\ta\tX\tY\n")
     items = review.items
@@ -74,6 +83,36 @@ def test_proven_known_replace_and_sortby_signatures_convert():
     )
     sort = migration.adapt_instruction("SORTBY\tALL\tTrue\tTrue")
     assert replace.status == "converted"
-    assert replace.operation["kind"] == "set-008-form"
+    assert replace.operation == {
+        "kind": "set-008-form",
+        "params": {"position": "23"},
+    }
     assert sort.status == "converted"
     assert sort.operation["kind"] == "sort-fields"
+
+
+def test_second_proven_replace_preserves_its_fixed_008_position():
+    replace = migration.adapt_instruction(
+        "REPLACE\t(=008.{31}).{1}(.+)\t$1o$2\t0\t0"
+    )
+
+    assert replace.operation == {
+        "kind": "set-008-form",
+        "params": {"position": "29"},
+    }
+
+
+def test_adapter_registry_is_the_dispatch_source(monkeypatch):
+    sentinel = migration.MigrationItem(
+        source_line="SORTBY\tALL",
+        source_format="test",
+        status="unresolved",
+        reason="sentinel",
+    )
+    monkeypatch.setitem(
+        migration.ADAPTER_REGISTRY,
+        "SORTBY",
+        lambda source_line: sentinel,
+    )
+
+    assert migration.adapt_instruction("SORTBY\tALL") is sentinel

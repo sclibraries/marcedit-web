@@ -11,7 +11,15 @@ from pymarc import Field, Record, Subfield
 
 TARGET_KINDS = {"subfield", "all_subfields", "data_field", "field_tag", "indicators", "tag_range"}
 ACTIONS = {"replace_matched_text", "replace_field", "retag", "set_indicators"}
-MATCH_MODES = {"contains", "starts_with", "ends_with", "whole_value", "structured", "raw_regex"}
+MATCH_MODES = {
+    "all",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "whole_value",
+    "structured",
+    "raw_regex",
+}
 _TAG = re.compile(r"^\d{3}$")
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
@@ -106,8 +114,27 @@ def validate_request(**request: Any) -> tuple[str, ...]:
             _replacement_from_pieces(request.get("replacement_pieces", []), set(_capture_names(request.get("pattern_pieces", []))))
         except ValueError as exc:
             errors.append(str(exc))
-    elif mode != "raw_regex" and not isinstance(request.get("find", ""), str):
-        errors.append("find must be text")
+    elif mode == "all":
+        if request.get("find", ""):
+            errors.append("Find must be empty when Match is every selected field")
+        if action not in {"retag", "set_indicators"}:
+            errors.append("every-selected-field matching is only valid for retag or set indicators")
+    else:
+        find = request.get("find", "")
+        if not isinstance(find, str):
+            errors.append("find must be text")
+        elif not find:
+            errors.append("Find text is required; choose every selected field explicitly when no text match is intended")
+        elif mode == "raw_regex":
+            try:
+                pattern = re.compile(
+                    find,
+                    re.IGNORECASE if request.get("ignore_case") else 0,
+                )
+                if action == "replace_matched_text":
+                    pattern.sub(str(request.get("replacement", "")), "")
+            except re.error as exc:
+                errors.append(f"invalid raw-regex replacement: {exc}")
     return tuple(errors)
 
 
@@ -142,6 +169,8 @@ def _capture_names(pieces: Any) -> list[str]:
 
 
 def _compile_structured_pattern(pieces: Any) -> tuple[re.Pattern, list[str]]:
+    if not isinstance(pieces, list) or not pieces:
+        raise ValueError("at least one structured pattern piece is required")
     names = _capture_names(pieces)
     parts: list[str] = []
     for piece in pieces:
@@ -190,6 +219,8 @@ def _replacement_from_pieces(pieces: Any, capture_names: set[str]) -> str:
 
 def _matcher(request: dict[str, Any]) -> tuple[re.Pattern, str]:
     mode = request["match_mode"]
+    if mode == "all":
+        return re.compile(r"(?s:.*)"), ""
     if mode == "structured":
         pattern, _ = _compile_structured_pattern(request["pattern_pieces"])
         return pattern, _replacement_from_pieces(
@@ -263,6 +294,9 @@ def apply_structural_find_replace(record: Record, **raw_request: Any) -> dict[st
             result["changed_fields"] += 1
             continue
         if request["action"] == "retag":
+            # Retagging preserves the field's source position. Catalogers can
+            # add the explicit TASK-182 sort operation when canonical tag
+            # order is required after structural changes.
             field.tag = request["destination_tag"]
             result["changed_fields"] += 1
             continue
@@ -276,11 +310,6 @@ def apply_structural_find_replace(record: Record, **raw_request: Any) -> dict[st
             new_value, count = matcher.subn(replacement, subfield.value, count=1 if request.get("occurrences") == "first" else 0)
             if count:
                 field.subfields[index] = Subfield(subfield.code, new_value)
-                result["matched_occurrences"] += count
-                result["changed_fields"] += 1
-        if request["target_kind"] == "data_field":
-            new_value, count = matcher.subn(replacement, field.value() or "", count=1 if request.get("occurrences") == "first" else 0)
-            if count:
                 result["matched_occurrences"] += count
                 result["changed_fields"] += 1
     return result

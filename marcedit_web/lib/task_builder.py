@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from marcedit_web.lib.codegen_safety import lit
+from marcedit_web.lib.codegen_safety import data_lit, lit
 
 logger = logging.getLogger("marcedit_web.task_builder")
 
@@ -494,8 +494,17 @@ OPERATIONS_PALETTE: list[dict] = [
     {
         "kind": "set-008-form",
         "label": "Set 008 form-of-item to 'o' (online)",
-        "summary": "Mark the record as an online resource by writing 'o' into 008 (byte 23 or 29, leader-dependent).",
-        "params": [],
+        "summary": "Write 'o' into 008 byte 23 or 29, selected explicitly or determined from the Leader.",
+        "params": [
+            {
+                "name": "position", "label": "008 position", "type": "select",
+                "options": [
+                    {"value": "leader", "label": "Determine from Leader"},
+                    {"value": "23", "label": "Position 23"},
+                    {"value": "29", "label": "Position 29"},
+                ], "default": "leader",
+            },
+        ],
     },
     {
         "kind": "rda-classify-material",
@@ -512,12 +521,16 @@ OPERATIONS_PALETTE: list[dict] = [
             {
                 "name": "fixed_material", "label": "Fixed material type", "type": "select",
                 "options": [
-                    {"value": "text", "label": "Text"},
-                    {"value": "computer", "label": "Computer"},
-                    {"value": "audio", "label": "Audio"},
-                    {"value": "video", "label": "Video"},
-                    {"value": "map", "label": "Map"},
-                ], "default": "text",
+                    {"value": "text_print", "label": "Text — print volume"},
+                    {"value": "text_online", "label": "Text — online resource"},
+                    {"value": "computer_online", "label": "Computer program — online resource"},
+                    {"value": "audio_online", "label": "Spoken word — online resource"},
+                    {"value": "audio_disc", "label": "Spoken word — audio disc"},
+                    {"value": "video_online", "label": "Moving image — online resource"},
+                    {"value": "video_disc", "label": "Moving image — videodisc"},
+                    {"value": "map_sheet", "label": "Cartographic image — sheet"},
+                    {"value": "map_online", "label": "Cartographic image — online resource"},
+                ], "default": "text_print",
             },
             {
                 "name": "existing_field_action", "label": "Existing 336/337/338 fields", "type": "select",
@@ -578,6 +591,7 @@ OPERATIONS_PALETTE: list[dict] = [
             {"name": "end_tag", "label": "End tag", "type": "text", "default": ""},
             {"name": "subfield", "label": "Subfield code", "type": "subfield_code", "default": ""},
             {"name": "match_mode", "label": "Match", "type": "select", "options": [
+                {"value": "all", "label": "Every selected field"},
                 {"value": "contains", "label": "Contains"},
                 {"value": "starts_with", "label": "Starts with"},
                 {"value": "ends_with", "label": "Ends with"},
@@ -1189,7 +1203,14 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
     if op.kind == "sort-fields":
         return (["sort_fields(record)"], {"sort_fields"}, False)
     if op.kind == "set-008-form":
-        return (["set_008_form_of_item(record)"], {"set_008_form_of_item"}, False)
+        position = str(p.get("position", "leader"))
+        if position == "leader":
+            call = "set_008_form_of_item(record)"
+        elif position in {"23", "29"}:
+            call = f"set_008_form_of_item(record, position={position})"
+        else:
+            raise ValueError("008 form-of-item position must be leader, 23, or 29")
+        return ([call], {"set_008_form_of_item"}, False)
 
     if op.kind == "empty-find-subfield-policy":
         return ([
@@ -1204,7 +1225,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         return ([
             "apply_material_classification("
             f"record, mode={lit(str(p.get('mode', 'classify')))}, "
-            f"fixed_material={lit(str(p.get('fixed_material', 'text')))}, "
+            f"fixed_material={lit(str(p.get('fixed_material', 'text_print')))}, "
             f"existing_field_action={lit(str(p.get('existing_field_action', 'preserve')))})"
         ], {"apply_material_classification"}, False)
     if op.kind == "rda-mark-rda":
@@ -1220,7 +1241,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
 
     if op.kind == "structural-find-replace":
         return ([
-            "apply_structural_find_replace(record, **" + repr(dict(p)) + ")"
+            "apply_structural_find_replace(record, **" + data_lit(dict(p)) + ")"
         ], {"apply_structural_find_replace"}, False)
 
     if op.kind == "custom":

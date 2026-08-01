@@ -27,6 +27,14 @@ def test_set_008_form_of_item_skips_unknown_leader(record):
     assert record.get("008").data == before
 
 
+def test_set_008_form_of_item_can_use_a_proven_fixed_position(record):
+    record.leader = pymarc.Leader("00000nzz a2200000 a 4500")
+
+    transforms.set_008_form_of_item(record, "o", position=29)
+
+    assert record.get("008").data[29] == "o"
+
+
 def test_delete_tags_exact(record):
     assert record.get("029") is not None
     transforms.delete_tags(record, "029")
@@ -119,6 +127,20 @@ def test_canonical_field_order_rejects_malformed_tags_without_mutation():
     with pytest.raises(ValueError, match="record 1.*bad"):
         transforms.canonical_field_order(record, record_number=1)
     assert record.fields == before
+
+
+def test_canonical_field_order_includes_zero_record_number_in_error():
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(tag="bad", data="opaque"))
+
+    with pytest.raises(ValueError, match="record 0.*bad"):
+        transforms.canonical_field_order(record, record_number=0)
+
+
+def test_inversion_counter_handles_large_reverse_order():
+    tags = list(range(2000, 0, -1))
+
+    assert transforms.count_tag_inversions(tags) == len(tags) * (len(tags) - 1) // 2
 
 
 def test_empty_find_policy_is_explicit_and_deterministic():

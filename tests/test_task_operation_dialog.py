@@ -382,6 +382,32 @@ def test_delete_tag_has_only_workspace_and_reference_tabs(monkeypatch):
     assert fake.column_calls == []
 
 
+def test_structural_retag_workspace_exposes_action_and_match_text(monkeypatch):
+    operation = {
+        "kind": "structural-find-replace",
+        "params": {
+            "target_kind": "field_tag",
+            "tag": "035",
+            "match_mode": "contains",
+            "find": "TFeba",
+            "action": "retag",
+            "destination_tag": "936",
+        },
+    }
+    state = task_operation_dialog.new_edit_state(operation, index=0, nonce=40)
+    rendered = []
+    monkeypatch.setattr(
+        task_operation_dialog,
+        "render_param_input",
+        lambda parameter, *args, **kwargs: rendered.append(parameter["name"]),
+    )
+
+    task_operation_dialog.render_selected_operation(state, is_admin=False)
+
+    assert "action" in rendered
+    assert "find" in rendered
+
+
 def test_add_starts_with_alphabetical_selector_and_no_controls(monkeypatch):
     fake = FakeStreamlit()
     controls = []

@@ -226,12 +226,7 @@ def build_preview(
                         raise ValueError(
                             f"record {idx + 1}: malformed field tag"
                         ) from exc
-                    inversion_count += sum(
-                        1
-                        for left_index, left in enumerate(tags)
-                        for right in tags[left_index + 1 :]
-                        if left > right
-                    )
+                    inversion_count += transforms.count_tag_inversions(tags)
                 try:
                     _apply_to_record(new_record, request)
                 except ValueError as exc:
