@@ -189,5 +189,21 @@ separate incomplete release gate.
 The rebuilt dependency contract, repository-aware automated suite, compiler
 freshness guard, and whitespace gate pass. The image-only repository-file
 failures and all skip reasons remain disclosed. Browser acceptance remains
-unperformed because neither approved browser controller was available; the
-TASK-186 ticket must remain `In-Progress` unless that gate is completed later.
+unperformed because neither approved browser controller was available at that
+checkpoint; the TASK-186 ticket remained `In-Progress` pending later manual
+confirmation.
+
+## Cataloger local-Docker confirmation (2026-08-01)
+
+The cataloger subsequently tested the compact modal authoring workflow in the
+local Docker deployment and confirmed that it worked as expected, including
+the combined setup/preview Workspace. This is the approved manual-browser
+disposition for the unavailable controller; no production service, database,
+vendor record, or institutional corpus was used.
+
+The repository-mounted Docker suite was rerun on the current worktree and
+passed 1,988 tests with five disclosed skips (four Docker-CLI-dependent
+Compose checks and the unavailable institutional corpus). The native contract
+freshness test passed and the compiler manifest remained unchanged. The
+image-only repository-file failures remain documented as a build-context
+limitation and are not counted as application passes.

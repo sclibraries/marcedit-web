@@ -29,7 +29,21 @@ Success Criteria:
 - Complete Docker verification reports every skip, and independent review has
   no unresolved Critical or Important findings.
 
-Status: Todo
+Status: In-Progress
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-187-persistent-import-diagnostics-design.md`
+
+Plan:
+- `docs/superpowers/plans/2026-08-01-task-187-persistent-import-diagnostics.md`
+
+Process and status review (2026-08-01):
+- The implementation is present in the isolated `task-186` worktree but is
+  not yet committed or completed.
+- The mounted-source Docker suite currently passes 1,988 tests with five
+  explicitly reported skips; the native compiler contract is fresh.
+- Completion remains blocked by the remediation plan's RED/GREEN matrix:
+  malformed session payloads can still raise, the required unresolved-warning
+  copy is not preserved, Dismiss does not immediately rerun, and the focused
+  tests do not yet cover successful archives, mixed archives, quota failures,
+  unexpected exceptions, replacement, and lifecycle reset.

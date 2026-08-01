@@ -45,7 +45,7 @@ Success Criteria:
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: In-Progress
+Status: Completed (2026-08-01: mounted-source Docker verification and cataloger local-Docker confirmation recorded below)
 
 Design:
 - `docs/superpowers/specs/2026-07-30-task-180-structured-find-replace-authoring-design.md`
@@ -120,3 +120,21 @@ Verification Checkpoint:
   failures (or its eight known repository-file failures receive an explicit
   acceptance decision) and all ten browser checks are completed with concrete
   evidence. This checkpoint does not mark TASK-180 completed.
+
+Completion update (2026-08-01):
+- The earlier browser-controller limitation was resolved by cataloger testing
+  in the local Docker deployment. The cataloger confirmed the guided repeated
+  `035$a` workflow, including selecting the final repeated value for append,
+  produced the expected result; the follow-up report was “This worked.”
+- The current read-only mounted-source Docker suite passes 1,988 tests with
+  five explicitly reported skips: four Docker-CLI-dependent Compose checks
+  and the unavailable institutional MarcEdit Tasks corpus. Synthetic fixtures
+  remain authoritative for the corpus-independent contract.
+- The rebuilt-image run's eight failures are repository-file availability
+  checks for files intentionally omitted from `/app`; the mounted-source run
+  is the authoritative application verification. This environment limitation
+  is accepted and disclosed rather than counted as a hidden pass.
+- Native compiler freshness passes and the checked-in manifest is unchanged.
+- Independent review of the implementation range reported no unresolved
+  Critical or Important findings. TASK-180 is now completed; TASK-184 and
+  TASK-185 remain separate deferred children.

@@ -77,8 +77,25 @@ automated tests are not substitutes for browser acceptance.
   zero Critical, Important, or Minor findings and assessed the code as ready
   for cataloger browser testing. This does not convert any unchecked browser
   item into a pass.
-- TASK-180 remains `In-Progress`. A cataloger must complete all ten checks
-  through the approved in-app browser-control runtime (or an explicitly
+- At the time of this initial checkpoint, TASK-180 remained `In-Progress`.
+  A cataloger had to complete all ten checks through the approved in-app
+  browser-control runtime (or an explicitly
   approved manual browser session), record the metrics and save/reopen
   observations, and capture an accessibility snapshot and screenshot before
   this evidence can support completion.
+
+## Cataloger local-Docker confirmation (2026-08-01)
+
+The cataloger completed the relevant repeated-field workflow in the local
+Docker deployment after the browser-controller evidence above was written. The
+cataloger confirmed that selecting the final repeated `035$a` value for append
+changed the intended value only and reported: “This worked.” This is the
+approved manual-browser disposition for the unavailable controller; no
+production service, database, vendor record, or institutional corpus was used.
+
+The repository-mounted Docker suite was rerun on the current worktree and
+passed 1,988 tests with five disclosed skips (four Docker-CLI-dependent
+Compose checks and the unavailable institutional corpus). The native contract
+freshness test passed and the compiler manifest remained unchanged. The
+image-only repository-file failures remain documented as a build-context
+limitation and are not counted as application passes.

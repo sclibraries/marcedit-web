@@ -101,8 +101,9 @@ Phase 3:
   Critical, Important, or Minor findings, and cataloger browser acceptance
   completed on synthetic data. TASK-179 is `Completed`; TASK-174 remains
   `In-Progress`.
-- TASK-180: structured Find/Replace and Subfield Edit authoring is
-  implemented through an evidence checkpoint but remains `In-Progress`.
+- TASK-180: structured Find/Replace and Subfield Edit authoring was
+  implemented through the initial evidence checkpoint and was then completed
+  after cataloger local-Docker confirmation.
   Focused and native-contract guards pass, and a supplementary
   TASK-179-precedent read-only-mounted complete suite passes with five
   disclosed environment/corpus skips. The required rebuilt-image complete
@@ -122,6 +123,22 @@ Phase 3:
   TASK-169.
 - TASK-183: deferred cataloger-facing reference and contextual help for every
   deterministic Tasks operation.
+
+Current child-status map (2026-08-01):
+- TASK-180 — `Completed`; implementation, mounted-source Docker verification,
+  native contract freshness, independent review, and cataloger local-Docker
+  confirmation are recorded in its ticket and evidence.
+- TASK-186 — `Completed`; compact modal authoring and the combined setup/preview
+  Workspace are recorded in its ticket and evidence.
+- TASK-187 — `In-Progress`; implementation is present in the isolated worktree,
+  but the linked remediation plan remains open for malformed-state handling,
+  required warning copy, dismissal rerun behavior, and the missing outcome
+  matrix.
+- TASK-175, TASK-181, TASK-182, TASK-183, TASK-184, and TASK-185 — `Todo`;
+  approved designs exist, but implementation plans and code are not yet
+  complete. TASK-184 and TASK-185 depend on the completed TASK-180 foundation.
+- TASK-174 remains `In-Progress` until every child has completed its own tests,
+  review, and evidence gates.
 
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.
