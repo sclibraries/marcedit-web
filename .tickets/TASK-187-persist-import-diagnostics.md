@@ -29,13 +29,20 @@ Success Criteria:
 - Complete Docker verification reports every skip, and independent review has
   no unresolved Critical or Important findings.
 
-Status: In-Progress
+Status: Completed
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-187-persistent-import-diagnostics-design.md`
 
 Plan:
 - `docs/superpowers/plans/2026-08-01-task-187-persistent-import-diagnostics.md`
+
+Implementation checkpoint (2026-08-01):
+- Import results are normalized and persisted across reruns, with bounded
+  unresolved lines, migration fingerprints/choices, archive entry isolation,
+  quota and exception categories, lifecycle clearing, and immediate Dismiss.
+- Focused workspace tests and the complete mounted-source Docker suite pass
+  (`2042 passed, 5 skipped`).
 
 Process and status review (2026-08-01):
 - The implementation is present in the isolated `task-186` worktree but is

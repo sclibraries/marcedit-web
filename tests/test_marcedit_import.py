@@ -110,7 +110,7 @@ def test_empty_find_subfield_edit_is_unresolved_not_python_replace():
     ]
     assert "sf.value.replace(''," not in result.body
     assert "# OP: custom" in result.body
-    assert "empty Find has no proven external meaning" in result.body
+    assert "empty Find has no implicit meaning" in result.body
 
 
 def test_unproven_caret_b_subfield_edit_remains_unresolved():
@@ -127,11 +127,11 @@ def test_unproven_caret_b_subfield_edit_remains_unresolved():
         "SUBFIELD_EDIT\t856\tu\t^b\t"
         "http://libproxy.smith.edu/login?url=\t0|0",
     ]
-    assert "unproven external syntax '^b'" in result.body
+    assert "^b syntax is not proven" in result.body
     assert "sf.value.replace('^b'," not in result.body
 
 
-def test_nonempty_subfield_edit_keeps_legacy_import_contract():
+def test_nonempty_subfield_edit_maps_to_guided_contract():
     source = "SUBFIELD_EDIT\t035\ta\tTFeba\t(SCTFEBA)\t0|0\n"
     result = marcedit_import.convert_tasksfile_text(
         source,
@@ -139,11 +139,9 @@ def test_nonempty_subfield_edit_keeps_legacy_import_contract():
         description_fallback="",
     )
     assert result.unsupported == []
-    assert (
-        '# OP: subfield-replace {"code": "a", "find": "TFeba", '
-        '"replace": "(SCTFEBA)", "tag": "035"}'
-    ) in result.body
-    assert "sf.value.replace('TFeba', '(SCTFEBA)')" in result.body
+    assert '# OP: guided-find-replace' in result.body
+    assert '"replacement_mode": "matched_text"' in result.body
+    assert "apply_guided_find_replace" in result.body
 
 
 # ---------------------------------------------------------------------------

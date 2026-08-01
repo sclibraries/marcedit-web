@@ -21,7 +21,7 @@ Success Criteria:
 - Applicable tests pass with every skip reported and code review has no
   unresolved Critical or Important findings.
 
-Status: Todo
+Status: Completed
 
 Context:
 - `.streamlit/config.toml` currently sets `[client] toolbarMode = "minimal"`.
@@ -31,3 +31,14 @@ Context:
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-175-streamlit-activity-header-design.md`
+
+Plan:
+- `docs/superpowers/plans/2026-08-01-task-175-streamlit-activity-header.md`
+
+Implementation checkpoint (2026-08-01):
+- `.streamlit/config.toml` now uses the approved viewer-safe
+  `toolbarMode = "viewer"` setting.
+- `tests/test_streamlit_config.py` passes in Docker.
+- Browser verification of the native running indicator and viewer/private
+  chrome is recorded in
+  `docs/superpowers/evidence/task-175-streamlit-activity-header-browser-smoke.md`.

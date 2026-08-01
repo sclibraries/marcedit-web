@@ -1241,8 +1241,14 @@ def test_new_unresolved_text_import_is_not_persisted(monkeypatch, tmp_path):
     tasks_render._do_marcedit_import(upload, tmp_path)
 
     assert saved == []
-    assert any("Not imported" in warning for warning in fake_st.warnings)
-    assert fake_st.code_blocks == ["RDAHELPER"]
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert result["status"] == "rejected"
+    assert result["rejection_category"] == "unresolved-instructions"
+    assert result["imported_task_names"] == []
+    assert len(result["entries"]) == 1
+    assert result["entries"][0]["status"] == "unresolved"
+    assert result["entries"][0]["task_name"] == "rda"
+    assert result["entries"][0]["unresolved_lines"] == ["RDAHELPER"]
 
 
 def test_empty_find_import_is_not_persisted(monkeypatch, tmp_path):
@@ -1273,15 +1279,326 @@ def test_empty_find_import_is_not_persisted(monkeypatch, tmp_path):
 
     tasks_render._do_marcedit_import(upload, tmp_path)
 
-    assert saved == []
-    refusal = next(
-        text for text in fake_st.warnings if "Not imported" in text
-    )
-    assert "unresolved external instructions" in refusal
-    assert "Add/Build" not in refusal
-    assert fake_st.code_blocks == [
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert result["status"] == "rejected"
+    assert result["rejection_category"] == "unresolved-instructions"
+    assert result["entries"][0]["unresolved_lines"] == [
         "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0"
     ]
+    assert result["entries"][0]["omitted_unresolved"] == 0
+    assert result["entries"][0]["status"] == "unresolved"
+
+
+def test_import_result_persists_across_rerun_and_is_dismissible(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    big = [f"line-{index}" for index in range(1, 25)]
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = {
+        "status": "rejected",
+        "uploaded_filename": "bulk.txt",
+        "imported_task_names": [],
+        "entries": [{
+            "entry_name": "bulk.txt",
+            "status": "unresolved",
+            "task_name": "bulk-task",
+            "message": "this task contains unresolved external instructions",
+            "unresolved_lines": big,
+            "omitted_unresolved": 4,
+        }],
+        "rejection_category": "unresolved-instructions",
+    }
+
+    tasks_render._render_marcedit_import_result()
+
+    assert fake_st.warnings  # status summary rendered as warning
+    assert fake_st.code_blocks == big[:20]
+    assert fake_st.captions[-1] == "4 additional unresolved lines omitted."
+    assert fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] is not None
+
+    fake_st.clicked_labels.add("Dismiss")
+    tasks_render._render_marcedit_import_result()
+    assert tasks_render.K_MARCEDIT_IMPORT_RESULT not in fake_st.session_state
+
+
+def test_malformed_import_result_is_discarded_without_crashing(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = {
+        "status": "rejected",
+        "uploaded_filename": "broken.task",
+        "entries": 42,
+    }
+
+    tasks_render._render_marcedit_import_result()
+
+    assert tasks_render.K_MARCEDIT_IMPORT_RESULT not in fake_st.session_state
+    assert fake_st.errors == []
+
+
+def test_unresolved_import_result_keeps_actionable_warning_copy(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = {
+        "status": "rejected",
+        "uploaded_filename": "legacy.tasksfile",
+        "imported_task_names": [],
+        "entries": [{
+            "entry_name": "legacy.tasksfile",
+            "status": "unresolved",
+            "message": "this task contains unresolved external instructions",
+            "unresolved_lines": ["RDAHELPER"],
+            "omitted_unresolved": 0,
+        }],
+        "rejection_category": "unresolved-instructions",
+    }
+
+    tasks_render._render_marcedit_import_result()
+
+    assert fake_st.warnings[0].startswith(
+        "Not imported: this task contains unresolved external instructions"
+    )
+    assert any(
+        "Recreate each listed instruction" in warning
+        for warning in fake_st.warnings
+    )
+
+
+def test_dismiss_import_result_requests_immediate_rerun(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = {
+        "status": "success",
+        "uploaded_filename": "ok.tasksfile",
+        "imported_task_names": ["ok"],
+        "entries": [],
+    }
+    fake_st.clicked_labels.add("Dismiss")
+
+    tasks_render._render_marcedit_import_result()
+
+    assert tasks_render.K_MARCEDIT_IMPORT_RESULT not in fake_st.session_state
+    assert fake_st.rerun_called
+
+
+def test_upload_read_exception_is_durable_and_replaces_old_result(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = {
+        "status": "success",
+        "uploaded_filename": "old.tasksfile",
+        "imported_task_names": ["old"],
+        "entries": [],
+    }
+
+    def fail_read():
+        raise OSError("upload read failed")
+
+    upload = SimpleNamespace(name="new.tasksfile", getvalue=fail_read)
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert result["status"] == "rejected"
+    assert result["rejection_category"] == "unexpected"
+    assert "upload read failed" in result["entries"][0]["message"]
+
+
+def test_archive_save_failure_keeps_successful_entries_and_diagnostic(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.quotas, "check_upload", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *args, **kwargs: None)
+    ok = tasks_render.marcedit_import.ConversionResult(
+        name="ok", description="", body="pass"
+    )
+    later = tasks_render.marcedit_import.ConversionResult(
+        name="later", description="", body="pass"
+    )
+    archive = SimpleNamespace(
+        archive_errors=[],
+        entries=[
+            SimpleNamespace(entry_name="ok.txt", success=True, conversion=ok, error=None),
+            SimpleNamespace(entry_name="later.txt", success=True, conversion=later, error=None),
+        ],
+    )
+    monkeypatch.setattr(tasks_render, "_convert_uploaded_archive", lambda *args: archive)
+    saved = []
+
+    def save_task(**kwargs):
+        if kwargs["name"] == "later":
+            raise RuntimeError("database write failed")
+        saved.append(kwargs)
+
+    monkeypatch.setattr(tasks_render.task_db, "save_task", save_task)
+    upload = SimpleNamespace(name="bundle.task", getvalue=lambda: b"archive")
+
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    assert [item["name"] for item in saved] == ["ok"]
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert result["status"] == "partial"
+    assert [entry["status"] for entry in result["entries"]] == [
+        "imported", "failed"
+    ]
+    assert "database write failed" in result["entries"][1]["message"]
+
+
+def _wire_import_test(monkeypatch, tasks_render, saved):
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.quotas, "check_upload", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        tasks_render.task_db,
+        "save_task",
+        lambda **kwargs: saved.append(kwargs),
+    )
+
+
+def test_successful_text_import_has_durable_success_result(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved = []
+    _wire_import_test(monkeypatch, tasks_render, saved)
+    upload = SimpleNamespace(
+        name="delete-029.tasksfile",
+        getvalue=lambda: b"DELETE\t029\n",
+    )
+
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    assert len(saved) == 1
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert result["status"] == "success"
+    assert result["imported_task_names"] == ["delete-029"]
+    assert result["entries"][0]["status"] == "imported"
+
+
+def test_archive_import_preserves_mixed_entry_outcomes(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved = []
+    _wire_import_test(monkeypatch, tasks_render, saved)
+    ok = tasks_render.marcedit_import.ConversionResult(
+        name="ok", description="", body="pass"
+    )
+    unresolved = tasks_render.marcedit_import.ConversionResult(
+        name="needs-review",
+        description="",
+        body="# TODO",
+        unsupported=["RDAHELPER"],
+    )
+    archive = SimpleNamespace(
+        archive_errors=[],
+        entries=[
+            SimpleNamespace(
+                entry_name="ok.txt", success=True, conversion=ok, error=None
+            ),
+            SimpleNamespace(
+                entry_name="needs-review.txt",
+                success=True,
+                conversion=unresolved,
+                error=None,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        tasks_render, "_convert_uploaded_archive", lambda *args: archive
+    )
+    upload = SimpleNamespace(
+        name="bundle.task", getvalue=lambda: b"archive-bytes"
+    )
+
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    assert [item["name"] for item in saved] == ["ok"]
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert result["status"] == "partial"
+    assert [entry["status"] for entry in result["entries"]] == [
+        "imported", "unresolved"
+    ]
+    assert result["entries"][1]["unresolved_lines"] == ["RDAHELPER"]
+
+
+def test_quota_rejection_is_durable_and_categorized(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved = []
+    _wire_import_test(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.quotas,
+        "check_upload",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            tasks_render.quotas.QuotaExceeded("tasksfile", 10, 5)
+        ),
+    )
+    upload = SimpleNamespace(name="too-large.tasksfile", getvalue=lambda: b"x")
+
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert saved == []
+    assert result["status"] == "rejected"
+    assert result["rejection_category"] == "quota"
+
+
+def test_unexpected_import_exception_is_durable(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved = []
+    _wire_import_test(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.marcedit_import,
+        "convert_tasksfile_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("converter failed")
+        ),
+    )
+    upload = SimpleNamespace(name="broken.tasksfile", getvalue=lambda: b"x")
+
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert result["status"] == "rejected"
+    assert result["rejection_category"] == "unexpected"
+    assert "converter failed" in result["entries"][0]["message"]
+
+
+def test_later_import_replaces_previous_result(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved = []
+    _wire_import_test(monkeypatch, tasks_render, saved)
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = {
+        "status": "rejected",
+        "uploaded_filename": "old.tasksfile",
+        "imported_task_names": [],
+        "entries": [{"status": "failed", "message": "old"}],
+    }
+    upload = SimpleNamespace(name="new.tasksfile", getvalue=lambda: b"DELETE\t029\n")
+
+    tasks_render._do_marcedit_import(upload, tmp_path)
+
+    result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
+    assert result["uploaded_filename"] == "new.tasksfile"
+    assert result["imported_task_names"] == ["new"]
 
 
 def test_save_callback_reports_invalid_form_regex_without_persisting(

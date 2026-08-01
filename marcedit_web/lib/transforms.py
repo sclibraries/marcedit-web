@@ -17,6 +17,15 @@ from __future__ import annotations
 import re
 
 from pymarc import Field, Record, Subfield
+from .rda_operations import (
+    apply_material_classification,
+    expand_abbreviations,
+    mark_rda,
+    normalize_relators,
+    promote_260,
+    remove_gmd,
+)
+from .structural_replace import apply_structural_find_replace
 
 
 # --- Leader/008 helpers ------------------------------------------------------
@@ -194,9 +203,39 @@ def add_field_if_absent(record: Record, field: Field) -> bool:
 # --- Field sort --------------------------------------------------------------
 
 
+def canonical_field_order(
+    record: Record, *, record_number: int | None = None
+) -> tuple[bool, int]:
+    """Sort fields by validated numeric tag, preserving duplicate order.
+
+    Validation is performed before mutation so malformed input cannot produce
+    a partially reordered record. The inversion count is the number of field
+    pairs whose source order contradicted canonical numeric order.
+    """
+    tags: list[int] = []
+    for field in record.fields:
+        if len(field.tag) != 3 or not field.tag.isascii() or not field.tag.isdigit():
+            location = f"record {record_number}: " if record_number else ""
+            raise ValueError(f"{location}field tag {field.tag!r} is not three ASCII digits")
+        tags.append(int(field.tag))
+    # Count all out-of-order pairs for a useful preview summary, not only
+    # adjacent inversions.
+    inversions = sum(
+        1
+        for index, left in enumerate(tags)
+        for right in tags[index + 1 :]
+        if left > right
+    )
+    ordered = sorted(record.fields, key=lambda field: int(field.tag))
+    changed = ordered != record.fields
+    if changed:
+        record.fields[:] = ordered
+    return changed, inversions
+
+
 def sort_fields(record: Record) -> None:
-    """Sort variable fields by tag (preserving relative order within a tag)."""
-    record.fields.sort(key=lambda f: f.tag)
+    """Compatibility wrapper for the saved ``sort-fields`` operation."""
+    canonical_field_order(record)
 
 
 def is_control_tag(tag: str) -> bool:
@@ -473,6 +512,67 @@ def replace_field_subfield_and_indicators(
         if updated:
             field.indicators = replacement_indicators
             field.subfields = subfields
+
+
+def apply_empty_find_subfield_policy(
+    record: Record,
+    tag: str,
+    code: str,
+    value: str,
+    policy: str,
+) -> dict[str, int]:
+    """Apply an explicit meaning to an imported empty-find edit."""
+    if policy not in {"add_if_missing", "replace_existing", "ensure_one"}:
+        raise ValueError("empty-find policy is not supported")
+    result = {
+        "fields_changed": 0,
+        "values_changed": 0,
+        "duplicates_removed": 0,
+    }
+    for field in record.get_fields(tag):
+        if field.is_control_field():
+            continue
+        matches = [
+            index for index, subfield in enumerate(field.subfields)
+            if subfield.code == code
+        ]
+        if policy == "add_if_missing":
+            if matches:
+                continue
+            field.subfields.append(Subfield(code, value))
+            result["fields_changed"] += 1
+            result["values_changed"] += 1
+            continue
+        if policy == "replace_existing":
+            changed = False
+            for index in matches:
+                if field.subfields[index].value != value:
+                    field.subfields[index] = Subfield(code, value)
+                    changed = True
+                    result["values_changed"] += 1
+            if changed:
+                result["fields_changed"] += 1
+            continue
+        if matches:
+            first = matches[0]
+            changed = field.subfields[first].value != value
+            if changed:
+                field.subfields[first] = Subfield(code, value)
+                result["values_changed"] += 1
+            field.subfields = [
+                subfield
+                for index, subfield in enumerate(field.subfields)
+                if index == first or index not in matches
+            ]
+            removed = len(matches) - 1
+            result["duplicates_removed"] += removed
+            if changed or removed:
+                result["fields_changed"] += 1
+        else:
+            field.subfields.append(Subfield(code, value))
+            result["fields_changed"] += 1
+            result["values_changed"] += 1
+    return result
 
 
 def regex_replace_field_data(

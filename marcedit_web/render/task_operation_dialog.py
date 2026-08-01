@@ -11,7 +11,13 @@ from typing import Any, Callable, Optional, Sequence
 import streamlit as st
 from streamlit.errors import StreamlitAPIException
 
-from marcedit_web.lib import task_authoring, task_builder
+from marcedit_web.lib import (
+    rda_operations,
+    structural_replace,
+    task_authoring,
+    task_builder,
+    transforms,
+)
 from marcedit_web.render import task_authoring as task_authoring_render
 from marcedit_web.render import task_operation_reference
 
@@ -90,6 +96,8 @@ def default_params_for(kind: str) -> dict[str, Any]:
         elif parameter["type"] == "bool":
             params[parameter["name"]] = False
         elif parameter["type"] == "subfields":
+            params[parameter["name"]] = []
+        elif parameter["type"] == "json":
             params[parameter["name"]] = []
         else:
             params[parameter["name"]] = ""
@@ -220,6 +228,21 @@ def render_param_input(
                     label
                 )
             )
+    elif parameter_type == "json":
+        raw = st.text_area(
+            label,
+            value=json.dumps(current or [], ensure_ascii=False, indent=2),
+            help=help_text or "Enter a JSON list of structured pieces.",
+            key=key,
+        )
+        try:
+            params[name] = json.loads(raw)
+        except json.JSONDecodeError:
+            st.warning(
+                "`{0}`: not valid JSON; previous value preserved.".format(
+                    label
+                )
+            )
     elif parameter_type == "select":
         options = [option["value"] for option in parameter.get("options", [])]
         if current not in options and options:
@@ -288,7 +311,19 @@ def _preview_required(operation: dict[str, Any], entry) -> bool:
         entry is not None
         and not operation.get("authoring_error")
         and operation.get("kind")
-        in {"add-field", "build-field", "guided-find-replace"}
+        in {
+            "add-field",
+            "build-field",
+            "guided-find-replace",
+            "structural-find-replace",
+            "sort-fields",
+            "rda-classify-material",
+            "rda-mark-rda",
+            "rda-remove-gmd",
+            "rda-expand-abbreviations",
+            "rda-normalize-relators",
+            "rda-promote-260",
+        }
     )
 
 
@@ -326,6 +361,38 @@ def render_selected_operation(
         task_authoring_render.render_guided_find_replace_params(
             params, key_prefix=key_prefix, rerun=rerun_fragment_or_app
         )
+    elif kind == "structural-find-replace":
+        target = params.get("target_kind", "data_field")
+        action = params.get("action", "replace_matched_text")
+        match_mode = params.get("match_mode", "contains")
+        visible = {"target_kind", "match_mode", "ignore_case", "occurrences"}
+        if target == "tag_range":
+            visible.update({"start_tag", "end_tag"})
+        else:
+            visible.add("tag")
+        if target == "subfield":
+            visible.add("subfield")
+        if target in {"subfield", "all_subfields", "data_field", "tag_range"}:
+            if match_mode == "structured":
+                visible.update({"pattern_pieces", "replacement_pieces"})
+            else:
+                visible.add("find")
+        if action == "replace_matched_text":
+            visible.add("replacement")
+        elif action == "replace_field":
+            visible.update({"replacement_ind1", "replacement_ind2", "replacement_subfields"})
+        elif action == "retag":
+            visible.add("destination_tag")
+        elif action == "set_indicators":
+            visible.update({"match_ind1", "match_ind2", "new_ind1", "new_ind2"})
+        for parameter in entry["params"]:
+            if parameter["name"] in visible:
+                render_param_input(
+                    parameter,
+                    params,
+                    key_prefix=key_prefix,
+                    is_admin=is_admin,
+                )
     else:
         for parameter in entry["params"]:
             render_param_input(
@@ -363,6 +430,134 @@ def _render_preview(
                 previewed_discard_count=discard_count,
             )
         )
+        return
+    if operation.get("kind") == "structural-find-replace":
+        params = operation.get("params")
+        if not isinstance(params, dict):
+            st.error("Structural operation parameters are not a mapping.")
+            return
+        errors = structural_replace.validate_request(**params)
+        if errors:
+            st.warning("; ".join(errors))
+            return
+        if store is None or not store.count():
+            st.info("Upload a MARC file to preview this structural operation.")
+            return
+        if st.button(
+            "Preview this structural operation",
+            key=_key(state, "structural_preview"),
+        ):
+            source = store.get(0)
+            candidate = copy.deepcopy(source)
+            try:
+                result = structural_replace.apply_structural_find_replace(
+                    candidate, **params
+                )
+            except (TypeError, ValueError) as exc:
+                st.session_state[_key(state, "structural_preview_result")] = {
+                    "error": str(exc)
+                }
+            else:
+                st.session_state[_key(state, "structural_preview_result")] = {
+                    "before": source.as_marc().decode("utf-8", errors="replace"),
+                    "after": candidate.as_marc().decode("utf-8", errors="replace"),
+                    "result": result,
+                    "store_id": id(store),
+                    "store_revision": getattr(store, "revision", None),
+                    "request_key": json.dumps(params, sort_keys=True, default=str),
+                }
+        preview = st.session_state.get(
+            _key(state, "structural_preview_result")
+        )
+        if not isinstance(preview, dict):
+            st.info("Preview this operation against the first loaded record.")
+            return
+        if preview.get("error"):
+            st.error(f"Structural preview failed: {preview['error']}")
+            return
+        if (
+            preview.get("store_id") != id(store)
+            or preview.get("store_revision") != getattr(store, "revision", None)
+            or preview.get("request_key")
+            != json.dumps(params, sort_keys=True, default=str)
+        ):
+            st.info("This preview is stale. Preview the operation again.")
+            return
+        result = preview.get("result") or {}
+        st.caption(
+            "Matched fields: {0} · Changed fields: {1} · Matched occurrences: {2}".format(
+                result.get("matched_fields", 0),
+                result.get("changed_fields", 0),
+                result.get("matched_occurrences", 0),
+            )
+        )
+        st.markdown("**Before**")
+        st.code(preview.get("before", ""), language="text")
+        st.markdown("**After**")
+        st.code(preview.get("after", ""), language="text")
+        return
+    if operation.get("kind") in {
+        "sort-fields",
+        "rda-classify-material",
+        "rda-mark-rda",
+        "rda-remove-gmd",
+        "rda-expand-abbreviations",
+        "rda-normalize-relators",
+        "rda-promote-260",
+    }:
+        if store is None or not store.count():
+            st.info("Upload a MARC file to preview this operation.")
+            return
+        params = operation.get("params") or {}
+        request_key = json.dumps(params, sort_keys=True, default=str)
+        result_key = _key(state, "deterministic_preview_result")
+        if st.button("Preview this operation", key=_key(state, "deterministic_preview")):
+            source = store.get(0)
+            candidate = copy.deepcopy(source)
+            kind = operation["kind"]
+            if kind == "sort-fields":
+                changed, detail = transforms.canonical_field_order(candidate)
+                result = {"changed": changed, "inversions": detail}
+            elif kind == "rda-classify-material":
+                result = rda_operations.apply_material_classification(
+                    candidate, **params
+                )
+            elif kind == "rda-mark-rda":
+                result = {"changed": rda_operations.mark_rda(candidate)}
+            elif kind == "rda-remove-gmd":
+                result = {"removed": rda_operations.remove_gmd(
+                    candidate, str(params.get("value") or "")
+                )}
+            elif kind == "rda-expand-abbreviations":
+                result = {"changed": rda_operations.expand_abbreviations(candidate)}
+            elif kind == "rda-normalize-relators":
+                result = {"changed": rda_operations.normalize_relators(candidate)}
+            else:
+                result = {"changed": rda_operations.promote_260(candidate)}
+            st.session_state[result_key] = {
+                "before": source.as_marc().decode("utf-8", errors="replace"),
+                "after": candidate.as_marc().decode("utf-8", errors="replace"),
+                "result": result,
+                "store_id": id(store),
+                "store_revision": getattr(store, "revision", None),
+                "request_key": request_key,
+            }
+        preview = st.session_state.get(result_key)
+        if not isinstance(preview, dict):
+            st.info("Preview this operation against the first loaded record.")
+            return
+        if (
+            preview.get("store_id") != id(store)
+            or preview.get("store_revision") != getattr(store, "revision", None)
+            or preview.get("request_key") != request_key
+        ):
+            st.info("This preview is stale. Preview the operation again.")
+            return
+        st.caption("Result: " + json.dumps(preview.get("result") or {}, sort_keys=True))
+        st.markdown("**Before**")
+        st.code(preview.get("before", ""), language="text")
+        st.markdown("**After**")
+        st.code(preview.get("after", ""), language="text")
         return
     preview_record = (
         store.get(0)

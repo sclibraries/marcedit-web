@@ -31,7 +31,7 @@ Success Criteria:
 - The ticket is marked Completed only after TDD verification and code review
   have no unresolved Critical or Important findings.
 
-Status: In-Progress
+Status: Completed
 
 Design:
 - `docs/superpowers/specs/2026-07-29-smith-metadata-studio-open-task-migration-design.md`
@@ -116,13 +116,12 @@ Phase 3:
   successful outcome. Final whole-branch review of `f9b8968..0c1c14a`
   found zero Critical, Important, or Minor findings and assessed the code as
   ready for cataloger browser testing. TASK-180 is not a completed
-  checkpoint; TASK-184 and TASK-185 remain deferred.
-- TASK-181: deferred explicit deterministic RDA operations.
-- TASK-182: deferred explicit MARC field reordering as both a quick action and
-  an optional task step, while View continues to preserve source order under
-  TASK-169.
-- TASK-183: deferred cataloger-facing reference and contextual help for every
-  deterministic Tasks operation.
+  checkpoint; TASK-184 and TASK-185 are now completed in the final child map.
+- TASK-181: explicit deterministic RDA operations are implemented and verified.
+- TASK-182: canonical MARC field reordering is implemented as both a quick
+  action and an optional task step; View still preserves source order.
+- TASK-183: cataloger-facing reference and contextual help are implemented
+  from a registry-backed generated guide.
 
 Current child-status map (2026-08-01):
 - TASK-180 — `Completed`; implementation, mounted-source Docker verification,
@@ -130,15 +129,27 @@ Current child-status map (2026-08-01):
   confirmation are recorded in its ticket and evidence.
 - TASK-186 — `Completed`; compact modal authoring and the combined setup/preview
   Workspace are recorded in its ticket and evidence.
-- TASK-187 — `In-Progress`; implementation is present in the isolated worktree,
-  but the linked remediation plan remains open for malformed-state handling,
-  required warning copy, dismissal rerun behavior, and the missing outcome
-  matrix.
-- TASK-175, TASK-181, TASK-182, TASK-183, TASK-184, and TASK-185 — `Todo`;
-  approved designs exist, but implementation plans and code are not yet
-  complete. TASK-184 and TASK-185 depend on the completed TASK-180 foundation.
-- TASK-174 remains `In-Progress` until every child has completed its own tests,
+- TASK-187 — `Completed`; durable import diagnostics, bounded malformed-state
+  handling, dismissal rerun behavior, and the outcome matrix are verified.
+- TASK-175, TASK-181, TASK-182, TASK-183, and TASK-184 — `Completed`; their
+  implementation, focused tests, full Docker suite, and ticket checkpoints are
+  recorded in their child tickets.
+- TASK-185 — `Completed`; proven adapters, explicit empty-find operations, and
+  ordered blocking migration-review drafts (including archive entries) are
+  implemented and verified. TASK-184 remains its structural dependency.
+- TASK-174 is now `Completed` after every child completed its own tests,
   review, and evidence gates.
+
+Final implementation checkpoint (2026-08-01):
+- TASK-175, TASK-181, TASK-182, TASK-183, TASK-184, TASK-185, and TASK-187
+  are completed in this isolated worktree; TASK-180 and TASK-186 were already
+  completed and remain untouched in their existing history.
+- Final mounted-source Docker verification: `2042 passed, 5 skipped`.
+  The five skips are two Docker-CLI Compose checks and one unavailable local
+  institutional corpus check (reported explicitly; synthetic fixtures remain
+  authoritative).
+- `git diff --check` passes. No production service, route, worker, proxy,
+  authentication, or ITS-managed configuration was changed.
 
 Related Tickets:
 - TASK-175 owns Streamlit activity-header restoration.

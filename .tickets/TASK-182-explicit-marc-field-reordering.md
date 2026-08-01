@@ -32,7 +32,17 @@ Success Criteria:
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: Todo
+Status: Completed
+
+Plan: `docs/superpowers/plans/2026-08-01-task-182-canonical-field-reordering.md`
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-182-canonical-field-reordering-design.md`
+
+Implementation checkpoint (2026-08-01):
+- Added one stable canonical numeric-tag transform for quick actions and task
+  steps, inversion/representative before-after reporting, malformed-tag
+  fail-closed handling, and stable duplicate ordering.
+- Verified quick/task equivalence, preview non-mutation, and history paths in
+  focused tests and the complete mounted-source Docker suite (`2042 passed,
+  5 skipped`).

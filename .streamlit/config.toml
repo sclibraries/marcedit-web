@@ -12,10 +12,9 @@ corsAllowedOrigins = ["https://libtools2.smith.edu"]
 gatherUsageStats = false
 
 [client]
-# Hide Streamlit's Deploy / dev toolbar — this is a cataloger-facing
-# app, not a developer playground. The ≡ menu remains accessible
-# (it's framework-level, not toolbar-level).
-toolbarMode = "minimal"
+# Restore the native activity/running indicator while keeping developer
+# controls hidden from viewer/cataloger sessions (TASK-175).
+toolbarMode = "viewer"
 
 [theme]
 base = "light"

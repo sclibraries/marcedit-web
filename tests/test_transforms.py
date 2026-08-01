@@ -95,6 +95,49 @@ def test_sort_fields_orders_by_tag(record):
     assert tags == sorted(tags)
 
 
+def test_canonical_field_order_reports_inversions_and_preserves_duplicates():
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(tag="650", indicators=[" ", "0"], subfields=[pymarc.Subfield("a", "first")]))
+    record.add_field(pymarc.Field(tag="001", data="id"))
+    record.add_field(pymarc.Field(tag="650", indicators=[" ", "0"], subfields=[pymarc.Subfield("a", "second")]))
+    record.add_field(pymarc.Field(tag="880", indicators=[" ", " "], subfields=[pymarc.Subfield("6", "650-01")]))
+
+    changed, inversions = transforms.canonical_field_order(record)
+
+    assert changed is True
+    assert inversions == 1
+    assert [field.tag for field in record.fields] == ["001", "650", "650", "880"]
+    assert [field.value() for field in record.get_fields("650")] == ["first", "second"]
+
+
+def test_canonical_field_order_rejects_malformed_tags_without_mutation():
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(tag="245", indicators=["1", "0"], subfields=[pymarc.Subfield("a", "title")]))
+    record.add_field(pymarc.Field(tag="bad", data="opaque"))
+    before = list(record.fields)
+
+    with pytest.raises(ValueError, match="record 1.*bad"):
+        transforms.canonical_field_order(record, record_number=1)
+    assert record.fields == before
+
+
+def test_empty_find_policy_is_explicit_and_deterministic():
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(
+        tag="856", indicators=["4", "0"],
+        subfields=[pymarc.Subfield("u", "one"), pymarc.Subfield("u", "two")],
+    ))
+    result = transforms.apply_empty_find_subfield_policy(
+        record, "856", "y", "Smith link", "add_if_missing"
+    )
+    assert result["values_changed"] == 1
+    assert record.get("856").get_subfields("y") == ["Smith link"]
+    result = transforms.apply_empty_find_subfield_policy(
+        record, "856", "u", "canonical", "ensure_one"
+    )
+    assert result["duplicates_removed"] == 1
+    assert record.get("856").get_subfields("u") == ["canonical"]
+
 def test_control_value(record):
     assert transforms.control_value(record, "001") == "1234567890"
     assert transforms.control_value(record, "999") is None

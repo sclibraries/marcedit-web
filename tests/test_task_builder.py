@@ -29,6 +29,32 @@ def _guided_op():
     )
 
 
+def test_structural_find_replace_codegen_and_marker_round_trip():
+    op = Operation(
+        kind="structural-find-replace",
+        params={
+            "target_kind": "subfield",
+            "tag": "035",
+            "subfield": "a",
+            "match_mode": "structured",
+            "pattern_pieces": [
+                {"type": "literal", "value": "TFeba"},
+                {"type": "digits", "name": "isbn"},
+            ],
+            "action": "replace_matched_text",
+            "replacement_pieces": [
+                {"type": "literal", "value": "(SCTFEBA)"},
+                {"type": "capture", "name": "isbn"},
+            ],
+        },
+    )
+    rendered = task_builder.render_ops_to_python([op])
+    assert "apply_structural_find_replace" in rendered["body"]
+    parsed = task_builder.parse_ops_from_source(rendered["body"])
+    assert parsed["form_editable"] is True
+    assert parsed["ops"][0].params == op.params
+
+
 def test_guided_replace_compiles_to_one_shared_transform_call():
     rendered = task_builder.render_ops_to_python([_guided_op()])
 

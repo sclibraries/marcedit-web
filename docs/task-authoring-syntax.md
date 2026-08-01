@@ -236,6 +236,16 @@ The following are not supported by the structured Add/Build editor:
 - undocumented numeric or pipe-delimited options; and
 - unknown external task verbs.
 
-Smith Metadata Studio does not guess these meanings. RDA transformations,
+Smith Metadata Studio does not guess these meanings. Explicit RDA operations,
 structural Find/Replace, external task conversion, and canonical MARC field
-reordering are separate future task families.
+reordering each remain separate deterministic operation families with their
+own validation and review behavior.
+
+## Explicit RDA operations
+
+The task palette exposes separate RDA operations for reviewed behavior:
+material classification from Leader/007 evidence, marking `040 $e rda`,
+removing `245 $h`, expanding the reviewed `300 $a` abbreviations, normalizing
+known relator codes, and promoting `260` to `264` only when no `264` exists.
+Existing data is preserved by default; ambiguous evidence is reported rather
+than guessed.

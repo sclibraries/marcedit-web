@@ -109,6 +109,7 @@ QUICK_BATCH_KINDS: tuple[str, ...] = (
     "035-oclc",
     "9xx-delete",
     "655-cleanup",
+    "sort-fields",
 )
 
 ProgressCallback = Callable[[int, int], None]
@@ -142,6 +143,9 @@ class QuickBatchPreview:
     job_file_id: int | None = None
     job_file_version_id: int | None = None
     detail_counts: dict[str, int] = field(default_factory=dict)
+    inversion_count: int = 0
+    representative_before: tuple[str, ...] = ()
+    representative_after: tuple[str, ...] = ()
     error: str | None = None
 
 
@@ -205,6 +209,9 @@ def build_preview(
     changed_count = 0
     skipped_count = 0
     detail_counts: Counter[str] = Counter()
+    inversion_count = 0
+    representative_before: tuple[str, ...] = ()
+    representative_after: tuple[str, ...] = ()
     total = store.count()
     try:
         with output_path.open("wb") as output_fh:
@@ -212,11 +219,36 @@ def build_preview(
             for idx, record in enumerate(store.iter_records()):
                 new_record = copy.deepcopy(record)
                 before = new_record.as_marc()
-                _apply_to_record(new_record, request)
+                if request.kind == "sort-fields":
+                    try:
+                        tags = [int(field.tag) for field in new_record.fields]
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"record {idx + 1}: malformed field tag"
+                        ) from exc
+                    inversion_count += sum(
+                        1
+                        for left_index, left in enumerate(tags)
+                        for right in tags[left_index + 1 :]
+                        if left > right
+                    )
+                try:
+                    _apply_to_record(new_record, request)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"record {idx + 1}: {exc}"
+                    ) from exc
                 after = new_record.as_marc()
                 writer.write(new_record)
                 if after != before:
                     changed_count += 1
+                    if not representative_before:
+                        representative_before = tuple(
+                            field.tag for field in record.fields
+                        )
+                        representative_after = tuple(
+                            field.tag for field in new_record.fields
+                        )
                     detail_counts.update(
                         _detail_counts_for(record, new_record, request)
                     )
@@ -237,6 +269,9 @@ def build_preview(
         store_id=id(store),
         store_revision=store.revision,
         detail_counts=dict(detail_counts),
+        inversion_count=inversion_count,
+        representative_before=representative_before,
+        representative_after=representative_after,
     )
 
 
@@ -280,7 +315,12 @@ def cleanup_preview(preview: QuickBatchPreview | None) -> None:
     shutil.rmtree(workdir, ignore_errors=True)
 
 
-def _apply_to_record(record: pymarc.Record, request: QuickBatchRequest) -> None:
+def _apply_to_record(
+    record: pymarc.Record,
+    request: QuickBatchRequest,
+    *,
+    record_number: int | None = None,
+) -> None:
     if request.kind == "leader":
         _set_leader_value(record, request.position, request.value)
     elif request.kind == "008-form":
@@ -295,6 +335,8 @@ def _apply_to_record(record: pymarc.Record, request: QuickBatchRequest) -> None:
         transforms.delete_tags(record, request.tag.upper())
     elif request.kind == "655-cleanup":
         _cleanup_655(record, request)
+    elif request.kind == "sort-fields":
+        transforms.canonical_field_order(record, record_number=record_number)
 
 
 def _detail_counts_for(
@@ -308,6 +350,8 @@ def _detail_counts_for(
         return _removed_856_url_counts(before, request.url_contains)
     if request.kind == "655-cleanup" and request.unwanted_text.strip():
         return _removed_655_counts(before, request.unwanted_text.strip())
+    if request.kind == "sort-fields":
+        return Counter({"field order normalized": 1})
     return Counter({_operation_detail_label(request): 1})
 
 
@@ -372,6 +416,8 @@ def _operation_detail_label(request: QuickBatchRequest) -> str:
         return "035 OCLC cleanup"
     if request.kind == "655-cleanup":
         return "655 cleanup"
+    if request.kind == "sort-fields":
+        return "Canonical field order"
     return request.kind
 
 

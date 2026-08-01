@@ -12,6 +12,7 @@ class FakeStreamlit:
         self.markdowns = []
         self.captions = []
         self.writes = []
+        self.code_blocks = []
         self.dialog_calls = []
         self.rerun_calls = 0
 
@@ -27,6 +28,9 @@ class FakeStreamlit:
 
     def write(self, value):
         self.writes.append(value)
+
+    def code(self, value, **kwargs):
+        self.code_blocks.append(value)
 
     def dialog(self, title, *, width, dismissible):
         self.dialog_calls.append(
@@ -94,7 +98,8 @@ def test_reference_entry_renders_palette_facts_and_syntax_link(monkeypatch):
     task_operation_reference.render_reference_entry(entry)
 
     assert fake.markdowns == ["**Guided find and replace**"]
-    assert fake.writes == ["Find and replace text in a selected MARC value."]
+    assert any("Find text in one MARC value" in value for value in fake.writes)
+    assert fake.code_blocks
     assert any("guided-find-replace" in value for value in fake.captions)
     assert any(
         "docs/task-authoring-syntax.md" in value
@@ -130,11 +135,13 @@ def test_reference_dialog_renders_searchable_alphabetical_browser(
     }]
     assert rendered_labels == sorted(rendered_labels, key=str.casefold)
     assert rendered_labels
-    assert all(
-        "field" in "{0} {1}".format(entry["label"], entry["summary"]).casefold()
-        for entry in task_builder.OPERATIONS_PALETTE
-        if entry["label"] in rendered_labels
-    )
+    assert rendered_labels == [
+        entry["label"]
+        for entry in task_operation_reference.reference_entries(
+            include_custom=False,
+            query="field",
+        )
+    ]
 
 
 def test_reference_dialog_close_clears_parent_state_and_reruns(monkeypatch):

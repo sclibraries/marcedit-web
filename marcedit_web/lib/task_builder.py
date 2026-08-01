@@ -300,6 +300,21 @@ OPERATIONS_PALETTE: list[dict] = [
             },
         ],
     },
+    {
+        "kind": "empty-find-subfield-policy",
+        "label": "Imported empty-find subfield policy",
+        "summary": "Apply an explicit add, replace, or ensure-one meaning to an imported empty Find instruction.",
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {"name": "code", "label": "Subfield code", "type": "subfield_code", "required": True},
+            {"name": "value", "label": "Value", "type": "text", "required": True},
+            {"name": "policy", "label": "Empty-find meaning", "type": "select", "options": [
+                {"value": "add_if_missing", "label": "Add only when the subfield is missing"},
+                {"value": "replace_existing", "label": "Replace existing values"},
+                {"value": "ensure_one", "label": "Ensure exactly one occurrence"},
+            ], "default": "add_if_missing"},
+        ],
+    },
     # --- TASK-030 new ops ---------------------------------------------------
     {
         "kind": "copy-field",
@@ -458,14 +473,14 @@ OPERATIONS_PALETTE: list[dict] = [
         ),
         "params": [
             {"name": "tag", "label": "Tag", "type": "text", "required": True},
-            {"name": "match_ind1", "label": "Match indicator 1", "type": "indicator", "default": " "},
-            {"name": "match_ind2", "label": "Match indicator 2", "type": "indicator", "default": " "},
             {"name": "match_code", "label": "Match subfield code", "type": "subfield_code", "required": True},
             {"name": "match_value", "label": "Match subfield value", "type": "text", "required": True},
             {"name": "regex", "label": "Treat match value as regex", "type": "bool", "default": False},
             {"name": "ignore_case", "label": "Case-insensitive", "type": "bool", "default": False},
             {"name": "new_ind1", "label": "New indicator 1", "type": "indicator", "default": " "},
             {"name": "new_ind2", "label": "New indicator 2", "type": "indicator", "default": " "},
+            {"name": "match_ind1", "label": "Match indicator 1 (* = any)", "type": "indicator", "default": "*"},
+            {"name": "match_ind2", "label": "Match indicator 2 (* = any)", "type": "indicator", "default": "*"},
             {"name": "new_code", "label": "New subfield code", "type": "subfield_code", "required": True},
             {"name": "new_value", "label": "New subfield value", "type": "text", "required": True},
         ],
@@ -481,6 +496,114 @@ OPERATIONS_PALETTE: list[dict] = [
         "label": "Set 008 form-of-item to 'o' (online)",
         "summary": "Mark the record as an online resource by writing 'o' into 008 (byte 23 or 29, leader-dependent).",
         "params": [],
+    },
+    {
+        "kind": "rda-classify-material",
+        "label": "RDA: classify content, media, and carrier",
+        "summary": "Use explicit Leader/007 evidence or a cataloger-selected mapping to add 336/337/338.",
+        "params": [
+            {
+                "name": "mode", "label": "Classification mode", "type": "select",
+                "options": [
+                    {"value": "classify", "label": "Classify from Leader/007"},
+                    {"value": "fixed", "label": "Use a fixed material type"},
+                ], "default": "classify",
+            },
+            {
+                "name": "fixed_material", "label": "Fixed material type", "type": "select",
+                "options": [
+                    {"value": "text", "label": "Text"},
+                    {"value": "computer", "label": "Computer"},
+                    {"value": "audio", "label": "Audio"},
+                    {"value": "video", "label": "Video"},
+                    {"value": "map", "label": "Map"},
+                ], "default": "text",
+            },
+            {
+                "name": "existing_field_action", "label": "Existing 336/337/338 fields", "type": "select",
+                "options": [
+                    {"value": "preserve", "label": "Preserve existing fields"},
+                    {"value": "replace", "label": "Replace existing fields"},
+                ], "default": "preserve",
+            },
+        ],
+    },
+    {
+        "kind": "rda-mark-rda",
+        "label": "RDA: mark 040 $e rda",
+        "summary": "Ensure the cataloging description includes 040 $e rda without duplicating it.",
+        "params": [],
+    },
+    {
+        "kind": "rda-remove-gmd",
+        "label": "RDA: remove GMD from 245 $h",
+        "summary": "Remove 245 $h values, optionally limited to one exact value.",
+        "params": [
+            {"name": "value", "label": "Exact GMD value (blank removes all)", "type": "text", "default": ""},
+        ],
+    },
+    {
+        "kind": "rda-expand-abbreviations",
+        "label": "RDA: expand reviewed abbreviations",
+        "summary": "Expand the reviewed p., ill., and col. abbreviations in 300 $a.",
+        "params": [],
+    },
+    {
+        "kind": "rda-normalize-relators",
+        "label": "RDA: normalize known relator codes",
+        "summary": "Convert reviewed $4 relator codes to explicit $e terms.",
+        "params": [],
+    },
+    {
+        "kind": "rda-promote-260",
+        "label": "RDA: promote 260 to 264 when safe",
+        "summary": "Retag 260 as 264 only when no 264 exists; never merge ambiguous publication meanings.",
+        "params": [],
+    },
+    {
+        "kind": "structural-find-replace",
+        "label": "Structural find and replace",
+        "summary": "Conditionally replace complete fields, retag fields, set indicators, or operate over a validated tag range.",
+        "params": [
+            {"name": "target_kind", "label": "Structural target", "type": "select", "options": [
+                {"value": "subfield", "label": "One subfield"},
+                {"value": "all_subfields", "label": "All subfields"},
+                {"value": "data_field", "label": "Complete data field"},
+                {"value": "field_tag", "label": "Field tag"},
+                {"value": "indicators", "label": "Indicators"},
+                {"value": "tag_range", "label": "Tag range"},
+            ], "default": "data_field"},
+            {"name": "tag", "label": "Tag", "type": "text", "default": ""},
+            {"name": "start_tag", "label": "Start tag", "type": "text", "default": ""},
+            {"name": "end_tag", "label": "End tag", "type": "text", "default": ""},
+            {"name": "subfield", "label": "Subfield code", "type": "subfield_code", "default": ""},
+            {"name": "match_mode", "label": "Match", "type": "select", "options": [
+                {"value": "contains", "label": "Contains"},
+                {"value": "starts_with", "label": "Starts with"},
+                {"value": "ends_with", "label": "Ends with"},
+                {"value": "whole_value", "label": "Whole value"},
+                {"value": "structured", "label": "Structured pattern"},
+                {"value": "raw_regex", "label": "Raw regular expression"},
+            ], "default": "contains"},
+            {"name": "find", "label": "Find", "type": "text", "default": ""},
+            {"name": "pattern_pieces", "label": "Structured pattern pieces (JSON)", "type": "json", "default": []},
+            {"name": "action", "label": "Action", "type": "select", "options": [
+                {"value": "replace_matched_text", "label": "Replace matched text"},
+                {"value": "replace_field", "label": "Replace complete field"},
+                {"value": "retag", "label": "Retag field"},
+                {"value": "set_indicators", "label": "Set indicators"},
+            ], "default": "replace_matched_text"},
+            {"name": "replacement", "label": "Replacement", "type": "text", "default": ""},
+            {"name": "replacement_pieces", "label": "Replacement pieces (JSON)", "type": "json", "default": []},
+            {"name": "replacement_ind1", "label": "Replacement indicator 1", "type": "indicator", "default": " "},
+            {"name": "replacement_ind2", "label": "Replacement indicator 2", "type": "indicator", "default": " "},
+            {"name": "replacement_subfields", "label": "Replacement subfields", "type": "subfields", "default": []},
+            {"name": "destination_tag", "label": "Destination tag", "type": "text", "default": ""},
+            {"name": "new_ind1", "label": "New indicator 1", "type": "indicator", "default": " "},
+            {"name": "new_ind2", "label": "New indicator 2", "type": "indicator", "default": " "},
+            {"name": "occurrences", "label": "Occurrences", "type": "select", "options": [{"value": "first", "label": "First"}, {"value": "all", "label": "All"}], "default": "all"},
+            {"name": "ignore_case", "label": "Case-insensitive", "type": "bool", "default": False},
+        ],
     },
     {
         "kind": "custom",
@@ -1067,6 +1190,38 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         return (["sort_fields(record)"], {"sort_fields"}, False)
     if op.kind == "set-008-form":
         return (["set_008_form_of_item(record)"], {"set_008_form_of_item"}, False)
+
+    if op.kind == "empty-find-subfield-policy":
+        return ([
+            "apply_empty_find_subfield_policy("
+            f"record, {lit(str(p.get('tag', '')))}, "
+            f"{lit(str(p.get('code', '')))}, "
+            f"{lit(str(p.get('value', '')))}, "
+            f"{lit(str(p.get('policy', 'add_if_missing')))})"
+        ], {"apply_empty_find_subfield_policy"}, False)
+
+    if op.kind == "rda-classify-material":
+        return ([
+            "apply_material_classification("
+            f"record, mode={lit(str(p.get('mode', 'classify')))}, "
+            f"fixed_material={lit(str(p.get('fixed_material', 'text')))}, "
+            f"existing_field_action={lit(str(p.get('existing_field_action', 'preserve')))})"
+        ], {"apply_material_classification"}, False)
+    if op.kind == "rda-mark-rda":
+        return (["mark_rda(record)"], {"mark_rda"}, False)
+    if op.kind == "rda-remove-gmd":
+        return ([f"remove_gmd(record, {lit(str(p.get('value', '')))})"], {"remove_gmd"}, False)
+    if op.kind == "rda-expand-abbreviations":
+        return (["expand_abbreviations(record)"], {"expand_abbreviations"}, False)
+    if op.kind == "rda-normalize-relators":
+        return (["normalize_relators(record)"], {"normalize_relators"}, False)
+    if op.kind == "rda-promote-260":
+        return (["promote_260(record)"], {"promote_260"}, False)
+
+    if op.kind == "structural-find-replace":
+        return ([
+            "apply_structural_find_replace(record, **" + repr(dict(p)) + ")"
+        ], {"apply_structural_find_replace"}, False)
 
     if op.kind == "custom":
         code = p.get("code") or ""

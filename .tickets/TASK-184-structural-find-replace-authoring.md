@@ -27,7 +27,16 @@ Success Criteria:
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: Todo
+Status: Completed
+
+Plan: `docs/superpowers/plans/2026-08-01-task-184-structural-find-replace-authoring.md`
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-184-structural-find-replace-authoring-design.md`
+
+Implementation checkpoint (2026-08-01):
+- Added structural target/action matrix validation, whole-field replacement,
+  retagging, indicators, tag ranges, named structured captures, deterministic
+  modal preview, and compiler round-trip coverage.
+- Verified the compatibility cells, preview non-mutation, and full Docker suite
+  (`2042 passed, 5 skipped`).

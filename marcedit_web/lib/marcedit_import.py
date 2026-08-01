@@ -26,7 +26,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from marcedit_web.lib import task_authoring
+from marcedit_web.lib import external_task_migration, task_authoring
 from marcedit_web.lib.codegen_safety import lit
 
 logger = logging.getLogger("marcedit_web.marcedit_import")
@@ -70,6 +70,7 @@ class ConversionResult:
     body: str
     imports: list[str] = field(default_factory=list)
     unsupported: list[str] = field(default_factory=list)
+    migration_review: external_task_migration.MigrationReview | None = None
 
 
 @dataclass
@@ -395,38 +396,26 @@ def _emit_subfield_edit(parts: list[str]) -> HandlerEmission:
     """SUBFIELD_EDIT\t<tag>\t<subfield>\t<find>\t<replace>\t…"""
     if len(parts) < 5:
         return HandlerEmission(code=None)
-    tag = parts[1].strip()
-    code = parts[2].strip()
-    find = parts[3]
-    replace = parts[4]
-    if find == "":
+    source_line = "\t".join(parts)
+    item = external_task_migration.adapt_subfield_edit(source_line)
+    if item.status != "converted" or item.operation is None:
         return HandlerEmission(
-            code=(
-                "# TODO: SUBFIELD_EDIT has an empty Find value; "
-                "empty Find has no proven external meaning — recreate it "
-                "with an explicit guided action"
-            ),
+            code=f"# TODO: SUBFIELD_EDIT {item.reason} — recreate with an explicit guided action",
         )
-    if find == "^b":
-        return HandlerEmission(
-            code=(
-                "# TODO: SUBFIELD_EDIT uses unproven external syntax '^b'; "
-                "recreate it with an explicit guided action"
-            ),
-        )
+    params = item.operation["params"]
     body = (
-        f"for f in record.get_fields({lit(tag)}):\n"
-        f"    f.subfields = [\n"
-        f"        Subfield(sf.code, sf.value.replace({lit(find)}, {lit(replace)}))\n"
-        f"        if sf.code == {lit(code)} else sf\n"
-        f"        for sf in f.subfields\n"
-        f"    ]"
+        "apply_guided_find_replace(record, "
+        f"target_kind={lit(params['target_kind'])}, tag={lit(params['tag'])}, "
+        f"subfield={lit(params['subfield'])}, match_mode={lit(params['match_mode'])}, "
+        f"find={lit(params['find'])}, ignore_case=False, "
+        f"replacement_mode='matched_text', replacement={lit(params['replacement'])}, "
+        "occurrences='all', value_scope='all')"
     )
     return HandlerEmission(
         code=body,
-        imports={"_subfield_import"},  # special marker; handled below
-        op_kind="subfield-replace",
-        op_params={"tag": tag, "code": code, "find": find, "replace": replace},
+        imports={"apply_guided_find_replace"},
+        op_kind="guided-find-replace",
+        op_params=params,
     )
 
 
@@ -562,6 +551,7 @@ def convert_tasksfile_text(
         body="\n".join(body_lines),
         imports=import_lines,
         unsupported=unsupported,
+        migration_review=external_task_migration.build_review(text),
     )
 
 

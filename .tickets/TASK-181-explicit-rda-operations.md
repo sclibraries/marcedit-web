@@ -23,7 +23,16 @@ Success Criteria:
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: Todo
+Status: Completed
+
+Plan: `docs/superpowers/plans/2026-08-01-task-181-explicit-rda-operations.md`
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-181-explicit-rda-operations-design.md`
+
+Implementation checkpoint (2026-08-01):
+- Added explicit deterministic RDA operations, visible Smith profile expansion,
+  modal preview/override controls, operation-reference entries, and ambiguity
+  reporting without guessed material mappings.
+- Verified by `tests/test_rda_operations.py` and the complete mounted-source
+  Docker suite (`2042 passed, 5 skipped`).

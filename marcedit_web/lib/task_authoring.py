@@ -12,6 +12,7 @@ from marcedit_web.lib import (
     guided_replace,
     guided_replace_validation,
     task_builder,
+    structural_replace,
 )
 from marcedit_web.lib.transforms import (
     is_control_tag,
@@ -338,6 +339,18 @@ def validate_operation(
                     find=params["find"],
                     replacement=params["replacement"],
                     ignore_case=params["ignore_case"],
+                )
+            )
+        return tuple(errors)
+    if kind == "structural-find-replace":
+        params = op.get("params") or {}
+        errors = list(structural_replace.validate_request(**params))
+        entry_names = {parameter["name"] for parameter in entry["params"]}
+        unexpected = sorted(set(params) - entry_names)
+        if unexpected:
+            errors.append(
+                "operation parameters contain unexpected keys: {0}".format(
+                    ", ".join(unexpected)
                 )
             )
         return tuple(errors)

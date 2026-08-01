@@ -28,7 +28,16 @@ Success Criteria:
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: Todo
+Status: Completed
+
+Plan: `docs/superpowers/plans/2026-08-01-task-183-cataloger-operation-reference.md`
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-183-cataloger-operation-reference-design.md`
+
+Implementation checkpoint (2026-08-01):
+- Added a registry-backed in-app reference and generated Markdown guide with
+  explicit inputs, preservation/skip/error behavior, and sanitized MARC
+  before/after examples for every palette operation.
+- Added freshness, search, and rendering tests; the complete mounted-source
+  Docker suite passes (`2042 passed, 5 skipped`).

@@ -30,7 +30,19 @@ Success Criteria:
 - Focused and complete supported Docker suites pass with every skip reported.
 - Independent review has no unresolved Critical or Important findings.
 
-Status: Todo
+Status: Completed
 
 Design:
 - `docs/superpowers/specs/2026-07-31-task-185-external-task-migration-design.md`
+
+Implementation checkpoint (2026-08-01):
+- Added proven adapters for literal `SUBFIELD_EDIT`, the two known 008
+  `REPLACE` signatures, and `SORTBY ALL`, with source-order SHA-256
+  provenance, bounded durable diagnostics, and explicit empty-find policy
+  operations that open in the editor.
+- Ordered migration-review drafts now open in the normal editor with converted
+  operations in source order and unresolved lines preserved as blocking
+  technical cards; archive entries receive the same bounded review treatment.
+  Unproven syntax remains intentionally blocking.
+- Focused migration/workspace tests and the complete mounted-source Docker
+  suite pass (`2042 passed, 5 skipped`).

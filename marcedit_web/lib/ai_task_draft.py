@@ -59,6 +59,14 @@ _REGEX_PARAMS_BY_KIND = {
 _UNSUPPORTED_AI_OPERATION_KINDS = {
     "custom",
     "guided-find-replace",
+    "rda-classify-material",
+    "rda-mark-rda",
+    "rda-remove-gmd",
+    "rda-expand-abbreviations",
+    "rda-normalize-relators",
+    "rda-promote-260",
+    "structural-find-replace",
+    "empty-find-subfield-policy",
 }
 _CODE_SHAPED_RE = re.compile(
     r"(__import__|\bimport\b|\bfrom\s+\S+\s+import\b|\bexec\s*\(|"

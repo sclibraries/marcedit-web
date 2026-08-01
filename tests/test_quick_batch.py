@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pymarc
 import pytest
+import copy
 
+from marcedit_web.lib import transforms
 from marcedit_web.lib import quick_batch as qb
 from marcedit_web.lib.quick_batch import (
     QuickBatchRequest,
@@ -66,6 +68,49 @@ def test_leader_request_rejects_structural_position():
     request = QuickBatchRequest(kind="leader", position="09", value="a")
 
     assert "not available" in (validate_request(request) or "")
+
+
+def test_sort_fields_quick_request_is_supported():
+    assert validate_request(QuickBatchRequest(kind="sort-fields")) is None
+
+
+def test_sort_fields_preview_reports_inversions_and_preserves_source(tmp_path):
+    store = _store(
+        tmp_path,
+        _record(
+            _field("650", ("a", "subject")),
+            _field("245", ("a", "title")),
+            _field("650", ("a", "second")),
+        ),
+    )
+    preview = build_preview(store, QuickBatchRequest(kind="sort-fields"))
+
+    assert preview.changed_count == 1
+    assert preview.inversion_count == 1
+    assert preview.representative_before == ("001", "650", "245", "650")
+    assert preview.representative_after == ("001", "245", "650", "650")
+    assert [field.tag for field in next(store.iter_records()).fields] == [
+        "001", "650", "245", "650"
+    ]
+    assert [field.tag for field in _preview_records(preview)[0].fields] == [
+        "001", "245", "650", "650"
+    ]
+
+
+def test_sort_fields_task_and_quick_paths_share_canonical_transform():
+    record = _record(
+        _field("040", ("a", "ABC")),
+        _field("020", ("a", "123")),
+    )
+    quick_record = copy.deepcopy(record)
+    task_record = copy.deepcopy(record)
+
+    transforms.canonical_field_order(quick_record)
+    qb._apply_to_record(task_record, QuickBatchRequest(kind="sort-fields"))
+
+    assert [field.tag for field in quick_record.fields] == [
+        field.tag for field in task_record.fields
+    ] == ["001", "020", "040"]
 
 
 def test_008_form_request_updates_known_position_and_skips_missing_008(tmp_path):

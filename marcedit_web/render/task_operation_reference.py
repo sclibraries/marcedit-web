@@ -7,7 +7,7 @@ from typing import Any, Callable, Mapping
 
 import streamlit as st
 
-from marcedit_web.lib import task_builder
+from marcedit_web.lib import operation_reference, task_builder
 
 
 _SYNTAX_KINDS = {"add-field", "build-field", "guided-find-replace"}
@@ -25,28 +25,39 @@ def reference_entries(
     """Return copied palette entries in searchable display order."""
 
     needle = query.strip().casefold()
-    entries = copy.deepcopy(task_builder.OPERATIONS_PALETTE)
+    entries = operation_reference.search_entries(query if needle else "")
     if not include_custom:
         entries = [entry for entry in entries if entry["kind"] != "custom"]
-    if needle:
-        entries = [
-            entry
-            for entry in entries
-            if needle
-            in "{0} {1}".format(
-                entry["label"],
-                entry["summary"],
-            ).casefold()
-        ]
-    return sorted(entries, key=lambda entry: entry["label"].casefold())
+    # Preserve the existing palette parameter shape for dialog callers while
+    # adding the canonical explanatory sections.
+    palette_by_kind = {
+        entry["kind"]: entry for entry in task_builder.OPERATIONS_PALETTE
+    }
+    merged = []
+    for entry in entries:
+        combined = copy.deepcopy(entry)
+        combined["params"] = copy.deepcopy(
+            palette_by_kind[entry["kind"]]["params"]
+        )
+        merged.append(combined)
+    return merged
 
 
 def render_reference_entry(entry: Mapping[str, Any]) -> None:
     """Render facts for one operation from the shared palette."""
 
-    st.markdown("**{0}**".format(entry["label"]))
+    canonical = operation_reference.REFERENCE_REGISTRY.get(entry["kind"], entry)
+    st.markdown("**{0}**".format(canonical["label"]))
     st.caption("Operation kind: `{0}`".format(entry["kind"]))
-    st.write(entry["summary"])
+    st.write(canonical["purpose"])
+    st.write("**When to use:** {0}".format(canonical["when_to_use"]))
+    st.write("**Inputs:** {0}".format(", ".join(canonical["inputs"]) or "none"))
+    st.write("**Behavior:** {0}".format(canonical["behavior"]))
+    st.write("**Preserves:** {0}".format(canonical["preserves"]))
+    st.write("**Skip behavior:** {0}".format(canonical["skip_behavior"]))
+    st.write("**Error behavior:** {0}".format(canonical["error_behavior"]))
+    example = canonical["example"]
+    st.code("Before: {0}\nAfter: {1}".format(example["before"], example["after"]))
     if entry["kind"] in _SYNTAX_KINDS:
         st.caption(
             "[docs/task-authoring-syntax.md]({0})".format(_SYNTAX_URL)
