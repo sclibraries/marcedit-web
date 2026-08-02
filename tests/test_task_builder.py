@@ -302,8 +302,8 @@ def test_build_replace_waits_until_source_and_leader_guards_pass():
     assert (
         "if leader_type(record) in 'amt' and "
         "leader_biblevel(record) == 'm':\n"
-        "    _t_001 = control_value(record, '001')\n"
-        "    if _t_001 is not None:\n"
+        "    _build_source_0 = control_value(record, '001')\n"
+        "    if _build_source_0 is not None:\n"
         "        delete_tags(record, '876')\n"
         "        record.add_ordered_field"
     ) in out["body"]
