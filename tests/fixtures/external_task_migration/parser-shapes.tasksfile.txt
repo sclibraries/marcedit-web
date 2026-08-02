@@ -1,1 +1,2 @@
+# FIXTURE_ID: subfield-edit-literal
 SUBFIELD_EDIT	035	a	OLD	NEW	0|0

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Mapping
 
 
 EMPTY_FIND_CHOICES = (
@@ -40,6 +40,18 @@ class MigrationReview:
             for item in self.items
             if item.status == "converted" and item.operation is not None
         )
+
+
+class CompatibilityContractError(ValueError):
+    """Raised when checked-in compatibility evidence drifts from code."""
+
+
+@dataclass(frozen=True)
+class CompatibilityAdapter:
+    adapter: Callable[..., MigrationItem]
+    verbs: tuple[str, ...]
+    shape_ids: tuple[str, ...]
+    fixture_ids: tuple[str, ...]
 
 
 def _item(source_line: str, **kwargs: Any) -> MigrationItem:
@@ -147,6 +159,95 @@ ADAPTER_REGISTRY = {
     "REPLACE": adapt_replace,
     "SORTBY": adapt_sortby,
 }
+
+COMPATIBILITY_ADAPTER_REGISTRY = {
+    "subfield-edit-v1": CompatibilityAdapter(
+        adapter=adapt_subfield_edit,
+        verbs=("SUBFIELD_EDIT",),
+        shape_ids=("subfield-edit-literal",),
+        fixture_ids=("subfield-edit-literal",),
+    ),
+}
+
+
+def _manifest_values(entry: Mapping[str, Any], field: str) -> tuple[str, ...]:
+    values = entry.get(field)
+    if (
+        not isinstance(values, list)
+        or not values
+        or not all(isinstance(value, str) and value for value in values)
+        or len(values) != len(set(values))
+    ):
+        raise CompatibilityContractError(
+            f"compatibility adapter {field} must be unique nonempty strings"
+        )
+    return tuple(values)
+
+
+def validate_compatibility_manifest(
+    manifest: Mapping[str, Any],
+    *,
+    exercised_fixtures: Mapping[str, str],
+) -> None:
+    """Fail closed when manifest, dispatch, or fixture evidence drifts."""
+    if manifest.get("schema_version") != 1:
+        raise CompatibilityContractError("unsupported compatibility schema version")
+    entries = manifest.get("adapters")
+    if not isinstance(entries, list) or not entries:
+        raise CompatibilityContractError("compatibility adapters must be nonempty")
+
+    manifest_adapters = {}
+    required_fields = {"adapter_id", "verbs", "shape_ids", "fixture_ids"}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != required_fields:
+            raise CompatibilityContractError(
+                "compatibility adapter fields do not match schema"
+            )
+        adapter_id = entry["adapter_id"]
+        if not isinstance(adapter_id, str) or not adapter_id:
+            raise CompatibilityContractError("adapter_id must be nonempty")
+        if adapter_id in manifest_adapters:
+            raise CompatibilityContractError(f"duplicate adapter_id {adapter_id}")
+        manifest_adapters[adapter_id] = {
+            "verbs": _manifest_values(entry, "verbs"),
+            "shape_ids": _manifest_values(entry, "shape_ids"),
+            "fixture_ids": _manifest_values(entry, "fixture_ids"),
+        }
+
+    if manifest_adapters.keys() != COMPATIBILITY_ADAPTER_REGISTRY.keys():
+        raise CompatibilityContractError(
+            "manifest adapter IDs do not match registered adapters"
+        )
+
+    registered_fixture_ids = set()
+    for adapter_id, registered in COMPATIBILITY_ADAPTER_REGISTRY.items():
+        actual = manifest_adapters[adapter_id]
+        for field in ("verbs", "shape_ids", "fixture_ids"):
+            if actual[field] != getattr(registered, field):
+                raise CompatibilityContractError(
+                    f"manifest {adapter_id} {field} drifted from registration"
+                )
+        for verb in registered.verbs:
+            if ADAPTER_REGISTRY.get(verb) is not registered.adapter:
+                raise CompatibilityContractError(
+                    f"registered adapter {adapter_id} dispatch drifted for {verb}"
+                )
+        registered_fixture_ids.update(registered.fixture_ids)
+        exercised_shapes = {
+            exercised_fixtures.get(fixture_id)
+            for fixture_id in registered.fixture_ids
+        }
+        if None in exercised_shapes or exercised_shapes != set(
+            registered.shape_ids
+        ):
+            raise CompatibilityContractError(
+                f"registered adapter {adapter_id} fixture evidence drifted"
+            )
+
+    if set(exercised_fixtures) != registered_fixture_ids:
+        raise CompatibilityContractError(
+            "exercised fixture IDs do not match registered fixtures"
+        )
 
 
 def adapt_instruction(source_line: str) -> MigrationItem:

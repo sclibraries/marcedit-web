@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from marcedit_web.lib import external_task_migration as migration
 from marcedit_web.lib.external_task_parser import (
     instruction_shape,
@@ -20,6 +22,24 @@ PARSER_FIXTURE = (
     / "external_task_migration"
     / "parser-shapes.tasksfile.txt"
 )
+
+
+def _compatibility_manifest():
+    return json.loads(COMPATIBILITY_MANIFEST.read_text())
+
+
+def _exercised_fixtures():
+    exercised = {}
+    fixture_id = None
+    for line in PARSER_FIXTURE.read_text().splitlines():
+        if line.startswith("# FIXTURE_ID: "):
+            fixture_id = line.removeprefix("# FIXTURE_ID: ")
+            continue
+        assert fixture_id is not None, "every fixture line requires an explicit ID"
+        exercised[fixture_id] = instruction_shape(parse_instruction(line))
+        fixture_id = None
+    assert fixture_id is None, "every fixture ID requires an instruction line"
+    return exercised
 
 
 def test_nonempty_subfield_edit_converts_to_guided_operation_with_provenance():
@@ -140,19 +160,80 @@ def test_adapter_registry_is_the_dispatch_source(monkeypatch):
 
 
 def test_compatibility_manifest_lists_only_registered_exercised_adapters():
-    manifest = json.loads(COMPATIBILITY_MANIFEST.read_text())
-    exercised_shapes = {
-        instruction_shape(parse_instruction(line))
-        for line in PARSER_FIXTURE.read_text().splitlines()
-    }
+    migration.validate_compatibility_manifest(
+        _compatibility_manifest(),
+        exercised_fixtures=_exercised_fixtures(),
+    )
 
-    assert manifest["schema_version"] == 1
-    assert manifest["adapters"], "the compatibility contract must not be vacuous"
-    assert [entry["adapter_id"] for entry in manifest["adapters"]] == [
-        "subfield-edit-v1"
-    ]
-    for entry in manifest["adapters"]:
-        assert set(entry) == {"adapter_id", "verbs", "shape_ids", "fixture_ids"}
-        assert set(entry["verbs"]) <= migration.ADAPTER_REGISTRY.keys()
-        assert set(entry["shape_ids"]) == set(entry["fixture_ids"])
-        assert set(entry["fixture_ids"]) <= exercised_shapes
+
+def test_compatibility_manifest_rejects_unknown_schema_version():
+    manifest = _compatibility_manifest()
+    manifest["schema_version"] = 2
+
+    with pytest.raises(migration.CompatibilityContractError, match="schema"):
+        migration.validate_compatibility_manifest(
+            manifest,
+            exercised_fixtures=_exercised_fixtures(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("adapter_id", "drifted-adapter"),
+        ("verbs", []),
+        ("verbs", ["REPLACE"]),
+        ("shape_ids", []),
+        ("shape_ids", ["drifted-shape"]),
+        ("fixture_ids", []),
+        ("fixture_ids", ["drifted-fixture"]),
+    ],
+)
+def test_compatibility_manifest_rejects_empty_or_drifted_fields(
+    field, replacement
+):
+    manifest = _compatibility_manifest()
+    manifest["adapters"][0][field] = replacement
+
+    with pytest.raises(migration.CompatibilityContractError):
+        migration.validate_compatibility_manifest(
+            manifest,
+            exercised_fixtures=_exercised_fixtures(),
+        )
+
+
+@pytest.mark.parametrize("adapters", [[], [{"adapter_id": "extra"}]])
+def test_compatibility_manifest_rejects_removed_or_extra_adapter_rows(adapters):
+    manifest = _compatibility_manifest()
+    manifest["adapters"] = adapters
+
+    with pytest.raises(migration.CompatibilityContractError):
+        migration.validate_compatibility_manifest(
+            manifest,
+            exercised_fixtures=_exercised_fixtures(),
+        )
+
+
+def test_compatibility_manifest_rejects_dispatch_function_drift(monkeypatch):
+    monkeypatch.setitem(
+        migration.ADAPTER_REGISTRY,
+        "SUBFIELD_EDIT",
+        lambda source_line: migration.adapt_subfield_edit(source_line),
+    )
+
+    with pytest.raises(migration.CompatibilityContractError, match="dispatch"):
+        migration.validate_compatibility_manifest(
+            _compatibility_manifest(),
+            exercised_fixtures=_exercised_fixtures(),
+        )
+
+
+def test_compatibility_manifest_rejects_unidentified_fixture():
+    exercised = _exercised_fixtures()
+    exercised["different-fixture"] = exercised.pop("subfield-edit-literal")
+
+    with pytest.raises(migration.CompatibilityContractError, match="fixture"):
+        migration.validate_compatibility_manifest(
+            _compatibility_manifest(),
+            exercised_fixtures=exercised,
+        )

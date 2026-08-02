@@ -1,3 +1,4 @@
+import hashlib
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def test_parsed_instruction_is_immutable():
             "RDAHELPER\t1|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|language of cataloging|0",
             "RDAHELPER",
             None,
-            (),
+            (True, True) + (False,) * 15,
         ),
         ("REPLACE\tfoo\tbar\t0\t\t1", "REPLACE", 0, ()),
         ("REPLACE\tfoo\tbar\t2\tcondition\t2\tFalse", "REPLACE", 2, (False,)),
@@ -153,8 +154,73 @@ def test_boolean_options_reject_non_boolean_values(line, message):
 
 
 def test_rdahelper_requires_all_18_serialized_positions():
-    with pytest.raises(ExternalParseError, match="18 pipe-delimited positions"):
+    with pytest.raises(
+        ExternalParseError, match="18 pipe-delimited positions"
+    ) as captured:
         parse_instruction("RDAHELPER\t1|1|0|language of cataloging|0")
+
+    assert captured.value.failure_code == "invalid_rda_position_count"
+    assert captured.value.failing_column == 1
+
+
+@pytest.mark.parametrize("position", [1, 9, 18])
+def test_rdahelper_rejects_malformed_switches_with_position_context(position):
+    positions = ["0"] * 18
+    positions[16] = "language of cataloging"
+    positions[position - 1] = "maybe"
+    line = f"RDAHELPER\t{'|'.join(positions)}"
+
+    with pytest.raises(
+        ExternalParseError, match=f"position {position}"
+    ) as captured:
+        parse_instruction(line, source_entry="rda.tasksfile.txt", line_number=11)
+
+    error = captured.value
+    assert error.failure_code == "invalid_rda_switch"
+    assert error.failing_column == 1
+    assert error.failing_position == position
+    assert (error.source_entry, error.line_number) == ("rda.tasksfile.txt", 11)
+
+
+def test_rdahelper_preserves_valid_but_unsupported_switch_combinations():
+    positions = ["1"] * 18
+    positions[16] = "eng"
+
+    item = parse_instruction(f"RDAHELPER\t{'|'.join(positions)}")
+
+    assert item.boolean_flags == (True,) * 17
+
+
+def test_malformed_typed_value_retains_immutable_structured_provenance():
+    line = "buildnewfield\t=035  9\\$a{001}\tFalse\tFalse\tmaybe\tFalse\r\n"
+
+    with pytest.raises(
+        ExternalParseError, match="Build Field flag 3"
+    ) as captured:
+        parse_instruction(
+            line,
+            source_entry="build.tasksfile.txt",
+            line_number=23,
+        )
+
+    error = captured.value
+    assert error.failure_code == "invalid_boolean"
+    assert error.source_line == line.rstrip("\r\n")
+    assert (error.source_entry, error.line_number) == ("build.tasksfile.txt", 23)
+    assert error.instruction_sha256 == hashlib.sha256(
+        error.source_line.encode("utf-8")
+    ).hexdigest()
+    assert error.verb == "buildnewfield"
+    assert error.arguments == (
+        "=035  9\\$a{001}",
+        "False",
+        "False",
+        "maybe",
+        "False",
+    )
+    assert error.failing_column == 4
+    with pytest.raises(FrozenInstanceError):
+        error.failure_code = "changed"
 
 
 def test_empty_surplus_columns_are_preserved_but_nonempty_surplus_fails_closed():
@@ -163,8 +229,30 @@ def test_empty_surplus_columns_are_preserved_but_nonempty_surplus_fails_closed()
     )
     assert item.arguments[-1] == ""
 
-    with pytest.raises(ExternalParseError, match="nonempty surplus column 5"):
-        parse_instruction("ADD\t877\t\\\\$mImage\t106\t/=LDR.{8}k.+/\t100\t")
+    surplus_line = "ADD\t877\t\\\\$mImage\t106\t/=LDR.{8}k.+/\t100\t"
+    with pytest.raises(
+        ExternalParseError, match="nonempty surplus column 5"
+    ) as captured:
+        parse_instruction(
+            surplus_line,
+            source_entry="core.tasksfile.txt",
+            line_number=16,
+        )
+
+    error = captured.value
+    assert error.failure_code == "surplus_column"
+    assert error.source_line == surplus_line
+    assert (error.source_entry, error.line_number) == ("core.tasksfile.txt", 16)
+    assert error.verb == "ADD"
+    assert error.arguments == (
+        "877",
+        "\\\\$mImage",
+        "106",
+        "/=LDR.{8}k.+/",
+        "100",
+        "",
+    )
+    assert error.failing_column == 5
 
 
 @pytest.mark.parametrize("line", ["", " \tvalue", "UNKNOWN\tvalue"])
@@ -174,7 +262,11 @@ def test_missing_or_unknown_verbs_fail_closed(line):
 
 
 def test_parser_fixture_exercises_registered_literal_shape():
-    items = [parse_instruction(line) for line in FIXTURE.read_text().splitlines()]
+    items = [
+        parse_instruction(line)
+        for line in FIXTURE.read_text().splitlines()
+        if not line.startswith("#")
+    ]
 
     assert [instruction_shape(item) for item in items] == [
         "subfield-edit-literal"

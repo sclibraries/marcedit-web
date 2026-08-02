@@ -3,11 +3,46 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
+@dataclass(frozen=True)
 class ExternalParseError(ValueError):
-    """Raised when an external instruction is not structurally valid."""
+    """An immutable structural failure with source provenance."""
+
+    message: str
+    failure_code: str
+    source_line: str = ""
+    source_entry: str = ""
+    line_number: int = 0
+    instruction_sha256: str = ""
+    verb: str = ""
+    arguments: tuple[str, ...] = ()
+    failing_column: int | None = None
+    failing_position: int | None = None
+
+    def __post_init__(self) -> None:
+        ValueError.__init__(self, self.message)
+
+    def with_context(
+        self,
+        *,
+        source_line: str,
+        source_entry: str,
+        line_number: int,
+        instruction_sha256: str,
+        verb: str,
+        arguments: tuple[str, ...],
+    ) -> ExternalParseError:
+        return replace(
+            self,
+            source_line=source_line,
+            source_entry=source_entry,
+            line_number=line_number,
+            instruction_sha256=instruction_sha256,
+            verb=verb,
+            arguments=arguments,
+        )
 
 
 @dataclass(frozen=True)
@@ -41,34 +76,101 @@ def _require_integer(
     *,
     label: str,
     accepted: set[int],
+    column: int,
 ) -> int:
     if not value.isascii() or not value.isdecimal():
-        raise ExternalParseError(f"{label} must be an integer")
+        raise ExternalParseError(
+            f"{label} must be an integer",
+            failure_code="invalid_integer",
+            failing_column=column,
+        )
     decoded = int(value)
     if decoded not in accepted:
         supported = ", ".join(str(item) for item in sorted(accepted))
         raise ExternalParseError(
-            f"{label} {decoded} is unsupported; expected one of {supported}"
+            f"{label} {decoded} is unsupported; expected one of {supported}",
+            failure_code="unsupported_option",
+            failing_column=column,
         )
     return decoded
 
 
-def _require_boolean(value: str, *, label: str) -> bool:
+def _require_boolean(value: str, *, label: str, column: int) -> bool:
     normalized = value.casefold()
     if normalized == "true":
         return True
     if normalized == "false":
         return False
-    raise ExternalParseError(f"{label} must be True or False")
+    raise ExternalParseError(
+        f"{label} must be True or False",
+        failure_code="invalid_boolean",
+        failing_column=column,
+    )
 
 
-def _pipe_option(value: str, *, label: str, accepted: set[int]) -> int:
+def _pipe_option(
+    value: str,
+    *,
+    label: str,
+    accepted: set[int],
+    column: int,
+) -> int:
     parts = value.split("|")
     if len(parts) != 2:
-        raise ExternalParseError(f"{label} must contain two pipe-delimited integers")
-    option = _require_integer(parts[0], label=label, accepted=accepted)
-    _require_integer(parts[1], label=f"{label} suffix", accepted={0})
+        raise ExternalParseError(
+            f"{label} must contain two pipe-delimited integers",
+            failure_code="invalid_pipe_option",
+            failing_column=column,
+        )
+    option = _require_integer(
+        parts[0], label=label, accepted=accepted, column=column
+    )
+    _require_integer(
+        parts[1],
+        label=f"{label} suffix",
+        accepted={0},
+        column=column,
+    )
     return option
+
+
+def _decode_rda_flags(value: str) -> tuple[bool, ...]:
+    positions = value.split("|")
+    if len(positions) != 18:
+        raise ExternalParseError(
+            "RDAHELPER requires 18 pipe-delimited positions",
+            failure_code="invalid_rda_position_count",
+            failing_column=1,
+        )
+
+    flags = []
+    for position in (*range(1, 17), 18):
+        switch = positions[position - 1]
+        if switch not in {"0", "1"}:
+            raise ExternalParseError(
+                f"RDAHELPER position {position} must be 0 or 1",
+                failure_code="invalid_rda_switch",
+                failing_column=1,
+                failing_position=position,
+            )
+        flags.append(switch == "1")
+    return tuple(flags)
+
+
+def _decode_boolean_flags(
+    values: tuple[str, ...],
+    *,
+    label: str,
+    first_column: int,
+) -> tuple[bool, ...]:
+    return tuple(
+        _require_boolean(
+            value,
+            label=f"{label} flag {index}",
+            column=first_column + index - 1,
+        )
+        for index, value in enumerate(values, start=1)
+    )
 
 
 def _decode_options(
@@ -76,55 +178,75 @@ def _decode_options(
 ) -> tuple[int | None, tuple[bool, ...]]:
     if verb == "ADD":
         return _require_integer(
-            arguments[2], label="ADD option", accepted={100, 101, 106, 108}
+            arguments[2],
+            label="ADD option",
+            accepted={100, 101, 106, 108},
+            column=3,
         ), ()
     if verb == "COPY":
         return None, (
-            _require_boolean(arguments[2], label="COPY flag 1"),
-            _require_boolean(arguments[5], label="COPY flag 2"),
+            _require_boolean(arguments[2], label="COPY flag 1", column=3),
+            _require_boolean(arguments[5], label="COPY flag 2", column=6),
         )
     if verb == "DELETE":
         return (
-            _require_integer(arguments[2], label="DELETE option", accepted={0}),
-            tuple(
-                _require_boolean(value, label=f"DELETE flag {index}")
-                for index, value in enumerate(arguments[3:8], start=1)
+            _require_integer(
+                arguments[2], label="DELETE option", accepted={0}, column=3
+            ),
+            _decode_boolean_flags(
+                arguments[3:8], label="DELETE", first_column=4
             ),
         )
     if verb == "EDITFIELD":
         return _require_integer(
-            arguments[2], label="EDITFIELD option", accepted={0}
+            arguments[2], label="EDITFIELD option", accepted={0}, column=3
         ), ()
+    if verb == "RDAHELPER":
+        return None, _decode_rda_flags(arguments[0])
     if verb == "REPLACE":
         option_code = _require_integer(
-            arguments[2], label="REPLACE option 1", accepted={0, 2}
+            arguments[2],
+            label="REPLACE option 1",
+            accepted={0, 2},
+            column=3,
         )
         _require_integer(
-            arguments[4], label="REPLACE option 2", accepted={0, 1, 2}
+            arguments[4],
+            label="REPLACE option 2",
+            accepted={0, 1, 2},
+            column=5,
         )
         flags = (
-            (_require_boolean(arguments[5], label="REPLACE flag 1"),)
+            (
+                _require_boolean(
+                    arguments[5], label="REPLACE flag 1", column=6
+                ),
+            )
             if len(arguments) >= 6
             else ()
         )
         return option_code, flags
     if verb == "SORTBY":
-        return None, tuple(
-            _require_boolean(value, label=f"SORTBY flag {index}")
-            for index, value in enumerate(arguments[1:3], start=1)
+        return None, _decode_boolean_flags(
+            arguments[1:3], label="SORTBY", first_column=2
         )
     if verb == "SUBFIELD_EDIT":
         return _pipe_option(
-            arguments[4], label="SUBFIELD_EDIT option", accepted={0, 101}
+            arguments[4],
+            label="SUBFIELD_EDIT option",
+            accepted={0, 101},
+            column=5,
         ), ()
     if verb == "SUBFIELD_REMOVE":
         return _pipe_option(
-            arguments[3], label="SUBFIELD_REMOVE option", accepted={107}
+            arguments[3],
+            label="SUBFIELD_REMOVE option",
+            accepted={107},
+            column=4,
         ), ()
     if verb == "buildnewfield":
-        return None, tuple(
-            _require_boolean(value, label=f"Build Field flag {index}")
-            for index, value in enumerate(arguments[1:5], start=1)
+        return None, _decode_boolean_flags(
+            arguments[1:5], label="Build Field", first_column=2
         )
     return None, ()
 
@@ -137,26 +259,53 @@ def parse_instruction(
 ) -> ExternalInstruction:
     normalized = source_line.rstrip("\r\n")
     parts = normalized.split("\t")
-    if not parts or not parts[0].strip():
-        raise ExternalParseError("instruction verb is required")
-
-    verb = parts[0].strip()
-    if verb not in _ARGUMENT_COUNTS:
-        raise ExternalParseError(f"unsupported instruction verb {verb!r}")
-
+    verb = parts[0].strip() if parts else ""
     arguments = tuple(parts[1:])
-    minimum, maximum = _ARGUMENT_COUNTS[verb]
-    if len(arguments) < minimum:
-        raise ExternalParseError(
-            f"{verb} requires at least {minimum} argument columns; got {len(arguments)}"
-        )
-    for index, value in enumerate(arguments[maximum:], start=maximum + 1):
-        if value:
-            raise ExternalParseError(f"{verb} has nonempty surplus column {index}")
+    instruction_sha256 = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    try:
+        if not verb:
+            raise ExternalParseError(
+                "instruction verb is required",
+                failure_code="verb_required",
+                failing_column=0,
+            )
+        if verb not in _ARGUMENT_COUNTS:
+            raise ExternalParseError(
+                f"unsupported instruction verb {verb!r}",
+                failure_code="unsupported_verb",
+                failing_column=0,
+            )
 
-    option_code, boolean_flags = _decode_options(verb, arguments[:maximum])
-    if verb == "RDAHELPER" and len(arguments[0].split("|")) != 18:
-        raise ExternalParseError("RDAHELPER requires 18 pipe-delimited positions")
+        minimum, maximum = _ARGUMENT_COUNTS[verb]
+        if len(arguments) < minimum:
+            raise ExternalParseError(
+                f"{verb} requires at least {minimum} argument columns; "
+                f"got {len(arguments)}",
+                failure_code="missing_columns",
+                failing_column=len(arguments) + 1,
+            )
+        for index, value in enumerate(
+            arguments[maximum:], start=maximum + 1
+        ):
+            if value:
+                raise ExternalParseError(
+                    f"{verb} has nonempty surplus column {index}",
+                    failure_code="surplus_column",
+                    failing_column=index,
+                )
+
+        option_code, boolean_flags = _decode_options(
+            verb, arguments[:maximum]
+        )
+    except ExternalParseError as exc:
+        raise exc.with_context(
+            source_line=normalized,
+            source_entry=source_entry,
+            line_number=line_number,
+            instruction_sha256=instruction_sha256,
+            verb=verb,
+            arguments=arguments,
+        ) from None
 
     return ExternalInstruction(
         verb=verb,
@@ -164,7 +313,7 @@ def parse_instruction(
         source_line=normalized,
         source_entry=source_entry,
         line_number=line_number,
-        instruction_sha256=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        instruction_sha256=instruction_sha256,
         option_code=option_code,
         boolean_flags=boolean_flags,
     )
