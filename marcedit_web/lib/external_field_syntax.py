@@ -16,6 +16,7 @@ _LEADER_CONDITIONS = {
     "=LDR.{8}g.+": "videos",
     "=LDR.{8}[i,j].+": "audios",
     "=LDR.{8}[c,d].+": "scores",
+    "=LDR.{8}k.+": "images",
 }
 
 

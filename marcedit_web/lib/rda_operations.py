@@ -160,6 +160,24 @@ SMITH_RDA_PROFILE = (
     {"kind": "rda-promote-260", "params": {}},
 )
 
+_SMITH_EXTERNAL_MATERIAL_OPERATION = {
+    "kind": "rda-classify-material",
+    "params": {
+        "mode": "classify",
+        "fixed_material": "text_print",
+        "existing_field_action": "preserve",
+    },
+}
+
+
+def smith_external_material_operation() -> dict:
+    """Return the explicit open replacement for the reviewed RDA signature."""
+
+    return {
+        "kind": _SMITH_EXTERNAL_MATERIAL_OPERATION["kind"],
+        "params": dict(_SMITH_EXTERNAL_MATERIAL_OPERATION["params"]),
+    }
+
 
 def smith_profile_operations() -> list[dict]:
     """Return a fresh, editable expansion of the visible Smith profile."""

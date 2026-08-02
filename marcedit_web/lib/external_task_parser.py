@@ -328,4 +328,35 @@ def instruction_shape(value: ExternalInstruction) -> str:
         and not value.arguments[2].startswith("^")
     ):
         return "subfield-edit-literal"
+    if value.verb == "DELETE" and not value.arguments[1] and not any(
+        value.boolean_flags
+    ):
+        return (
+            "delete-wildcard"
+            if "X" in value.arguments[0].upper()
+            else "delete-exact"
+        )
+    if value.verb == "ADD" and not value.arguments[3]:
+        return {
+            100: "add-append",
+            101: "add-skip-tag",
+            108: "add-skip-identical",
+        }.get(value.option_code, "add-unrecognized")
+    if value.verb == "ADD" and value.option_code == 106:
+        return "add-leader"
+    if value.verb == "buildnewfield":
+        return {
+            (False, False, True, False): "build-if-absent",
+            (False, False, False, True): "build-always",
+        }.get(value.boolean_flags, "buildnewfield-unrecognized")
+    if value.verb == "RDAHELPER" and value.arguments[0] == (
+        "1|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|language of cataloging|0"
+    ):
+        return "rda-smith-classify"
+    if (
+        value.verb == "SORTBY"
+        and value.arguments[0] == "ALL"
+        and value.boolean_flags == (True, True)
+    ):
+        return "sort-all"
     return f"{value.verb.replace('_', '-').lower()}-unrecognized"

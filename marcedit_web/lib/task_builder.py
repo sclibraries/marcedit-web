@@ -72,6 +72,7 @@ LEADER_CONDITIONS: dict[str, str] = {
     "videos": "leader_type(record) == 'g'",
     "audios": "leader_type(record) in 'ij'",
     "scores": "leader_type(record) in 'cd'",
+    "images": "leader_type(record) == 'k'",
 }
 
 LEADER_CONDITION_LABELS: dict[str, str] = {
@@ -83,6 +84,7 @@ LEADER_CONDITION_LABELS: dict[str, str] = {
     "videos": "Streaming video (LDR 06 = g)",
     "audios": "Streaming audio (LDR 06 ∈ ij)",
     "scores": "Scores / notated music (LDR 06 ∈ cd)",
+    "images": "Two-dimensional images (LDR 06 = k)",
 }
 
 

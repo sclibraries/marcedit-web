@@ -188,3 +188,20 @@ def test_smith_profile_expands_to_editable_explicit_operations():
     ]
     profile[0]["params"]["mode"] = "fixed"
     assert rda_operations.SMITH_RDA_PROFILE[0]["params"]["mode"] == "classify"
+
+
+def test_external_rda_replacement_is_only_the_open_material_classification():
+    operation = rda_operations.smith_external_material_operation()
+
+    assert operation == {
+        "kind": "rda-classify-material",
+        "params": {
+            "mode": "classify",
+            "fixed_material": "text_print",
+            "existing_field_action": "preserve",
+        },
+    }
+    operation["params"]["mode"] = "fixed"
+    assert rda_operations.smith_external_material_operation()["params"][
+        "mode"
+    ] == "classify"

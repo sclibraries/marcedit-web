@@ -1,0 +1,20 @@
+# FIXTURE_ID: delete-exact
+DELETE	001		0	False	False	False	False	False
+# FIXTURE_ID: delete-wildcard
+DELETE	9XX		0	False	False	False	False	False
+# FIXTURE_ID: add-append
+ADD	506	1\$aAccess$5ABC	100	
+# FIXTURE_ID: add-skip-tag
+ADD	050	\\$aOnline	101	
+# FIXTURE_ID: add-skip-identical
+ADD	336	\\$atext$btxt$2rdacontent	108	
+# FIXTURE_ID: add-leader
+ADD	655	\7$aElectronic books$2local	106	/=LDR.{8}[amt][m].+/
+# FIXTURE_ID: build-if-absent
+buildnewfield	=035  9\$a({003}){001}	False	False	True	False
+# FIXTURE_ID: build-always
+buildnewfield	=876  \\$aB({003}){001}-SC$lOnline	False	False	False	True
+# FIXTURE_ID: rda-smith-classify
+RDAHELPER	1|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|language of cataloging|0
+# FIXTURE_ID: sort-all
+SORTBY	ALL	True	True

@@ -1,10 +1,23 @@
-"""Fail-closed adapters for proven external task instructions (TASK-185)."""
+"""Fail-closed adapters for proven external task instructions."""
 
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
+
+from .external_field_syntax import (
+    parse_build_template,
+    parse_leader_condition,
+    parse_mnemonic_field,
+)
+from .external_task_parser import (
+    ExternalInstruction,
+    ExternalParseError,
+    parse_instruction,
+)
+from .rda_operations import smith_external_material_operation
 
 
 EMPTY_FIND_CHOICES = (
@@ -19,10 +32,21 @@ class MigrationItem:
     source_line: str
     source_format: str
     status: str
-    operation: dict[str, Any] | None = None
+    operations: tuple[dict[str, Any], ...] = ()
     reason: str = ""
     choices: tuple[str, ...] = ()
     instruction_sha256: str = ""
+    intent: str = ""
+    recommended_operation: str = ""
+    prefilled_params: dict[str, Any] | None = None
+    cataloger_action: str = ""
+    disclosure: str = ""
+
+    @property
+    def operation(self) -> dict[str, Any] | None:
+        """Temporary singular accessor retained for one compatibility cycle."""
+
+        return self.operations[0] if len(self.operations) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -36,9 +60,10 @@ class MigrationReview:
     @property
     def converted_operations(self) -> tuple[dict[str, Any], ...]:
         return tuple(
-            item.operation
+            operation
             for item in self.items
-            if item.status == "converted" and item.operation is not None
+            if item.status == "converted"
+            for operation in item.operations
         )
 
 
@@ -55,11 +80,390 @@ class CompatibilityAdapter:
 
 
 def _item(source_line: str, **kwargs: Any) -> MigrationItem:
+    operation = kwargs.pop("operation", None)
+    if operation is not None:
+        if "operations" in kwargs:
+            raise TypeError("provide operation or operations, not both")
+        kwargs["operations"] = (operation,)
     return MigrationItem(
-        source_line=source_line,
+        source_line=source_line.rstrip("\r\n"),
         source_format="marcedit-tasksfile",
-        instruction_sha256=hashlib.sha256(source_line.encode("utf-8")).hexdigest(),
+        instruction_sha256=hashlib.sha256(
+            source_line.rstrip("\r\n").encode("utf-8")
+        ).hexdigest(),
         **kwargs,
+    )
+
+
+def _suggestion(
+    source_line: str,
+    *,
+    intent: str,
+    reason: str,
+    recommended_operation: str,
+    prefilled_params: dict[str, Any] | None,
+    cataloger_action: str,
+) -> MigrationItem:
+    return _item(
+        source_line,
+        status="unresolved",
+        intent=intent,
+        reason=reason,
+        recommended_operation=recommended_operation,
+        prefilled_params=dict(prefilled_params or {}),
+        cataloger_action=cataloger_action,
+    )
+
+
+def _safe_field_params(tag: str, field_data: str) -> dict[str, Any]:
+    try:
+        return parse_mnemonic_field("={0}  {1}".format(tag, field_data))
+    except ValueError:
+        return {"tag": tag} if tag else {}
+
+
+def _safe_build_params(template: str) -> dict[str, Any]:
+    try:
+        return parse_build_template(template)
+    except ValueError:
+        return {}
+
+
+def _is_data_tag(value: object) -> bool:
+    return bool(re.fullmatch(r"\d{3}", str(value))) and not str(value).startswith(
+        "00"
+    )
+
+
+def _core_parse_failure(source_line: str, exc: ExternalParseError) -> MigrationItem:
+    parts = source_line.rstrip("\r\n").split("\t")
+    verb = parts[0].strip() if parts else ""
+    if verb == "ADD":
+        tag = parts[1].strip() if len(parts) > 1 else ""
+        field_data = parts[2] if len(parts) > 2 else ""
+        params = _safe_field_params(tag, field_data)
+        return _suggestion(
+            source_line,
+            intent="Add a MARC field using the external option policy",
+            reason=exc.message,
+            recommended_operation="add-field",
+            prefilled_params=params,
+            cataloger_action=(
+                "Open Add Field, review the prefilled field, and choose an "
+                "explicit existing-field policy."
+            ),
+        )
+    if verb == "DELETE":
+        tag = parts[1].strip() if len(parts) > 1 else ""
+        return _suggestion(
+            source_line,
+            intent="Delete selected MARC fields",
+            reason=exc.message,
+            recommended_operation="delete-tag",
+            prefilled_params={"tag": tag} if tag else {},
+            cataloger_action=(
+                "Open Delete Tag and confirm how the unsupported external "
+                "option should affect matching fields."
+            ),
+        )
+    if verb == "buildnewfield":
+        template = parts[1] if len(parts) > 1 else ""
+        return _suggestion(
+            source_line,
+            intent="Build a MARC field from source record values",
+            reason=exc.message,
+            recommended_operation="build-field",
+            prefilled_params=_safe_build_params(template),
+            cataloger_action=(
+                "Open Build Field, review the template, and select explicit "
+                "source-missing and existing-field policies."
+            ),
+        )
+    if verb == "RDAHELPER":
+        return _suggestion(
+            source_line,
+            intent="Create RDA content, media, and carrier fields",
+            reason=exc.message,
+            recommended_operation="rda-classify-material",
+            prefilled_params=smith_external_material_operation()["params"],
+            cataloger_action=(
+                "Open RDA Material Classification and confirm the transparent "
+                "Smith replacement for the unsupported external settings."
+            ),
+        )
+    if verb == "SORTBY":
+        return _suggestion(
+            source_line,
+            intent="Sort MARC fields",
+            reason=exc.message,
+            recommended_operation="sort-fields",
+            prefilled_params={},
+            cataloger_action=(
+                "Open Sort Fields and confirm the requested scope and options."
+            ),
+        )
+    return _suggestion(
+        source_line,
+        intent="Recreate an external task instruction",
+        reason=exc.message,
+        recommended_operation="choose-operation",
+        prefilled_params={},
+        cataloger_action=(
+            "Choose the closest structured operation and confirm its parameters."
+        ),
+    )
+
+
+def _parse_core(
+    source_line: str,
+) -> tuple[ExternalInstruction | None, MigrationItem | None]:
+    try:
+        return parse_instruction(source_line), None
+    except ExternalParseError as exc:
+        return None, _core_parse_failure(source_line, exc)
+
+
+def adapt_delete(source_line: str) -> MigrationItem:
+    instruction, failure = _parse_core(source_line)
+    if failure is not None:
+        return failure
+    assert instruction is not None
+    tag, match = instruction.arguments[:2]
+    params = {"tag": tag.strip()} if tag.strip() else {}
+    if match:
+        return _suggestion(
+            source_line,
+            intent="Delete fields whose value matches external text",
+            reason="matched DELETE behavior is not yet proven for automatic conversion",
+            recommended_operation="delete-by-subfield",
+            prefilled_params={"tag": tag.strip(), "match": match},
+            cataloger_action=(
+                "Open Delete Fields Matching Subfield Value and confirm the "
+                "external match mode before saving."
+            ),
+        )
+    if not re.fullmatch(r"[0-9Xx]{3}", tag.strip()):
+        return _suggestion(
+            source_line,
+            intent="Delete every field matching a MARC tag pattern",
+            reason="DELETE tag must be three digits or use X as a digit wildcard",
+            recommended_operation="delete-tag",
+            prefilled_params=params,
+            cataloger_action="Open Delete Tag and enter a valid exact or wildcard tag.",
+        )
+    if any(instruction.boolean_flags):
+        enabled = ", ".join(
+            "flag {0}".format(index)
+            for index, value in enumerate(instruction.boolean_flags, start=1)
+            if value
+        )
+        return _suggestion(
+            source_line,
+            intent="Delete every field matching a MARC tag pattern",
+            reason=(
+                "DELETE {0} is enabled, and that external policy has no proven "
+                "open equivalent".format(enabled)
+            ),
+            recommended_operation="delete-tag",
+            prefilled_params=params,
+            cataloger_action=(
+                "Open Delete Tag and confirm whether the enabled external "
+                "policy can be omitted or recreated separately."
+            ),
+        )
+    return _item(
+        source_line,
+        status="converted",
+        operations=({"kind": "delete-tag", "params": params},),
+    )
+
+
+_ADD_POLICIES = {
+    100: "append",
+    101: "skip_if_tag_exists",
+    108: "skip_if_identical",
+}
+
+
+def adapt_add(source_line: str) -> MigrationItem:
+    instruction, failure = _parse_core(source_line)
+    if failure is not None:
+        return failure
+    assert instruction is not None
+    tag, field_data, _option, external_condition = instruction.arguments[:4]
+    params = _safe_field_params(tag.strip(), field_data)
+    if not _is_data_tag(params.get("tag")) or not params.get("subfields"):
+        return _suggestion(
+            source_line,
+            intent="Add a MARC field",
+            reason=(
+                "ADD must target a data field with lossless indicators and "
+                "subfields"
+            ),
+            recommended_operation="add-field",
+            prefilled_params=params,
+            cataloger_action=(
+                "Open Add Field and correct the field indicators and subfields."
+            ),
+        )
+    option_code = instruction.option_code
+    if option_code in _ADD_POLICIES:
+        if external_condition:
+            return _suggestion(
+                source_line,
+                intent="Add a MARC field with an external condition",
+                reason=(
+                    "ADD option {0} does not have a proven conditional form".format(
+                        option_code
+                    )
+                ),
+                recommended_operation="add-field",
+                prefilled_params=params,
+                cataloger_action=(
+                    "Open Add Field and confirm both the condition and the "
+                    "existing-field policy."
+                ),
+            )
+        params.update({
+            "condition": "always",
+            "existing_field_action": _ADD_POLICIES[option_code],
+        })
+    elif option_code == 106:
+        try:
+            condition = parse_leader_condition(external_condition)
+        except ValueError as exc:
+            return _suggestion(
+                source_line,
+                intent="Add a MARC field for records matching a Leader condition",
+                reason=str(exc),
+                recommended_operation="add-field",
+                prefilled_params=params,
+                cataloger_action=(
+                    "Open Add Field and select the reviewed Leader condition "
+                    "that matches the cataloging intent."
+                ),
+            )
+        if condition == "always":
+            return _suggestion(
+                source_line,
+                intent="Add a MARC field conditionally",
+                reason="ADD option 106 requires a recognized nonempty Leader condition",
+                recommended_operation="add-field",
+                prefilled_params=params,
+                cataloger_action=(
+                    "Open Add Field and select an explicit Leader condition."
+                ),
+            )
+        params.update({
+            "condition": condition,
+            "existing_field_action": "append",
+        })
+    else:
+        raise AssertionError("typed parser returned an unknown ADD option")
+    return _item(
+        source_line,
+        status="converted",
+        operations=({"kind": "add-field", "params": params},),
+    )
+
+
+_BUILD_POLICIES = {
+    (False, False, True, False): "skip_if_tag_exists",
+    (False, False, False, True): "append",
+}
+
+
+def adapt_build_field(source_line: str) -> MigrationItem:
+    instruction, failure = _parse_core(source_line)
+    if failure is not None:
+        return failure
+    assert instruction is not None
+    template = instruction.arguments[0]
+    params = _safe_build_params(template)
+    if not params or not _is_data_tag(params.get("tag")):
+        return _suggestion(
+            source_line,
+            intent="Build a MARC field from source record values",
+            reason=(
+                "Build Field must target a data field and use supported "
+                "lossless source syntax"
+            ),
+            recommended_operation="build-field",
+            prefilled_params=params,
+            cataloger_action=(
+                "Open Build Field and recreate the template with literal, "
+                "control-field, or data-subfield segments."
+            ),
+        )
+    policy = _BUILD_POLICIES.get(instruction.boolean_flags)
+    if policy is None:
+        return _suggestion(
+            source_line,
+            intent="Build a MARC field from source record values",
+            reason=(
+                "Build Field flags {0} have no proven open policy".format(
+                    instruction.arguments[1:5]
+                )
+            ),
+            recommended_operation="build-field",
+            prefilled_params=params,
+            cataloger_action=(
+                "Open Build Field and choose explicit missing-source and "
+                "existing-field behavior."
+            ),
+        )
+    params.update({
+        "condition": "always",
+        "existing_field_action": policy,
+        "missing_control_action": "skip_field",
+    })
+    return _item(
+        source_line,
+        status="converted",
+        operations=({"kind": "build-field", "params": params},),
+    )
+
+
+_CORPUS_RDA_SIGNATURE = (
+    "1|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|language of cataloging|0"
+)
+
+
+def adapt_rdahelper(source_line: str) -> MigrationItem:
+    instruction, failure = _parse_core(source_line)
+    if failure is not None:
+        return failure
+    assert instruction is not None
+    if instruction.arguments[0] != _CORPUS_RDA_SIGNATURE:
+        positions = instruction.arguments[0].split("|")
+        additional = [
+            str(index)
+            for index, value in enumerate(positions, start=1)
+            if index not in {1, 2, 17, 18} and value == "1"
+        ]
+        detail = (
+            "additional enabled RDAHELPER positions: " + ", ".join(additional)
+            if additional
+            else "RDAHELPER positions differ from the reviewed corpus signature"
+        )
+        return _suggestion(
+            source_line,
+            intent="Create RDA fields using explicit open operations",
+            reason=detail,
+            recommended_operation="rda-classify-material",
+            prefilled_params=smith_external_material_operation()["params"],
+            cataloger_action=(
+                "Open RDA Material Classification and confirm which external "
+                "RDA options need separate explicit operations."
+            ),
+        )
+    return _item(
+        source_line,
+        status="converted",
+        operations=(smith_external_material_operation(),),
+        disclosure=(
+            "Smith open equivalent; not a byte-for-byte external emulation"
+        ),
     )
 
 
@@ -144,20 +548,43 @@ def adapt_replace(source_line: str) -> MigrationItem:
 
 
 def adapt_sortby(source_line: str) -> MigrationItem:
-    parts = source_line.rstrip("\n").split("\t")
-    if len(parts) >= 2 and parts[1].strip().upper() == "ALL":
+    instruction, failure = _parse_core(source_line)
+    if failure is not None:
+        return failure
+    assert instruction is not None
+    scope = instruction.arguments[0]
+    if scope == "ALL" and instruction.boolean_flags == (True, True):
         return _item(
             source_line,
             status="converted",
-            operation={"kind": "sort-fields", "params": {}},
+            operations=({"kind": "sort-fields", "params": {}},),
         )
-    return _item(source_line, status="unresolved", reason="SORTBY signature has no proven adapter")
+    return _suggestion(
+        source_line,
+        intent="Sort MARC fields using the external scope and options",
+        reason=(
+            "only SORTBY ALL True True has a proven open equivalent; "
+            "received scope {0!r} and flags {1}".format(
+                scope, instruction.arguments[1:3]
+            )
+        ),
+        recommended_operation="sort-fields",
+        prefilled_params={},
+        cataloger_action=(
+            "Open Sort Fields and confirm whether sorting all fields matches "
+            "the requested external behavior."
+        ),
+    )
 
 
 ADAPTER_REGISTRY = {
+    "ADD": adapt_add,
+    "DELETE": adapt_delete,
+    "RDAHELPER": adapt_rdahelper,
     "SUBFIELD_EDIT": adapt_subfield_edit,
     "REPLACE": adapt_replace,
     "SORTBY": adapt_sortby,
+    "buildnewfield": adapt_build_field,
 }
 
 COMPATIBILITY_ADAPTER_REGISTRY = {
@@ -166,6 +593,46 @@ COMPATIBILITY_ADAPTER_REGISTRY = {
         verbs=("SUBFIELD_EDIT",),
         shape_ids=("subfield-edit-literal",),
         fixture_ids=("subfield-edit-literal",),
+    ),
+    "delete-v1": CompatibilityAdapter(
+        adapter=adapt_delete,
+        verbs=("DELETE",),
+        shape_ids=("delete-exact", "delete-wildcard"),
+        fixture_ids=("delete-exact", "delete-wildcard"),
+    ),
+    "add-v1": CompatibilityAdapter(
+        adapter=adapt_add,
+        verbs=("ADD",),
+        shape_ids=(
+            "add-append",
+            "add-skip-tag",
+            "add-skip-identical",
+            "add-leader",
+        ),
+        fixture_ids=(
+            "add-append",
+            "add-skip-tag",
+            "add-skip-identical",
+            "add-leader",
+        ),
+    ),
+    "build-field-v1": CompatibilityAdapter(
+        adapter=adapt_build_field,
+        verbs=("buildnewfield",),
+        shape_ids=("build-if-absent", "build-always"),
+        fixture_ids=("build-if-absent", "build-always"),
+    ),
+    "rda-smith-open-v1": CompatibilityAdapter(
+        adapter=adapt_rdahelper,
+        verbs=("RDAHELPER",),
+        shape_ids=("rda-smith-classify",),
+        fixture_ids=("rda-smith-classify",),
+    ),
+    "sort-all-v1": CompatibilityAdapter(
+        adapter=adapt_sortby,
+        verbs=("SORTBY",),
+        shape_ids=("sort-all",),
+        fixture_ids=("sort-all",),
     ),
 }
 
@@ -255,10 +722,15 @@ def adapt_instruction(source_line: str) -> MigrationItem:
     adapter = ADAPTER_REGISTRY.get(verb)
     if adapter is not None:
         return adapter(source_line)
-    return _item(
+    return _suggestion(
         source_line,
-        status="unresolved",
+        intent="Recreate an unsupported external instruction",
         reason=f"external instruction {verb or '(empty)'} has no proven adapter",
+        recommended_operation="choose-operation",
+        prefilled_params={},
+        cataloger_action=(
+            "Choose the closest structured operation and confirm its parameters."
+        ),
     )
 
 
