@@ -48,7 +48,7 @@ def _exercised_fixtures():
             assert fixture_id is not None, (
                 "every fixture line requires an explicit ID"
             )
-            exercised[fixture_id] = instruction_shape(parse_instruction(line))
+            exercised[fixture_id] = parse_instruction(line)
             fixture_id = None
     assert fixture_id is None, "every fixture ID requires an instruction line"
     return exercised
@@ -204,6 +204,70 @@ def test_core_near_misses_decline_with_structured_actionable_suggestion(
     assert item.recommended_operation == recommended_operation
     assert isinstance(item.prefilled_params, dict)
     assert item.cataloger_action
+
+
+@pytest.mark.parametrize(
+    ("position", "cataloger_label"),
+    [
+        (1, "Add MARC 336 Content Type"),
+        (2, "Add MARC 337 Media Type and 338 Carrier Type"),
+        (3, "Add MARC 344 Sound Characteristics"),
+        (4, "Add MARC 345 Projection Characteristics"),
+        (5, "Add MARC 346 Video Characteristics"),
+        (6, "Add MARC 347 Digital File Characteristics"),
+        (7, "Add MARC 380 Form of Work"),
+        (8, "Add MARC 381 Other Distinguishing Characteristics"),
+        (9, "Evaluate MARC 260/264 publication fields"),
+        (10, "Always use copyright and phonogram symbols"),
+        (11, "Add qualifying information to MARC 015/020/024/027"),
+        (12, "Modify MARC 040 to add $e rda"),
+        (13, "Process MARC 502 dissertation notes"),
+        (14, "Delete the General Material Designation from MARC 245 $h"),
+        (15, "Generate a General Material Designation"),
+        (16, "Expand RDA abbreviations"),
+        (18, "Add a relator term in MARC 100 $e"),
+    ],
+)
+def test_rda_near_miss_names_each_enabled_option_for_catalogers(
+    position, cataloger_label
+):
+    positions = ["0"] * 18
+    positions[16] = "language of cataloging"
+    positions[position - 1] = "1"
+
+    item = migration.adapt_instruction(
+        "RDAHELPER\t" + "|".join(positions)
+    )
+
+    assert item.status == "unresolved"
+    assert cataloger_label in item.reason
+    assert "position" not in item.reason.casefold()
+
+
+def test_rda_near_miss_names_enabled_options_and_language_setting():
+    item = migration.adapt_instruction(
+        "RDAHELPER\t1|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|eng|0"
+    )
+
+    assert "Add MARC 336 Content Type" in item.reason
+    assert "Add MARC 337 Media Type and 338 Carrier Type" in item.reason
+    assert "Cataloging language setting: eng" in item.reason
+    assert "position" not in item.reason.casefold()
+
+
+def test_malformed_rda_switch_names_option_and_other_enabled_intent():
+    positions = ["0"] * 18
+    positions[2] = "maybe"
+    positions[11] = "1"
+    positions[16] = "language of cataloging"
+
+    item = migration.adapt_instruction(
+        "RDAHELPER\t" + "|".join(positions)
+    )
+
+    assert "Add MARC 344 Sound Characteristics" in item.reason
+    assert "Modify MARC 040 to add $e rda" in item.reason
+    assert "position" not in item.reason.casefold()
 
 
 def test_unknown_numeric_option_is_not_normalized_to_supported_add_policy():
@@ -515,6 +579,24 @@ def test_compatibility_manifest_lists_only_registered_exercised_adapters():
         _compatibility_manifest(),
         exercised_fixtures=_exercised_fixtures(),
     )
+
+
+def test_compatibility_manifest_rejects_fixture_that_shapes_but_does_not_convert():
+    exercised = _exercised_fixtures()
+    invalid_delete = parse_instruction(
+        "DELETE\tABC\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse"
+    )
+    assert instruction_shape(invalid_delete) == "delete-exact"
+    exercised["delete-exact"] = invalid_delete
+
+    with pytest.raises(
+        migration.CompatibilityContractError,
+        match="delete-v1 fixture delete-exact did not convert",
+    ):
+        migration.validate_compatibility_manifest(
+            _compatibility_manifest(),
+            exercised_fixtures=exercised,
+        )
 
 
 def test_compatibility_manifest_rejects_unknown_schema_version():

@@ -15,7 +15,11 @@ from .external_field_syntax import (
 from .external_task_parser import (
     ExternalInstruction,
     ExternalParseError,
+    RDA_SWITCH_POSITIONS,
+    enabled_rda_option_labels,
+    instruction_shape,
     parse_instruction,
+    rda_option_label,
 )
 from .rda_operations import smith_external_material_operation
 
@@ -180,10 +184,34 @@ def _core_parse_failure(source_line: str, exc: ExternalParseError) -> MigrationI
             ),
         )
     if verb == "RDAHELPER":
+        reason = exc.message
+        serialized = parts[1].split("|") if len(parts) > 1 else []
+        if (
+            exc.failure_code == "invalid_rda_switch"
+            and exc.failing_position is not None
+            and len(serialized) == 18
+        ):
+            enabled_flags = tuple(
+                serialized[position - 1] == "1"
+                for position in RDA_SWITCH_POSITIONS
+            )
+            details = [
+                "{0} must be enabled or disabled".format(
+                    rda_option_label(exc.failing_position)
+                )
+            ]
+            enabled_options = enabled_rda_option_labels(enabled_flags)
+            if enabled_options:
+                details.append(
+                    "Enabled external options: {0}".format(
+                        "; ".join(enabled_options)
+                    )
+                )
+            reason = ". ".join(details)
         return _suggestion(
             source_line,
             intent="Create RDA content, media, and carrier fields",
-            reason=exc.message,
+            reason=reason,
             recommended_operation="rda-classify-material",
             prefilled_params=smith_external_material_operation()["params"],
             cataloger_action=(
@@ -436,20 +464,23 @@ def adapt_rdahelper(source_line: str) -> MigrationItem:
     assert instruction is not None
     if instruction.arguments[0] != _CORPUS_RDA_SIGNATURE:
         positions = instruction.arguments[0].split("|")
-        additional = [
-            str(index)
-            for index, value in enumerate(positions, start=1)
-            if index not in {1, 2, 17, 18} and value == "1"
-        ]
-        detail = (
-            "additional enabled RDAHELPER positions: " + ", ".join(additional)
-            if additional
-            else "RDAHELPER positions differ from the reviewed corpus signature"
+        enabled_options = enabled_rda_option_labels(
+            instruction.boolean_flags
         )
+        details = [
+            "Enabled external options: {0}".format(
+                "; ".join(enabled_options)
+            )
+            if enabled_options
+            else "No RDA transformation options are enabled"
+        ]
+        language = positions[16]
+        if language != "language of cataloging":
+            details.append("Cataloging language setting: {0}".format(language))
         return _suggestion(
             source_line,
             intent="Create RDA fields using explicit open operations",
-            reason=detail,
+            reason=". ".join(details),
             recommended_operation="rda-classify-material",
             prefilled_params=smith_external_material_operation()["params"],
             cataloger_action=(
@@ -654,7 +685,7 @@ def _manifest_values(entry: Mapping[str, Any], field: str) -> tuple[str, ...]:
 def validate_compatibility_manifest(
     manifest: Mapping[str, Any],
     *,
-    exercised_fixtures: Mapping[str, str],
+    exercised_fixtures: Mapping[str, ExternalInstruction],
 ) -> None:
     """Fail closed when manifest, dispatch, or fixture evidence drifts."""
     if manifest.get("schema_version") != 1:
@@ -700,10 +731,20 @@ def validate_compatibility_manifest(
                     f"registered adapter {adapter_id} dispatch drifted for {verb}"
                 )
         registered_fixture_ids.update(registered.fixture_ids)
-        exercised_shapes = {
-            exercised_fixtures.get(fixture_id)
-            for fixture_id in registered.fixture_ids
-        }
+        exercised_shapes = set()
+        for fixture_id in registered.fixture_ids:
+            fixture = exercised_fixtures.get(fixture_id)
+            if not isinstance(fixture, ExternalInstruction):
+                raise CompatibilityContractError(
+                    f"registered adapter {adapter_id} fixture evidence drifted"
+                )
+            exercised_shapes.add(instruction_shape(fixture))
+            outcome = registered.adapter(fixture.source_line)
+            if outcome.status != "converted":
+                raise CompatibilityContractError(
+                    f"registered adapter {adapter_id} fixture {fixture_id} "
+                    "did not convert"
+                )
         if None in exercised_shapes or exercised_shapes != set(
             registered.shape_ids
         ):

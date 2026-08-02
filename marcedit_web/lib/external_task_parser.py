@@ -71,6 +71,50 @@ _ARGUMENT_COUNTS = {
 }
 
 
+RDA_SWITCH_POSITIONS = (*range(1, 17), 18)
+
+RDA_OPTION_LABELS = {
+    1: "Add MARC 336 Content Type",
+    2: "Add MARC 337 Media Type and 338 Carrier Type",
+    3: "Add MARC 344 Sound Characteristics",
+    4: "Add MARC 345 Projection Characteristics",
+    5: "Add MARC 346 Video Characteristics",
+    6: "Add MARC 347 Digital File Characteristics",
+    7: "Add MARC 380 Form of Work",
+    8: "Add MARC 381 Other Distinguishing Characteristics",
+    9: "Evaluate MARC 260/264 publication fields",
+    10: "Always use copyright and phonogram symbols",
+    11: "Add qualifying information to MARC 015/020/024/027",
+    12: "Modify MARC 040 to add $e rda",
+    13: "Process MARC 502 dissertation notes",
+    14: "Delete the General Material Designation from MARC 245 $h",
+    15: "Generate a General Material Designation",
+    16: "Expand RDA abbreviations",
+    18: "Add a relator term in MARC 100 $e",
+}
+
+
+def enabled_rda_option_labels(flags: tuple[bool, ...]) -> tuple[str, ...]:
+    """Translate typed RDA switches to their cataloger-facing option names."""
+
+    if len(flags) != len(RDA_SWITCH_POSITIONS):
+        raise ValueError("RDAHELPER typed switches are incomplete")
+    return tuple(
+        RDA_OPTION_LABELS[position]
+        for position, enabled in zip(RDA_SWITCH_POSITIONS, flags)
+        if enabled
+    )
+
+
+def rda_option_label(position: int) -> str:
+    """Return the cataloger-facing name for one serialized switch."""
+
+    try:
+        return RDA_OPTION_LABELS[position]
+    except KeyError as exc:
+        raise ValueError("RDAHELPER switch is not recognized") from exc
+
+
 def _require_integer(
     value: str,
     *,
@@ -144,7 +188,7 @@ def _decode_rda_flags(value: str) -> tuple[bool, ...]:
         )
 
     flags = []
-    for position in (*range(1, 17), 18):
+    for position in RDA_SWITCH_POSITIONS:
         switch = positions[position - 1]
         if switch not in {"0", "1"}:
             raise ExternalParseError(
