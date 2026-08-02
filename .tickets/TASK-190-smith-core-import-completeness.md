@@ -62,4 +62,4 @@ Status: Todo
 
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 
-Plan: Pending
+Plan: [Example-task import completeness implementation plan](../docs/superpowers/plans/2026-08-02-task-190-example-task-import-completeness.md)
