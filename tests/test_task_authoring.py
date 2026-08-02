@@ -524,6 +524,13 @@ def _source_record():
     record = Record()
     record.add_field(Field(tag="001", data="SYNTHETIC12345"))
     record.add_field(Field(tag="003", data="NhCcYBP"))
+    record.add_field(
+        Field(
+            tag="050",
+            indicators=[" ", "4"],
+            subfields=[Subfield("a", "QA76.9"), Subfield("b", ".A1")],
+        )
+    )
     return record
 
 
@@ -625,6 +632,119 @@ def test_876_preview_keeps_two_subfields_in_order():
     assert preview.mnemonic == (
         "=876  \\\\$aB(NhCcYBP)SYNTHETIC12345-SC$lInternet"
     )
+
+
+def test_data_subfield_reference_uses_first_matching_value_in_preview():
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "852",
+            "ind1": "0",
+            "ind2": " ",
+            "structured_subfields": [[
+                "h",
+                [
+                    {"type": "data_subfield", "tag": "050", "code": "a"},
+                    {"type": "text", "value": " "},
+                    {"type": "data_subfield", "tag": "050", "code": "b"},
+                ],
+            ]],
+            "existing_field_action": "append",
+            "missing_control_action": "skip_field",
+            "condition": "always",
+        },
+    }
+
+    assert task_authoring.validate_operation(operation) == ()
+    assert task_authoring.render_mnemonic(operation) == (
+        "=852  0\\$h{050$a} {050$b}"
+    )
+    assert task_authoring.preview_operation(
+        operation, _source_record()
+    ).mnemonic == "=852  0\\$hQA76.9 .A1"
+
+
+def test_data_subfield_reference_compiles_to_same_value_as_preview():
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "856",
+            "ind1": "4",
+            "ind2": "0",
+            "structured_subfields": [[
+                "u",
+                [
+                    {"type": "text", "value": "https://proxy/?url="},
+                    {"type": "data_subfield", "tag": "050", "code": "a"},
+                ],
+            ]],
+            "existing_field_action": "append",
+            "missing_control_action": "skip_field",
+            "condition": "always",
+        },
+    }
+    record = _source_record()
+    rendered = task_builder.render_ops_to_python(
+        [Operation.from_dict(operation)]
+    )
+    result = sandbox.run_tasks_subprocess(
+        [sandbox.TaskSpec(
+            name="data-subfield-preview-equivalence",
+            body=rendered["body"],
+            imports=rendered["imports"],
+        )],
+        record.as_marc(),
+    )
+
+    assert result.returncode == 0
+    with result.output_path.open("rb") as stream:
+        output = next(iter(MARCReader(stream)))
+    assert output["856"].get_subfields("u") == [
+        "https://proxy/?url=QA76.9"
+    ]
+    assert task_authoring.preview_operation(operation, record).mnemonic == (
+        "=856  40$uhttps://proxy/?url=QA76.9"
+    )
+
+
+def test_missing_data_subfield_uses_legacy_missing_control_action_policy():
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "852",
+            "ind1": " ",
+            "ind2": " ",
+            "structured_subfields": [[
+                "h",
+                [{"type": "data_subfield", "tag": "050", "code": "z"}],
+            ]],
+            "existing_field_action": "append",
+            "missing_control_action": "fail_record",
+            "condition": "always",
+        },
+    }
+
+    preview = task_authoring.preview_operation(operation, _source_record())
+
+    assert preview.status == "error"
+    assert preview.message == "Missing required source value 050 $z."
+
+
+def test_first_subfield_value_is_deterministically_first_field_first_value():
+    record = Record()
+    record.add_field(Field(
+        tag="035",
+        indicators=[" ", " "],
+        subfields=[Subfield("a", "first"), Subfield("a", "second")],
+    ))
+    record.add_field(Field(
+        tag="035",
+        indicators=[" ", " "],
+        subfields=[Subfield("a", "third")],
+    ))
+
+    assert task_builder.first_subfield_value(record, "035", "a") == "first"
+    assert task_builder.first_subfield_value(record, "035", "z") is None
 
 
 def test_missing_control_preview_obeys_skip_and_fail_policies():

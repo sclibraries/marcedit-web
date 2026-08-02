@@ -456,7 +456,9 @@ def validate_operation(
         if not any(
             isinstance(segment, Mapping)
             and (
-                segment.get("type") == "control_field"
+                segment.get("type") in {
+                    "control_field", "data_subfield"
+                }
                 or (
                     segment.get("type") == "text"
                     and bool(segment.get("value"))
@@ -510,6 +512,31 @@ def validate_operation(
                             subfield_index, segment_index
                         )
                     )
+            elif segment_type == "data_subfield":
+                unexpected = sorted(
+                    set(segment) - {"type", "tag", "code"}
+                )
+                if unexpected:
+                    errors.append(
+                        "subfield {0} segment {1} contains unexpected "
+                        "keys: {2}".format(
+                            subfield_index,
+                            segment_index,
+                            ", ".join(unexpected),
+                        )
+                    )
+                tag = str(segment.get("tag") or "")
+                if not _TAG_RE.fullmatch(tag) or is_control_tag(tag):
+                    errors.append(
+                        "subfield {0} segment {1} source must be a data "
+                        "field tag".format(subfield_index, segment_index)
+                    )
+                errors.extend(_validate_code(
+                    segment.get("code"),
+                    "subfield {0} segment {1} source subfield code".format(
+                        subfield_index, segment_index
+                    ),
+                ))
             else:
                 errors.append(
                     "subfield {0} segment {1} type is unsupported".format(
@@ -549,13 +576,28 @@ def _resolve_segments(
             parts.append(segment["value"])
             continue
         if record is None:
-            parts.append("{" + segment["tag"] + "}")
+            if segment["type"] == "data_subfield":
+                parts.append(
+                    "{{{0}${1}}}".format(segment["tag"], segment["code"])
+                )
+            else:
+                parts.append("{" + segment["tag"] + "}")
             continue
-        field = record.get(segment["tag"])
-        if field is None:
-            missing.append(segment["tag"])
+        if segment["type"] == "data_subfield":
+            value = task_builder.first_subfield_value(
+                record, segment["tag"], segment["code"]
+            )
+            source = "{0} ${1}".format(
+                segment["tag"], segment["code"]
+            )
         else:
-            parts.append(str(field.data))
+            field = record.get(segment["tag"])
+            value = None if field is None else str(field.data)
+            source = segment["tag"]
+        if value is None:
+            missing.append(source)
+        else:
+            parts.append(value)
     return "".join(parts), tuple(dict.fromkeys(missing))
 
 
@@ -725,10 +767,17 @@ def describe_operation(op: Mapping[str, Any]) -> str:
         for _code, segments in params["structured_subfields"]:
             for segment in segments:
                 if (
-                    segment["type"] == "control_field"
-                    and segment["tag"] not in sources
+                    segment["type"] in {
+                        "control_field", "data_subfield"
+                    }
                 ):
-                    sources.append(segment["tag"])
+                    source = (
+                        "{0} ${1}".format(segment["tag"], segment["code"])
+                        if segment["type"] == "data_subfield"
+                        else segment["tag"]
+                    )
+                    if source not in sources:
+                        sources.append(source)
         if sources:
             description += " built from {0}".format(_join_words(sources))
     else:
@@ -824,10 +873,17 @@ def token_annotations(op: Mapping[str, Any]) -> tuple[str, ...]:
                 annotations.append(
                     "{0}: literal text.".format(segment["value"])
                 )
-            else:
+            elif segment["type"] == "control_field":
                 annotations.append(
                     "{{{0}}}: value from control field {0}.".format(
                         segment["tag"]
+                    )
+                )
+            else:
+                annotations.append(
+                    "{{{0}${1}}}: first value from data field {0} "
+                    "subfield {1}.".format(
+                        segment["tag"], segment["code"]
                     )
                 )
     return tuple(annotations)
@@ -848,7 +904,7 @@ def preview_operation(
         return AuthoringPreview(
             "no-file",
             unresolved,
-            "Load a MARC file to resolve source control fields.",
+            "Load a MARC file to resolve source values.",
         )
     candidate = copy.deepcopy(record)
     params = normalized["params"]
@@ -865,12 +921,20 @@ def preview_operation(
     if normalized["kind"] == "build-field":
         for _code, segments in params["structured_subfields"]:
             for segment in segments:
-                if (
-                    segment["type"] == "control_field"
-                    and candidate.get(segment["tag"]) is None
-                    and segment["tag"] not in missing
-                ):
-                    missing.append(segment["tag"])
+                if segment["type"] == "control_field":
+                    source = segment["tag"]
+                    present = candidate.get(segment["tag"]) is not None
+                elif segment["type"] == "data_subfield":
+                    source = "{0} ${1}".format(
+                        segment["tag"], segment["code"]
+                    )
+                    present = task_builder.first_subfield_value(
+                        candidate, segment["tag"], segment["code"]
+                    ) is not None
+                else:
+                    continue
+                if not present and source not in missing:
+                    missing.append(source)
     if missing:
         status = (
             "error"
@@ -880,9 +944,11 @@ def preview_operation(
         return AuthoringPreview(
             status,
             unresolved,
-            "Missing required control field {0}.".format(
-                ", ".join(missing)
-            ),
+            (
+                "Missing required source value {0}."
+                if any(" $" in source for source in missing)
+                else "Missing required control field {0}."
+            ).format(", ".join(missing)),
         )
     action = params["existing_field_action"]
     if action == "skip_if_tag_exists" and candidate.get_fields(params["tag"]):

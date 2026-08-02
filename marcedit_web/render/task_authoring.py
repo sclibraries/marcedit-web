@@ -27,8 +27,9 @@ MISSING_CONTROL_OPTIONS = (
     ("fail_record", "Record a task error for this record"),
 )
 SEGMENT_TYPE_OPTIONS = (
-    ("text", "Literal text"),
-    ("control_field", "Source control field"),
+    ("text", "Text"),
+    ("control_field", "Control field"),
+    ("data_subfield", "Data subfield"),
 )
 GUIDED_TARGET_OPTIONS = (
     ("subfield", "One subfield code"),
@@ -223,6 +224,30 @@ def _render_segment(
                 key=_key(key_prefix, "tag"),
             ),
         }
+    if segment_type == "data_subfield":
+        return {
+            "type": "data_subfield",
+            "tag": st.text_input(
+                "Source data field",
+                value=(
+                    str(segment.get("tag", ""))
+                    if current == "data_subfield"
+                    else ""
+                ),
+                max_chars=3,
+                key=_key(key_prefix, "tag"),
+            ),
+            "code": st.text_input(
+                "Source subfield code",
+                value=(
+                    str(segment.get("code", ""))
+                    if current == "data_subfield"
+                    else ""
+                ),
+                max_chars=1,
+                key=_key(key_prefix, "code"),
+            ),
+        }
     return {
         "type": "text",
         "value": st.text_input(
@@ -247,7 +272,7 @@ def render_build_field_params(
 
     _render_common_params(params, key_prefix=key_prefix)
     params["missing_control_action"] = _select_policy(
-        "When a source control field is missing",
+        "Missing source value",
         str(params.get("missing_control_action") or "skip_field"),
         MISSING_CONTROL_OPTIONS,
         key=_key(key_prefix, "missing_control_action"),

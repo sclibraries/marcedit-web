@@ -133,6 +133,45 @@ def test_edit_opening_and_working_values_are_independent_deep_copies():
     assert state.opening_value["params"]["nested"] == [["original"]]
 
 
+def test_build_field_data_reference_survives_cancel_save_and_reopen():
+    operation = {
+        "kind": "build-field",
+        "params": {
+            "tag": "852",
+            "ind1": "0",
+            "ind2": " ",
+            "structured_subfields": [[
+                "h",
+                [{"type": "data_subfield", "tag": "050", "code": "a"}],
+            ]],
+            "existing_field_action": "append",
+            "missing_control_action": "skip_field",
+            "condition": "always",
+        },
+    }
+    operations = [operation]
+    cancelled = task_operation_dialog.new_edit_state(
+        operation, index=0, nonce=9
+    )
+    cancelled.working_copy["params"]["structured_subfields"][0][1][0][
+        "code"
+    ] = "b"
+
+    assert task_operation_dialog.cancel_result(cancelled) == "confirm"
+    assert operations[0]["params"]["structured_subfields"][0][1][0][
+        "code"
+    ] == "a"
+
+    saved = task_operation_dialog.keep_in_task(operations, cancelled)
+    rendered = task_builder.render_ops_to_python(
+        [task_builder.Operation.from_dict(saved[0])]
+    )
+    reopened = task_builder.parse_ops_from_source(rendered["body"])
+
+    assert reopened["form_editable"] is True
+    assert reopened["ops"][0].to_dict() == saved[0]
+
+
 def test_keep_rejects_missing_add_selection_and_stale_edit_index():
     with pytest.raises(ValueError, match="select an operation"):
         task_operation_dialog.keep_in_task(

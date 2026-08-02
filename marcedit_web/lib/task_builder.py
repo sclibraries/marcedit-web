@@ -31,6 +31,16 @@ from marcedit_web.lib.codegen_safety import data_lit, lit
 logger = logging.getLogger("marcedit_web.task_builder")
 
 
+def first_subfield_value(record, tag: str, code: str) -> str | None:
+    """Return the first matching value from the first field with ``tag``."""
+
+    field = record.get(tag)
+    if field is None:
+        return None
+    values = field.get_subfields(code)
+    return values[0] if values else None
+
+
 # ---------------------------------------------------------------------------
 # Operation data
 # ---------------------------------------------------------------------------
@@ -715,19 +725,28 @@ def _extract_template_tokens(subfields: list) -> list[str]:
 
 def _format_structured_build_subfields(
     subfields: list,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[tuple[str, str, str]]]:
     """Render typed text/control segments without inferring placeholders."""
-    tokens: list[str] = []
+    sources: list[tuple[str, str, str]] = []
     rendered: list[str] = []
     for code, segments in subfields:
-        control_tags: list[str] = []
+        segment_sources: list[tuple[str, str, str]] = []
         for segment in segments:
             segment_type = segment.get("type")
             if segment_type == "control_field":
-                tag = segment["tag"]
-                control_tags.append(tag)
-                if tag not in tokens:
-                    tokens.append(tag)
+                source = ("control_field", segment["tag"], "")
+                segment_sources.append(source)
+                if source not in sources:
+                    sources.append(source)
+            elif segment_type == "data_subfield":
+                source = (
+                    "data_subfield",
+                    segment["tag"],
+                    segment["code"],
+                )
+                segment_sources.append(source)
+                if source not in sources:
+                    sources.append(source)
             elif segment_type != "text":
                 raise ValueError(
                     f"unsupported structured build-field segment {segment_type!r}"
@@ -742,7 +761,7 @@ def _format_structured_build_subfields(
             parts = [
                 lit(segment["value"])
                 if segment["type"] == "text"
-                else f"_t_{segment['tag']}"
+                else _build_source_variable(segment)
                 for segment in segments
             ]
             value_expression = " + ".join(parts)
@@ -750,17 +769,45 @@ def _format_structured_build_subfields(
             template = "".join(
                 segment["value"]
                 if segment["type"] == "text"
-                else "{" + segment["tag"] + "}"
+                else _build_source_token(segment)
                 for segment in segments
             )
             replace_chain = "".join(
-                f".replace({lit('{' + tag + '}')}, _t_{tag})"
-                for tag in tokens
-                if tag in control_tags
+                f".replace({lit(_source_token(source))}, "
+                f"{_source_variable(source)})"
+                for source in segment_sources
             )
             value_expression = f"{lit(template)}{replace_chain}"
         rendered.append(f"({lit(code)}, {value_expression})")
-    return ", ".join(rendered), tokens
+    return ", ".join(rendered), sources
+
+
+def _source_variable(source: tuple[str, str, str]) -> str:
+    _kind, tag, code = source
+    return "_t_{0}{1}".format(tag, "_" + code if code else "")
+
+
+def _source_token(source: tuple[str, str, str]) -> str:
+    kind, tag, code = source
+    if kind == "data_subfield":
+        return "{{{0}${1}}}".format(tag, code)
+    return "{{{0}}}".format(tag)
+
+
+def _segment_source(segment: dict) -> tuple[str, str, str]:
+    return (
+        segment["type"],
+        segment["tag"],
+        segment.get("code", ""),
+    )
+
+
+def _build_source_variable(segment: dict) -> str:
+    return _source_variable(_segment_source(segment))
+
+
+def _build_source_token(segment: dict) -> str:
+    return _source_token(_segment_source(segment))
 
 
 def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
@@ -845,15 +892,20 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         ind2 = (p.get("ind2") or " ")[:1] or " "
         subfields = list(p.get("subfields") or [])
         structured_subfields = p.get("structured_subfields")
+        sources: list[tuple[str, str, str]] = []
         if structured_subfields is None:
             # Validate placeholders up front so malformed templates fail at
             # render time (when the cataloger is editing) instead of at run time.
             tokens = _extract_template_tokens(subfields)
             structured_sf_args = None
         else:
-            structured_sf_args, tokens = _format_structured_build_subfields(
+            structured_sf_args, sources = _format_structured_build_subfields(
                 structured_subfields
             )
+            tokens = [
+                tag for kind, tag, _code in sources
+                if kind == "control_field"
+            ]
         imports: set[str] = {"make_field"}
         condition_key = (
             p["condition"] if "condition" in p else "always"
@@ -875,7 +927,10 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
 
         # No template tokens? Fall back to the same shape as add-field —
         # build-field stays usable as a strict superset.
-        if not tokens:
+        has_sources = bool(
+            tokens if structured_subfields is None else sources
+        )
+        if not has_sources:
             sf_args = (
                 structured_sf_args
                 if structured_sf_args is not None
@@ -898,18 +953,40 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
                 )
             return (mutation_lines, imports, False)
 
-        # Template path: look up each referenced control field, guard on
+        # Template path: look up each referenced source value, guard on
         # non-None (skip the whole add if any is missing), then substitute
         # via chained `.replace()` calls. We can't use str.format() here:
         # numeric placeholders like `{001}` are treated as positional
         # indices by Python's format machinery (IndexError on call),
         # even when passed via **kwargs. Tags are 3-digit so no token
         # is a prefix of another, making the replace order irrelevant.
-        imports |= {"control_value"}
-        lookup_lines = [
-            f"_t_{tok} = control_value(record, {lit(tok)})" for tok in tokens
-        ]
-        guard = " and ".join(f"_t_{tok} is not None" for tok in tokens)
+        if structured_subfields is None:
+            imports.add("control_value")
+            lookup_lines = [
+                f"_t_{tok} = control_value(record, {lit(tok)})"
+                for tok in tokens
+            ]
+            guard_variables = [f"_t_{tok}" for tok in tokens]
+        else:
+            lookup_lines = []
+            for source in sources:
+                kind, source_tag, source_code = source
+                variable = _source_variable(source)
+                if kind == "control_field":
+                    imports.add("control_value")
+                    lookup_lines.append(
+                        f"{variable} = control_value(record, {lit(source_tag)})"
+                    )
+                else:
+                    imports.add("_first_subfield_value_import")
+                    lookup_lines.append(
+                        f"{variable} = first_subfield_value(record, "
+                        f"{lit(source_tag)}, {lit(source_code)})"
+                    )
+            guard_variables = [_source_variable(source) for source in sources]
+        guard = " and ".join(
+            f"{variable} is not None" for variable in guard_variables
+        )
         if structured_sf_args is None:
             sf_items: list[str] = []
             for code, value in subfields:
@@ -940,12 +1017,21 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             + [f"    {line}" for line in mutation_lines]
         )
         if missing_control_action == "fail_record":
-            missing = ", ".join(tokens)
+            if structured_subfields is None or all(
+                kind == "control_field" for kind, _tag, _code in sources
+            ):
+                missing = "control field " + ", ".join(tokens)
+            else:
+                missing = "source value " + ", ".join(
+                    "{0} ${1}".format(tag, code)
+                    if kind == "data_subfield" else tag
+                    for kind, tag, code in sources
+                )
             body_lines.extend(
                 [
                     "else:",
                     "    raise ValueError("
-                    + lit("Build Field requires control field " + missing)
+                    + lit("Build Field requires " + missing)
                     + ")",
                 ]
             )
@@ -1270,6 +1356,7 @@ def render_ops_to_python(ops: list[Operation]) -> dict:
     transforms_needed: set[str] = set()
     needs_subfield_import = False
     needs_re_import = False
+    needs_first_subfield_value_import = False
     for op in ops:
         marker = f"{_OP_MARKER_PREFIX} {op.kind} {json.dumps(op.params, sort_keys=True)}"
         body_lines.append(marker)
@@ -1284,6 +1371,9 @@ def render_ops_to_python(ops: list[Operation]) -> dict:
         if "_re_import" in needed:
             needs_re_import = True
             needed = needed - {"_re_import"}
+        if "_first_subfield_value_import" in needed:
+            needs_first_subfield_value_import = True
+            needed = needed - {"_first_subfield_value_import"}
         transforms_needed |= needed
         needs_subfield_import = needs_subfield_import or needs_sf
 
@@ -1294,6 +1384,10 @@ def render_ops_to_python(ops: list[Operation]) -> dict:
     imports: list[str] = []
     if needs_re_import:
         imports.append("import re")
+    if needs_first_subfield_value_import:
+        imports.append(
+            "from marcedit_web.lib.task_builder import first_subfield_value"
+        )
     if transforms_needed:
         imports.append(
             "from marcedit_web.lib.transforms import "

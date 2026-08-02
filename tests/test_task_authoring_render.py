@@ -964,6 +964,29 @@ def test_build_field_renders_typed_text_and_control_segments(monkeypatch):
     assert "Source control field" in fake.text_input_labels
 
 
+def test_build_field_renders_editable_data_subfield_reference(monkeypatch):
+    fake = FakeStreamlit(selectbox_values={"Segment type": "data_subfield"})
+    renderer = _renderer(monkeypatch, fake)
+    params = _smith_876_operation()["params"]
+
+    renderer.render_build_field_params(params, key_prefix="op_0")
+
+    segment_widget = next(
+        key
+        for key in fake.widget_keys
+        if key == "op_0_sf_0_seg_0_type"
+    )
+    assert segment_widget == "op_0_sf_0_seg_0_type"
+    assert "Source data field" in fake.text_input_labels
+    assert "Source subfield code" in fake.text_input_labels
+    assert "Missing source value" in fake.selectbox_labels
+    assert params["structured_subfields"][0][1][0] == {
+        "type": "data_subfield",
+        "tag": "",
+        "code": "",
+    }
+
+
 def test_operation_panel_shows_plain_mnemonic_annotations_and_preview(
     monkeypatch,
 ):
