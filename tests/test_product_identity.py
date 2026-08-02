@@ -158,6 +158,15 @@ def test_existing_technical_identifiers_remain_compatible():
     assert "streamlit run marcedit_web/App.py" in readme
 
 
+def test_private_docker_review_requires_google_authentication():
+    """Future local review instructions must not reintroduce an auth bypass."""
+    readme = " ".join(_source("README.md").split())
+
+    assert "Private Docker UI review always requires Google authentication" in readme
+    assert "Do not disable or bypass authentication" in readme
+    assert "http://localhost:8501/oauth2callback" in readme
+
+
 def test_docker_image_includes_project_license_and_notices():
     dockerfile = _source("Dockerfile")
 

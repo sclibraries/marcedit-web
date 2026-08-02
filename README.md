@@ -34,9 +34,15 @@ pip install -e ".[dev]"
 streamlit run marcedit_web/App.py
 ```
 
-The app loads at `http://localhost:8501/`. For Google OAuth in local
-dev, copy `.streamlit/secrets.toml.example` to
-`.streamlit/secrets.toml` and follow the setup notes there.
+The app loads at `http://localhost:8501/`.
+
+**Private Docker UI review always requires Google authentication.** Do not
+disable or bypass authentication for local review of Tasks, Jobs, Operations,
+or other private workflows. Copy `.streamlit/secrets.toml.example` to
+`.streamlit/secrets.toml`, configure its Google OAuth values, and keep the file
+untracked. The local OAuth client must allow
+`http://localhost:8501/oauth2callback` as its redirect URI. Public-mode and
+automated test containers remain separate anonymous surfaces.
 
 Run the test suite:
 
