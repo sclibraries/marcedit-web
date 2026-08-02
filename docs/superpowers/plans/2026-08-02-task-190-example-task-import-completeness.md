@@ -85,7 +85,7 @@ Test every verb’s required column count, numeric options, Boolean options, emp
 
 - [ ] **Step 2: Run RED**
 
-Run: docker compose run --rm app pytest tests/test_external_task_parser.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_external_task_parser.py -q
 
 Expected: collection fails because the parser module does not exist.
 
@@ -148,7 +148,7 @@ schema versions fail closed.
 
 - [ ] **Step 5: Run GREEN and commit**
 
-Run: docker compose run --rm app pytest tests/test_external_task_parser.py tests/test_external_task_migration.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_external_task_parser.py tests/test_external_task_migration.py -q
 
 Expected: all pass with zero skips.
 
@@ -209,7 +209,7 @@ Add failures for malformed tags, incomplete dollar markers, literal braces, func
 
 - [ ] **Step 2: Run RED**
 
-Run: docker compose run --rm app pytest tests/test_external_field_syntax.py tests/test_task_authoring.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_external_field_syntax.py tests/test_task_authoring.py -q
 
 Expected: missing module and unsupported data_subfield segments.
 
@@ -239,8 +239,8 @@ Render Text, Control field, and Data subfield choices with keys shaped as op_0_s
 Run:
 
 ~~~bash
-docker compose run --rm app pytest tests/test_external_field_syntax.py tests/test_task_authoring.py tests/test_task_operation_dialog.py tests/test_codegen_safety.py -q
-docker compose run --rm app pytest tests/test_native_task_contract.py::test_checked_in_contract_matches_every_golden_definition -q
+docker compose run --rm marcedit-web pytest tests/test_external_field_syntax.py tests/test_task_authoring.py tests/test_task_operation_dialog.py tests/test_codegen_safety.py -q
+docker compose run --rm marcedit-web pytest tests/test_native_task_contract.py::test_checked_in_contract_matches_every_golden_definition -q
 ~~~
 
 Update the checked-in compiler manifest only through its generator and inspect any diff.
@@ -301,7 +301,7 @@ def test_corpus_rda_signature_expands_to_visible_open_equivalent():
 
 - [ ] **Step 3: Run RED**
 
-Run: docker compose run --rm app pytest tests/test_external_task_migration.py tests/test_rda_operations.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_external_task_migration.py tests/test_rda_operations.py -q
 
 Expected: current registry leaves these families unresolved.
 
@@ -315,7 +315,7 @@ Compile and run representative converted operations against MARC records coverin
 
 - [ ] **Step 6: Run GREEN and commit**
 
-Run: docker compose run --rm app pytest tests/test_external_task_parser.py tests/test_external_task_migration.py tests/test_rda_operations.py tests/test_task_authoring.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_external_task_parser.py tests/test_external_task_migration.py tests/test_rda_operations.py tests/test_task_authoring.py -q
 
 Commit:
 
@@ -375,7 +375,7 @@ Use matching/nonmatching and repeated 035 $z values. The expected structured beh
 
 - [ ] **Step 4: Run RED, implement, and run GREEN**
 
-Run before and after: docker compose run --rm app pytest tests/test_external_task_migration.py tests/test_guided_replace.py tests/test_guided_replace_validation.py -q
+Run before and after: docker compose run --rm marcedit-web pytest tests/test_external_task_migration.py tests/test_guided_replace.py tests/test_guided_replace_validation.py -q
 
 Expected after: all pass; unsupported caret, pipe-move, or option shapes return a prefilled guided-operation blocker.
 
@@ -439,7 +439,7 @@ than an unfiltered operation.
 
 - [ ] **Step 3: Run RED**
 
-Run: docker compose run --rm app pytest tests/test_field_predicates.py tests/test_operations.py tests/test_task_authoring.py tests/test_external_task_migration.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_field_predicates.py tests/test_operations.py tests/test_task_authoring.py tests/test_external_task_migration.py -q
 
 - [ ] **Step 4: Implement the leaf predicate engine and safe compiler output**
 
@@ -451,7 +451,7 @@ Render “Limit which fields are affected” with indicator and subfield rows. A
 
 - [ ] **Step 6: Run GREEN and commit**
 
-Run: docker compose run --rm app pytest tests/test_field_predicates.py tests/test_operations.py tests/test_task_authoring.py tests/test_external_task_migration.py tests/test_codegen_safety.py tests/test_native_task_contract.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_field_predicates.py tests/test_operations.py tests/test_task_authoring.py tests/test_external_task_migration.py tests/test_codegen_safety.py tests/test_native_task_contract.py -q
 
 Commit:
 
@@ -492,7 +492,7 @@ Build records with 856 indicators 40, 41, and a non-4 first indicator. Compare t
 
 - [ ] **Step 3: Run RED**
 
-Run: docker compose run --rm app pytest tests/test_structural_replace.py tests/test_external_task_migration.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_structural_replace.py tests/test_external_task_migration.py -q
 
 - [ ] **Step 4: Implement exact recognizers and set-control-field**
 
@@ -504,7 +504,7 @@ Invalid positions, backreferences, malformed complete fields, and unknown regex 
 
 - [ ] **Step 6: Run GREEN and commit**
 
-Run: docker compose run --rm app pytest tests/test_structural_replace.py tests/test_external_task_migration.py tests/test_operations.py tests/test_codegen_safety.py tests/test_native_task_contract.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_structural_replace.py tests/test_external_task_migration.py tests/test_operations.py tests/test_codegen_safety.py tests/test_native_task_contract.py -q
 
 Commit:
 
@@ -558,7 +558,7 @@ Saving in form mode succeeds and labels the task “Needs migration review.” P
 
 - [ ] **Step 3: Run RED**
 
-Run: docker compose run --rm app pytest tests/test_task_authoring.py tests/test_native_tasks.py tests/test_tasks_workspace_modes.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_task_authoring.py tests/test_native_tasks.py tests/test_tasks_workspace_modes.py -q
 
 - [ ] **Step 4: Implement one marker-based preflight**
 
@@ -566,7 +566,7 @@ Normalize and validate required user-facing fields and the digest. Every runnabl
 
 - [ ] **Step 5: Run GREEN and commit**
 
-Run: docker compose run --rm app pytest tests/test_task_authoring.py tests/test_native_tasks.py tests/test_tasks_workspace_modes.py tests/test_codegen_safety.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_task_authoring.py tests/test_native_tasks.py tests/test_tasks_workspace_modes.py tests/test_codegen_safety.py -q
 
 Commit:
 
@@ -618,7 +618,7 @@ A blocked entry must not discard a valid sibling. Traversal, duplicate names, en
 
 - [ ] **Step 3: Run RED**
 
-Run: docker compose run --rm app pytest tests/test_marcedit_import.py tests/test_task_import_traversal.py tests/test_tasks_workspace_modes.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_marcedit_import.py tests/test_task_import_traversal.py tests/test_tasks_workspace_modes.py -q
 
 - [ ] **Step 4: Build drafts without writing tasks during parsing**
 
@@ -626,7 +626,7 @@ Adopt a single fully converted draft directly into K_EDITOR_OPS. Present an entr
 
 - [ ] **Step 5: Run GREEN and commit**
 
-Run: docker compose run --rm app pytest tests/test_marcedit_import.py tests/test_task_import_traversal.py tests/test_tasks_workspace_modes.py tests/test_codegen_safety.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_marcedit_import.py tests/test_task_import_traversal.py tests/test_tasks_workspace_modes.py tests/test_codegen_safety.py -q
 
 Commit:
 
@@ -673,7 +673,7 @@ Opening copies prefilled values into modal state. Save replaces exactly the orig
 
 - [ ] **Step 3: Run RED**
 
-Run: docker compose run --rm app pytest tests/test_tasks_workspace_modes.py tests/test_task_operation_dialog.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_tasks_workspace_modes.py tests/test_task_operation_dialog.py -q
 
 - [ ] **Step 4: Implement cataloger-first rendering**
 
@@ -687,7 +687,7 @@ Assert summaries and blockers survive Streamlit reruns and save/reopen. Use dige
 
 - [ ] **Step 6: Run GREEN and commit**
 
-Run: docker compose run --rm app pytest tests/test_tasks_workspace_modes.py tests/test_task_operation_dialog.py tests/test_task_authoring.py -q
+Run: docker compose run --rm marcedit-web pytest tests/test_tasks_workspace_modes.py tests/test_task_operation_dialog.py tests/test_task_authoring.py -q
 
 Commit:
 
@@ -747,8 +747,8 @@ For each family document “Imports automatically,” “Needs confirmation,” 
 - [ ] **Step 5: Run fixture, reference, and audit tests**
 
 ~~~bash
-docker compose run --rm -v "/Users/roconnell/Projects/work/marcedit-web/MarcEdit Tasks:/corpus:ro" app pytest tests/test_task_authoring_corpus.py tests/test_operation_reference_registry.py -q
-docker compose run --rm -v "/Users/roconnell/Projects/work/marcedit-web/MarcEdit Tasks:/corpus:ro" app python scripts/audit_external_task_corpus.py /corpus
+docker compose run --rm -v "/Users/roconnell/Projects/work/marcedit-web/MarcEdit Tasks:/corpus:ro" marcedit-web pytest tests/test_task_authoring_corpus.py tests/test_operation_reference_registry.py -q
+docker compose run --rm -v "/Users/roconnell/Projects/work/marcedit-web/MarcEdit Tasks:/corpus:ro" marcedit-web python scripts/audit_external_task_corpus.py /corpus
 ~~~
 
 Expected: no failures; audit has zero unclassified items and zero blockers without suggestions. Report every skip.
@@ -775,7 +775,7 @@ git commit -m "docs: publish external task migration coverage"
 - [ ] **Step 1: Run focused mounted-source suites**
 
 ~~~bash
-docker compose run --rm -v "$PWD:/app" app pytest \
+docker compose run --rm -v "$PWD:/app" marcedit-web pytest \
   tests/test_external_task_parser.py \
   tests/test_external_field_syntax.py \
   tests/test_external_task_migration.py \
@@ -794,7 +794,7 @@ Expected: zero failures. Report every skip by name and reason.
 docker compose run --rm \
   -v "$PWD:/app" \
   -v "/Users/roconnell/Projects/work/marcedit-web/MarcEdit Tasks:/corpus:ro" \
-  app python scripts/audit_external_task_corpus.py /corpus
+  marcedit-web python scripts/audit_external_task_corpus.py /corpus
 ~~~
 
 Expected: all documents classified, every non-converted line has a suggestion, and no external instruction is executable.
@@ -802,7 +802,7 @@ Expected: all documents classified, every non-converted line has a suggestion, a
 - [ ] **Step 3: Run compiler and code-generation guards**
 
 ~~~bash
-docker compose run --rm -v "$PWD:/app" app pytest tests/test_codegen_safety.py tests/test_native_task_contract.py tests/test_native_task_storage.py -q
+docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_codegen_safety.py tests/test_native_task_contract.py tests/test_native_task_storage.py -q
 git diff --exit-code -- marcedit_web/schemas/native-task-compiler-contract-v1.json
 git diff --exit-code -- marcedit_web/schemas/external-task-compatibility-v1.json
 ~~~
@@ -811,15 +811,15 @@ Expected: zero failures and no unexplained manifest drift.
 
 - [ ] **Step 4: Run the complete mounted-source suite**
 
-Run: docker compose run --rm -v "$PWD:/app" app pytest -q
+Run: docker compose run --rm -v "$PWD:/app" marcedit-web pytest -q
 
 Record exact passed, failed, and skipped counts. List every skip category.
 
 - [ ] **Step 5: Rebuild and run the runtime-image disclosure suite**
 
 ~~~bash
-docker compose build app
-docker compose run --rm app pytest -q
+docker compose build marcedit-web
+docker compose run --rm marcedit-web pytest -q
 ~~~
 
 Record exact counts and identify repository-identity tests unavailable inside the image. Do not merge with an application or TASK-190 failure.
