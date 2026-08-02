@@ -315,3 +315,35 @@ def test_task_builder_subfield_replace_with_quote_payload_emits_safe_code():
     )]
     rendered = task_builder.render_ops_to_python(ops)
     ast.parse(rendered["body"])
+
+
+@pytest.mark.parametrize(
+    ("tag", "code"),
+    [
+        ('050")\nimport os; os.system("pwn")\n#', "a"),
+        ("050", "a-b"),
+        ("050", 'a")\nraise RuntimeError("pwn")\n#'),
+    ],
+)
+def test_task_builder_data_source_identifiers_never_use_persisted_text(
+    tag, code
+):
+    ops = [task_builder.Operation(
+        kind="build-field",
+        params={
+            "tag": "852",
+            "ind1": " ",
+            "ind2": " ",
+            "structured_subfields": [[
+                "h",
+                [{"type": "data_subfield", "tag": tag, "code": code}],
+            ]],
+            "existing_field_action": "append",
+            "missing_control_action": "skip_field",
+            "condition": "always",
+        },
+    )]
+
+    rendered = task_builder.render_ops_to_python(ops)
+
+    ast.parse(rendered["body"])

@@ -2,7 +2,7 @@
   "compiler_contract_version": 1,
   "golden_snapshots": {
     "build-field.json": {
-      "body_sha256": "9c835e5c357a0a63b6cce9df3acf0359cbd1628205fa09438e499c8120cb80d2",
+      "body_sha256": "ba74799ca7699d221c86463394b3e1873b65034302fc0102940c533419de7cef",
       "definition_sha256": "0661218152e435bfae97b38e06d5b5df1c9b1a26b4150c2e1d27f3042e18e741",
       "extra_imports_sha256": "8161fef593c728b47d49e4bd2074945a1950242bebf76547642aa35f149214cb"
     },

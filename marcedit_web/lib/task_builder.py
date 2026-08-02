@@ -761,7 +761,9 @@ def _format_structured_build_subfields(
             parts = [
                 lit(segment["value"])
                 if segment["type"] == "text"
-                else _build_source_variable(segment)
+                else _source_variable(
+                    _segment_source(segment), sources
+                )
                 for segment in segments
             ]
             value_expression = " + ".join(parts)
@@ -774,7 +776,7 @@ def _format_structured_build_subfields(
             )
             replace_chain = "".join(
                 f".replace({lit(_source_token(source))}, "
-                f"{_source_variable(source)})"
+                f"{_source_variable(source, sources)})"
                 for source in segment_sources
             )
             value_expression = f"{lit(template)}{replace_chain}"
@@ -782,9 +784,11 @@ def _format_structured_build_subfields(
     return ", ".join(rendered), sources
 
 
-def _source_variable(source: tuple[str, str, str]) -> str:
-    _kind, tag, code = source
-    return "_t_{0}{1}".format(tag, "_" + code if code else "")
+def _source_variable(
+    source: tuple[str, str, str],
+    sources: list[tuple[str, str, str]],
+) -> str:
+    return "_build_source_{0}".format(sources.index(source))
 
 
 def _source_token(source: tuple[str, str, str]) -> str:
@@ -800,10 +804,6 @@ def _segment_source(segment: dict) -> tuple[str, str, str]:
         segment["tag"],
         segment.get("code", ""),
     )
-
-
-def _build_source_variable(segment: dict) -> str:
-    return _source_variable(_segment_source(segment))
 
 
 def _build_source_token(segment: dict) -> str:
@@ -971,7 +971,7 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             lookup_lines = []
             for source in sources:
                 kind, source_tag, source_code = source
-                variable = _source_variable(source)
+                variable = _source_variable(source, sources)
                 if kind == "control_field":
                     imports.add("control_value")
                     lookup_lines.append(
@@ -983,7 +983,9 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
                         f"{variable} = first_subfield_value(record, "
                         f"{lit(source_tag)}, {lit(source_code)})"
                     )
-            guard_variables = [_source_variable(source) for source in sources]
+            guard_variables = [
+                _source_variable(source, sources) for source in sources
+            ]
         guard = " and ".join(
             f"{variable} is not None" for variable in guard_variables
         )

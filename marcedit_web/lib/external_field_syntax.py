@@ -26,6 +26,10 @@ def _parse_field(value: str) -> tuple[str, str, str, list[list[str]]]:
             raise ValueError("field tag must be exactly three numeric characters")
         raise ValueError("field must use '=TAG  II$codevalue' mnemonic syntax")
     tag, indicators, payload = match.groups()
+    if " " in indicators:
+        raise ValueError(
+            "indicator positions must use a backslash for a blank"
+        )
     ind1, ind2 = (
         " " if indicator == "\\" else indicator
         for indicator in indicators

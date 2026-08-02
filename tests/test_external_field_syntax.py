@@ -54,6 +54,31 @@ def test_plain_mnemonic_field_preserves_subfield_order_and_backslashes():
 
 
 @pytest.mark.parametrize(
+    "template",
+    [
+        "=035  9\\$aValue",
+        "=852  \\0$hValue",
+        "=876  \\\\$aValue",
+    ],
+)
+def test_every_accepted_blank_indicator_spelling_round_trips(template):
+    assert render_external_field(parse_build_template(template)) == template
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "=035  9 $aValue",
+        "=852   0$hValue",
+        "=876    $aValue",
+    ],
+)
+def test_literal_space_indicator_spellings_are_rejected(template):
+    with pytest.raises(ValueError, match="backslash for a blank"):
+        parse_build_template(template)
+
+
+@pytest.mark.parametrize(
     ("value", "message"),
     [
         ("=85X  \\\\$aValue", "three numeric"),
