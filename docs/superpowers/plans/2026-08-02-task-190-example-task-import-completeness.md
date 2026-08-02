@@ -43,7 +43,7 @@
 
 ---
 
-### Task 1: Typed Parser and Compatibility Contract
+### Task 1: Typed Parser and Compatibility Contract Schema
 
 **Files:**
 - Create: marcedit_web/lib/external_task_parser.py
@@ -54,7 +54,9 @@
 
 **Interfaces:**
 - Produces ExternalInstruction, ExternalParseError, parse_instruction(source_line, source_entry="", line_number=0), and instruction_shape(value).
-- Produces manifest schema version 1 with adapter IDs, accepted shape IDs, and fixture IDs.
+- Produces manifest schema version 1 and validates only the adapter entries
+  registered by the end of this task. Tasks 3–6 append and verify their own
+  adapter rows; Task 10 enforces complete corpus coverage.
 
 - [ ] **Step 1: Write strict parser tests**
 
@@ -131,16 +133,18 @@ Manifest entries use this shape:
   "schema_version": 1,
   "adapters": [
     {
-      "adapter_id": "add-v1",
-      "verbs": ["ADD"],
-      "shape_ids": ["add-100", "add-101", "add-106-leader", "add-108"],
-      "fixture_ids": ["add-always", "add-if-tag-missing", "add-if-identical-missing"]
+      "adapter_id": "subfield-edit-v1",
+      "verbs": ["SUBFIELD_EDIT"],
+      "shape_ids": ["subfield-edit-literal"],
+      "fixture_ids": ["subfield-edit-literal"]
     }
   ]
 }
 ~~~
 
-Assert every adapter ID exists in the registry and every fixture ID is exercised. Unknown schema versions fail closed.
+Assert every entry currently listed has a registered adapter and an exercised
+fixture. Do not list future adapters merely to reserve their names. Unknown
+schema versions fail closed.
 
 - [ ] **Step 5: Run GREEN and commit**
 
