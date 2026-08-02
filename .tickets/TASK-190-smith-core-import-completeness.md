@@ -58,7 +58,7 @@ Success Criteria:
 - Intent-focused RED/GREEN tests, complete Docker verification, and review
   pass before completion.
 
-Status: Todo
+Status: In-Progress
 
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 
