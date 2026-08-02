@@ -1,4 +1,25 @@
+import json
+from pathlib import Path
+
 from marcedit_web.lib import external_task_migration as migration
+from marcedit_web.lib.external_task_parser import (
+    instruction_shape,
+    parse_instruction,
+)
+
+
+COMPATIBILITY_MANIFEST = (
+    Path(__file__).parents[1]
+    / "marcedit_web"
+    / "schemas"
+    / "external-task-compatibility-v1.json"
+)
+PARSER_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "external_task_migration"
+    / "parser-shapes.tasksfile.txt"
+)
 
 
 def test_nonempty_subfield_edit_converts_to_guided_operation_with_provenance():
@@ -116,3 +137,22 @@ def test_adapter_registry_is_the_dispatch_source(monkeypatch):
     )
 
     assert migration.adapt_instruction("SORTBY\tALL") is sentinel
+
+
+def test_compatibility_manifest_lists_only_registered_exercised_adapters():
+    manifest = json.loads(COMPATIBILITY_MANIFEST.read_text())
+    exercised_shapes = {
+        instruction_shape(parse_instruction(line))
+        for line in PARSER_FIXTURE.read_text().splitlines()
+    }
+
+    assert manifest["schema_version"] == 1
+    assert manifest["adapters"], "the compatibility contract must not be vacuous"
+    assert [entry["adapter_id"] for entry in manifest["adapters"]] == [
+        "subfield-edit-v1"
+    ]
+    for entry in manifest["adapters"]:
+        assert set(entry) == {"adapter_id", "verbs", "shape_ids", "fixture_ids"}
+        assert set(entry["verbs"]) <= migration.ADAPTER_REGISTRY.keys()
+        assert set(entry["shape_ids"]) == set(entry["fixture_ids"])
+        assert set(entry["fixture_ids"]) <= exercised_shapes
