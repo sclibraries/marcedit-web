@@ -23,6 +23,8 @@ ALLOWED_OPERATION_MARKER_KINDS = frozenset({
     "empty-find-subfield-policy",
     "copy-field",
     "copy-fields-with-policy",
+    "build-fields-from-source",
+    "institution-profile",
     "move-field",
     "add-subfield",
     "delete-subfield",

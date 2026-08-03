@@ -387,6 +387,43 @@ def test_partner_copy_with_policy_has_structured_palette_and_safe_codegen():
     assert task_builder.parse_ops_from_source(rendered["body"])["form_editable"]
 
 
+def test_partner_build_and_profile_operations_round_trip_with_nested_data():
+    kinds = {entry["kind"] for entry in task_builder.OPERATIONS_PALETTE}
+    assert {"build-fields-from-source", "institution-profile"} <= kinds
+    ops = [
+        task_builder.Operation(
+            kind="build-fields-from-source",
+            params={
+                "source_tag": "856",
+                "destination_tag": "945",
+                "indicators": [" ", " "],
+                "subfield_templates": [
+                    {"code": "u", "parts": [{"type": "source_subfield", "code": "u"}]}
+                ],
+                "occurrence": "all",
+                "missing_source_action": "skip_field",
+                "existing_field_action": "append",
+                "max_fields_per_record": 10,
+            },
+        ),
+        task_builder.Operation(
+            kind="institution-profile",
+            params={
+                "source_tag": "856",
+                "rows": [{"destination_tag": "945", "indicators": [" ", " "], "subfields": [["a", "Smith"]]}],
+                "occurrence": "first",
+                "max_fields_per_record": 10,
+            },
+        ),
+    ]
+    rendered = task_builder.render_ops_to_python(ops)
+    assert "build_fields_for_matches(record" in rendered["body"]
+    assert "apply_institution_profile(record" in rendered["body"]
+    parsed = task_builder.parse_ops_from_source(rendered["body"])
+    assert parsed["form_editable"]
+    assert [op.kind for op in parsed["ops"]] == [op.kind for op in ops]
+
+
 def test_replace_field_subfield_and_indicators_palette_exposes_regex_options():
     entry = next(
         op for op in task_builder.OPERATIONS_PALETTE

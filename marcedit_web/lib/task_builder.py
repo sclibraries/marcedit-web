@@ -383,6 +383,64 @@ OPERATIONS_PALETTE: list[dict] = [
         ],
     },
     {
+        "kind": "build-fields-from-source",
+        "label": "Build fields from matching source fields",
+        "summary": "Create destination fields from explicit source-field templates.",
+        "params": [
+            {"name": "source_tag", "label": "Source tag", "type": "text", "required": True},
+            {"name": "destination_tag", "label": "Destination tag", "type": "text", "required": True},
+            {"name": "indicators", "label": "Destination indicators", "type": "json", "default": [" ", " "]},
+            {"name": "subfield_templates", "label": "Subfield templates", "type": "json", "required": True},
+            {
+                "name": "occurrence", "label": "Source occurrences", "type": "select",
+                "options": [
+                    {"value": "first", "label": "First"},
+                    {"value": "last", "label": "Last"},
+                    {"value": "all", "label": "All"},
+                ],
+                "default": "all",
+            },
+            {
+                "name": "missing_source_action", "label": "If a source value is missing", "type": "select",
+                "options": [
+                    {"value": "skip_field", "label": "Skip this destination field"},
+                    {"value": "fail", "label": "Fail the task"},
+                ],
+                "default": "skip_field",
+            },
+            {
+                "name": "existing_field_action", "label": "If destination exists", "type": "select",
+                "options": [
+                    {"value": "append", "label": "Append"},
+                    {"value": "replace", "label": "Replace existing"},
+                    {"value": "skip", "label": "Skip this record"},
+                ],
+                "default": "append",
+            },
+            {"name": "predicate", "label": "Limit source fields", "type": "json", "default": {}},
+            {"name": "max_fields_per_record", "label": "Maximum fields per record", "type": "text", "default": "100"},
+        ],
+    },
+    {
+        "kind": "institution-profile",
+        "label": "Apply institution mapping profile",
+        "summary": "Create editable institution-specific fields from selected source fields.",
+        "params": [
+            {"name": "source_tag", "label": "Source tag", "type": "text", "required": True},
+            {"name": "rows", "label": "Institution mapping rows", "type": "json", "required": True},
+            {
+                "name": "occurrence", "label": "Source occurrences", "type": "select",
+                "options": [
+                    {"value": "first", "label": "First"},
+                    {"value": "last", "label": "Last"},
+                    {"value": "all", "label": "All"},
+                ],
+                "default": "all",
+            },
+            {"name": "max_fields_per_record", "label": "Maximum fields per record", "type": "text", "default": "100"},
+        ],
+    },
+    {
         "kind": "move-field",
         "label": "Move (re-tag) field",
         "summary": (
@@ -1260,6 +1318,45 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
                 f"{predicate_arg})"
             ],
             {"copy_fields_with_policy"},
+            False,
+        )
+
+    if op.kind == "build-fields-from-source":
+        indicators = p.get("indicators", [" ", " "])
+        templates = p.get("subfield_templates", [])
+        max_fields = int(p.get("max_fields_per_record", 100))
+        return (
+            [
+                "build_fields_for_matches("
+                f"record, source_tag={lit(str(p.get('source_tag', '')))}, "
+                f"destination_tag={lit(str(p.get('destination_tag', '')))}, "
+                f"indicators={data_lit(indicators)}, "
+                f"subfield_templates={data_lit(templates)}, "
+                f"occurrence={lit(str(p.get('occurrence', 'all')))}, "
+                f"missing_source_action={lit(str(p.get('missing_source_action', 'skip_field')))}, "
+                f"existing_field_action={lit(str(p.get('existing_field_action', 'append')))}, "
+                f"max_fields_per_record={lit(max_fields)}"
+                + (
+                    f", predicate={data_lit(p['predicate'])}"
+                    if p.get("predicate") not in (None, {})
+                    else ""
+                )
+                + ")"
+            ],
+            {"build_fields_for_matches"},
+            False,
+        )
+
+    if op.kind == "institution-profile":
+        return (
+            [
+                "apply_institution_profile("
+                f"record, source_tag={lit(str(p.get('source_tag', '')))}, "
+                f"rows={data_lit(p.get('rows', []))}, "
+                f"occurrence={lit(str(p.get('occurrence', 'all')))}, "
+                f"max_fields_per_record={lit(int(p.get('max_fields_per_record', 100)))})"
+            ],
+            {"apply_institution_profile"},
             False,
         )
 

@@ -68,6 +68,8 @@ _UNSUPPORTED_AI_OPERATION_KINDS = {
     "rda-promote-260",
     "structural-find-replace",
     "copy-fields-with-policy",
+    "build-fields-from-source",
+    "institution-profile",
     "empty-find-subfield-policy",
 }
 _CODE_SHAPED_RE = re.compile(
