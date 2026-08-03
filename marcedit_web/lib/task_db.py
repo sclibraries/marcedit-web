@@ -88,8 +88,13 @@ def save_task(
     extras = "\n".join(extra_imports or [])
     now = _utc_now()
     with db.connect() as conn:
+        from . import task_library
+
+        folder_id = task_library.ensure_task_folder(
+            conn, owner=owner, visibility=visibility
+        )
         existing = conn.execute(
-            "SELECT created_at, definition_json FROM tasks"
+            "SELECT created_at, definition_json, folder_id FROM tasks"
             " WHERE owner_email = ? AND name = ?",
             (owner, name),
         ).fetchone()
@@ -97,9 +102,9 @@ def save_task(
             conn.execute(
                 "INSERT INTO tasks"
                 "(owner_email, name, description, body, extra_imports,"
-                " visibility, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (owner, name, description, body, extras, visibility, now, now),
+                " visibility, folder_id, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (owner, name, description, body, extras, visibility, folder_id, now, now),
             )
         else:
             if existing["definition_json"] is not None:
@@ -108,11 +113,12 @@ def save_task(
                 )
             cursor = conn.execute(
                 "UPDATE tasks SET description = ?, body = ?,"
-                " extra_imports = ?, visibility = ?, revision = revision + 1,"
+                " extra_imports = ?, visibility = ?, folder_id = COALESCE(folder_id, ?),"
+                " revision = revision + 1,"
                 " updated_at = ?"
                 " WHERE owner_email = ? AND name = ?"
                 " AND definition_json IS NULL",
-                (description, body, extras, visibility, now, owner, name),
+                (description, body, extras, visibility, folder_id, now, owner, name),
             )
             if cursor.rowcount != 1:
                 raise NativeTaskStorageError(

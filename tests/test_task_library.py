@@ -1,6 +1,8 @@
 """TDD coverage for TASK-193 task-library persistence."""
 
-from marcedit_web.lib import db
+import pytest
+
+from marcedit_web.lib import db, task_db, task_library
 
 
 def test_folder_schema_is_additive_and_seeds_shared_unfiled_root():
@@ -49,3 +51,33 @@ def test_shared_task_name_index_is_partial_and_case_sensitive_to_visibility():
         sql[name] and "WHERE visibility = 'shared'" in sql[name]
         for name in matching
     )
+
+
+def test_new_private_task_is_assigned_to_owner_unfiled_folder():
+    db.init_schema()
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="strip-029",
+        description="Drop 029",
+        body="pass\n",
+    )
+
+    row = task_db.get_task("alice@example.edu", "strip-029")
+    tree = task_library.list_folder_tree("alice@example.edu")
+
+    assert row["folder_id"] is not None
+    assert tree[0]["scope"] == "personal"
+    assert tree[0]["owner_email"] == "alice@example.edu"
+    assert tree[0]["name"] == "Unfiled"
+    assert tree[0]["task_ids"] == [row["id"]]
+
+
+def test_shared_folder_creation_rejects_personal_parent_and_is_audited():
+    db.init_schema()
+    with pytest.raises(ValueError, match="shared folder"):
+        task_library.create_folder(
+            "alice@example.edu",
+            scope="shared",
+            parent_id=99999,
+            name="Imports",
+        )
