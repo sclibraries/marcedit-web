@@ -108,8 +108,11 @@ def delete_fields_matching_subfield(
     books" before re-adding a canonical form.
     """
     needle = contains.lower()
-    keep = []
-    for field in record.get_fields(tag):
+    retained = []
+    for field in record.fields:
+        if field.tag != tag:
+            retained.append(field)
+            continue
         selected = (
             field.get_subfields(subfield_code)
             if subfield_code is not None
@@ -117,10 +120,8 @@ def delete_fields_matching_subfield(
         )
         values = " ".join(selected).lower()
         if needle not in values:
-            keep.append(field)
-    record.remove_fields(tag)
-    for field in keep:
-        record.add_ordered_field(field)
+            retained.append(field)
+    record.fields[:] = retained
 
 
 def delete_856_fields_matching_url(record: Record, contains: str) -> None:

@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from marcedit_web.lib import editor, task_builder
+from marcedit_web.lib import editor, field_predicates, task_builder
 from marcedit_web.lib.transforms import is_control_tag
 
 
@@ -228,6 +228,22 @@ def _validate_operation(raw_op: Any, index: int) -> DraftOperation | RejectedOpe
     regex_error = _regex_error(kind, params)
     if regex_error is not None:
         return RejectedOperation(kind, dict(params), regex_error, index, source_text)
+
+    predicate = params.get("predicate")
+    if (
+        kind in {"copy-field", "delete-by-subfield"}
+        and "predicate" in params
+        and predicate != {}
+    ):
+        predicate_errors = field_predicates.validate_field_predicate(predicate)
+        if predicate_errors:
+            return RejectedOperation(
+                kind,
+                dict(params),
+                "param 'predicate' " + "; ".join(predicate_errors),
+                index,
+                source_text,
+            )
 
     if (
         kind == "copy-field"

@@ -18,6 +18,7 @@ from .external_task_parser import (
     RDA_SWITCH_POSITIONS,
     enabled_rda_option_labels,
     instruction_shape,
+    is_characterized_delete_mnemonic_regex,
     parse_instruction,
     rda_option_label,
 )
@@ -313,28 +314,33 @@ def adapt_delete(source_line: str) -> MigrationItem:
     mnemonic = re.fullmatch(r"([0-9\\])([0-9\\])\$([a-z0-9])(.*)", match)
     if mnemonic is not None and _is_data_tag(tag.strip()):
         ind1, ind2, code, value = mnemonic.groups()
-        predicate = {
-            "ind1": " " if ind1 == "\\" else ind1,
-            "ind2": " " if ind2 == "\\" else ind2,
-            "subfield_matches": [{
-                "code": code,
-                "mode": "exists" if value == "" else "regex",
-                "value": "*" if value == "" else value,
-                "ignore_case": False,
-            }],
-        }
         expected_flags = (
             (False, False, False, False, False)
             if value == ""
             else (True, False, False, False, False)
         )
-        regex_valid = True
-        if value:
-            try:
-                re.compile(value)
-            except re.error:
-                regex_valid = False
-        if instruction.boolean_flags == expected_flags and regex_valid:
+        characterized_exists = (
+            tag.strip() == "650"
+            and ind1 == "\\"
+            and ind2 == "6"
+            and code == "a"
+            and value == ""
+        )
+        characterized_regex = is_characterized_delete_mnemonic_regex(
+            tag.strip(), match, instruction.boolean_flags
+        )
+        characterized = characterized_exists or characterized_regex
+        if instruction.boolean_flags == expected_flags and characterized:
+            predicate = {
+                "ind1": " " if ind1 == "\\" else ind1,
+                "ind2": " " if ind2 == "\\" else ind2,
+                "subfield_matches": [{
+                    "code": code,
+                    "mode": "exists" if value == "" else "contains",
+                    "value": "*" if value == "" else value[1:-1],
+                    "ignore_case": False,
+                }],
+            }
             return _item(
                 source_line,
                 status="converted",
@@ -342,6 +348,21 @@ def adapt_delete(source_line: str) -> MigrationItem:
                     "kind": "delete-by-subfield",
                     "params": {"tag": tag.strip(), "predicate": predicate},
                 },),
+            )
+        if value and instruction.boolean_flags == expected_flags:
+            return _suggestion(
+                source_line,
+                intent="Delete fields matching an external mnemonic regex",
+                reason=(
+                    "the regex mnemonic DELETE pattern is not an exact "
+                    "characterized signature"
+                ),
+                recommended_operation="delete-by-subfield",
+                prefilled_params={"tag": tag.strip()},
+                cataloger_action=(
+                    "Open Delete Fields Matching a Field Filter and recreate "
+                    "the indicator, subfield, and match rule explicitly."
+                ),
             )
     if any(instruction.boolean_flags):
         enabled = ", ".join(
@@ -425,16 +446,58 @@ def adapt_copy(source_line: str) -> MigrationItem:
         or not re.fullmatch(r"\d{3}", dst.strip())
     ):
         reason = "COPY source and destination tags must be three digits"
-    elif src.strip().startswith("00") != dst.strip().startswith("00"):
-        reason = (
-            "COPY crosses control-field and data-field shapes, which would "
-            "discard the source value"
-        )
     elif instruction.boolean_flags != (False, False):
         reason = "COPY filter flags differ from the proven false/false signature"
     elif extra_filter or surplus:
         reason = "COPY contains an unproven additional filter value"
-    elif external_filter:
+    elif src.strip().startswith("00") != dst.strip().startswith("00"):
+        if (
+            src.strip() == "001"
+            and dst.strip() == "035"
+            and not external_filter
+        ):
+            return _suggestion(
+                source_line,
+                intent="Create a 035 from the record control number",
+                reason=(
+                    "direct COPY crosses control-field and data-field shapes "
+                    "and would discard the source value"
+                ),
+                recommended_operation="build-field",
+                prefilled_params={
+                    "tag": "035",
+                    "ind1": " ",
+                    "ind2": " ",
+                    "structured_subfields": [[
+                        "a", [{"type": "control_field", "tag": "001"}],
+                    ]],
+                    "condition": "always",
+                    "existing_field_action": "append",
+                    "missing_control_action": "skip_field",
+                },
+                cataloger_action=(
+                    "Open Build Field and confirm creating 035 $a from control "
+                    "field 001."
+                ),
+            )
+        return _suggestion(
+            source_line,
+            intent="Copy a value across incompatible MARC field shapes",
+            reason=(
+                "direct COPY cannot preserve values between control fields "
+                "and data fields"
+            ),
+            recommended_operation="choose-operation",
+            prefilled_params={},
+            cataloger_action=(
+                "Direct Copy Field cannot represent this conversion. Choose "
+                "a supported control-field or Build Field operation and "
+                "manually select the source value."
+            ),
+        )
+    elif not external_filter:
+        reason = "unfiltered COPY has no registered equivalence evidence"
+    else:
         match = re.fullmatch(r"\$([a-z0-9])(.+)", external_filter)
         if match is None or src.strip().startswith("00"):
             reason = "COPY filter must be a nonempty data-subfield text filter"

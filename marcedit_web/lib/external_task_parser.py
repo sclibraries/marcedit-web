@@ -74,6 +74,13 @@ _ARGUMENT_COUNTS = {
 
 RDA_SWITCH_POSITIONS = (*range(1, 17), 18)
 
+_CHARACTERIZED_DELETE_REGEX_DIGESTS = frozenset({
+    # Local reviewed corpus signature; value stays local and untracked.
+    "1185f92d1738b5922634312502c0f10bf8fbc44321e1eb4d53a895a3d456ccec",
+    # Sanitized equivalence fixture: 9\$a(ABC).
+    "f09101eaf438583b9c258a36ff2c3e1f139154ff204c497be9634030b362ae70",
+})
+
 RDA_OPTION_LABELS = {
     1: "Add MARC 336 Content Type",
     2: "Add MARC 337 Media Type and 338 Carrier Type",
@@ -93,6 +100,21 @@ RDA_OPTION_LABELS = {
     16: "Expand RDA abbreviations",
     18: "Add a relator term in MARC 100 $e",
 }
+
+
+def is_characterized_delete_mnemonic_regex(
+    tag: str,
+    match: str,
+    flags: tuple[bool, ...],
+) -> bool:
+    """Return whether DELETE uses one exact reviewed mnemonic regex."""
+
+    return (
+        tag == "035"
+        and flags == (True, False, False, False, False)
+        and hashlib.sha256(match.encode("utf-8")).hexdigest()
+        in _CHARACTERIZED_DELETE_REGEX_DIGESTS
+    )
 
 
 def enabled_rda_option_labels(flags: tuple[bool, ...]) -> tuple[str, ...]:
@@ -366,8 +388,13 @@ def parse_instruction(
 
 def instruction_shape(value: ExternalInstruction) -> str:
     """Return a value-neutral compatibility shape identifier."""
-    if value.verb == "COPY" and value.boolean_flags == (False, False):
-        if value.arguments[3].startswith("$"):
+    if (
+        value.verb == "COPY"
+        and value.boolean_flags == (False, False)
+        and not value.arguments[4]
+        and not value.arguments[6]
+    ):
+        if re.fullmatch(r"\$[a-z0-9].+", value.arguments[3]):
             return "copy-filter-subfield"
         if not value.arguments[3]:
             return "copy-unfiltered"
@@ -407,13 +434,16 @@ def instruction_shape(value: ExternalInstruction) -> str:
         and "\\" not in value.arguments[1]
     ):
         return "delete-subfield-text"
-    if value.verb == "DELETE" and re.fullmatch(
-        r"[0-9\\][0-9\\]\$[a-z0-9]", value.arguments[1]
-    ) and value.boolean_flags == (False, False, False, False, False):
+    if (
+        value.verb == "DELETE"
+        and value.arguments[0] == "650"
+        and value.arguments[1] == r"\6$a"
+        and value.boolean_flags == (False, False, False, False, False)
+    ):
         return "delete-mnemonic-exists"
-    if value.verb == "DELETE" and re.fullmatch(
-        r"[0-9\\][0-9\\]\$[a-z0-9].+", value.arguments[1]
-    ) and value.boolean_flags == (True, False, False, False, False):
+    if value.verb == "DELETE" and is_characterized_delete_mnemonic_regex(
+        value.arguments[0], value.arguments[1], value.boolean_flags
+    ):
         return "delete-mnemonic-regex"
     if value.verb == "ADD" and not value.arguments[3]:
         return {

@@ -120,3 +120,81 @@ The external compatibility manifest changed intentionally for registered Task
 - AI drafting policy and supported operation set are unchanged. Validation now
   rejects only malformed Task 5 JSON predicates and proven-lossy cross-shape
   copies.
+
+## Fix round 1 — exact evidence and fail-closed ordering
+
+Commit: `fix: tighten field predicate migration evidence` (this commit)
+
+### Parent-review findings fixed
+
+- Restricted regex-mnemonic DELETE conversion to two exact full signatures:
+  the reviewed local corpus signature and its sanitized `(ABC)` equivalence
+  fixture. The accepted tag is exactly `035`, the mnemonic indicators/code are
+  exactly `9\$a`, and the flags are exactly
+  `(True, False, False, False, False)`. Parser classification and migration use
+  one SHA-256 allowlist so the untracked institutional token is not committed.
+- The external parentheses are grouping syntax, not literal MARC data. The
+  allowlisted grouped token is translated to a case-sensitive structural
+  `contains` predicate for the inner token; no external regex reaches Python.
+  Changed values, indicators, codes, case, tags, flags, and `.*` all block with
+  an actionable field-filter suggestion.
+- Removed automatic conversion for every unfiltered COPY signature. There is
+  no registered same-shape unfiltered equivalence fixture, so `650→651` and
+  other unfiltered copies remain confirmation blockers. The registered
+  `copy-v1` manifest row still represents only filtered `$codeVALUE` COPY with
+  the exact false/false flags and empty surplus filter columns.
+- Changed plain matched DELETE execution to filter `record.fields` in place.
+  Matching fields are removed while every retained field remains at its exact
+  original index relative to all interleaved fields.
+- AI draft ingestion now passes predicate objects through the same
+  `validate_field_predicate` leaf schema as authoring and runtime. Unknown keys
+  and every other malformed structure are rejected in `DraftReview`.
+- Replaced the invalid `001→035` Copy Field recommendation with a valid Build
+  Field operation: `035` blank indicators, `$a` sourced from control field
+  `001`, append policy, and skip when the source is missing. Other cross-type
+  directions return a non-executable Choose Operation recommendation with a
+  concrete manual source-selection step.
+
+### RED evidence
+
+- Importer remediation command: `4 failed, 113 deselected`. It reproduced the
+  overbroad `9\$a.*` conversion, automatic unfiltered `650→651`, invalid
+  `001→035` Copy recommendation, and non-actionable data-to-control COPY.
+- AI/order command initially produced `1 failed, 1 passed`; AI accepted
+  `{"unexpected": true}` while the first order fixture did not yet expose the
+  move. After correcting the interleaving fixture, the order regression failed
+  independently because the retained `655` moved across a `245`.
+- Exact-signature near variants produced `3 failed, 2 passed`; changed
+  indicator, subfield code, and tag still converted. Adding changed token
+  `(ABD)` produced `1 failed, 3 passed`, proving the remaining generalized
+  value family.
+
+### GREEN evidence
+
+Focused migration/parser/AI/transform suite before the final exact-value
+allowlist: `264 passed in 1.09s`; 0 skipped, 0 failed.
+
+Final required suite:
+
+`docker compose run --rm marcedit-web pytest tests/test_field_predicates.py tests/test_operations.py tests/test_task_authoring.py tests/test_external_task_migration.py tests/test_codegen_safety.py tests/test_native_task_contract.py -q`
+
+Exact result: `332 passed in 7.70s`; 0 skipped, 0 failed.
+
+Final expanded relevant suite:
+
+`docker compose run --rm marcedit-web pytest tests/test_field_predicates.py tests/test_operations.py tests/test_task_authoring.py tests/test_external_task_migration.py tests/test_codegen_safety.py tests/test_native_task_contract.py tests/test_task_operation_dialog.py tests/test_external_task_parser.py tests/test_ai_task_draft.py tests/test_transforms.py tests/test_task_builder.py -q`
+
+Exact result: `588 passed in 7.57s`; 0 skipped, 0 failed.
+
+The native compiler contract freshness guard still passes and its manifest
+remains unchanged. The compatibility manifest also remains unchanged in this
+fix round because its filtered COPY and exact mnemonic DELETE rows already
+name only the registered automatic shapes; parser and adapter acceptance are
+now tightened to those exact evidence boundaries.
+
+### Review and remaining concerns
+
+- Independent fix-round review first rejected the generalized parenthesized
+  token family. After the exact shared digest allowlist and `(ABD)` regression,
+  final re-review reported no remaining Critical or Important findings.
+- No tests were skipped or silently omitted. No blocker remains for Task 5.

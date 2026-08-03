@@ -6,7 +6,7 @@ import pymarc
 import pytest
 
 from marcedit_web.lib import external_task_migration as migration
-from marcedit_web.lib import task_builder
+from marcedit_web.lib import task_authoring, task_builder
 from marcedit_web.lib.external_task_parser import (
     instruction_shape,
     parse_instruction,
@@ -188,9 +188,40 @@ def test_cross_type_unfiltered_copy_blocks_instead_of_losing_control_value():
 
     assert item.status == "unresolved"
     assert item.operations == ()
-    assert item.recommended_operation == "copy-field"
+    assert item.recommended_operation == "build-field"
     assert "control" in item.reason
+    assert task_authoring.validate_operation({
+        "kind": item.recommended_operation,
+        "params": item.prefilled_params,
+    }) == ()
+    assert item.prefilled_params["structured_subfields"] == [[
+        "a", [{"type": "control_field", "tag": "001"}],
+    ]]
     assert item.cataloger_action
+
+
+def test_unfiltered_same_shape_copy_blocks_without_registered_evidence():
+    item = migration.adapt_instruction(
+        "COPY\t650\t651\tfalse\t\t\tfalse\t"
+    )
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert item.recommended_operation == "copy-field"
+    assert "unfiltered" in item.reason
+    assert item.cataloger_action
+
+
+def test_data_to_control_copy_gives_manual_non_executable_next_step():
+    item = migration.adapt_instruction(
+        "COPY\t650\t001\tfalse\t\t\tfalse\t"
+    )
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert item.recommended_operation == "choose-operation"
+    assert item.prefilled_params == {}
+    assert "cannot" in item.cataloger_action
 
 
 def test_plain_matched_delete_preserves_any_subfield_scope():
@@ -236,6 +267,69 @@ def test_changed_filter_flags_and_mnemonic_near_misses_block_safely(line):
     assert item.cataloger_action
 
 
+def test_uncharacterized_regex_mnemonic_delete_blocks_actionably():
+    item = migration.adapt_instruction(
+        "DELETE\t035\t9\\$a.*\t0\tTrue\tFalse\tFalse\tFalse\tFalse"
+    )
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert item.recommended_operation == "delete-by-subfield"
+    assert "characterized" in item.reason
+    assert item.cataloger_action
+
+
+@pytest.mark.parametrize(
+    "match",
+    [
+        "8\\$a(ABC)",
+        "9\\$b(ABC)",
+        "9\\$a(Abc)",
+        "9\\$a(ABD)",
+    ],
+)
+def test_near_mnemonic_regex_forms_outside_exact_evidence_block(match):
+    item = migration.adapt_instruction(
+        "DELETE\t035\t{0}\t0\tTrue\tFalse\tFalse\tFalse\tFalse".format(
+            match
+        )
+    )
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert "characterized" in item.reason
+
+
+def test_mnemonic_regex_on_unreviewed_tag_blocks():
+    item = migration.adapt_instruction(
+        "DELETE\t036\t9\\$a(ABC)\t0\tTrue\tFalse\tFalse\tFalse\tFalse"
+    )
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert "characterized" in item.reason
+
+
+def test_characterized_regex_parentheses_translate_as_grouping_not_literal():
+    record = pymarc.Record()
+    selected = pymarc.Field(
+        tag="035", indicators=["9", " "],
+        subfields=[pymarc.Subfield("a", "prefix ABC suffix")],
+    )
+    retained = pymarc.Field(
+        tag="035", indicators=["9", " "],
+        subfields=[pymarc.Subfield("a", "prefix DEF suffix")],
+    )
+    record.fields[:] = [selected, retained]
+    item = migration.adapt_instruction(
+        "DELETE\t035\t9\\$a(ABC)\t0\tTrue\tFalse\tFalse\tFalse\tFalse"
+    )
+
+    _run_operations(item, record)
+
+    assert record.fields == [retained]
+
+
 @pytest.mark.parametrize(
     ("line", "predicate"),
     [
@@ -254,7 +348,7 @@ def test_changed_filter_flags_and_mnemonic_near_misses_block_safely(line):
             {
                 "ind1": "9", "ind2": " ",
                 "subfield_matches": [{
-                    "code": "a", "mode": "regex", "value": "(ABC)",
+                    "code": "a", "mode": "contains", "value": "ABC",
                     "ignore_case": False,
                 }],
             },

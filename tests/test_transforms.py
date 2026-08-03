@@ -57,6 +57,37 @@ def test_delete_fields_matching_subfield(record):
     assert record.get_fields("655") == []
 
 
+def test_delete_fields_matching_any_subfield_preserves_interleaved_order():
+    record = pymarc.Record()
+    before = pymarc.Field(
+        tag="100", indicators=["1", " "],
+        subfields=[pymarc.Subfield("a", "Before")],
+    )
+    selected = pymarc.Field(
+        tag="655", indicators=[" ", "7"],
+        subfields=[pymarc.Subfield("x", "Electronic books")],
+    )
+    middle = pymarc.Field(
+        tag="245", indicators=["1", "0"],
+        subfields=[pymarc.Subfield("a", "Middle")],
+    )
+    retained = pymarc.Field(
+        tag="655", indicators=[" ", "7"],
+        subfields=[pymarc.Subfield("a", "Streaming video")],
+    )
+    after = pymarc.Field(
+        tag="700", indicators=["1", " "],
+        subfields=[pymarc.Subfield("a", "After")],
+    )
+    record.fields[:] = [before, retained, middle, selected, after]
+
+    transforms.delete_fields_matching_subfield(
+        record, "655", None, "Electronic books"
+    )
+
+    assert record.fields == [before, retained, middle, after]
+
+
 def test_delete_856_fields_matching_url_only_touches_856(record):
     transforms.delete_856_fields_matching_url(record, "example.org/ebook")
     urls = [

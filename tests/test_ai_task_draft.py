@@ -131,6 +131,22 @@ def test_ai_copy_rejects_non_object_field_predicate():
     )
 
 
+def test_ai_copy_rejects_predicate_outside_exact_schema():
+    review = parse_ai_task_draft(
+        _draft(operations=[{
+            "kind": "copy-field",
+            "params": {
+                "src_tag": "856",
+                "dst_tag": "857",
+                "predicate": {"unexpected": True},
+            },
+        }])
+    )
+
+    assert review.operations == ()
+    assert "unknown predicate key" in review.rejected_operations[0].reason
+
+
 def test_ai_copy_rejects_crossing_control_and_data_field_shapes():
     review = parse_ai_task_draft(
         _draft(operations=[{
