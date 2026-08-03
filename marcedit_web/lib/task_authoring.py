@@ -939,6 +939,11 @@ def describe_operation(op: Mapping[str, Any]) -> str:
         "skip_if_tag_exists": "leave the record unchanged",
         "skip_if_identical": "add unless an identical field exists",
     }[params["existing_field_action"]]
+    condition = params.get("condition", "always")
+    if condition != "always":
+        description += ". Only for {0}".format(
+            task_builder.LEADER_CONDITION_LABELS[condition]
+        )
     description += ". When {0} exists, {1}".format(tag, existing)
     if normalized["kind"] == "build-field":
         missing = {

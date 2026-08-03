@@ -122,7 +122,10 @@ Post-checkpoint importer regression (2026-08-03):
   supplying conflicting defaults, removing Streamlit's duplicate-value warning.
   The optional shortcut is labeled **Add full Smith RDA cleanup profile (6
   operations)** and explicitly states that it is not part of the imported
-  source task. Editor/RDA/importer/migration suites: `262 passed`.
+  source task. Conditional Add Field cards now name their imported Leader
+  condition rather than appearing unconditional. Editor/RDA/importer/migration
+  suites: `262 passed`; final full source-mounted suite: `2428 passed, 4
+  skipped` with the same Docker CLI-only skips.
 
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 

@@ -844,6 +844,31 @@ def test_add_field_explanation_names_values_and_existing_field_action():
     )
 
 
+def test_add_field_explanation_names_record_condition():
+    operation = {
+        "kind": "add-field",
+        "params": {
+            "tag": "655",
+            "ind1": " ",
+            "ind2": "7",
+            "subfields": [
+                ["a", "Electronic books."],
+                ["2", "local"],
+            ],
+            "condition": "books",
+            "existing_field_action": "append",
+            "missing_control_action": "skip_field",
+        },
+    }
+
+    assert task_authoring.describe_operation(operation) == (
+        "Add a 655 field with a blank indicator 1, indicator 2 “7”, and "
+        "subfield a containing “Electronic books.” and subfield 2 containing "
+        "“local”. Only for Books (LDR 06 ∈ amt, LDR 07 = m). When 655 "
+        "exists, add another field."
+    )
+
+
 def test_876_preview_keeps_two_subfields_in_order():
     preview = task_authoring.preview_operation(
         smith_876_operation(), _source_record()
