@@ -100,9 +100,10 @@ Remediation verification checkpoint (2026-08-03):
   repository files intentionally omitted from the runtime image; no
   TASK-190 test failed. The runtime image includes the corpus audit script.
 - Rebuilt local Streamlit service is healthy and returns HTTP 200 at
-  `http://localhost:8501/`. Authenticated browser verification remains
-  pending because this environment has no browser automation or Google
-  session; do not treat the HTTP smoke check as a substitute.
+  `http://localhost:8501/`. Playwright reaches the Five-College Google
+  sign-in page, but no Google account session is available in this review
+  environment. Authenticated browser verification remains pending; do not
+  treat the HTTP smoke check or the sign-in-page reachability as a substitute.
 
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 
