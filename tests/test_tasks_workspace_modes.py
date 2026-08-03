@@ -1251,7 +1251,9 @@ def test_new_unresolved_text_import_is_not_persisted(monkeypatch, tmp_path):
     assert result["entries"][0]["unresolved_lines"] == ["RDAHELPER"]
 
 
-def test_empty_find_import_is_not_persisted(monkeypatch, tmp_path):
+def test_empty_find_101_import_persists_add_if_missing_operation(
+    monkeypatch, tmp_path
+):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
     monkeypatch.setattr(
@@ -1279,14 +1281,30 @@ def test_empty_find_import_is_not_persisted(monkeypatch, tmp_path):
 
     tasks_render._do_marcedit_import(upload, tmp_path)
 
+    assert len(saved) == 1
+    parsed = tasks_render.task_builder.parse_ops_from_source(saved[0]["body"])
+    assert parsed["form_editable"] is True
+    assert [operation.to_dict() for operation in parsed["ops"]] == [{
+        "kind": "empty-find-subfield-policy",
+        "params": {
+            "tag": "856",
+            "code": "y",
+            "value": "Smith: Link to resource",
+            "policy": "add_if_missing",
+        },
+    }]
+    assert "migration-blocker" not in saved[0]["body"]
+    assert "# TODO" not in saved[0]["body"]
+
     result = fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT]
-    assert result["status"] == "rejected"
-    assert result["rejection_category"] == "unresolved-instructions"
-    assert result["entries"][0]["unresolved_lines"] == [
-        "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0"
-    ]
-    assert result["entries"][0]["omitted_unresolved"] == 0
-    assert result["entries"][0]["status"] == "unresolved"
+    assert result["status"] == "success"
+    assert result["rejection_category"] is None
+    assert result["imported_task_names"] == ["empty-find"]
+    assert result["entries"] == [{
+        "entry_name": "empty-find.tasksfile",
+        "status": "imported",
+        "task_name": "empty-find",
+    }]
 
 
 def test_import_result_persists_across_rerun_and_is_dismissible(

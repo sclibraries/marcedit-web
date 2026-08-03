@@ -131,3 +131,59 @@ Exact result: `497 passed in 8.09s`; 0 skipped, 0 failed.
   new removal verb to avoid classifying a proven adapter as unknown.
 - The private corpus remains untracked. Only synthetic fixture values are
   committed.
+
+## Fix round 1 — empty-find workspace persistence contract
+
+Commit: `test: align empty-find import persistence`
+
+### Review finding fixed
+
+- Replaced the stale workspace integration test that expected empty-Find
+  `SUBFIELD_EDIT ... 101|0` to be rejected.
+- The integration boundary now proves one task is persisted, its stored body
+  reopens as exactly one `empty-find-subfield-policy` operation with
+  `policy=add_if_missing`, and the durable import result reports success.
+- The test also proves the persisted body contains neither a
+  `migration-blocker` nor a `# TODO` unresolved marker.
+- No production behavior changed in this fix round.
+
+### RED evidence
+
+Original stale integration test:
+
+`docker compose run --rm marcedit-web pytest tests/test_tasks_workspace_modes.py::test_empty_find_import_is_not_persisted -q`
+
+Exact result: `1 failed in 3.04s`; 0 skipped. The failure showed the current
+successful import result (`success`) contradicting the obsolete expected
+result (`rejected`).
+
+### GREEN evidence
+
+Exact updated integration test:
+
+`docker compose run --rm marcedit-web pytest tests/test_tasks_workspace_modes.py::test_empty_find_101_import_persists_add_if_missing_operation -q`
+
+Exact result: `1 passed in 1.61s`; 0 skipped, 0 failed.
+
+Relevant workspace modes suite:
+
+`docker compose run --rm marcedit-web pytest tests/test_tasks_workspace_modes.py -q`
+
+Exact result: `46 passed in 1.88s`; 0 skipped, 0 failed.
+
+Task 4 focused suite:
+
+`docker compose run --rm marcedit-web pytest tests/test_external_task_migration.py tests/test_guided_replace.py tests/test_guided_replace_validation.py -q`
+
+Exact result: `189 passed in 0.92s`; 0 skipped, 0 failed.
+
+Task 4 expanded suite:
+
+`docker compose run --rm marcedit-web pytest tests/test_external_task_parser.py tests/test_external_task_migration.py tests/test_guided_replace.py tests/test_guided_replace_validation.py tests/test_marcedit_import.py tests/test_task_authoring.py tests/test_task_builder.py tests/test_transforms.py tests/test_codegen_safety.py tests/test_native_task_contract.py -q`
+
+Exact result: `497 passed in 5.66s`; 0 skipped, 0 failed.
+
+### Concerns
+
+- None. This fix round changes only the stale integration contract and its
+  implementation report.
