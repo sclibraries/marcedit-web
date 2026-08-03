@@ -290,3 +290,65 @@ private-corpus reasons disclosed in the original report.
 - No fix-round-2 Task 7 failure remains. The unrelated generated
   operation-reference drift still prevents a globally green repository suite
   and remains outside this surgical remediation.
+
+## Fix round 3 — unconditional tokenizer failure preflight
+
+Commit: `fix: fail closed on task tokenization errors` (this commit)
+
+### Review finding fixed
+
+- Tokenizer failures now raise the same bounded deterministic preflight error
+  immediately, regardless of whether Python yielded an earlier structured
+  marker comment. This closes the ordering bypass where an indentation error
+  occurred before a valid later migration blocker and left the collected
+  candidate list empty.
+- The parser still relies exclusively on Python `tokenize` COMMENT tokens; it
+  does not fall back to raw source or substring scanning. Valid marker-free
+  handwritten Python remains runnable, while malformed Python is rejected as
+  non-runnable before any sandbox, source, database, copy, or queue side effect.
+- Regression coverage exercises the exact indentation-error-before-blocker
+  ordering through `operation_markers`, direct sandbox execution, job-file
+  durable submission, and quick-load durable submission. Marker-free
+  unterminated Python also encodes the clarified unconditional policy.
+
+### RED evidence
+
+The targeted container run produced four expected failures: marker-free
+tokenization, direct sandbox launch, quick-load source copy, and job-file source
+database access. The separately selected direct `operation_markers` regression
+also failed by returning without raising. Together these five failures proved
+the existing conditional candidate check was the bypass.
+
+### GREEN evidence
+
+Targeted tokenizer and durable-boundary regressions:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_task_authoring.py tests/test_sandbox.py tests/test_operation_submission.py -q -k 'tokenize_error or indentation_error or preflights_before'`
+
+Exact result: `11 passed, 171 deselected in 0.47s`; zero failed.
+
+Focused authoring, parser, direct sandbox, and durable submission suite:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_task_authoring.py tests/test_sandbox.py tests/test_operation_submission.py -q`
+
+Exact result: `182 passed in 12.35s`; zero skipped and zero failed.
+
+Expanded Task 7 caller, native, storage, queue, sandbox, guided replace, batch
+replace, and codegen suite:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_task_builder.py tests/test_task_authoring.py tests/test_native_tasks.py tests/test_native_task_contract.py tests/test_native_task_storage.py tests/test_task_db.py tests/test_tasks_workspace_modes.py tests/test_tasks_export.py tests/test_operation_runner.py tests/test_operation_submission.py tests/test_operation_queue_integration.py tests/test_sandbox.py tests/test_guided_replace_preview.py tests/test_guided_replace_validation.py tests/test_batch_replace.py tests/test_codegen_safety.py -q`
+
+Exact result: `514 passed in 25.81s`; zero skipped and zero failed.
+
+Explicit native compiler contract freshness:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_native_task_contract.py::test_checked_in_contract_matches_every_golden_definition -q`
+
+Exact result: `1 passed in 0.14s`; zero skipped and zero failed. The compiler
+contract manifest has no diff, and `git diff --check` exited 0.
+
+### Remaining concern
+
+- No fix-round-3 Task 7 failure remains. The unrelated generated operation
+  reference drift disclosed by the fix-round-2 full suite remains outside this
+  surgical remediation.

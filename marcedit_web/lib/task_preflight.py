@@ -62,14 +62,13 @@ def operation_markers(source: str) -> tuple[dict[str, Any], ...]:
     """Parse structured ``# OP:`` comment tokens or fail closed."""
 
     comments = []
-    tokenize_failed = False
     try:
         tokens = tokenize.generate_tokens(io.StringIO(source).readline)
         for token in tokens:
             if token.type == tokenize.COMMENT:
                 comments.append((token.start[0], token.string))
     except (IndentationError, tokenize.TokenError):
-        tokenize_failed = True
+        raise ValueError("Could not tokenize operation markers.") from None
 
     candidates = []
     for line_number, comment in comments:
@@ -80,9 +79,6 @@ def operation_markers(source: str) -> tuple[dict[str, Any], ...]:
         if not _is_structured_marker_candidate(body):
             continue
         candidates.append((line_number, body))
-
-    if tokenize_failed and candidates:
-        raise ValueError("Could not tokenize operation markers.")
 
     operations = []
     for line_number, body in candidates:

@@ -177,13 +177,30 @@ def test_unrelated_op_explanation_comment_remains_inert():
     assert task_preflight.operation_markers(body) == ()
 
 
-def test_tokenize_error_fails_closed_only_after_structured_marker():
+def test_tokenize_error_always_fails_closed():
     with pytest.raises(ValueError, match="tokenize operation markers"):
         task_authoring.assert_runnable_task_body(
             '# OP: delete-tag {"tag":"029"}\nvalue = """unterminated'
         )
 
-    task_authoring.assert_runnable_task_body('value = """unterminated')
+    with pytest.raises(ValueError, match="tokenize operation markers"):
+        task_authoring.assert_runnable_task_body('value = """unterminated')
+
+
+def test_operation_markers_rejects_indentation_error_before_later_blocker():
+    body = (
+        "if True:\n"
+        "    pass\n"
+        "  pass\n"
+        '# OP: migration-blocker {"instruction_sha256":"' + "a" * 64
+        + '","intent":"Edit control field 001",'
+        '"reason":"Exact external mode is unproven",'
+        '"suggestion":{"operation_kind":"set-control-field",'
+        '"prefilled_params":{"tag":"001"}}}\npass'
+    )
+
+    with pytest.raises(ValueError, match="tokenize operation markers"):
+        task_preflight.operation_markers(body)
 
 
 def test_operation_marker_allowlist_stays_synchronized_with_palette():

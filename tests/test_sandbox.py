@@ -183,6 +183,36 @@ def test_direct_sandbox_rejects_unknown_structured_marker_before_child(
     assert child_calls == []
 
 
+def test_direct_sandbox_rejects_tokenize_error_before_later_blocker(
+    one_record_bytes, monkeypatch
+):
+    body = (
+        "if True:\n"
+        "    pass\n"
+        "  pass\n"
+        '# OP: migration-blocker {"instruction_sha256":"' + "a" * 64
+        + '","intent":"Edit control field 001",'
+        '"reason":"Exact external mode is unproven",'
+        '"suggestion":{"operation_kind":"set-control-field",'
+        '"prefilled_params":{"tag":"001"}}}\n'
+        "record['001'].data = 'MUTATED'"
+    )
+    child_calls = []
+    monkeypatch.setattr(
+        sandbox.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: child_calls.append(True),
+    )
+
+    with pytest.raises(ValueError, match="tokenize operation markers"):
+        run_tasks_subprocess(
+            [TaskSpec(name="invalid", body=body)],
+            one_record_bytes,
+        )
+
+    assert child_calls == []
+
+
 def test_trusted_task_result_can_be_captured_for_preview(one_record_bytes):
     spec = sandbox.TaskSpec(
         name="capture",

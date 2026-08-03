@@ -57,12 +57,17 @@ def _blocked_task_body() -> str:
     )
 
 
+def _tokenize_error_before_blocker_body() -> str:
+    return "if True:\n    pass\n  pass\n" + _blocked_task_body()
+
+
 @pytest.mark.parametrize(
     "body",
     [
         _blocked_task_body(),
         "# OP: delete-tag {not-json}\npass",
         '# OP: migration-blocker-v2 {"intent":"unknown version"}\npass',
+        _tokenize_error_before_blocker_body(),
     ],
 )
 def test_quick_load_api_preflights_before_copy_or_queue_side_effect(
@@ -101,6 +106,7 @@ def test_quick_load_api_preflights_before_copy_or_queue_side_effect(
         _blocked_task_body(),
         "# OP: delete-tag {not-json}\npass",
         '# OP: migration-blocker-v2 {"intent":"unknown version"}\npass',
+        _tokenize_error_before_blocker_body(),
     ],
 )
 def test_job_api_preflights_before_source_or_queue_database_access(
