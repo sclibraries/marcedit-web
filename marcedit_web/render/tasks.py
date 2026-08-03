@@ -1694,15 +1694,21 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         # Standard users are pinned to form view regardless of state.
         st.session_state[K_EDITOR_MODE] = "form"
 
+    st.session_state.setdefault(
+        K_EDITOR_NAME_INPUT,
+        st.session_state[K_EDITOR_NAME],
+    )
+    st.session_state.setdefault(
+        K_EDITOR_DESCRIPTION_INPUT,
+        st.session_state[K_EDITOR_DESCRIPTION],
+    )
     st.session_state[K_EDITOR_NAME] = st.text_input(
         "Task name (lowercase, digits, hyphens)",
-        value=st.session_state[K_EDITOR_NAME],
         help="Used in the @task(...) decorator. Must be unique.",
         key=K_EDITOR_NAME_INPUT,
     )
     st.session_state[K_EDITOR_DESCRIPTION] = st.text_input(
         "Description (one sentence)",
-        value=st.session_state[K_EDITOR_DESCRIPTION],
         key=K_EDITOR_DESCRIPTION_INPUT,
     )
 
@@ -1887,12 +1893,18 @@ def _render_form_editor() -> None:
         on_suggestion=_open_suggested_operation,
     )
 
+    if isinstance(st.session_state.get(K_EDITOR_IMPORT_SUMMARY), dict):
+        st.caption(
+            "Optional shortcut: the full Smith RDA cleanup profile adds six "
+            "additional operations and is not part of the imported source task."
+        )
     if st.button(
-        "Add Smith RDA cleanup profile",
+        "Add full Smith RDA cleanup profile (6 operations)",
         key="tasks_add_smith_rda_profile",
         help=(
-            "Adds six explicit, editable RDA operations in order. "
-            "Nothing opaque is stored."
+            "Adds material classification, 040 $e rda, 245 $h removal, "
+            "300 abbreviation expansion, relator normalization, and "
+            "260-to-264 promotion as six explicit editable operations."
         ),
     ):
         operations.extend(rda_operations.smith_profile_operations())

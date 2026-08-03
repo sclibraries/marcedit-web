@@ -30,10 +30,11 @@ class _FakeStreamlit:
         self.successes = []
         self.code_blocks = []
         self.captions = []
+        self.text_inputs = []
         self.rerun_called = False
 
     def radio(self, label, options, horizontal=False, key=None,
-              label_visibility=None):
+              label_visibility=None, **kwargs):
         self.radios.append(
             {"label": label, "options": tuple(options), "key": key}
         )
@@ -45,6 +46,9 @@ class _FakeStreamlit:
 
     def divider(self):
         self.dividers += 1
+
+    def subheader(self, value):
+        return None
 
     def container(self):
         return self
@@ -89,6 +93,14 @@ class _FakeStreamlit:
 
     def selectbox(self, label, options, **kwargs):
         return options[0]
+
+    def text_input(self, label, *, key, **kwargs):
+        self.text_inputs.append({
+            "label": label,
+            "key": key,
+            "kwargs": kwargs,
+        })
+        return self.session_state.get(key, "")
 
     def rerun(self):
         self.rerun_called = True
@@ -193,6 +205,35 @@ def test_open_editor_for_new_forces_build_mode(monkeypatch):
 
     assert fake_st.session_state[tasks_render.K_FORCE_MODE] == (
         tasks_render.MODE_BUILD
+    )
+
+
+def test_editor_uses_keyed_widget_state_without_duplicate_defaults(
+    monkeypatch,
+):
+    """Imported task values must not trigger Streamlit's keyed-value warning."""
+
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    tasks_render._open_editor_for_new()
+    tasks_render._sync_editor_widget_inputs(
+        "smith-core-instance",
+        "Imported Smith CORE Instance task",
+    )
+    monkeypatch.setattr(tasks_render, "_render_form_editor", lambda: None)
+
+    tasks_render._render_editor(Path("/unused"), is_admin=False)
+
+    assert [item["key"] for item in fake_st.text_inputs] == [
+        tasks_render.K_EDITOR_NAME_INPUT,
+        tasks_render.K_EDITOR_DESCRIPTION_INPUT,
+    ]
+    assert all("value" not in item["kwargs"] for item in fake_st.text_inputs)
+    assert fake_st.session_state[tasks_render.K_EDITOR_NAME] == (
+        "smith-core-instance"
+    )
+    assert fake_st.session_state[tasks_render.K_EDITOR_DESCRIPTION] == (
+        "Imported Smith CORE Instance task"
     )
 
 
@@ -398,6 +439,37 @@ def test_form_editor_renders_cards_and_main_actions_without_inline_controls(
     assert calls == [("cards", operations)]
     assert "+ Add operation" in fake_st.button_labels
     assert "Browse operation reference" in fake_st.button_labels
+
+
+def test_imported_editor_labels_full_rda_profile_as_optional(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update({
+        tasks_render.K_EDITOR_OPS: [],
+        tasks_render.K_EDITOR_IMPORT_SUMMARY: {
+            "converted": 20,
+            "blocking": 0,
+            "total": 20,
+        },
+    })
+    calls = []
+    _wire_compact_form(monkeypatch, tasks_render, calls)
+    monkeypatch.setattr(
+        tasks_render.task_operation_cards,
+        "render_operation_cards",
+        lambda *args, **kwargs: None,
+    )
+
+    tasks_render._render_form_editor()
+
+    assert "Add full Smith RDA cleanup profile (6 operations)" in (
+        fake_st.button_labels
+    )
+    assert any(
+        "Optional shortcut" in caption
+        and "not part of the imported source task" in caption
+        for caption in fake_st.captions
+    )
 
 
 def test_form_editor_add_opens_transactional_dialog(monkeypatch):

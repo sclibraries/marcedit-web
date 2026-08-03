@@ -118,6 +118,11 @@ Post-checkpoint importer regression (2026-08-03):
 - Regression/importer/migration suites: `247 passed`. Full source-mounted suite
   with the local corpus: `2425 passed, 4 skipped`; the four skips remain the
   Docker CLI checks unavailable inside the container.
+- Imported editor widgets now use their keyed session-state values without also
+  supplying conflicting defaults, removing Streamlit's duplicate-value warning.
+  The optional shortcut is labeled **Add full Smith RDA cleanup profile (6
+  operations)** and explicitly states that it is not part of the imported
+  source task. Editor/RDA/importer/migration suites: `262 passed`.
 
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 
