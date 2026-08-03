@@ -7,9 +7,9 @@ This directory preserves the `FOLIO Marc Edit Tasks` collection from:
 - Source directory: `FOLIO Marc Edit Tasks/`
 - Retrieved: 2026-08-03
 
-The 49 `.task` archives are copied verbatim. The project user confirmed on
-2026-08-03 that the author is a partner-library cataloger and granted
-permission to copy the collection for this compatibility work.
+The 49 `.task` archives are copied verbatim. On 2026-08-03, the project user
+confirmed that the partner-library author granted Smith permission to copy the
+collection for compatibility review and testing.
 
 The upstream collection is distributed under GPL-3.0. Its license is retained
 as `LICENSE` in this directory. Smith Metadata Studio's root MIT license does

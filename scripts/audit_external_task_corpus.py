@@ -112,11 +112,12 @@ def _print_report(report: AuditReport, *, technical: bool) -> None:
         if item.status == "converted" and not technical:
             continue
         print(
-            "{0}:{1} status={2} recommendation={3} reason={4}".format(
+            "{0}:{1} status={2} recommendation={3} action={4} reason={5}".format(
                 entry.document,
                 entry.line_number,
                 item.status,
                 item.recommended_operation or "none",
+                " ".join(item.cataloger_action.split()) or "none",
                 " ".join(item.reason.split()) or "none",
             )
         )
