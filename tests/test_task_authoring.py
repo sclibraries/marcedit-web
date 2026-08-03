@@ -1143,3 +1143,21 @@ def test_legacy_if_absent_preview_matches_identical_field_execution():
     assert [
         field.get_subfields("a") for field in output.get_fields("876")
     ] == [["Different value"], ["Internet"]]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"tag": "008", "mode": "position", "value": "x", "position": -1},
+        {"tag": "008", "mode": "position", "value": "xx", "position": 1},
+        {"tag": "008", "mode": "value", "value": "text", "position": 1},
+        {"tag": "245", "mode": "value", "value": "text"},
+    ],
+)
+def test_set_control_field_validation_rejects_invalid_requests_before_compile(params):
+    errors = task_authoring.validate_operation({
+        "kind": "set-control-field",
+        "params": {**params, "condition": "always"},
+    })
+
+    assert errors

@@ -19,6 +19,7 @@ from marcedit_web.lib.transforms import (
     is_control_tag,
     leader_biblevel,
     leader_type,
+    validate_set_control_field_request,
 )
 
 
@@ -395,6 +396,24 @@ def validate_operation(
     if kind == "structural-find-replace":
         params = op.get("params") or {}
         errors = list(structural_replace.validate_request(**params))
+        entry_names = {parameter["name"] for parameter in entry["params"]}
+        unexpected = sorted(set(params) - entry_names)
+        if unexpected:
+            errors.append(
+                "operation parameters contain unexpected keys: {0}".format(
+                    ", ".join(unexpected)
+                )
+            )
+        return tuple(errors)
+    if kind == "set-control-field":
+        params = op.get("params") or {}
+        errors = list(validate_set_control_field_request(
+            tag=params.get("tag"),
+            mode=params.get("mode"),
+            value=params.get("value"),
+            position=params.get("position"),
+            condition=params.get("condition", "always"),
+        ))
         entry_names = {parameter["name"] for parameter in entry["params"]}
         unexpected = sorted(set(params) - entry_names)
         if unexpected:

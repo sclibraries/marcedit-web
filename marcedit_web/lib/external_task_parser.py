@@ -81,6 +81,33 @@ _CHARACTERIZED_DELETE_REGEX_DIGESTS = frozenset({
     "f09101eaf438583b9c258a36ff2c3e1f139154ff204c497be9634030b362ae70",
 })
 
+_CHARACTERIZED_REPLACE_SHAPES = {
+    "e25d8ab4c2ba4d894214072117d790c68a66090063a4028356a03170c16536c8": "replace-008-form-23",
+    "fc2b0810f87e01bb1fd33a3333f377d794159c63e5c8cc49907a5d1e4ec5038f": "replace-008-form-29",
+    "0fe0d6b95234500d441f35d66f471fd9cfee2c1e455202e5f48bad85a074f171": "replace-856-stage",
+    "dcf09ea2b281af15bb66a0abf2b725535dc68861441dae0a2a8906738a8c01fe": "replace-956-restore",
+    "1b3a03c559cc5e12f6a7b828b9302a6c1a249907b5e7063cf0fa3c4efddc6b69": "replace-008-blank-29",
+    # Sanitized fixture and reviewed local-corpus digest for the same shape.
+    "7d3dbd4bfbc4b5730e4100c0b120e3d6fd797e3637e4f34442553c9779c638dc": "replace-035-prefix",
+    "8b2caa917fa54c724f7d9996bf6a51c399f8933705089404f1ab0a3460ad5ed1": "replace-035-prefix",
+    "44f69f7a80508d1ec03ddf43a0a55d83916fab4c2232ffc26d5bc0e9ec75b758": "replace-035-oclc",
+    "8e56d6bb7717fd3ab6c2f7cc6cabe59ba2de12feb59b307bfcd3f5e59689e4da": "replace-336-order-a",
+    "ec07c2a68fee8e35a7033ba8d71a2e36d847ec9be99ee9b7c17e05ef88b4fc76": "replace-336-order-b",
+    "bb44fc023abeb4ae1678cd6362a1f9b041fb2592368784b4ef270c3c300764b1": "replace-337-order-a",
+    "1b056c7cdd52df843dde2cbde324b00341ed68b3fbdc911691776ba12c3a32c9": "replace-337-order-b",
+    "570e990ea5b3b2c4fb9db04e3e3d2d07a3430249380605645d56e156ef7f982a": "replace-338-order-a",
+    "db375812f671a1acecebd4d16ef4a3a923ed7a742200f7da02779a7ba57731e5": "replace-338-order-b",
+    # Sanitized fixture and reviewed local-corpus digest for the same shape.
+    "7ed273cc96bcd65f303ae4ead9f6cc099e02d150d6867d9cd4353ccd5ce67099": "replace-852-normalize",
+    "c2674288403fe464963e1ed2501d937e229a7d8df4f11969ab4b56b55335439a": "replace-852-normalize",
+}
+
+
+def characterized_replace_shape(instruction_sha256: str) -> str | None:
+    """Return the exact reviewed REPLACE shape for one normalized digest."""
+
+    return _CHARACTERIZED_REPLACE_SHAPES.get(instruction_sha256)
+
 RDA_OPTION_LABELS = {
     1: "Add MARC 336 Content Type",
     2: "Add MARC 337 Media Type and 338 Carrier Type",
@@ -468,4 +495,8 @@ def instruction_shape(value: ExternalInstruction) -> str:
         and value.boolean_flags == (True, True)
     ):
         return "sort-all"
+    if value.verb == "REPLACE":
+        shape = characterized_replace_shape(value.instruction_sha256)
+        if shape is not None:
+            return shape
     return f"{value.verb.replace('_', '-').lower()}-unrecognized"

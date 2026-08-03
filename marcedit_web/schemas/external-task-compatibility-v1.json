@@ -48,6 +48,12 @@
       "verbs": ["SORTBY"],
       "shape_ids": ["sort-all"],
       "fixture_ids": ["sort-all"]
+    },
+    {
+      "adapter_id": "replace-corpus-v1",
+      "verbs": ["REPLACE"],
+      "shape_ids": ["replace-008-form-23", "replace-008-form-29", "replace-856-stage", "replace-956-restore", "replace-008-blank-29", "replace-035-prefix", "replace-035-oclc", "replace-336-order-a", "replace-336-order-b", "replace-337-order-a", "replace-337-order-b", "replace-338-order-a", "replace-338-order-b", "replace-852-normalize"],
+      "fixture_ids": ["replace-008-form-23", "replace-008-form-29", "replace-856-stage", "replace-956-restore", "replace-008-blank-29", "replace-035-prefix", "replace-035-oclc", "replace-336-order-a", "replace-336-order-b", "replace-337-order-a", "replace-337-order-b", "replace-338-order-a", "replace-338-order-b", "replace-852-normalize"]
     }
   ]
 }

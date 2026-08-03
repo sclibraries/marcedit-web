@@ -189,6 +189,20 @@ def render_param_input(
             help=help_text,
             key=key,
         )
+    elif parameter_type == "int":
+        current_value = (
+            current
+            if isinstance(current, int) and not isinstance(current, bool)
+            else None
+        )
+        params[name] = st.number_input(
+            label,
+            min_value=0,
+            value=current_value,
+            step=1,
+            help=help_text,
+            key=key,
+        )
     elif parameter_type == "bool":
         params[name] = st.checkbox(
             label, value=bool(current), help=help_text, key=key
@@ -390,8 +404,10 @@ def render_selected_operation(
             visible.add("pattern_pieces")
             if action == "replace_matched_text":
                 visible.add("replacement_pieces")
-        elif match_mode != "all":
+        elif match_mode not in {"all", "field_signature"}:
             visible.add("find")
+        if match_mode == "field_signature":
+            visible.update({"match_ind1", "match_ind2", "match_subfields"})
         if action == "replace_matched_text":
             if match_mode != "structured":
                 visible.add("replacement")
@@ -409,6 +425,10 @@ def render_selected_operation(
                     key_prefix=key_prefix,
                     is_admin=is_admin,
                 )
+        if "predicate" in params:
+            task_authoring_render.render_field_predicate_params(
+                params, key_prefix=key_prefix, rerun=rerun_fragment_or_app
+            )
     else:
         for parameter in entry["params"]:
             render_param_input(

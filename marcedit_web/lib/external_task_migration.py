@@ -13,6 +13,7 @@ from .external_field_syntax import (
     parse_mnemonic_field,
 )
 from .external_task_parser import (
+    characterized_replace_shape,
     ExternalInstruction,
     ExternalParseError,
     RDA_SWITCH_POSITIONS,
@@ -978,19 +979,144 @@ def adapt_subfield_remove(source_line: str) -> MigrationItem:
 
 
 def adapt_replace(source_line: str) -> MigrationItem:
-    parts = source_line.rstrip("\n").split("\t")
-    known_positions = {
-        (r"(=008.{25}).{1}(.+)", r"$1o$2"): "23",
-        (r"(=008.{31}).{1}(.+)", r"$1o$2"): "29",
-    }
-    position = known_positions.get(tuple(parts[1:3])) if len(parts) >= 3 else None
-    if position is not None:
+    try:
+        instruction = parse_instruction(source_line)
+    except ExternalParseError as exc:
+        return _replace_suggestion(source_line, reason=exc.message)
+    shape = characterized_replace_shape(instruction.instruction_sha256)
+    if shape is None:
+        return _replace_suggestion(
+            source_line,
+            reason=(
+                "REPLACE does not match an exact reviewed signature; every "
+                "source column, option, condition, mode, and flag must match"
+            ),
+        )
+    if shape == "replace-008-form-23":
+        return _set_control_position(
+            source_line, position=23, value="o", condition="form_of_item_23"
+        )
+    if shape == "replace-008-form-29":
+        return _set_control_position(
+            source_line, position=29, value="o", condition="form_of_item_29"
+        )
+    if shape == "replace-008-blank-29":
+        return _set_control_position(
+            source_line, position=29, value=" ", condition="always"
+        )
+    if shape == "replace-856-stage":
         return _item(
             source_line,
             status="converted",
-            operation={"kind": "set-008-form", "params": {"position": position}},
+            operation={
+                "kind": "structural-find-replace",
+                "params": {
+                    "target_kind": "field_tag",
+                    "tag": "856",
+                    "match_mode": "all",
+                    "find": "",
+                    "action": "retag",
+                    "destination_tag": "956",
+                    "predicate": {"ind1": "4", "ind2_not": "0"},
+                },
+            },
         )
-    return _item(source_line, status="unresolved", reason="REPLACE signature has no proven adapter")
+    if shape == "replace-956-restore":
+        return _item(
+            source_line,
+            status="converted",
+            operation={
+                "kind": "structural-find-replace",
+                "params": {
+                    "target_kind": "field_tag",
+                    "tag": "956",
+                    "match_mode": "all",
+                    "find": "",
+                    "action": "retag",
+                    "destination_tag": "856",
+                },
+            },
+        )
+    find_field = parse_mnemonic_field(instruction.arguments[0])
+    replacement_field = parse_mnemonic_field(instruction.arguments[1])
+    return _item(
+        source_line,
+        status="converted",
+        operation={
+            "kind": "structural-find-replace",
+            "params": {
+                "target_kind": "data_field",
+                "tag": find_field["tag"],
+                "match_mode": "field_signature",
+                "action": "replace_field",
+                "match_ind1": find_field["ind1"],
+                "match_ind2": find_field["ind2"],
+                "match_subfields": find_field["subfields"],
+                "replacement_ind1": replacement_field["ind1"],
+                "replacement_ind2": replacement_field["ind2"],
+                "replacement_subfields": replacement_field["subfields"],
+            },
+        },
+    )
+
+
+def _set_control_position(
+    source_line: str, *, position: int, value: str, condition: str
+) -> MigrationItem:
+    return _item(
+        source_line,
+        status="converted",
+        operation={
+            "kind": "set-control-field",
+            "params": {
+                "tag": "008",
+                "mode": "position",
+                "value": value,
+                "position": position,
+                "condition": condition,
+            },
+        },
+    )
+
+
+def _replace_suggestion(source_line: str, *, reason: str) -> MigrationItem:
+    return _suggestion(
+        source_line,
+        intent="Replace selected MARC field data using a structural rule",
+        reason=reason,
+        recommended_operation="structural-find-replace",
+        prefilled_params={},
+        cataloger_action=(
+            "Open Structural Find and Replace and confirm the complete field "
+            "selection, replacement, conditions, and occurrence behavior."
+        ),
+    )
+
+
+def adapt_editfield(source_line: str) -> MigrationItem:
+    try:
+        instruction = parse_instruction(source_line)
+    except ExternalParseError as exc:
+        reason = exc.message
+        tag = source_line.rstrip("\r\n").split("\t")[1:2]
+        safe_tag = tag[0].strip() if tag else ""
+    else:
+        safe_tag = instruction.arguments[0].strip()
+        reason = (
+            "the exact EDITFIELD 001 signature is preserved, but its value "
+            "and mode semantics are not proven by available characterization evidence"
+        )
+    return _suggestion(
+        source_line,
+        intent="Edit the record control number",
+        reason=reason,
+        recommended_operation="set-control-field",
+        prefilled_params={"tag": safe_tag} if re.fullmatch(r"00[1-9]", safe_tag) else {},
+        cataloger_action=(
+            "Open Set Control Field and confirm whether to replace the complete "
+            "value or one character position."
+        ),
+    )
 
 
 def adapt_sortby(source_line: str) -> MigrationItem:
@@ -1027,6 +1153,7 @@ ADAPTER_REGISTRY = {
     "ADD": adapt_add,
     "COPY": adapt_copy,
     "DELETE": adapt_delete,
+    "EDITFIELD": adapt_editfield,
     "RDAHELPER": adapt_rdahelper,
     "SUBFIELD_EDIT": adapt_subfield_edit,
     "SUBFIELD_REMOVE": adapt_subfield_remove,
@@ -1109,6 +1236,42 @@ COMPATIBILITY_ADAPTER_REGISTRY = {
         verbs=("SORTBY",),
         shape_ids=("sort-all",),
         fixture_ids=("sort-all",),
+    ),
+    "replace-corpus-v1": CompatibilityAdapter(
+        adapter=adapt_replace,
+        verbs=("REPLACE",),
+        shape_ids=(
+            "replace-008-form-23",
+            "replace-008-form-29",
+            "replace-856-stage",
+            "replace-956-restore",
+            "replace-008-blank-29",
+            "replace-035-prefix",
+            "replace-035-oclc",
+            "replace-336-order-a",
+            "replace-336-order-b",
+            "replace-337-order-a",
+            "replace-337-order-b",
+            "replace-338-order-a",
+            "replace-338-order-b",
+            "replace-852-normalize",
+        ),
+        fixture_ids=(
+            "replace-008-form-23",
+            "replace-008-form-29",
+            "replace-856-stage",
+            "replace-956-restore",
+            "replace-008-blank-29",
+            "replace-035-prefix",
+            "replace-035-oclc",
+            "replace-336-order-a",
+            "replace-336-order-b",
+            "replace-337-order-a",
+            "replace-337-order-b",
+            "replace-338-order-a",
+            "replace-338-order-b",
+            "replace-852-normalize",
+        ),
     ),
 }
 

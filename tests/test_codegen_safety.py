@@ -317,6 +317,24 @@ def test_task_builder_subfield_replace_with_quote_payload_emits_safe_code():
     ast.parse(rendered["body"])
 
 
+def test_set_control_field_compiler_keeps_all_parameters_as_safe_literals():
+    payload = 'x")\nraise RuntimeError("pwn")\n#'
+    rendered = task_builder.render_ops_to_python([
+        task_builder.Operation(
+            kind="set-control-field",
+            params={
+                "tag": payload,
+                "mode": "value",
+                "value": payload,
+                "condition": payload,
+            },
+        )
+    ])
+
+    ast.parse(rendered["body"])
+    assert "set_control_field(" in rendered["body"]
+
+
 @pytest.mark.parametrize(
     ("tag", "code"),
     [

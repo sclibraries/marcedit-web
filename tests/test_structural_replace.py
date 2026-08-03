@@ -218,3 +218,101 @@ def test_invalid_raw_regex_capture_reference_is_a_validation_error():
         replacement=r"\9",
     )
     assert any("replacement" in error and "group" in error for error in errors)
+
+
+def test_predicate_aware_retag_matches_only_the_selected_indicator_matrix():
+    record = pymarc.Record()
+    for indicators in (["4", "0"], ["4", "1"], ["3", "1"]):
+        record.add_field(pymarc.Field(
+            tag="856",
+            indicators=indicators,
+            subfields=[pymarc.Subfield("u", "https://example.invalid")],
+        ))
+
+    result = structural_replace.apply_structural_find_replace(
+        record,
+        target_kind="field_tag",
+        tag="856",
+        match_mode="all",
+        find="",
+        action="retag",
+        destination_tag="956",
+        predicate={"ind1": "4", "ind2_not": "0"},
+    )
+
+    assert result["changed_fields"] == 1
+    assert [field.tag for field in record.fields] == ["856", "956", "856"]
+
+
+def test_malformed_structural_predicate_fails_before_execution():
+    record = _record()
+    before = list(record.fields)
+
+    with pytest.raises(ValueError, match="predicate"):
+        structural_replace.apply_structural_find_replace(
+            record,
+            target_kind="field_tag",
+            tag="035",
+            match_mode="all",
+            find="",
+            action="retag",
+            destination_tag="936",
+            predicate={"unknown": True},
+        )
+
+    assert record.fields == before
+
+
+def test_complete_field_signature_requires_exact_indicators_order_and_values():
+    record = pymarc.Record()
+    exact = pymarc.Field(
+        tag="336", indicators=[" ", " "],
+        subfields=[pymarc.Subfield("2", "rdacontent"), pymarc.Subfield("a", "text")],
+    )
+    different_order = pymarc.Field(
+        tag="336", indicators=[" ", " "],
+        subfields=[pymarc.Subfield("a", "text"), pymarc.Subfield("2", "rdacontent")],
+    )
+    record.add_field(exact)
+    record.add_field(different_order)
+
+    structural_replace.apply_structural_find_replace(
+        record,
+        target_kind="data_field",
+        tag="336",
+        match_mode="field_signature",
+        action="replace_field",
+        match_ind1=" ",
+        match_ind2=" ",
+        match_subfields=[["2", "rdacontent"], ["a", "text"]],
+        replacement_ind1=" ",
+        replacement_ind2=" ",
+        replacement_subfields=[["a", "text"], ["b", "txt"], ["2", "rdacontent"]],
+    )
+
+    assert exact not in record.fields
+    assert record.fields[0].get_subfields("b") == ["txt"]
+    assert record.fields[1] is different_order
+
+
+@pytest.mark.parametrize(
+    "signature_params",
+    [
+        {"match_ind1": "", "match_ind2": " ", "match_subfields": [["a", "x"]]},
+        {"match_ind1": " ", "match_ind2": " ", "match_subfields": [["aa", "x"]]},
+        {"match_ind1": " ", "match_ind2": " ", "match_subfields": "bad"},
+    ],
+)
+def test_malformed_complete_field_signatures_fail_before_execution(signature_params):
+    errors = structural_replace.validate_request(
+        target_kind="data_field",
+        tag="336",
+        match_mode="field_signature",
+        action="replace_field",
+        replacement_ind1=" ",
+        replacement_ind2=" ",
+        replacement_subfields=[["a", "text"]],
+        **signature_params,
+    )
+
+    assert errors

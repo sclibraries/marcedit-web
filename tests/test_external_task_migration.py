@@ -43,6 +43,12 @@ TASK_5_FIXTURE = (
     / "external_task_migration"
     / "field-predicate-operations.tasksfile.txt"
 )
+TASK_6_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "external_task_migration"
+    / "replace-signatures.tasksfile.txt"
+)
 
 
 def _compatibility_manifest():
@@ -52,7 +58,10 @@ def _compatibility_manifest():
 def _exercised_fixtures():
     exercised = {}
     fixture_id = None
-    for fixture in (PARSER_FIXTURE, CORE_FIXTURE, SUBFIELD_FIXTURE, TASK_5_FIXTURE):
+    for fixture in (
+        PARSER_FIXTURE, CORE_FIXTURE, SUBFIELD_FIXTURE, TASK_5_FIXTURE,
+        TASK_6_FIXTURE,
+    ):
         for line in fixture.read_text().splitlines():
             if line.startswith("# FIXTURE_ID: "):
                 fixture_id = line.removeprefix("# FIXTURE_ID: ")
@@ -1079,13 +1088,18 @@ def test_review_keeps_blocking_source_provenance_and_suggestions():
 
 def test_proven_known_replace_and_sortby_signatures_convert():
     replace = migration.adapt_instruction(
-        "REPLACE\t(=008.{25}).{1}(.+)\t$1o$2\t0\t0"
+        "REPLACE\t(=008.{25}).{1}(.+)\t$1o$2\t2\t"
+        "=LDR.{8}[a,c,d,i,j,m,o,p,r,t][c,m,s,i].+\t2\tFalse"
     )
     sort = migration.adapt_instruction("SORTBY\tALL\tTrue\tTrue")
     assert replace.status == "converted"
     assert replace.operation == {
-        "kind": "set-008-form",
-        "params": {"position": "23"},
+        "kind": "set-control-field",
+        "params": {
+            "tag": "008", "mode": "position", "value": "o",
+            "position": 23,
+            "condition": "form_of_item_23",
+        },
     }
     assert sort.status == "converted"
     assert sort.operation["kind"] == "sort-fields"
@@ -1093,13 +1107,242 @@ def test_proven_known_replace_and_sortby_signatures_convert():
 
 def test_second_proven_replace_preserves_its_fixed_008_position():
     replace = migration.adapt_instruction(
-        "REPLACE\t(=008.{31}).{1}(.+)\t$1o$2\t0\t0"
+        "REPLACE\t(=008.{31}).{1}(.+)\t$1o$2\t2\t"
+        "=LDR.{8}[e,f,g,k].+\t2\tFalse"
     )
 
     assert replace.operation == {
-        "kind": "set-008-form",
-        "params": {"position": "29"},
+        "kind": "set-control-field",
+        "params": {
+            "tag": "008", "mode": "position", "value": "o",
+            "position": 29,
+            "condition": "form_of_item_29",
+        },
     }
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "REPLACE\t(=008.{25}).{1}(.+)\t$1o$2\t0\t"
+        "=LDR.{8}[a,c,d,i,j,m,o,p,r,t][c,m,s,i].+\t2\tFalse",
+        "REPLACE\t(=008.{25}).{1}(.+)\t$1o$2\t2\tWRONG\t2\tFalse",
+        "REPLACE\t(=008.{25}).{1}(.+)\t$1o$2\t2\t"
+        "=LDR.{8}[a,c,d,i,j,m,o,p,r,t][c,m,s,i].+\t1\tFalse",
+        "REPLACE\t(=008.{25}).{1}(.+)\t$1o$2\t2\t"
+        "=LDR.{8}[a,c,d,i,j,m,o,p,r,t][c,m,s,i].+\t2\tTrue",
+    ],
+)
+def test_one_column_change_blocks_a_proven_replace_signature(line):
+    item = migration.adapt_instruction(line)
+
+    assert item.status == "unresolved"
+    assert item.recommended_operation
+    assert item.cataloger_action
+
+
+def test_every_registered_replace_signature_blocks_when_one_option_or_flag_changes():
+    lines = [
+        line
+        for line in TASK_6_FIXTURE.read_text().splitlines()
+        if line and not line.startswith("#")
+    ]
+    for line in lines:
+        columns = line.split("\t")
+        if len(columns) == 7:
+            columns[-1] = "True" if columns[-1] == "False" else "False"
+        else:
+            columns[-1] = "2" if columns[-1] != "2" else "1"
+        changed = migration.adapt_instruction("\t".join(columns))
+        assert changed.status == "unresolved", line
+        assert changed.recommended_operation == "structural-find-replace", line
+        assert changed.cataloger_action, line
+
+
+def test_local_identifier_prefix_digest_uses_the_sanitized_proven_shape():
+    assert migration.characterized_replace_shape(
+        "8b2caa917fa54c724f7d9996bf6a51c399f8933705089404f1ab0a3460ad5ed1"
+    ) == "replace-035-prefix"
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "REPLACE\t(=999)(.*)\t$1changed\t2\t\t0\tFalse",
+        "REPLACE\t=336  broken\t=336  \\\\$atext\t0\t\t1",
+        "REPLACE\t(=008)(.*)\t$9\t2\t\t0\tFalse",
+    ],
+)
+def test_unknown_regex_backreference_and_malformed_field_replaces_never_execute(line):
+    item = migration.adapt_instruction(line)
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert item.recommended_operation == "structural-find-replace"
+
+
+def test_856_staging_matrix_is_preserved_by_predicate_aware_retagging():
+    item = migration.adapt_instruction(
+        "REPLACE\t(=856)(  4[^0].*)\t=956$2\t2\t\t0\tFalse"
+    )
+    record = pymarc.Record()
+    for indicators in (["4", "0"], ["4", "1"], ["3", "1"]):
+        record.add_field(pymarc.Field(
+            tag="856", indicators=indicators,
+            subfields=[pymarc.Subfield("u", "https://example.invalid")],
+        ))
+
+    _run_operations(item, record)
+
+    assert item.operation == {
+        "kind": "structural-find-replace",
+        "params": {
+            "target_kind": "field_tag", "tag": "856",
+            "match_mode": "all", "find": "", "action": "retag",
+            "destination_tag": "956",
+            "predicate": {"ind1": "4", "ind2_not": "0"},
+        },
+    }
+    assert [field.tag for field in record.fields] == ["856", "956", "856"]
+
+
+def test_temporary_956_returns_to_856_without_reordering_fields():
+    item = migration.adapt_instruction(
+        "REPLACE\t=956  \t=856  \t0\t\t0\tFalse"
+    )
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(tag="245", indicators=["1", "0"], subfields=[pymarc.Subfield("a", "Title")]))
+    record.add_field(pymarc.Field(tag="956", indicators=["4", "1"], subfields=[pymarc.Subfield("u", "URL")]))
+    record.add_field(pymarc.Field(tag="852", indicators=[" ", " "], subfields=[pymarc.Subfield("h", "Online")]))
+
+    _run_operations(item, record)
+
+    assert [field.tag for field in record.fields] == ["245", "856", "852"]
+
+
+@pytest.mark.parametrize(
+    ("line", "tag", "expected"),
+    [
+        (
+            "REPLACE\t=336  \\\\$2rdacontent$atext\t"
+            "=336  \\\\$atext$btxt$2rdacontent\t0\t\t1",
+            "336", (("a", "text"), ("b", "txt"), ("2", "rdacontent")),
+        ),
+        (
+            "REPLACE\t=337  \\\\$acomputer$2rdamedia\t"
+            "=337  \\\\$acomputer$bc$2rdamedia\t0\t\t1",
+            "337", (("a", "computer"), ("b", "c"), ("2", "rdamedia")),
+        ),
+        (
+            "REPLACE\t=338  \\\\$2rdacarrier$aonline\t"
+            "=338  \\\\$aonline resource$bcr$2rdacarrier\t0\t\t1",
+            "338", (("a", "online resource"), ("b", "cr"), ("2", "rdacarrier")),
+        ),
+    ],
+)
+def test_complete_field_normalizations_replace_only_the_exact_signature(line, tag, expected):
+    parsed = migration.parse_mnemonic_field(line.split("\t")[1])
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(
+        tag=tag, indicators=[parsed["ind1"], parsed["ind2"]],
+        subfields=[pymarc.Subfield(code, value) for code, value in parsed["subfields"]],
+    ))
+    record.add_field(pymarc.Field(
+        tag="245", indicators=["1", "0"], subfields=[pymarc.Subfield("a", "Keep")],
+    ))
+
+    _run_operations(migration.adapt_instruction(line), record)
+
+    assert tuple((sf.code, sf.value) for sf in record.fields[0].subfields) == expected
+    assert record.fields[1].tag == "245"
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "REPLACE\t=035  9\\$a(ABC)https://example.invalid/item/\t"
+            "=035  9\\$a(ABC)\t0\t\t0\tFalse",
+            ("035", ("9", " "), (("a", "(ABC)"),)),
+        ),
+        (
+            "REPLACE\t=035  \\\\$ao\t=035  \\\\$a(OCoLC)o\t0\t\t0\tFalse",
+            ("035", (" ", " "), (("a", "(OCoLC)o"),)),
+        ),
+        (
+            "REPLACE\t=852  \\\\$hOnline $lTEST$pE-Book$tLibrary of Congress classification\t"
+            "=852  \\\\$hOnline$lTEST$pE-Book$tOther scheme\t0\t\t0\tFalse",
+            (
+                "852", (" ", " "),
+                (("h", "Online"), ("l", "TEST"), ("p", "E-Book"), ("t", "Other scheme")),
+            ),
+        ),
+    ],
+)
+def test_identifier_and_holdings_normalizations_replace_exact_complete_fields(line, expected):
+    source = migration.parse_mnemonic_field(line.split("\t")[1])
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(
+        tag=source["tag"], indicators=[source["ind1"], source["ind2"]],
+        subfields=[pymarc.Subfield(code, value) for code, value in source["subfields"]],
+    ))
+
+    _run_operations(migration.adapt_instruction(line), record)
+
+    assert _field_list(record) == [expected]
+
+
+@pytest.mark.parametrize(
+    ("line", "leader", "changed_position", "unchanged_position"),
+    [
+        (
+            "REPLACE\t(=008.{25}).{1}(.+)\t$1o$2\t2\t"
+            "=LDR.{8}[a,c,d,i,j,m,o,p,r,t][c,m,s,i].+\t2\tFalse",
+            "00000nam a2200000   4500", 23, 29,
+        ),
+        (
+            "REPLACE\t(=008.{31}).{1}(.+)\t$1o$2\t2\t"
+            "=LDR.{8}[e,f,g,k].+\t2\tFalse",
+            "00000nem a2200000   4500", 29, 23,
+        ),
+    ],
+)
+def test_conditioned_008_replacements_change_only_the_proven_position(
+    line, leader, changed_position, unchanged_position
+):
+    record = pymarc.Record()
+    record.leader = leader
+    record.add_field(pymarc.Field(tag="008", data="x" * 40))
+
+    _run_operations(migration.adapt_instruction(line), record)
+
+    assert record["008"].data[changed_position] == "o"
+    assert record["008"].data[unchanged_position] == "x"
+
+
+def test_ellis_blank_008_position_skips_short_fields_and_reports_without_extension():
+    item = migration.adapt_instruction(
+        "REPLACE\t(^=008 .{29})(.)\t$1\\\t2\t\t0\tFalse"
+    )
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(tag="008", data="short"))
+
+    rendered = task_builder.render_ops_to_python([
+        task_builder.Operation.from_dict(item.operation)
+    ])
+    assert "set_control_field" in rendered["body"]
+    _run_operations(item, record)
+
+    assert record["008"].data == "short"
+
+
+def test_corpus_editfield_001_remains_actionable_until_semantics_are_proven():
+    item = migration.adapt_instruction("EDITFIELD\t001\t\\\t0\t\t")
+
+    assert item.status == "unresolved"
+    assert item.recommended_operation == "set-control-field"
+    assert item.prefilled_params == {"tag": "001"}
+    assert "confirm" in item.cataloger_action.lower()
 
 
 def test_adapter_registry_is_the_dispatch_source(monkeypatch):

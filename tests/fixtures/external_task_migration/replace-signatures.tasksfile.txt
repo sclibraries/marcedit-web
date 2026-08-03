@@ -1,0 +1,28 @@
+# FIXTURE_ID: replace-008-form-23
+REPLACE	(=008.{25}).{1}(.+)	$1o$2	2	=LDR.{8}[a,c,d,i,j,m,o,p,r,t][c,m,s,i].+	2	False
+# FIXTURE_ID: replace-008-form-29
+REPLACE	(=008.{31}).{1}(.+)	$1o$2	2	=LDR.{8}[e,f,g,k].+	2	False
+# FIXTURE_ID: replace-856-stage
+REPLACE	(=856)(  4[^0].*)	=956$2	2		0	False
+# FIXTURE_ID: replace-956-restore
+REPLACE	=956  	=856  	0		0	False
+# FIXTURE_ID: replace-008-blank-29
+REPLACE	(^=008 .{29})(.)	$1\	2		0	False
+# FIXTURE_ID: replace-035-prefix
+REPLACE	=035  9\$a(ABC)https://example.invalid/item/	=035  9\$a(ABC)	0		0	False
+# FIXTURE_ID: replace-035-oclc
+REPLACE	=035  \\$ao	=035  \\$a(OCoLC)o	0		0	False
+# FIXTURE_ID: replace-336-order-a
+REPLACE	=336  \\$2rdacontent$atext	=336  \\$atext$btxt$2rdacontent	0		1
+# FIXTURE_ID: replace-336-order-b
+REPLACE	=336  \\$atext$2rdacontent	=336  \\$atext$btxt$2rdacontent	0		1
+# FIXTURE_ID: replace-337-order-a
+REPLACE	=337  \\$2rdamedia$acomputer	=337  \\$acomputer$bc$2rdamedia	0		1
+# FIXTURE_ID: replace-337-order-b
+REPLACE	=337  \\$acomputer$2rdamedia	=337  \\$acomputer$bc$2rdamedia	0		1
+# FIXTURE_ID: replace-338-order-a
+REPLACE	=338  \\$2rdacarrier$aonline	=338  \\$aonline resource$bcr$2rdacarrier	0		1
+# FIXTURE_ID: replace-338-order-b
+REPLACE	=338  \\$aonline resource$2rdacarrier	=338  \\$aonline resource$bcr$2rdacarrier	0		1
+# FIXTURE_ID: replace-852-normalize
+REPLACE	=852  \\$hOnline $lTEST$pE-Book$tLibrary of Congress classification	=852  \\$hOnline$lTEST$pE-Book$tOther scheme	0		0	False

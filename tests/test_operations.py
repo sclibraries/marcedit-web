@@ -86,6 +86,47 @@ def test_matched_delete_removes_only_selected_fields():
     assert record.get_fields("655") == [retained]
 
 
+def test_set_control_field_reports_short_and_missing_fields_without_extension():
+    short = Record()
+    short.add_field(Field(tag="008", data="short"))
+
+    short_result = transforms.set_control_field(
+        short, "008", "position", "o", position=23
+    )
+    missing_result = transforms.set_control_field(
+        Record(), "008", "position", "o", position=23
+    )
+
+    assert short["008"].data == "short"
+    assert short_result == {
+        "matched_fields": 1, "changed_fields": 0, "skipped_fields": 1,
+    }
+    assert missing_result == {
+        "matched_fields": 0, "changed_fields": 0, "skipped_fields": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"tag": "008", "mode": "position", "value": "x", "position": -1},
+        {"tag": "008", "mode": "position", "value": "xx", "position": 1},
+        {"tag": "008", "mode": "position", "value": "x", "position": True},
+        {"tag": "008", "mode": "value", "value": "text", "position": 1},
+        {"tag": "245", "mode": "value", "value": "text"},
+        {"tag": "008", "mode": "unknown", "value": "text"},
+    ],
+)
+def test_invalid_set_control_field_requests_fail_before_mutation(kwargs):
+    record = Record()
+    record.add_field(Field(tag="008", data="unchanged"))
+
+    with pytest.raises(ValueError):
+        transforms.set_control_field(record, **kwargs)
+
+    assert record["008"].data == "unchanged"
+
+
 @pytest.fixture
 def queued_operation():
     db.init_schema()

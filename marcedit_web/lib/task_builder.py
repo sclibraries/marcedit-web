@@ -594,6 +594,25 @@ OPERATIONS_PALETTE: list[dict] = [
         "params": [],
     },
     {
+        "kind": "set-control-field",
+        "label": "Set control field",
+        "summary": "Set a complete control value or one fixed character position.",
+        "params": [
+            {"name": "tag", "label": "Tag", "type": "text", "required": True},
+            {"name": "mode", "label": "Edit", "type": "select", "options": [
+                {"value": "value", "label": "Complete value"},
+                {"value": "position", "label": "Character position"},
+            ], "default": "value"},
+            {"name": "value", "label": "Value", "type": "text", "required": True},
+            {"name": "position", "label": "Zero-based position", "type": "int", "default": None},
+            {"name": "condition", "label": "Record condition", "type": "select", "options": [
+                {"value": "always", "label": "Every record"},
+                {"value": "form_of_item_23", "label": "008 form-of-item byte 23 records"},
+                {"value": "form_of_item_29", "label": "008 form-of-item byte 29 records"},
+            ], "default": "always"},
+        ],
+    },
+    {
         "kind": "structural-find-replace",
         "label": "Structural find and replace",
         "summary": "Conditionally replace complete fields, retag fields, set indicators, or operate over a validated tag range.",
@@ -618,6 +637,7 @@ OPERATIONS_PALETTE: list[dict] = [
                 {"value": "whole_value", "label": "Whole value"},
                 {"value": "structured", "label": "Structured pattern"},
                 {"value": "raw_regex", "label": "Raw regular expression"},
+                {"value": "field_signature", "label": "Exact complete field"},
             ], "default": "contains"},
             {"name": "find", "label": "Find", "type": "text", "default": ""},
             {"name": "pattern_pieces", "label": "Structured pattern pieces (JSON)", "type": "json", "default": []},
@@ -632,11 +652,15 @@ OPERATIONS_PALETTE: list[dict] = [
             {"name": "replacement_ind1", "label": "Replacement indicator 1", "type": "indicator", "default": " "},
             {"name": "replacement_ind2", "label": "Replacement indicator 2", "type": "indicator", "default": " "},
             {"name": "replacement_subfields", "label": "Replacement subfields", "type": "subfields", "default": []},
+            {"name": "match_ind1", "label": "Match indicator 1", "type": "indicator", "default": " "},
+            {"name": "match_ind2", "label": "Match indicator 2", "type": "indicator", "default": " "},
+            {"name": "match_subfields", "label": "Match subfields", "type": "subfields", "default": []},
             {"name": "destination_tag", "label": "Destination tag", "type": "text", "default": ""},
             {"name": "new_ind1", "label": "New indicator 1", "type": "indicator", "default": " "},
             {"name": "new_ind2", "label": "New indicator 2", "type": "indicator", "default": " "},
             {"name": "occurrences", "label": "Occurrences", "type": "select", "options": [{"value": "first", "label": "First"}, {"value": "all", "label": "All"}], "default": "all"},
             {"name": "ignore_case", "label": "Case-insensitive", "type": "bool", "default": False},
+            {"name": "predicate", "label": "Limit which fields are affected", "type": "json", "default": None},
         ],
     },
     {
@@ -1353,6 +1377,16 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         return (["normalize_relators(record)"], {"normalize_relators"}, False)
     if op.kind == "rda-promote-260":
         return (["promote_260(record)"], {"promote_260"}, False)
+
+    if op.kind == "set-control-field":
+        position = p.get("position")
+        position_arg = "" if position is None else f", position={lit(position)}"
+        return ([
+            "set_control_field("
+            f"record, {lit(p.get('tag', ''))}, "
+            f"{lit(p.get('mode', ''))}, {lit(p.get('value', ''))}"
+            f"{position_arg}, condition={lit(p.get('condition', 'always'))})"
+        ], {"set_control_field"}, False)
 
     if op.kind == "structural-find-replace":
         return ([

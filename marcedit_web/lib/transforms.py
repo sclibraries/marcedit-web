@@ -305,6 +305,94 @@ def control_value(record: Record, tag: str) -> str | None:
     return field.data
 
 
+def set_control_field(
+    record: Record,
+    tag: str,
+    mode: str,
+    value: str,
+    *,
+    position: int | None = None,
+    condition: str = "always",
+) -> dict[str, int]:
+    """Set a complete control value or one zero-based character position.
+
+    Positional edits never extend short fields. Missing and short fields are
+    reported as skipped so callers can surface the incomplete record without
+    manufacturing fixed-field bytes.
+    """
+    errors = validate_set_control_field_request(
+        tag=tag,
+        mode=mode,
+        value=value,
+        position=position,
+        condition=condition,
+    )
+    if errors:
+        raise ValueError("; ".join(errors))
+
+    if condition == "form_of_item_23" and not (
+        leader_type(record) in "acdijmoprt" and leader_biblevel(record) in "cmsi"
+    ):
+        return {"matched_fields": 0, "changed_fields": 0, "skipped_fields": 0}
+    if condition == "form_of_item_29" and leader_type(record) not in "efgk":
+        return {"matched_fields": 0, "changed_fields": 0, "skipped_fields": 0}
+
+    fields = list(record.get_fields(tag))
+    result = {
+        "matched_fields": len(fields),
+        "changed_fields": 0,
+        "skipped_fields": 0,
+    }
+    if not fields:
+        result["skipped_fields"] = 1
+        return result
+    for field in fields:
+        if mode == "value":
+            if field.data != value:
+                field.data = value
+                result["changed_fields"] += 1
+            continue
+        assert position is not None
+        if len(field.data) <= position:
+            result["skipped_fields"] += 1
+            continue
+        updated = field.data[:position] + value + field.data[position + 1:]
+        if updated != field.data:
+            field.data = updated
+            result["changed_fields"] += 1
+    return result
+
+
+def validate_set_control_field_request(
+    *,
+    tag: object,
+    mode: object,
+    value: object,
+    position: object = None,
+    condition: object = "always",
+) -> tuple[str, ...]:
+    """Validate persisted set-control-field parameters without mutation."""
+    errors = []
+    if not isinstance(tag, str) or not is_control_tag(tag):
+        errors.append("set-control-field tag must be 001 through 009")
+    if mode not in {"value", "position"}:
+        errors.append("set-control-field mode must be value or position")
+    if not isinstance(value, str):
+        errors.append("set-control-field value must be text")
+    if condition not in {"always", "form_of_item_23", "form_of_item_29"}:
+        errors.append("set-control-field condition is not supported")
+    if mode == "position":
+        if isinstance(position, bool) or not isinstance(position, int) or position < 0:
+            errors.append("set-control-field position must be a zero-based integer")
+        if not isinstance(value, str) or len(value) != 1:
+            errors.append(
+                "positional set-control-field value must be one character"
+            )
+    elif mode == "value" and position is not None:
+        errors.append("whole-value set-control-field does not accept a position")
+    return tuple(errors)
+
+
 def normalize_oclc_035(value: str) -> str | None:
     """Return the bare OCLC number from one 035 $a value, or None.
 

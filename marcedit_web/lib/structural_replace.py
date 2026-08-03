@@ -8,6 +8,8 @@ from typing import Any
 
 from pymarc import Field, Record, Subfield
 
+from .field_predicates import field_matches, validate_field_predicate
+
 
 TARGET_KINDS = {"subfield", "all_subfields", "data_field", "field_tag", "indicators", "tag_range"}
 ACTIONS = {"replace_matched_text", "replace_field", "retag", "set_indicators"}
@@ -19,6 +21,7 @@ MATCH_MODES = {
     "whole_value",
     "structured",
     "raw_regex",
+    "field_signature",
 }
 _TAG = re.compile(r"^\d{3}$")
 _NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -108,6 +111,29 @@ def validate_request(**request: Any) -> tuple[str, ...]:
     if action == "replace_field":
         if not isinstance(request.get("replacement_subfields"), list) or not request.get("replacement_subfields"):
             errors.append("replacement subfields are required")
+    predicate = request.get("predicate")
+    if predicate is not None:
+        errors.extend(
+            "predicate: " + error
+            for error in validate_field_predicate(predicate)
+        )
+    if mode == "field_signature":
+        if target != "data_field" or action != "replace_field":
+            errors.append(
+                "complete-field signatures require a data-field replacement"
+            )
+        for name in (
+            "match_ind1", "match_ind2", "replacement_ind1",
+            "replacement_ind2",
+        ):
+            if not isinstance(request.get(name), str) or len(request.get(name, "")) != 1:
+                errors.append(f"{name} must be one character")
+        errors.extend(_validate_subfield_signature(
+            request.get("match_subfields"), "match subfields"
+        ))
+        errors.extend(_validate_subfield_signature(
+            request.get("replacement_subfields"), "replacement subfields"
+        ))
     if mode == "structured":
         try:
             _compile_structured_pattern(request.get("pattern_pieces", []))
@@ -119,7 +145,7 @@ def validate_request(**request: Any) -> tuple[str, ...]:
             errors.append("Find must be empty when Match is every selected field")
         if action not in {"retag", "set_indicators"}:
             errors.append("every-selected-field matching is only valid for retag or set indicators")
-    else:
+    elif mode != "field_signature":
         find = request.get("find", "")
         if not isinstance(find, str):
             errors.append("find must be text")
@@ -135,6 +161,25 @@ def validate_request(**request: Any) -> tuple[str, ...]:
                     pattern.sub(str(request.get("replacement", "")), "")
             except re.error as exc:
                 errors.append(f"invalid raw-regex replacement: {exc}")
+    return tuple(errors)
+
+
+def _validate_subfield_signature(value: Any, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        return (f"{label} must be a nonempty list",)
+    errors = []
+    for item in value:
+        if (
+            not isinstance(item, (list, tuple))
+            or len(item) != 2
+            or not isinstance(item[0], str)
+            or re.fullmatch(r"[a-z0-9]", item[0]) is None
+            or not isinstance(item[1], str)
+        ):
+            errors.append(
+                f"{label} entries must contain one subfield code and text value"
+            )
+            break
     return tuple(errors)
 
 
@@ -219,7 +264,7 @@ def _replacement_from_pieces(pieces: Any, capture_names: set[str]) -> str:
 
 def _matcher(request: dict[str, Any]) -> tuple[re.Pattern, str]:
     mode = request["match_mode"]
-    if mode == "all":
+    if mode in {"all", "field_signature"}:
         return re.compile(r"(?s:.*)"), ""
     if mode == "structured":
         pattern, _ = _compile_structured_pattern(request["pattern_pieces"])
@@ -266,6 +311,10 @@ def apply_structural_find_replace(record: Record, **raw_request: Any) -> dict[st
             )
         ):
             continue
+        if request.get("predicate") is not None and not field_matches(
+            field, request["predicate"]
+        ):
+            continue
         values = [field.value() or ""]
         if request["target_kind"] in {"subfield", "all_subfields"}:
             values = [
@@ -279,7 +328,16 @@ def apply_structural_find_replace(record: Record, **raw_request: Any) -> dict[st
                 match_ind2 != "*" and field.indicators[1] != match_ind2
             ):
                 continue
-        matched = any(matcher.search(value) for value in values)
+        if request["match_mode"] == "field_signature":
+            matched = (
+                list(field.indicators) == [
+                    request["match_ind1"], request["match_ind2"]
+                ]
+                and [(sf.code, sf.value) for sf in field.subfields]
+                == [tuple(item) for item in request["match_subfields"]]
+            )
+        else:
+            matched = any(matcher.search(value) for value in values)
         if not matched:
             continue
         result["matched_fields"] += 1

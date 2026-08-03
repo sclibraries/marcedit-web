@@ -65,6 +65,10 @@ class FakeStreamlit:
         self.widgets.append(("button", label, None, key))
         return label in self.pressed
 
+    def number_input(self, label, *, value, key, **kwargs):
+        self.widgets.append(("number_input", label, value, key))
+        return self.selections.get(label, value)
+
     def json(self, value):
         self.raw_values.append(value)
 
@@ -234,6 +238,23 @@ def test_generic_select_render_can_repair_unsupported_value(monkeypatch):
     )
 
     assert params["position"] == "start"
+
+
+def test_set_control_field_position_renders_as_an_integer(monkeypatch):
+    fake = FakeStreamlit(selections={"Zero-based position": 29})
+    params = {"position": 23}
+    entry = task_operation_dialog._palette_entry("set-control-field")
+    parameter = next(
+        item for item in entry["params"] if item["name"] == "position"
+    )
+    monkeypatch.setattr(task_operation_dialog, "st", fake)
+
+    task_operation_dialog.render_param_input(
+        parameter, params, key_prefix="operation_1"
+    )
+
+    assert params["position"] == 29
+    assert fake.widgets[0][0] == "number_input"
 
 
 @pytest.mark.parametrize(
@@ -445,6 +466,66 @@ def test_structural_retag_workspace_exposes_action_and_match_text(monkeypatch):
 
     assert "action" in rendered
     assert "find" in rendered
+
+
+def test_structural_complete_field_workspace_exposes_exact_match_signature(monkeypatch):
+    operation = {
+        "kind": "structural-find-replace",
+        "params": {
+            "target_kind": "data_field",
+            "tag": "336",
+            "match_mode": "field_signature",
+            "action": "replace_field",
+            "match_ind1": " ",
+            "match_ind2": " ",
+            "match_subfields": [["a", "text"]],
+            "replacement_ind1": " ",
+            "replacement_ind2": " ",
+            "replacement_subfields": [["a", "text"], ["b", "txt"]],
+        },
+    }
+    state = task_operation_dialog.new_edit_state(operation, index=0, nonce=41)
+    rendered = []
+    monkeypatch.setattr(
+        task_operation_dialog,
+        "render_param_input",
+        lambda parameter, *args, **kwargs: rendered.append(parameter["name"]),
+    )
+
+    task_operation_dialog.render_selected_operation(state, is_admin=False)
+
+    assert {"match_ind1", "match_ind2", "match_subfields"} <= set(rendered)
+
+
+def test_structural_retag_workspace_exposes_field_predicate(monkeypatch):
+    operation = {
+        "kind": "structural-find-replace",
+        "params": {
+            "target_kind": "field_tag",
+            "tag": "856",
+            "match_mode": "all",
+            "find": "",
+            "action": "retag",
+            "destination_tag": "956",
+            "predicate": {"ind1": "4", "ind2_not": "0"},
+        },
+    }
+    state = task_operation_dialog.new_edit_state(operation, index=0, nonce=42)
+    predicates = []
+    monkeypatch.setattr(
+        task_operation_dialog,
+        "render_param_input",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        task_operation_dialog.task_authoring_render,
+        "render_field_predicate_params",
+        lambda params, **kwargs: predicates.append(copy.deepcopy(params)),
+    )
+
+    task_operation_dialog.render_selected_operation(state, is_admin=False)
+
+    assert predicates[0]["predicate"] == {"ind1": "4", "ind2_not": "0"}
 
 
 def test_add_starts_with_alphabetical_selector_and_no_controls(monkeypatch):
