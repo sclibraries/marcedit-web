@@ -800,3 +800,10 @@ from marcedit_web.lib.field_predicates import (  # noqa: E402,F401
     field_matches,
     validate_field_predicate,
 )
+# TASK-192 leaf-engine re-export. ``partner_operations`` imports only the
+# field-predicate leaf, so this remains cycle-safe for sandbox imports.
+from marcedit_web.lib.partner_operations import (  # noqa: E402,F401
+    apply_institution_profile,
+    build_fields_for_matches,
+    copy_fields_with_policy,
+)
