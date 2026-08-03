@@ -196,6 +196,33 @@ def test_open_editor_for_new_forces_build_mode(monkeypatch):
     )
 
 
+def test_general_editor_navigation_preserves_pending_import_result(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    pending = {
+        "status": "partial",
+        "uploaded_filename": "pending.task",
+        "imported_task_names": [],
+        "entries": [],
+        "rejection_category": None,
+    }
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = pending
+
+    tasks_render._open_editor_for_new()
+    assert fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] == pending
+
+    tasks_render._open_editor_for_existing_row({
+        "name": "existing",
+        "description": "",
+        "body": "pass",
+        "visibility": "private",
+    }, is_admin=False)
+    assert fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] == pending
+
+    tasks_render._cancel_callback()
+    assert fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] == pending
+
+
 def test_new_build_field_defaults_are_structured(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
@@ -608,6 +635,8 @@ def test_form_save_persists_blocker_and_labels_migration_review(
     fake_st.session_state.update(
         _form_save_state(tasks_render, [_migration_blocker()])
     )
+    pending = {"status": "partial", "entries": []}
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = pending
     saved = []
     _wire_successful_save(monkeypatch, tasks_render, saved)
 
@@ -618,6 +647,7 @@ def test_form_save_persists_blocker_and_labels_migration_review(
     assert fake_st.session_state[tasks_render.K_SAVE_SUCCESS] == (
         "Saved `structured-fields`. Needs migration review."
     )
+    assert fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] == pending
 
 
 def test_queued_submission_rejects_marker_before_constructing_task_spec(
@@ -1434,7 +1464,126 @@ def test_malformed_import_result_is_discarded_without_crashing(
     tasks_render._render_marcedit_import_result()
 
     assert tasks_render.K_MARCEDIT_IMPORT_RESULT not in fake_st.session_state
-    assert fake_st.errors == []
+    assert fake_st.errors == [
+        "Stored import result is invalid. Re-import the source file."
+    ]
+
+
+def _retained_partial_draft_payload(tasks_render):
+    conversion = tasks_render.marcedit_import.convert_tasksfile_text(
+        (
+            "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n"
+            "UNKNOWN\texternal intent\n"
+            "SORTBY\tALL\tTrue\tTrue\n"
+        ),
+        name="mixed",
+        description_fallback="",
+        source_entry="mixed.tasksfile",
+    )
+    return {
+        "status": "partial",
+        "uploaded_filename": "mixed.tasksfile",
+        "imported_task_names": [],
+        "entries": [{
+            "entry_name": "mixed.tasksfile",
+            "status": "needs_review",
+            "task_name": "mixed",
+            "message": "editable draft contains instructions needing review",
+            "draft": conversion.draft.to_session_dict(),
+        }],
+        "rejection_category": "unresolved-instructions",
+    }
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "converted_count",
+        "blocking_count",
+        "total_count",
+        "ready_with_blocker",
+        "task_identity",
+        "source_entry_identity",
+        "source_line_digest",
+        "blocker_digest",
+        "provenance_order",
+    ],
+)
+def test_retained_draft_cross_checks_counts_identity_and_provenance(
+    monkeypatch, corruption
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    payload = _retained_partial_draft_payload(tasks_render)
+    entry = payload["entries"][0]
+    draft = entry["draft"]
+
+    if corruption == "converted_count":
+        draft["summary"]["converted"] += 1
+    elif corruption == "blocking_count":
+        draft["summary"]["blocking"] = 0
+    elif corruption == "total_count":
+        draft["summary"]["total"] += 1
+    elif corruption == "ready_with_blocker":
+        entry["status"] = "draft_ready"
+    elif corruption == "task_identity":
+        draft["task_name"] = "different"
+    elif corruption == "source_entry_identity":
+        draft["provenance"][1]["source_entry"] = "other.tasksfile"
+    elif corruption == "source_line_digest":
+        draft["provenance"][1]["source_line"] = "changed"
+    elif corruption == "blocker_digest":
+        draft["operations"][1]["params"]["instruction_sha256"] = "0" * 64
+    elif corruption == "provenance_order":
+        draft["provenance"][0], draft["provenance"][2] = (
+            draft["provenance"][2], draft["provenance"][0]
+        )
+
+    normalized = tasks_render._normalize_marcedit_import_result(payload)
+
+    assert normalized["entries"][0]["status"] == "failed"
+    assert normalized["entries"][0]["draft"] is None
+    assert normalized["entries"][0]["message"] == (
+        "Stored migration draft is invalid. Re-import the source file."
+    )
+
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = payload
+    tasks_render._render_marcedit_import_result()
+    assert any("Stored migration draft is invalid" in error for error in fake_st.errors)
+    assert "Open migration draft" not in fake_st.button_labels
+    assert "Open selected draft" not in fake_st.button_labels
+
+
+@pytest.mark.parametrize(
+    ("constant_name", "corruption"),
+    [
+        ("MAX_DRAFT_PROVENANCE_ITEMS", "provenance"),
+        ("MAX_DRAFT_SOURCE_ENTRY_BYTES", "source_entry"),
+        ("MAX_DRAFT_SOURCE_LINE_BYTES", "source_line"),
+        ("MAX_DRAFT_DISCLOSURES", "disclosures"),
+    ],
+)
+def test_retained_draft_enforces_concrete_payload_bounds(
+    monkeypatch, constant_name, corruption
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    payload = _retained_partial_draft_payload(tasks_render)
+    draft = payload["entries"][0]["draft"]
+    monkeypatch.setattr(tasks_render, constant_name, 1)
+    if corruption == "provenance":
+        pass
+    elif corruption == "source_entry":
+        draft["provenance"][0]["source_entry"] = "xx"
+    elif corruption == "source_line":
+        draft["provenance"][0]["source_line"] = "xx"
+    elif corruption == "disclosures":
+        draft["disclosures"] = ["one", "two"]
+
+    normalized = tasks_render._normalize_marcedit_import_result(payload)
+
+    assert normalized["entries"][0]["status"] == "failed"
+    assert normalized["entries"][0]["draft"] is None
 
 
 def test_unresolved_import_result_keeps_actionable_warning_copy(
@@ -1648,6 +1797,7 @@ def test_partial_text_import_waits_for_adoption_then_opens_ordered_blockers(
     assert stored["entries"][0]["draft"]["summary"] == {
         "converted": 2,
         "blocking": 1,
+        "total": 3,
     }
     tasks_render._render_marcedit_import_result()
     assert fake_st.warnings[0].startswith(
@@ -1678,9 +1828,13 @@ def test_multi_entry_archive_presents_chooser_without_writing_tasks(
         "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n",
         name="valid",
         description_fallback="",
+        source_entry="same.txt",
     )
     blocked = tasks_render.marcedit_import.convert_tasksfile_text(
-        "UNKNOWN\texternal intent\n", name="blocked", description_fallback=""
+        "UNKNOWN\texternal intent\n",
+        name="blocked",
+        description_fallback="",
+        source_entry="same.txt",
     )
     archive = SimpleNamespace(
         archive_errors=[],

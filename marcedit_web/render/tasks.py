@@ -21,6 +21,7 @@ on every render. Save / delete / visibility writes go to SQL.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import re
@@ -144,6 +145,15 @@ K_OPERATION_DIALOG_STATE = "tasks_operation_dialog_state"
 K_OPERATION_DIALOG_NONCE = "tasks_operation_dialog_nonce"
 K_OPERATION_REFERENCE_REQUESTED = "tasks_operation_reference_requested"
 K_OPERATION_CARDS_PENDING_REMOVE = "task_operation_cards_pending_remove"
+
+# Retained draft bounds follow the existing archive envelope: ZIP entry names
+# are at most 65,535 bytes and an archive may expand to 50 MiB. The shortest
+# retained instruction occupies two bytes including its newline.
+MAX_DRAFT_PROVENANCE_ITEMS = (50 * 1024 * 1024) // 2
+MAX_DRAFT_SOURCE_ENTRY_BYTES = 65_535
+MAX_DRAFT_SOURCE_LINE_BYTES = 50 * 1024 * 1024
+MAX_DRAFT_DISCLOSURES = len(external_task_migration.ADAPTER_REGISTRY)
+MAX_DRAFT_DISCLOSURE_CHARS = 1_024
 
 # TASK-143: workspace mode switcher.
 MODE_RUN = "Run"
@@ -282,15 +292,42 @@ def _normalize_marcedit_import_result(value: object) -> dict:
             })
         return normalized
 
-    def safe_draft(raw: object) -> dict | None:
+    def safe_draft(
+        raw: object,
+        *,
+        entry_name: str,
+        entry_status: str,
+        entry_task_name: str | None,
+    ) -> dict | None:
         if not isinstance(raw, dict):
             return None
         operations = raw.get("operations")
         summary = raw.get("summary")
-        if not isinstance(operations, list) or not isinstance(summary, dict):
+        provenance_value = raw.get("provenance")
+        disclosures_value = raw.get("disclosures")
+        task_name = raw.get("task_name")
+        description = raw.get("description")
+        if (
+            not isinstance(operations, list)
+            or not isinstance(summary, dict)
+            or not isinstance(provenance_value, list)
+            or len(provenance_value) > MAX_DRAFT_PROVENANCE_ITEMS
+            or not isinstance(disclosures_value, list)
+            or len(disclosures_value) > MAX_DRAFT_DISCLOSURES
+            or not all(
+                isinstance(item, str)
+                and len(item) <= MAX_DRAFT_DISCLOSURE_CHARS
+                for item in disclosures_value
+            )
+            or not isinstance(task_name, str)
+            or task_name != entry_task_name
+            or not editor.is_valid_slug(task_name)
+            or not isinstance(description, str)
+        ):
             return None
         converted = summary.get("converted")
         blocking = summary.get("blocking")
+        total = summary.get("total")
         if (
             not isinstance(converted, int)
             or isinstance(converted, bool)
@@ -298,6 +335,9 @@ def _normalize_marcedit_import_result(value: object) -> dict:
             or not isinstance(blocking, int)
             or isinstance(blocking, bool)
             or blocking < 0
+            or not isinstance(total, int)
+            or isinstance(total, bool)
+            or total < 0
         ):
             return None
         normalized_operations = []
@@ -314,10 +354,9 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 return None
             normalized_operations.append(normalized_operation)
         normalized_provenance = []
-        raw_provenance = raw.get("provenance")
-        if not isinstance(raw_provenance, list):
-            return None
-        for item in raw_provenance:
+        previous_line_number = 0
+        operation_offset = 0
+        for item in provenance_value:
             if not isinstance(item, dict):
                 return None
             line_number = item.get("line_number")
@@ -325,6 +364,7 @@ def _normalize_marcedit_import_result(value: object) -> dict:
             digest = item.get("instruction_sha256")
             source_entry = item.get("source_entry")
             source_line = item.get("source_line")
+            operation_count = item.get("operation_count")
             if (
                 not isinstance(line_number, int)
                 or isinstance(line_number, bool)
@@ -335,7 +375,35 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 or not isinstance(digest, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", digest)
                 or not isinstance(source_entry, str)
+                or source_entry != entry_name
+                or len(source_entry.encode("utf-8"))
+                > MAX_DRAFT_SOURCE_ENTRY_BYTES
                 or not isinstance(source_line, str)
+                or len(source_line.encode("utf-8")) > MAX_DRAFT_SOURCE_LINE_BYTES
+                or hashlib.sha256(source_line.encode("utf-8")).hexdigest()
+                != digest
+                or line_number <= previous_line_number
+                or not isinstance(operation_count, int)
+                or isinstance(operation_count, bool)
+                or operation_count < 1
+            ):
+                return None
+            operation_slice = normalized_operations[
+                operation_offset:operation_offset + operation_count
+            ]
+            if len(operation_slice) != operation_count:
+                return None
+            blockers_in_slice = task_authoring.migration_blockers(
+                operation_slice
+            )
+            if status_value == "converted":
+                if blockers_in_slice:
+                    return None
+            elif (
+                operation_count != 1
+                or len(blockers_in_slice) != 1
+                or blockers_in_slice[0]["params"].get("instruction_sha256")
+                != digest
             ):
                 return None
             normalized_provenance.append({
@@ -344,13 +412,38 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 "source_line": source_line,
                 "instruction_sha256": digest,
                 "status": status_value,
+                "operation_count": operation_count,
             })
+            previous_line_number = line_number
+            operation_offset += operation_count
+        if operation_offset != len(normalized_operations):
+            return None
+        actual_converted = sum(
+            item["status"] == "converted" for item in normalized_provenance
+        )
+        actual_blocking = len(task_authoring.migration_blockers(
+            normalized_operations
+        ))
+        actual_total = len(normalized_provenance)
+        expected_status = "needs_review" if actual_blocking else "draft_ready"
+        if (
+            converted != actual_converted
+            or blocking != actual_blocking
+            or total != actual_total
+            or total != converted + blocking
+            or entry_status != expected_status
+        ):
+            return None
         return {
-            "task_name": str(raw.get("task_name") or "")[:256],
-            "description": str(raw.get("description") or "")[:2048],
+            "task_name": task_name,
+            "description": description[:2048],
             "operations": normalized_operations,
-            "summary": {"converted": converted, "blocking": blocking},
-            "disclosures": safe_text_list(raw.get("disclosures"))[:20],
+            "summary": {
+                "converted": converted,
+                "blocking": blocking,
+                "total": total,
+            },
+            "disclosures": list(disclosures_value),
             "provenance": normalized_provenance,
         }
 
@@ -372,15 +465,38 @@ def _normalize_marcedit_import_result(value: object) -> dict:
             omitted = raw_entry.get("omitted_unresolved", 0)
             if not isinstance(omitted, int) or isinstance(omitted, bool):
                 omitted = 0
+            entry_name_value = raw_entry.get("entry_name")
+            entry_task_name = (
+                raw_entry.get("task_name")
+                if isinstance(raw_entry.get("task_name"), str)
+                else None
+            )
+            entry_name = (
+                entry_name_value
+                if isinstance(entry_name_value, str)
+                else ""
+            )
+            normalized_draft = safe_draft(
+                raw_entry.get("draft"),
+                entry_name=entry_name,
+                entry_status=entry_status,
+                entry_task_name=entry_task_name,
+            )
+            if (
+                entry_status in {"draft_ready", "needs_review"}
+                and normalized_draft is None
+            ):
+                entry_status = "failed"
+                entry_message = (
+                    "Stored migration draft is invalid. Re-import the source file."
+                )
+            else:
+                entry_message = str(raw_entry.get("message") or "")[:1024]
             normalized_entries.append({
-                "entry_name": str(raw_entry.get("entry_name") or "")[:256],
+                "entry_name": entry_name[:MAX_DRAFT_SOURCE_ENTRY_BYTES],
                 "status": entry_status,
-                "task_name": (
-                    str(raw_entry["task_name"])[:256]
-                    if isinstance(raw_entry.get("task_name"), str)
-                    else None
-                ),
-                "message": str(raw_entry.get("message") or "")[:1024],
+                "task_name": entry_task_name,
+                "message": entry_message,
                 "unresolved_lines": safe_text_list(
                     raw_entry.get("unresolved_lines")
                 )[:20],
@@ -388,7 +504,7 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 "migration_items": safe_migration_items(
                     raw_entry.get("migration_items")
                 ),
-                "draft": safe_draft(raw_entry.get("draft")),
+                "draft": normalized_draft,
             })
 
     category = value.get("rejection_category")
@@ -466,6 +582,9 @@ def _render_marcedit_import_result() -> None:
                 "Dropped malformed tasks import diagnostics from session state."
             )
             st.session_state.pop(K_MARCEDIT_IMPORT_RESULT, None)
+            st.error(
+                "Stored import result is invalid. Re-import the source file."
+            )
         return
 
     filename = raw["uploaded_filename"]
@@ -886,7 +1005,6 @@ def _open_editor_for_new() -> None:
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
-    _clear_marcedit_import_result()
     _reset_operation_dialog_state()
 
 
@@ -909,7 +1027,6 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
-    _clear_marcedit_import_result()
     _reset_operation_dialog_state()
 
     parse_result = task_builder.parse_ops_from_source(row["body"])
@@ -1355,7 +1472,6 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = True
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = review
-    _clear_marcedit_import_result()
     _reset_operation_dialog_state()
 
 
@@ -1785,7 +1901,6 @@ def _save_callback(tasks_dir: Path) -> None:
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
-    _clear_marcedit_import_result()
     _reset_operation_dialog_state()
     st.session_state[K_SAVE_SUCCESS] = (
         f"Saved `{name}`. Needs migration review."
@@ -1819,7 +1934,6 @@ def _cancel_callback() -> None:
     st.session_state[K_EDITOR_OPEN] = False
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
-    _clear_marcedit_import_result()
     _reset_operation_dialog_state()
 
 

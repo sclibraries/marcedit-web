@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -80,6 +81,10 @@ class MigrationSummary:
     converted: int
     blocking: int
 
+    @property
+    def total(self) -> int:
+        return self.converted + self.blocking
+
 
 @dataclass(frozen=True)
 class MigrationProvenance:
@@ -88,16 +93,33 @@ class MigrationProvenance:
     source_line: str
     instruction_sha256: str
     status: str
+    operation_count: int
 
 
 @dataclass(frozen=True)
 class MigrationDraft:
     task_name: str
     description: str
-    operations: tuple[dict[str, Any], ...]
-    summary: MigrationSummary
+    _operation_payloads: tuple[str, ...]
     disclosures: tuple[str, ...]
     provenance: tuple[MigrationProvenance, ...]
+
+    @property
+    def operations(self) -> tuple[dict[str, Any], ...]:
+        """Return isolated plain operation values from immutable JSON storage."""
+
+        return tuple(json.loads(payload) for payload in self._operation_payloads)
+
+    @property
+    def summary(self) -> MigrationSummary:
+        return MigrationSummary(
+            converted=sum(
+                item.status == "converted" for item in self.provenance
+            ),
+            blocking=sum(
+                item.status != "converted" for item in self.provenance
+            ),
+        )
 
     @property
     def status(self) -> str:
@@ -111,6 +133,7 @@ class MigrationDraft:
             "summary": {
                 "converted": self.summary.converted,
                 "blocking": self.summary.blocking,
+                "total": self.summary.total,
             },
             "disclosures": list(self.disclosures),
             "provenance": [
@@ -120,6 +143,7 @@ class MigrationDraft:
                     "source_line": item.source_line,
                     "instruction_sha256": item.instruction_sha256,
                     "status": item.status,
+                    "operation_count": item.operation_count,
                 }
                 for item in self.provenance
             ],
@@ -1457,10 +1481,32 @@ def adapt_instruction(source_line: str) -> MigrationItem:
     )
 
 
+def _adapt_instruction_safely(source_line: str) -> MigrationItem:
+    """Contain one adapter failure as an actionable, non-sensitive blocker."""
+
+    try:
+        item = adapt_instruction(source_line)
+        if item.status == "converted" and not item.operations:
+            raise ValueError("converted adapter returned no operations")
+        return item
+    except Exception:  # noqa: BLE001 - an adapter must not discard its entry
+        return _suggestion(
+            source_line,
+            intent="Review an external instruction",
+            reason="The instruction adapter could not complete safely.",
+            recommended_operation="choose-operation",
+            prefilled_params={},
+            cataloger_action=(
+                "Choose the closest structured operation and confirm its "
+                "parameters, or contact an administrator if this repeats."
+            ),
+        )
+
+
 def review_tasksfile(text: str) -> tuple[MigrationItem, ...]:
     """Review in source order without executing or silently dropping lines."""
     return tuple(
-        adapt_instruction(line)
+        _adapt_instruction_safely(line)
         for line in text.splitlines()
         if line.strip() and not line.startswith("#")
     )
@@ -1482,21 +1528,17 @@ def build_migration_draft(
     operations: list[dict[str, Any]] = []
     provenance: list[MigrationProvenance] = []
     disclosures: list[str] = []
-    converted = 0
-    blocking = 0
-
     for line_number, line in enumerate(text.splitlines(), start=1):
         if not line.strip() or line.startswith("#"):
             continue
-        item = adapt_instruction(line)
+        item = _adapt_instruction_safely(line)
         if item.status == "converted":
-            converted += 1
-            operations.extend(copy.deepcopy(list(item.operations)))
+            item_operations = copy.deepcopy(list(item.operations))
+            operations.extend(item_operations)
             if item.disclosure and item.disclosure not in disclosures:
                 disclosures.append(item.disclosure)
         else:
-            blocking += 1
-            operations.append({
+            item_operations = [{
                 "kind": "migration-blocker",
                 "params": {
                     "intent": item.intent or "Review an external instruction",
@@ -1511,20 +1553,24 @@ def build_migration_draft(
                     },
                     "instruction_sha256": item.instruction_sha256,
                 },
-            })
+            }]
+            operations.extend(item_operations)
         provenance.append(MigrationProvenance(
             source_entry=source_entry,
             line_number=line_number,
             source_line=item.source_line,
             instruction_sha256=item.instruction_sha256,
             status=item.status,
+            operation_count=len(item_operations),
         ))
 
     return MigrationDraft(
         task_name=task_name,
         description=description,
-        operations=tuple(operations),
-        summary=MigrationSummary(converted=converted, blocking=blocking),
+        _operation_payloads=tuple(
+            json.dumps(operation, sort_keys=True, separators=(",", ":"))
+            for operation in operations
+        ),
         disclosures=tuple(disclosures),
         provenance=tuple(provenance),
     )

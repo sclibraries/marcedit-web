@@ -9,7 +9,13 @@ from __future__ import annotations
 
 import pytest
 
-from marcedit_web.lib import marcedit_import, task_authoring
+from marcedit_web.lib import (
+    editor,
+    external_task_migration,
+    marcedit_import,
+    task_authoring,
+    tasks as task_registry,
+)
 
 
 def test_dropped_handlers_are_gone():
@@ -43,6 +49,30 @@ def test_build_full_task_file_uses_new_import_path():
     rendered = marcedit_import.build_full_task_file(result)
     assert "from marcedit_web.lib.tasks import task" in rendered
     assert "from marc_processing" not in rendered
+
+
+def test_build_full_task_file_rejects_blocked_or_malformed_conversions():
+    blocked = marcedit_import.convert_tasksfile_text(
+        "UNKNOWN\texternal intent\n",
+        name="blocked",
+        description_fallback="",
+    )
+    malformed = marcedit_import.ConversionResult(
+        name="malformed",
+        description="",
+        body="# OP: migration-blocker {\npass",
+    )
+
+    registered_before = dict(task_registry.TASK_REGISTRY)
+    try:
+        with pytest.raises(ValueError, match="Resolve 1 imported instruction"):
+            marcedit_import.build_full_task_file(blocked)
+        with pytest.raises(ValueError, match="Malformed operation marker"):
+            marcedit_import.build_full_task_file(malformed)
+        assert task_registry.TASK_REGISTRY == registered_before
+    finally:
+        task_registry.TASK_REGISTRY.clear()
+        task_registry.TASK_REGISTRY.update(registered_before)
 
 
 def test_add_with_proven_conditional_policy_is_exact():
@@ -234,7 +264,7 @@ def test_fully_converted_archive_entry_returns_editable_draft(tmp_path):
 
     entry = result.entries[0]
     assert entry.status == "draft_ready"
-    assert entry.task_name == "core-tasksfile"
+    assert entry.task_name == "core"
     assert entry.summary.converted == 2
     assert entry.summary.blocking == 0
     assert [operation["kind"] for operation in entry.operations] == [
@@ -308,6 +338,105 @@ def test_text_conversion_uses_registry_for_every_instruction():
     assert result.draft.disclosures == (
         "Smith open equivalent; not a byte-for-byte external emulation",
     )
+
+
+def test_migration_draft_nested_operations_are_returned_as_isolated_copies():
+    result = marcedit_import.convert_tasksfile_text(
+        "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n",
+        name="immutable",
+        description_fallback="",
+    )
+    assert result.draft is not None
+
+    returned = result.draft.operations
+    returned[0]["params"]["tag"] = "999"
+    serialized = result.draft.to_session_dict()
+    serialized["operations"][0]["params"]["tag"] = "998"
+
+    assert result.draft.operations[0]["params"]["tag"] == "029"
+    assert result.draft.summary.converted == 1
+    assert result.draft.summary.blocking == 0
+    assert result.draft.summary.total == 1
+
+
+def test_adapter_exception_becomes_bounded_blocker_without_losing_siblings(
+    monkeypatch,
+):
+    def fail_adapter(_source_line):
+        raise RuntimeError("secret adapter detail from /private/source")
+
+    monkeypatch.setitem(
+        external_task_migration.ADAPTER_REGISTRY,
+        "DELETE",
+        fail_adapter,
+    )
+    source = (
+        "SORTBY\tALL\tTrue\tTrue\n"
+        "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n"
+        "SORTBY\tALL\tTrue\tTrue\n"
+    )
+
+    result = marcedit_import.convert_tasksfile_text(
+        source,
+        name="contained",
+        description_fallback="",
+        source_entry="contained.txt",
+    )
+
+    assert result.draft is not None
+    assert [operation["kind"] for operation in result.draft.operations] == [
+        "sort-fields",
+        "migration-blocker",
+        "sort-fields",
+    ]
+    blocker = result.draft.operations[1]
+    assert task_authoring.validate_operation(blocker) == ()
+    assert "secret" not in blocker["params"]["reason"]
+    assert "/private" not in blocker["params"]["reason"]
+    assert result.draft.summary.converted == 2
+    assert result.draft.summary.blocking == 1
+    assert [item.line_number for item in result.draft.provenance] == [1, 2, 3]
+
+
+def test_adapter_exception_does_not_discard_valid_archive_entry(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setitem(
+        external_task_migration.ADAPTER_REGISTRY,
+        "DELETE",
+        lambda _line: (_ for _ in ()).throw(RuntimeError("private detail")),
+    )
+    path = _build_archive(tmp_path, [
+        (
+            "blocked.txt",
+            "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n",
+        ),
+        ("valid.txt", "SORTBY\tALL\tTrue\tTrue\n"),
+    ])
+
+    result = marcedit_import.convert_task_archive(path)
+
+    assert result.archive_errors == []
+    assert [entry.success for entry in result.entries] == [True, True]
+    assert [entry.status for entry in result.entries] == [
+        "needs_review",
+        "draft_ready",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("folder\\Smith_CORE Tásk.tasksfile.txt", "smith-core-task"),
+        ("___\\Éxample_任务.-tasksfile-1234567890abcdef.txt", "example"),
+        ("任务.tasksfile.txt", "imported-task"),
+    ],
+)
+def test_filename_derived_names_are_saveable_slugs(filename, expected):
+    derived = marcedit_import._derive_name_from_filename(filename)
+
+    assert derived == expected
+    assert editor.is_valid_slug(derived)
 
 
 def test_duplicate_archive_entry_names_remain_distinct_drafts(tmp_path):

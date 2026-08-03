@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -743,13 +744,16 @@ def _derive_name_from_filename(filename: str) -> str:
     We lowercase, strip the trailing `.txt`, `-tasksfile…`, and any GUID
     fragment, and replace spaces with hyphens. Falls back to the bare stem.
     """
-    stem = Path(filename).stem.lower()
+    basename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = Path(basename).stem
+    stem = unicodedata.normalize("NFKD", stem).encode(
+        "ascii", "ignore"
+    ).decode("ascii").lower()
     # Strip GUID-style hex suffixes attached with a dash.
     stem = re.sub(r"-[a-f0-9]{16,}$", "", stem)
-    # Strip the literal `-tasksfile` (with optional trailing dot/number).
-    stem = re.sub(r"\.?-tasksfile.*$", "", stem)
-    stem = re.sub(r"-tasksfile.*$", "", stem)
-    stem = stem.replace(" ", "-").replace(".", "-")
+    # Strip common dot/dash task-file suffixes before slug normalization.
+    stem = re.sub(r"(?:\.?-tasksfile|\.tasksfile).*$", "", stem)
+    stem = re.sub(r"[^a-z0-9-]+", "-", stem)
     # Collapse runs of separators and trim.
     stem = re.sub(r"-+", "-", stem).strip("-")
     return stem or "imported-task"
@@ -789,6 +793,7 @@ def build_full_task_file(result: ConversionResult) -> str:
     helper is exposed for tools that want the raw file content (and for
     tests).
     """
+    task_authoring.assert_runnable_task_body(result.body or "pass")
     fn_name = result.name.replace("-", "_")
     if fn_name and fn_name[0].isdigit():
         fn_name = "_" + fn_name
