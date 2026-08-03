@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -155,6 +155,8 @@ def init_schema() -> None:
                 _migrate_to_v13(conn)
             if current_version < 14:
                 _migrate_to_v14(conn)
+            if current_version < 15:
+                _migrate_to_v15(conn)
             from . import job_files
 
             job_files._migrate_uploads_to_job_files(conn)  # noqa: SLF001
@@ -552,6 +554,104 @@ def _migrate_to_v14(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE tasks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
         )
+
+
+def _migrate_to_v15(conn: sqlite3.Connection) -> None:
+    """Add additive task folders and shared-name uniqueness (TASK-193)."""
+    task_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(tasks)")
+    }
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_folders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL CHECK(scope IN ('personal', 'shared')),
+            owner_email TEXT,
+            parent_id INTEGER REFERENCES task_folders(id) ON DELETE RESTRICT,
+            name TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK(
+                (scope = 'shared' AND owner_email IS NULL)
+                OR (scope = 'personal' AND owner_email IS NOT NULL)
+            ),
+            UNIQUE(scope, owner_email, parent_id, name)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_folders_parent"
+        " ON task_folders(scope, owner_email, parent_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_task_folders_owner"
+        " ON task_folders(owner_email)"
+    )
+    if "folder_id" not in task_columns:
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN folder_id INTEGER REFERENCES task_folders(id)"
+        )
+
+    conflicts = list(
+        conn.execute(
+            "SELECT name, COUNT(*) AS n FROM tasks"
+            " WHERE visibility = 'shared' GROUP BY name HAVING COUNT(*) > 1"
+        )
+    )
+    if conflicts:
+        names = ", ".join(str(row["name"]) for row in conflicts)
+        raise RuntimeError(
+            "shared task-name conflicts must be resolved before folder migration: "
+            + names
+        )
+
+    now = _utc_now_iso()
+    conn.execute(
+        "INSERT OR IGNORE INTO task_folders"
+        "(scope, owner_email, parent_id, name, created_by, created_at, updated_at)"
+        " VALUES ('shared', NULL, NULL, 'Unfiled', '__migration__', ?, ?)",
+        (now, now),
+    )
+    shared_root = conn.execute(
+        "SELECT id FROM task_folders"
+        " WHERE scope='shared' AND parent_id IS NULL AND name='Unfiled'"
+    ).fetchone()["id"]
+
+    owners = [
+        row["owner_email"]
+        for row in conn.execute(
+            "SELECT DISTINCT owner_email FROM tasks WHERE visibility='private'"
+        )
+    ]
+    for owner in owners:
+        conn.execute(
+            "INSERT OR IGNORE INTO task_folders"
+            "(scope, owner_email, parent_id, name, created_by, created_at, updated_at)"
+            " VALUES ('personal', ?, NULL, 'Unfiled', '__migration__', ?, ?)",
+            (owner, now, now),
+        )
+        personal_root = conn.execute(
+            "SELECT id FROM task_folders"
+            " WHERE scope='personal' AND owner_email=?"
+            " AND parent_id IS NULL AND name='Unfiled'",
+            (owner,),
+        ).fetchone()["id"]
+        conn.execute(
+            "UPDATE tasks SET folder_id=?"
+            " WHERE owner_email=? AND visibility='private' AND folder_id IS NULL",
+            (personal_root, owner),
+        )
+    conn.execute(
+        "UPDATE tasks SET folder_id=?"
+        " WHERE visibility='shared' AND folder_id IS NULL",
+        (shared_root,),
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_tasks_shared_name"
+        " ON tasks(name) WHERE visibility = 'shared'"
+    )
 
 
 def _seed_folio_profiles(conn: sqlite3.Connection) -> None:
