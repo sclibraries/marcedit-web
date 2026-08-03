@@ -351,9 +351,13 @@ def _normalize_marcedit_import_result(value: object) -> dict:
         ):
             return None
         normalized_operations = []
+        stored_operation_digests = []
         for operation in operations:
             if not isinstance(operation, dict):
                 return None
+            stored_operation_digests.append(
+                external_task_migration.operation_fingerprint(operation)
+            )
             try:
                 normalized_operation = task_authoring.normalize_operation(
                     operation
@@ -411,9 +415,8 @@ def _normalize_marcedit_import_result(value: object) -> dict:
             ]
             if len(operation_slice) != operation_count:
                 return None
-            expected_digests = [
-                external_task_migration.operation_fingerprint(operation)
-                for operation in operation_slice
+            expected_digests = stored_operation_digests[
+                operation_offset:operation_offset + operation_count
             ]
             if expected_digests != operation_digests:
                 return None

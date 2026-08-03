@@ -105,6 +105,20 @@ Remediation verification checkpoint (2026-08-03):
   environment. Authenticated browser verification remains pending; do not
   treat the HTTP smoke check or the sign-in-page reachability as a substitute.
 
+Post-checkpoint importer regression (2026-08-03):
+- A real SC FOLIO archive import exposed a retained-draft fingerprint mismatch:
+  Add Field defaults were normalized before validation but fingerprinted before
+  normalization when the draft was created. Both Smith CORE entries were
+  incorrectly downgraded to invalid after the first Streamlit rerun.
+- Retained-draft validation now checks provenance against the exact stored
+  operation payload and normalizes only after that integrity check. Existing
+  digest, provenance-order, identity, and blocker-tamper checks remain intact.
+- The exact local `SC FOLIO core tasks.task` archive now retains both Smith CORE
+  Instance and Holdings/Items entries as `draft_ready` editable drafts.
+- Regression/importer/migration suites: `247 passed`. Full source-mounted suite
+  with the local corpus: `2425 passed, 4 skipped`; the four skips remain the
+  Docker CLI checks unavailable inside the container.
+
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 
 Plan: [Example-task import completeness implementation plan](../docs/superpowers/plans/2026-08-02-task-190-example-task-import-completeness.md)

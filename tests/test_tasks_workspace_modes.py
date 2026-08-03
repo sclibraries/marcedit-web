@@ -1540,6 +1540,54 @@ def _retained_partial_draft_payload(tasks_render):
     }
 
 
+def test_retained_converted_draft_accepts_normalized_add_field_defaults(
+    monkeypatch,
+):
+    """A valid imported Add Field must survive the first Streamlit rerun."""
+
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "external_task_migration"
+        / "core-automatic.tasksfile.txt"
+    )
+    source_entry = "core-automatic.tasksfile.txt"
+    conversion = tasks_render.marcedit_import.convert_tasksfile_text(
+        fixture.read_text(encoding="utf-8"),
+        name="core-automatic",
+        description_fallback="",
+        source_entry=source_entry,
+    )
+    entry = tasks_render._draft_result_entry(
+        conversion.draft,
+        entry_name=source_entry,
+    )
+    payload = {
+        "status": "success",
+        "uploaded_filename": "core.task",
+        "imported_task_names": [],
+        "entries": [entry],
+        "rejection_category": None,
+    }
+
+    normalized = tasks_render._normalize_marcedit_import_result(payload)
+
+    assert normalized["entries"][0]["status"] == "draft_ready"
+    assert normalized["entries"][0]["draft"] is not None
+    add_operations = [
+        operation
+        for operation in normalized["entries"][0]["draft"]["operations"]
+        if operation["kind"] == "add-field"
+    ]
+    assert add_operations
+    assert all(
+        operation["params"]["missing_control_action"] == "skip_field"
+        for operation in add_operations
+    )
+
+
 @pytest.mark.parametrize(
     "corruption",
     [
