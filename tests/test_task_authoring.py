@@ -1148,6 +1148,7 @@ def test_legacy_if_absent_preview_matches_identical_field_execution():
 @pytest.mark.parametrize(
     "params",
     [
+        {"tag": "001", "mode": "value", "value": ""},
         {"tag": "008", "mode": "position", "value": "x", "position": -1},
         {"tag": "008", "mode": "position", "value": "xx", "position": 1},
         {"tag": "008", "mode": "value", "value": "text", "position": 1},
@@ -1161,3 +1162,16 @@ def test_set_control_field_validation_rejects_invalid_requests_before_compile(pa
     })
 
     assert errors
+
+
+def test_set_control_field_validation_accepts_nonempty_whole_value():
+    assert task_authoring.validate_operation({
+        "kind": "set-control-field",
+        "params": {
+            "tag": "001",
+            "mode": "value",
+            "value": "new",
+            "position": None,
+            "condition": "always",
+        },
+    }) == ()

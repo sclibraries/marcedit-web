@@ -1342,7 +1342,21 @@ def test_corpus_editfield_001_remains_actionable_until_semantics_are_proven():
     assert item.status == "unresolved"
     assert item.recommended_operation == "set-control-field"
     assert item.prefilled_params == {"tag": "001"}
+    assert item.intent == "Edit the record control number"
+    assert "exact EDITFIELD 001 signature" in item.reason
     assert "confirm" in item.cataloger_action.lower()
+
+
+def test_editfield_near_miss_uses_truthful_tag_aware_generic_guidance():
+    item = migration.adapt_instruction("EDITFIELD\t008\t\\\t0\t\t")
+
+    assert item.status == "unresolved"
+    assert item.prefilled_params == {"tag": "008"}
+    assert item.intent == "Edit control field 008"
+    assert "EDITFIELD 008" in item.reason
+    assert "001" not in " ".join([
+        item.intent, item.reason, item.cataloger_action,
+    ])
 
 
 def test_adapter_registry_is_the_dispatch_source(monkeypatch):

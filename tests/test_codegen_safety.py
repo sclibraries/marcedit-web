@@ -323,10 +323,10 @@ def test_set_control_field_compiler_keeps_all_parameters_as_safe_literals():
         task_builder.Operation(
             kind="set-control-field",
             params={
-                "tag": payload,
+                "tag": "001",
                 "mode": "value",
                 "value": payload,
-                "condition": payload,
+                "condition": "always",
             },
         )
     ])

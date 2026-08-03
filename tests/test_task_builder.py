@@ -136,6 +136,22 @@ def test_set_008_form_can_compile_an_explicit_imported_position():
     assert "set_008_form_of_item(record, position=29)" in out["body"]
 
 
+def test_set_control_field_compiler_rejects_empty_whole_value():
+    with pytest.raises(ValueError, match="value cannot be empty"):
+        task_builder.render_ops_to_python([
+            Operation(
+                kind="set-control-field",
+                params={
+                    "tag": "001",
+                    "mode": "value",
+                    "value": "",
+                    "position": None,
+                    "condition": "always",
+                },
+            )
+        ])
+
+
 def test_render_delete_tag_emits_op_marker_and_call():
     out = task_builder.render_ops_to_python(
         [Operation(kind="delete-tag", params={"tag": "029"})]

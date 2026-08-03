@@ -19,6 +19,7 @@ from .external_task_parser import (
     RDA_SWITCH_POSITIONS,
     enabled_rda_option_labels,
     instruction_shape,
+    is_characterized_editfield_001,
     is_characterized_delete_mnemonic_regex,
     parse_instruction,
     rda_option_label,
@@ -1102,19 +1103,40 @@ def adapt_editfield(source_line: str) -> MigrationItem:
         safe_tag = tag[0].strip() if tag else ""
     else:
         safe_tag = instruction.arguments[0].strip()
+        if is_characterized_editfield_001(instruction.instruction_sha256):
+            return _suggestion(
+                source_line,
+                intent="Edit the record control number",
+                reason=(
+                    "the exact EDITFIELD 001 signature is preserved, but its "
+                    "value and mode semantics are not proven by available "
+                    "characterization evidence"
+                ),
+                recommended_operation="set-control-field",
+                prefilled_params={"tag": "001"},
+                cataloger_action=(
+                    "Open Set Control Field and confirm whether to replace the "
+                    "complete record control number or one character position."
+                ),
+            )
         reason = (
-            "the exact EDITFIELD 001 signature is preserved, but its value "
-            "and mode semantics are not proven by available characterization evidence"
-        )
+            "EDITFIELD {0} does not match the exact reviewed corpus signature, "
+            "so its value and mode semantics remain unproven"
+        ).format(safe_tag or "instruction")
+    intent = (
+        "Edit control field {0}".format(safe_tag)
+        if re.fullmatch(r"00[1-9]", safe_tag)
+        else "Edit a control field"
+    )
     return _suggestion(
         source_line,
-        intent="Edit the record control number",
+        intent=intent,
         reason=reason,
         recommended_operation="set-control-field",
         prefilled_params={"tag": safe_tag} if re.fullmatch(r"00[1-9]", safe_tag) else {},
         cataloger_action=(
-            "Open Set Control Field and confirm whether to replace the complete "
-            "value or one character position."
+            "Open Set Control Field and confirm the target tag, then choose "
+            "whether to replace the complete value or one character position."
         ),
     )
 

@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from marcedit_web.lib.codegen_safety import data_lit, lit
+from marcedit_web.lib.transforms import validate_set_control_field_request
 
 logger = logging.getLogger("marcedit_web.task_builder")
 
@@ -1380,6 +1381,15 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
 
     if op.kind == "set-control-field":
         position = p.get("position")
+        errors = validate_set_control_field_request(
+            tag=p.get("tag"),
+            mode=p.get("mode"),
+            value=p.get("value"),
+            position=position,
+            condition=p.get("condition", "always"),
+        )
+        if errors:
+            raise ValueError("; ".join(errors))
         position_arg = "" if position is None else f", position={lit(position)}"
         return ([
             "set_control_field("

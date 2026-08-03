@@ -109,6 +109,7 @@ def test_set_control_field_reports_short_and_missing_fields_without_extension():
 @pytest.mark.parametrize(
     "kwargs",
     [
+        {"tag": "001", "mode": "value", "value": ""},
         {"tag": "008", "mode": "position", "value": "x", "position": -1},
         {"tag": "008", "mode": "position", "value": "xx", "position": 1},
         {"tag": "008", "mode": "position", "value": "x", "position": True},
@@ -119,12 +120,26 @@ def test_set_control_field_reports_short_and_missing_fields_without_extension():
 )
 def test_invalid_set_control_field_requests_fail_before_mutation(kwargs):
     record = Record()
+    record.add_field(Field(tag="001", data="control-number"))
     record.add_field(Field(tag="008", data="unchanged"))
 
     with pytest.raises(ValueError):
         transforms.set_control_field(record, **kwargs)
 
+    assert record["001"].data == "control-number"
     assert record["008"].data == "unchanged"
+
+
+def test_set_control_field_accepts_a_nonempty_whole_value():
+    record = Record()
+    record.add_field(Field(tag="001", data="old"))
+
+    result = transforms.set_control_field(record, "001", "value", "new")
+
+    assert record["001"].data == "new"
+    assert result == {
+        "matched_fields": 1, "changed_fields": 1, "skipped_fields": 0,
+    }
 
 
 @pytest.fixture

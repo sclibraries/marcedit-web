@@ -102,11 +102,21 @@ _CHARACTERIZED_REPLACE_SHAPES = {
     "c2674288403fe464963e1ed2501d937e229a7d8df4f11969ab4b56b55335439a": "replace-852-normalize",
 }
 
+_CHARACTERIZED_EDITFIELD_001_DIGEST = (
+    "e857318386671b3a8d9272799281982b23ca6ffa509af81609672340aed31210"
+)
+
 
 def characterized_replace_shape(instruction_sha256: str) -> str | None:
     """Return the exact reviewed REPLACE shape for one normalized digest."""
 
     return _CHARACTERIZED_REPLACE_SHAPES.get(instruction_sha256)
+
+
+def is_characterized_editfield_001(instruction_sha256: str) -> bool:
+    """Return whether this is the exact reviewed corpus EDITFIELD line."""
+
+    return instruction_sha256 == _CHARACTERIZED_EDITFIELD_001_DIGEST
 
 RDA_OPTION_LABELS = {
     1: "Add MARC 336 Content Type",

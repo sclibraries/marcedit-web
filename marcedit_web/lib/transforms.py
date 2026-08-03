@@ -381,6 +381,8 @@ def validate_set_control_field_request(
         errors.append("set-control-field value must be text")
     if condition not in {"always", "form_of_item_23", "form_of_item_29"}:
         errors.append("set-control-field condition is not supported")
+    if mode == "value" and value == "":
+        errors.append("whole-value set-control-field value cannot be empty")
     if mode == "position":
         if isinstance(position, bool) or not isinstance(position, int) or position < 0:
             errors.append("set-control-field position must be a zero-based integer")
