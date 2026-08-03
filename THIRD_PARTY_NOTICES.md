@@ -17,3 +17,12 @@ the license metadata supplied by upstream.
 These notices cover direct dependencies installed from `requirements.txt`.
 Transitive dependencies retain the license metadata supplied in their
 installed distributions.
+
+## Compatibility corpora
+
+The repository also preserves the partner-library `FOLIO Marc Edit Tasks`
+collection from [jenmawe/marcedit](https://github.com/jenmawe/marcedit) at
+commit `d07377a58cba9d0936a63863c9d428498609d5e5`. Those third-party task
+archives remain licensed under GPL-3.0; their license and provenance notice
+are retained in `third_party/task-corpora/jenmawe-marcedit/`. The root MIT
+license does not relicense that corpus.
