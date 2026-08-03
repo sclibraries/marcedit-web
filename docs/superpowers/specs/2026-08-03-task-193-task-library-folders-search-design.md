@@ -29,6 +29,12 @@ any historical shared-name conflict with both owners and task names and stops;
 it never silently renames a task. Folder paths are presentation metadata, not
 execution IDs.
 
+Shared-name uniqueness is enforced by a partial unique index on task name where
+visibility is `shared`, in addition to service validation. TASK-194 must verify
+the live Python SQLite library supports partial indexes before planning or
+deployment; otherwise the release is blocked rather than weakened to an
+application-only uniqueness check.
+
 ## Authorization
 
 Every signed-in cataloger can create, rename, move, and organize shared
@@ -36,6 +42,12 @@ folders, including moving shared tasks between them. These actions never
 change task ownership or definition content. Every shared-folder mutation and
 shared-task move records the acting identity, old parent/path, new parent/path,
 and affected stable IDs in the audit log.
+
+When a cataloger moves a shared task owned by someone else, the task keeps its
+owner and definition, receives the new shared folder ID, increments its task
+revision and updated time, and records the organizer separately in audit. A
+concurrent editor holding the previous revision must refresh before saving;
+the move never transfers ownership or grants personal-folder access.
 
 Personal folders are manageable only by their owner. Existing task editing and
 deletion authorization remains unchanged. Search and counts always begin with
@@ -59,6 +71,17 @@ Nonempty folders cannot be deleted. Catalogers must first move or delete their
 tasks and child folders. Folder rename and move use optimistic revisions;
 stale writes fail with a refresh message rather than overwriting another
 cataloger's organization.
+
+Task rename becomes one atomic database update guarded by owner and expected
+revision. It updates the name in place, preserves the stable task ID and folder
+association, increments the revision, and retains created/history identity.
+The current delete-then-insert rename path is removed for both legacy and
+native definitions.
+
+Folder cycle and depth validation uses an iterative parent walk within the
+same transaction. The walk tracks visited stable IDs, stops after the root or
+the three-level limit, and rejects a repeated ID or excessive depth. TASK-193
+does not introduce or depend on recursive CTE support.
 
 ## User interface
 
@@ -87,6 +110,10 @@ searchable by safe metadata without exposing raw executable source.
 - Test additive migration and repeat migration from realistic old schemas.
 - Test rename, move, nonempty deletion, cycles, depth overflow, case-folded
   duplicates, stale revisions, and transactional rollback.
+- Characterize current rename, then verify legacy and native renames preserve
+  task ID, folder, created identity, and monotonically increasing revision.
+- Verify the partial shared-name index, migration preflight conflicts, and
+  sharing-time conflicts on the production SQLite contract.
 - Test every indexed content type and filter combination against visible and
   inaccessible tasks.
 - Browser-test folder creation, navigation, search, sharing, unsharing, moving,

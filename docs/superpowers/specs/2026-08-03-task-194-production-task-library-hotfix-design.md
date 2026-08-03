@@ -8,11 +8,30 @@ activating durable Operations infrastructure.
 
 ## Release lineage
 
-Before branch creation, record the deployed repository's clean status, current
-branch, and full SHA. The release branch starts from that exact commit. Each
-ported ticket records its source commit range and conflict resolution. The
-release diff is audited for queue, worker, Operations-page, systemd, sudoers,
-proxy, OAuth, and deployment-script changes before it can pass.
+TASK-194 planning is blocked until a fresh read-only runtime-lineage capture is
+recorded from production. Earlier operator evidence showed `marcedit-web` active
+and enabled, `marcedit-web-private` absent, `/var/www/html/marcedit-web`
+resolving to `/home/www/html/marcedit-web`, and the `marcedit` account permitted
+to restart only `marcedit-web`. Checked-in Operations-era assets instead target
+`marcedit-web-private` and `marcedit-web-worker`; they describe a future
+topology and cannot override live evidence.
+
+Gate 0 recaptures, without mutation:
+
+- repository real path, clean status, current branch, and full SHA;
+- matching installed units plus active, enabled, fragment, working-directory,
+  executable, user, group, and environment-file properties;
+- the service user's exact noninteractive sudo allowlist;
+- venv Python, Streamlit, pymarc, and installed-package versions;
+- Python `sqlite3.sqlite_version` and any installed SQLite CLI version;
+- effective database path, file identity, permissions, size, and free space;
+- the runtime `st.dialog` signature, including `dismissible`.
+
+The captured active unit, working tree, venv, and database then become explicit
+constants in the reviewed implementation plan. If they differ from the prior
+evidence, the design is amended before planning. The release branch starts from
+the captured exact commit. Each ported ticket records its source commit range
+and conflict resolution.
 
 TASK-190 through TASK-193 are necessary inputs, together with their already
 reviewed task-authoring dependencies. Completion on another branch is not
@@ -24,28 +43,46 @@ production lineage.
 Saved tasks continue to execute synchronously through the existing subprocess
 sandbox. The hotfix has no Operations navigation entry, notification bell,
 queue submission path, worker health dependency, or durable-result workflow.
-The application continues to use the installed `marcedit-web.service`, current
-working directory, current environment file, and current sudo permission.
+The application uses only the unit, working directory, environment file, and
+sudo permission proven by Gate 0; the unit name is not inferred from repository
+assets.
 
 No compatibility mode silently detects services. The branch contains only the
 legacy production execution topology, preventing a missing or partially
 installed worker from changing behavior.
 
-The legacy deploy script is made branch-aware using a tested fast-forward-only
-pull of its currently checked-out release branch, then restarts only the
-existing `marcedit-web.service`. It never falls through to `main`, switches
-branches implicitly, or manages an unavailable unit. The one-time production
+The checked-in deploy script is an Operations-era script, not a legacy script.
+TASK-194 replaces its lifecycle explicitly. The production-hotfix script:
+
+1. validates service user, approved branch, clean tree, venv, and captured unit;
+2. pulls only that currently checked-out branch with `--ff-only`;
+3. records the pre-upgrade dependency inventory;
+4. upgrades pip and installs `requirements.txt` into the existing venv;
+5. verifies Streamlit is `>=1.50,<2` and `st.dialog` exposes `dismissible`;
+6. creates and verifies the SQLite backup;
+7. runs the application-schema migration/readiness preflight;
+8. restarts only the Gate-0 unit and waits for the existing HTTP healthcheck.
+
+It removes worker stop/start, heartbeat expiry/readiness loops,
+`marcedit_web.ops.worker --check`, durable `marcedit_web.ops.health`, private
+unit assumptions, and `git pull origin main`. It never switches branches,
+detects a replacement unit, or manages an unavailable service. The one-time
 checkout of the approved release branch is a documented user-run Git action,
 not an ITS service change.
 
 ## Database upgrade and rollback
 
 The folder migration is additive and uses production-compatible SQLite syntax;
-it does not use `RETURNING`. Deployment takes a verified database backup before
-application restart. Migration runs transactionally and is safe to rerun. The
-older application ignores the new table and task column, so code rollback does
-not require destructive database rollback. Restoration from backup remains
-available for migration corruption or an unrelated database failure.
+it does not use `RETURNING`. Deployment uses Python SQLite's online backup API
+before migration, then opens the backup independently. Verification requires
+`PRAGMA integrity_check` to return `ok`, an exact schema-object inventory,
+`PRAGMA user_version`, and row counts for every application table compared with
+the live source at the backup checkpoint. The backup path, byte size, and
+SHA-256 are recorded. Migration runs transactionally and is safe to rerun. The
+older application ignores the new table and task column, so ordinary code
+rollback does not require destructive database rollback. A tested restore from
+a copied backup remains the response to migration corruption or an unrelated
+database failure.
 
 The release procedure records backup location, release SHA, previous SHA,
 health checks, application log checks, and exact rollback commands. Runtime
@@ -53,13 +90,19 @@ data directories are never replaced by Git operations.
 
 ## Verification gates
 
+0. Capture and approve the complete live runtime lineage described above.
 1. Confirm exact production lineage and a clean tracked worktree.
 2. Review the ported diff against every included ticket and the exclusion list.
+   The only permitted deployment-script delta is the explicitly enumerated
+   Operations-era-to-hotfix rewrite above; worker, Operations UI, systemd,
+   sudoers, proxy, and OAuth changes remain forbidden.
 3. Run schema migration tests using private tasks, owned shared tasks, shared
    tasks from others, native definitions, legacy definitions, and name clashes.
 4. Run synchronous execution tests proving no queue row or Operations link is
    produced.
-5. Run the full supported Python 3.9 and production SQLite suite.
+5. Run the full supported Python 3.9 and production SQLite suite. Verify the
+   installed Streamlit version and dialog-signature preflight before any
+   application restart.
 6. Run Docker upgrade and rollback tests from the current production schema.
 7. Run authenticated browser tests for authoring, import, preview, execution,
    folders, search, sharing, and shared-task collaboration.
@@ -71,9 +114,9 @@ data directories are never replaced by Git operations.
 
 Pushing the release branch and deploying it are separate explicit actions. The
 production deploy workflow pulls the currently checked-out approved release
-branch with `--ff-only` and restarts only `marcedit-web.service`. If the
-checked-in script attempts to manage unavailable private or worker units, the
-release is blocked rather than worked around manually.
+branch with `--ff-only` and restarts only the Gate-0 unit. If the checked-in
+script attempts to manage any other unit, the release is blocked rather than
+worked around manually.
 
 No ITS request, service installation, sudoers change, proxy change, or
 production directory rename is part of this hotfix. Durable Operations remains

@@ -14,6 +14,12 @@ representing 166 unique unresolved source lines. Repetition prioritizes an
 instruction for investigation but does not prove its semantics. A new adapter
 requires documented behavior or representative MARC before/after evidence.
 
+The 166 figure is a reproducible TASK-191 audit derivation at source commit
+`d07377a58cba9d0936a63863c9d428498609d5e5`: collect every audit item whose
+status is not `converted`, then count distinct preserved `source_line` values.
+TASK-192 adds that derivation to the checked-in corpus report so the figure
+cannot drift silently.
+
 ## Native operations
 
 ### Build fields for each matching source field
@@ -31,12 +37,19 @@ label, identifier suffix, and fixed subfields. Applying a profile to each
 selected 856 replaces the repeated 945-949 build, copy, edit, and retag chain.
 Rows remain editable in the form authoring UI and are never stored as Python.
 
-### Copy fields
+### Existing Copy field and new controlled copy
 
-Copy selects source fields, clones them through pymarc, assigns the destination
-tag, and applies an explicit existing-target policy. Optional structured
-predicates replace unproven external filter flags. The operation never mutates
-the source unless a separate removal action is present.
+The existing `copy-field` kind, saved shape (`src_tag`, `dst_tag`, `predicate`),
+append behavior, compiler output, and AI behavior remain unchanged. Proven
+external COPY signatures that exactly mean that contract reuse it.
+
+Signatures requiring occurrence or existing-target policies use a new
+`copy-fields-with-policy` kind. It selects source fields, clones them through
+pymarc, assigns the destination tag, and applies explicit occurrence and
+existing-target policies. Structured predicates replace unproven external
+filter flags. The operation never mutates the source unless a separate removal
+action is present. Characterization tests pin the old kind before the new kind
+is introduced.
 
 ### Conditional and subfield actions
 
@@ -72,9 +85,23 @@ ticket after available dependencies establish the required identity model.
 Preview and execution call the same pure transformation engine. Results report
 records inspected, source fields matched, destination fields created, existing
 fields replaced, and records skipped. Expansion is bounded per record and for
-the complete batch. Invalid templates, missing mappings, collisions without a
-policy, and exceeded bounds fail before committing output. Field ordering is
+the complete batch. If either bound is crossed, the complete submitted task
+fails, the candidate output is discarded, and no partial result is applied or
+offered for download. The error identifies the record and bound without
+continuing mutation. Invalid templates, missing mappings, and collisions
+without a policy likewise fail before output commit. Field ordering is
 preserved unless the task contains the explicit canonical-order operation.
+
+## AI boundary
+
+The new per-source-field, institution-profile, and controlled-copy kinds are
+deterministic form/import features, not AI draft vocabulary. Each new kind is
+added to `ai_task_draft._UNSUPPORTED_AI_OPERATION_KINDS`; Gemini prompt
+construction continues to call the same `is_operation_kind_supported` gate.
+Tests assert both exclusion points before palette changes. Existing
+`copy-field` remains in its current AI contract: its top-level JSON predicate
+shape and dedicated field-predicate validation are unchanged. No new
+structured parameter type is accepted through AI validation in TASK-192.
 
 ## Testing
 
@@ -82,6 +109,10 @@ preserved unless the task contains the explicit canonical-order operation.
 - Use MARC golden records for the repeated 856 and 945-949 workflows.
 - Compare consolidated output to the documented expected record, not to opaque
   generated source text.
+- Characterize existing `copy-field` execution, saved shape, and AI schema
+  before adding `copy-fields-with-policy`.
+- Assert every new operation kind is excluded from both AI-draft schemas and
+  that existing AI-draft suites remain unchanged.
 - Cover zero, one, and multiple source fields; duplicates; missing subfields;
   collision policies; ordering; and expansion limits.
 - Regenerate the partner-corpus converted/blocker report and require zero

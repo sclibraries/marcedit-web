@@ -25,6 +25,8 @@ Success Criteria:
   content without exposing private tasks, generated Python, or fingerprints.
 - Existing shared-name conflicts are reported before migration and must be
   resolved explicitly; migration never silently renames a task.
+- Task rename preserves the stable task ID, folder, and history and increments
+  the existing revision atomically.
 - Existing schemas migrate idempotently and rollback to the older application
   remains possible because the migration is additive.
 - Authorization, migration, search, concurrency, and authenticated browser

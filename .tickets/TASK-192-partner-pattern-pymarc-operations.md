@@ -13,6 +13,8 @@ Scope:
 - Preserve source ranges and actionable blockers when semantics are unproven.
 - Keep arbitrary Python and opaque external option numbers out of stored native
   task definitions.
+- Preserve the existing `copy-field` operation contract and keep all new
+  structured operation kinds outside both AI-draft schemas.
 
 Success Criteria:
 - Reviewed repeated 856 and 945-949 workflows convert to concise editable
@@ -22,6 +24,8 @@ Success Criteria:
 - Preview reports matched, created, replaced, and skipped counts and enforces a
   per-record expansion bound.
 - Missing TASK_LIST dependencies remain actionable and are never guessed.
+- Existing AI drafting behavior and every previously saved `copy-field` task
+  remain unchanged, with characterization coverage.
 - The complete partner corpus has a checked-in converted/blocker report with
   zero silent omissions and zero blockers without a next action.
 - Supported Python 3.9 Docker tests and independent review pass with no
