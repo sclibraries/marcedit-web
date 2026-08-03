@@ -39,6 +39,25 @@ def test_queued_runner_reconstruction_rejects_saved_migration_blocker():
     assert exc_info.value.code == "migration-review-required"
 
 
+def test_queued_runner_reconstruction_rejects_malformed_operation_marker():
+    request = {
+        "version": 1,
+        "tasks": [{
+            "name": "malformed",
+            "body": "# OP: delete-tag {not-json}\npass",
+            "imports": [],
+        }],
+    }
+
+    with pytest.raises(
+        operation_runner.OperationRunError,
+        match="Malformed operation marker on line 1",
+    ) as exc_info:
+        operation_runner._parse_tasks(request)
+
+    assert exc_info.value.code == "migration-review-required"
+
+
 def _mrc_bytes(count: int) -> bytes:
     output = io.BytesIO()
     writer = pymarc.MARCWriter(output)

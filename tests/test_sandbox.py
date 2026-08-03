@@ -105,6 +105,61 @@ def test_noop_task_round_trips(one_record_bytes):
     assert reread[0].get("001").data == "1234567890"
 
 
+def test_direct_sandbox_rejects_migration_blocker_before_child_execution(
+    one_record_bytes, monkeypatch
+):
+    body = (
+        '# OP: migration-blocker {"instruction_sha256":"' + "a" * 64
+        + '","intent":"Edit control field 001",'
+        '"reason":"Exact external mode is unproven",'
+        '"suggestion":{"operation_kind":"set-control-field",'
+        '"prefilled_params":{"tag":"001"}}}\n'
+        "record['001'].data = 'MUTATED'"
+    )
+    child_calls = []
+    monkeypatch.setattr(
+        sandbox.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: child_calls.append(True),
+    )
+
+    with pytest.raises(ValueError, match="Resolve 1 imported instruction"):
+        run_tasks_subprocess(
+            [TaskSpec(name="blocked", body=body)],
+            one_record_bytes,
+        )
+
+    assert child_calls == []
+
+
+def test_direct_sandbox_rejects_malformed_marker_before_child_execution(
+    one_record_bytes, monkeypatch
+):
+    child_calls = []
+    monkeypatch.setattr(
+        sandbox.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: child_calls.append(True),
+    )
+    body = (
+        "# OP: delete-tag {not-json}\n"
+        '# OP: migration-blocker {"instruction_sha256":"' + "a" * 64
+        + '","intent":"Edit control field 001",'
+        '"reason":"Exact external mode is unproven",'
+        '"suggestion":{"operation_kind":"set-control-field",'
+        '"prefilled_params":{"tag":"001"}}}\n'
+        "record['001'].data = 'MUTATED'"
+    )
+
+    with pytest.raises(ValueError, match="Malformed operation marker on line 1"):
+        run_tasks_subprocess(
+            [TaskSpec(name="malformed", body=body)],
+            one_record_bytes,
+        )
+
+    assert child_calls == []
+
+
 def test_trusted_task_result_can_be_captured_for_preview(one_record_bytes):
     spec = sandbox.TaskSpec(
         name="capture",

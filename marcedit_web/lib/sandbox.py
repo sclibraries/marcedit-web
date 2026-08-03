@@ -55,6 +55,8 @@ from functools import partial
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from marcedit_web.lib import task_preflight
+
 logger = logging.getLogger("marcedit_web.sandbox")
 
 
@@ -371,6 +373,8 @@ def run_tasks_subprocess(
         }
         for t in tasks
     ]
+    for task in tasks_list:
+        task_preflight.assert_runnable_task_body(task["body"])
 
     workdir = (
         tmp_dir

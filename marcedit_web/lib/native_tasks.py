@@ -9,7 +9,7 @@ from typing import Any, Mapping
 
 from jsonschema import Draft202012Validator
 
-from marcedit_web.lib import task_authoring, task_builder
+from marcedit_web.lib import task_builder, task_preflight
 
 
 SUPPORTED_SCHEMA_VERSION = 1
@@ -126,14 +126,16 @@ def compile_definition(value: Mapping[str, Any]) -> CompiledNativeTask:
     valid = validate_definition(value)
     ops = [_operation_for_step(step) for step in valid["steps"]]
     try:
-        task_authoring.assert_runnable_operations(
+        task_preflight.assert_runnable_operations(
             [operation.to_dict() for operation in ops]
         )
     except ValueError as exc:
         raise NativeDefinitionError(str(exc)) from exc
     rendered = task_builder.render_ops_to_python(ops)
-    if "# TODO:" in rendered["body"]:
-        raise NativeDefinitionError("native task compilation produced unsupported code")
+    try:
+        task_preflight.assert_runnable_task_body(rendered["body"])
+    except ValueError as exc:
+        raise NativeDefinitionError(str(exc)) from exc
     return CompiledNativeTask(
         body=rendered["body"],
         imports=tuple(rendered["imports"]),

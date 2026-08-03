@@ -26,6 +26,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from marcedit_web.lib import task_preflight
 from marcedit_web.lib.codegen_safety import data_lit, lit
 from marcedit_web.lib.transforms import validate_set_control_field_request
 
@@ -1498,11 +1499,6 @@ def render_ops_to_python(ops: list[Operation]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-_OP_MARKER_RE = re.compile(
-    r"^\s*#\s*OP:\s*(?P<kind>[a-z0-9-]+)\s*(?P<json>\{.*\})?\s*$"
-)
-
-
 def parse_ops_from_source(source: str) -> dict:
     """Extract `Operation` objects from a task body that uses `# OP:` markers.
 
@@ -1516,26 +1512,15 @@ def parse_ops_from_source(source: str) -> dict:
     The caller (gui_runner) decides whether to surface Form view based on
     that flag.
     """
-    ops: list[Operation] = []
-    found_marker = False
-    for line in source.splitlines():
-        m = _OP_MARKER_RE.match(line)
-        if not m:
-            continue
-        found_marker = True
-        kind = m.group("kind")
-        raw_params = m.group("json") or "{}"
-        try:
-            params = json.loads(raw_params)
-        except json.JSONDecodeError:
-            return {
-                "ops": [],
-                "form_editable": False,
-                "reason": f"malformed OP marker for {kind!r} — switch to Code view",
-            }
-        ops.append(Operation(kind=kind, params=params))
-
-    if not found_marker:
+    try:
+        parsed_operations = task_preflight.operation_markers(source)
+    except ValueError as exc:
+        return {
+            "ops": [],
+            "form_editable": False,
+            "reason": "{0} Switch to Code view.".format(exc),
+        }
+    if not parsed_operations:
         return {
             "ops": [],
             "form_editable": False,
@@ -1544,4 +1529,11 @@ def parse_ops_from_source(source: str) -> dict:
                 "form-builder markers — use Code view to edit"
             ),
         }
-    return {"ops": ops, "form_editable": True, "reason": None}
+    return {
+        "ops": [
+            Operation.from_dict(operation)
+            for operation in parsed_operations
+        ],
+        "form_editable": True,
+        "reason": None,
+    }

@@ -119,3 +119,94 @@ Disclosed skips:
   new fail-closed contract.
 - Independent parent review remains required before TASK-190 can be marked
   Completed.
+
+## Fix round 1 — strict execution-boundary preflight
+
+Commit: `fix: enforce migration preflight at sandbox boundary` (this commit)
+
+### Review findings fixed
+
+- Added dependency-light `marcedit_web/lib/task_preflight.py` as the single
+  marker parser and runnable gate. It scans every present `# OP:` marker,
+  rejects malformed JSON, malformed marker shapes, duplicate JSON keys, and
+  non-finite JSON constants without relying on form-editable state.
+- Moved direct sandbox enforcement before work-directory creation, task JSON
+  serialization, or `Popen`. A `TaskSpec` containing a valid blocker plus
+  executable mutation code now raises before a child exists.
+- Applied the same strict body gate at queued submission, immutable worker
+  reconstruction before `TaskSpec`, and rendered native compilation. Normal
+  handwritten bodies without markers remain runnable.
+- Tightened blocker validation: tuple values are not JSON-safe; every mapping
+  key must be text; blocker and suggestion keys are closed allowlists;
+  non-string/mixed keys return bounded errors rather than sorting/formatting
+  exceptions; unknown keys are counted without echoing attacker-controlled
+  text.
+- Removed native compilation's rendered-source `# TODO:` substring check.
+  Native structured operations remain the semantic allowlist, and legitimate
+  Build Field text containing `# TODO:` now compiles as literal data.
+
+`sandbox.py`, `task_preflight.py`, `tests/test_sandbox.py`, and the additional
+sandbox-caller tests are necessary additions to Task 7's original file list.
+The Critical direct-execution finding cannot be closed solely in the original
+UI/native files because `run_tasks_subprocess` is the lowest public execution
+boundary.
+
+### RED evidence
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_task_authoring.py tests/test_native_tasks.py tests/test_tasks_workspace_modes.py tests/test_operation_runner.py tests/test_sandbox.py -q`
+
+Exact result before production changes: `11 failed, 230 passed in 17.27s`;
+zero skipped. The failures reproduced direct child launch for blocker code,
+malformed-marker queue/worker bypass, tuple acceptance, mixed-key `TypeError`,
+unbounded 10,000-character key echo, nested non-string key acceptance, and
+native literal `# TODO:` rejection.
+
+### GREEN evidence
+
+Focused review suite, final run:
+
+Same command.
+
+Exact result: `241 passed in 18.78s`; zero skipped and zero failed.
+
+Expanded direct-sandbox, caller, native, storage, and codegen suite:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_task_builder.py tests/test_task_authoring.py tests/test_native_tasks.py tests/test_native_task_contract.py tests/test_native_task_storage.py tests/test_task_db.py tests/test_tasks_workspace_modes.py tests/test_tasks_export.py tests/test_operation_runner.py tests/test_operation_submission.py tests/test_operation_queue_integration.py tests/test_sandbox.py tests/test_guided_replace_preview.py tests/test_guided_replace_validation.py tests/test_batch_replace.py tests/test_codegen_safety.py -q`
+
+Exact result: `498 passed in 25.65s`; zero skipped and zero failed.
+
+Explicit native compiler contract freshness after remediation:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_native_task_contract.py::test_checked_in_contract_matches_every_golden_definition -q`
+
+Exact result: `1 passed in 0.13s`; zero skipped and zero failed. The compiler
+contract manifest has no diff, and `git diff --check` exited 0.
+
+Fresh pre-commit focused plus codegen/native guard:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_task_authoring.py tests/test_native_tasks.py tests/test_tasks_workspace_modes.py tests/test_operation_runner.py tests/test_sandbox.py tests/test_codegen_safety.py tests/test_native_task_contract.py -q`
+
+Exact result: `301 passed in 19.39s`; zero skipped and zero failed.
+
+Full mounted-source suite:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest -q`
+
+Exact result: `1 failed, 2366 passed, 5 skipped in 58.62s`. The sole failure
+remains the pre-existing generated operation-reference freshness drift already
+disclosed above; it is unchanged by this remediation.
+
+Disclosed skips remain:
+
+- 2 at `tests/test_docker_compose_config.py:88`: Docker CLI required inside
+  the test container.
+- 2 at `tests/test_docker_compose_config.py:130`: Docker CLI required inside
+  the test container.
+- 1 at `tests/test_task_authoring_corpus.py:105`: private institutional corpus
+  unavailable.
+
+### Remaining concern
+
+- No Critical or Important Task 7 review finding remains. The unrelated
+  generated operation-reference failure still prevents a globally green
+  repository suite and remains owned by the operation-reference plan task.

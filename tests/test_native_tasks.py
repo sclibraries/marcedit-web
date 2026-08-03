@@ -144,21 +144,16 @@ def test_structured_control_segments_substitute_when_compiled_and_run():
     assert record["876"].get_subfields("a") == ["B(CtY)12345-SC"]
 
 
-def test_compile_definition_rejects_renderer_todo_output(monkeypatch):
-    def render_todo(_ops):
-        return {"body": "# TODO: unsupported operation", "imports": []}
+def test_native_build_literal_containing_todo_comment_text_compiles():
+    definition = _definition("build-field.json")
+    definition["steps"][0]["subfields"] = [{
+        "code": "a",
+        "segments": [{"type": "text", "value": "literal # TODO: keep"}],
+    }]
 
-    monkeypatch.setattr(
-        native_tasks.task_builder,
-        "render_ops_to_python",
-        render_todo,
-    )
+    compiled = native_tasks.compile_definition(definition)
 
-    with pytest.raises(
-        native_tasks.NativeDefinitionError,
-        match="produced unsupported code",
-    ):
-        native_tasks.compile_definition(_definition("delete-and-sort.json"))
+    assert "literal # TODO: keep" in compiled.body
 
 
 def test_native_runnable_compilation_rejects_migration_blocker(monkeypatch):

@@ -115,6 +115,63 @@ def test_migration_blocker_explanation_cannot_escape_inert_comments():
     )
 
 
+def test_malformed_operation_marker_fails_closed_independent_of_form_mode():
+    body = (
+        "record['001'].data = 'handwritten'\n"
+        "# OP: delete-tag {not-json}\n"
+        '# OP: migration-blocker {"instruction_sha256":"' + "a" * 64
+        + '","intent":"Edit control field 001",'
+        '"reason":"Exact external mode is unproven",'
+        '"suggestion":{"operation_kind":"set-control-field",'
+        '"prefilled_params":{"tag":"001"}}}'
+    )
+
+    parsed = task_builder.parse_ops_from_source(body)
+    assert parsed["form_editable"] is False
+    with pytest.raises(
+        ValueError,
+        match="Malformed operation marker on line 2",
+    ):
+        task_authoring.assert_runnable_task_body(body)
+
+
+def test_handwritten_body_without_operation_markers_remains_runnable():
+    task_authoring.assert_runnable_task_body(
+        "# TODO: historical note\nrecord['001'].data = 'kept'"
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({
+            "suggestion": {
+                "operation_kind": "set-control-field",
+                "prefilled_params": {"choices": ("one", "two")},
+            },
+        }, "safe literals"),
+        ({1: "not-text"}, "parameter keys must be text"),
+        ({"x" * 10000: "not-known"}, "unexpected key"),
+        ({
+            "suggestion": {
+                "operation_kind": "set-control-field",
+                "prefilled_params": {1: "not-text"},
+            },
+        }, "mapping keys must be text"),
+    ],
+)
+def test_migration_blocker_mapping_validation_is_strict_and_bounded(
+    change, message
+):
+    blocker = _migration_blocker()
+    blocker["params"].update(change)
+
+    errors = task_authoring.validate_operation(blocker)
+
+    assert any(message in error for error in errors)
+    assert max(map(len, errors)) < 256
+
+
 def test_per_operation_preview_rejects_migration_blocker_with_shared_gate():
     with pytest.raises(ValueError, match="Resolve 1 imported instruction"):
         task_authoring.preview_operation(_migration_blocker(), _source_record())

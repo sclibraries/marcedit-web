@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import math
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, TypeVar
@@ -14,6 +13,7 @@ from marcedit_web.lib import (
     guided_replace,
     guided_replace_validation,
     task_builder,
+    task_preflight,
     structural_replace,
 )
 from marcedit_web.lib.transforms import (
@@ -205,11 +205,7 @@ def migration_blockers(
 ) -> tuple[dict[str, Any], ...]:
     """Return copied structured migration blockers in source order."""
 
-    return tuple(
-        copy.deepcopy(dict(operation))
-        for operation in operations
-        if operation.get("kind") == "migration-blocker"
-    )
+    return task_preflight.migration_blockers(operations)
 
 
 def assert_runnable_operations(
@@ -217,14 +213,13 @@ def assert_runnable_operations(
 ) -> None:
     """Reject an operation list while imported instructions need review."""
 
-    blockers = migration_blockers(operations)
-    if not blockers:
-        return
-    noun = "instruction" if len(blockers) == 1 else "instructions"
-    raise ValueError(
-        "Resolve {0} imported {1} before previewing or running this task."
-        .format(len(blockers), noun)
-    )
+    task_preflight.assert_runnable_operations(operations)
+
+
+def assert_runnable_task_body(body: str) -> None:
+    """Strictly parse markers and reject blockers before execution."""
+
+    task_preflight.assert_runnable_task_body(body)
 
 
 def submission_preflight_issues(body: str) -> tuple[str, ...]:
@@ -232,13 +227,13 @@ def submission_preflight_issues(body: str) -> tuple[str, ...]:
 
     issues = []
     superseded_issues = set()
+    try:
+        assert_runnable_task_body(body)
+    except ValueError as exc:
+        issues.append(str(exc))
     parsed = task_builder.parse_ops_from_source(body)
     if parsed["form_editable"]:
         operations = [operation.to_dict() for operation in parsed["ops"]]
-        try:
-            assert_runnable_operations(operations)
-        except ValueError as exc:
-            issues.append(str(exc))
         for index, op in enumerate(parsed["ops"], start=1):
             if (
                 op.kind == "subfield-replace"
@@ -305,75 +300,10 @@ def _validate_code(value: object, label: str) -> list[str]:
     return []
 
 
-def _is_safe_literal(value: object) -> bool:
-    if value is None or isinstance(value, (str, bool, int)):
-        return True
-    if isinstance(value, float):
-        return math.isfinite(value)
-    if isinstance(value, (list, tuple)):
-        return all(_is_safe_literal(item) for item in value)
-    if isinstance(value, Mapping):
-        return all(
-            isinstance(key, str) and _is_safe_literal(item)
-            for key, item in value.items()
-        )
-    return False
-
-
 def _validate_migration_blocker(
     op: Mapping[str, Any],
 ) -> tuple[str, ...]:
-    params = op.get("params") or {}
-    errors = []
-    allowed_params = {
-        "intent",
-        "reason",
-        "suggestion",
-        "instruction_sha256",
-    }
-    unexpected = sorted(set(params) - allowed_params)
-    if unexpected:
-        errors.append(
-            "migration blocker parameters contain unexpected keys: {0}"
-            .format(", ".join(unexpected))
-        )
-    for name in ("intent", "reason"):
-        value = params.get(name)
-        if not isinstance(value, str):
-            errors.append("{0} must be text".format(name))
-        elif not " ".join(value.split()):
-            errors.append("{0} is required".format(name))
-    suggestion = params.get("suggestion")
-    if not isinstance(suggestion, Mapping):
-        errors.append("suggestion must be an object")
-    else:
-        unexpected_suggestion = sorted(
-            set(suggestion) - {"operation_kind", "prefilled_params"}
-        )
-        if unexpected_suggestion:
-            errors.append(
-                "suggestion contains unexpected keys: {0}".format(
-                    ", ".join(unexpected_suggestion)
-                )
-            )
-        operation_kind = suggestion.get("operation_kind")
-        if not isinstance(operation_kind, str):
-            errors.append("suggested operation kind must be text")
-        elif not operation_kind.strip():
-            errors.append("suggested operation kind is required")
-        elif not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", operation_kind):
-            errors.append("suggested operation kind is invalid")
-        prefilled = suggestion.get("prefilled_params")
-        if not isinstance(prefilled, Mapping):
-            errors.append("suggested prefilled parameters must be an object")
-        elif not _is_safe_literal(prefilled):
-            errors.append("suggested prefilled parameters must use safe literals")
-    digest = params.get("instruction_sha256")
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-        errors.append(
-            "instruction digest must be 64 lowercase hexadecimal characters"
-        )
-    return tuple(errors)
+    return task_preflight.migration_blocker_errors(op)
 
 
 def validate_operation(

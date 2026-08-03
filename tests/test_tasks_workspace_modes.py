@@ -651,6 +651,33 @@ def test_queued_submission_rejects_marker_before_constructing_task_spec(
     assert any("Resolve 1 imported instruction" in error for error in fake_st.errors)
 
 
+def test_queued_submission_rejects_malformed_marker_before_task_spec(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {
+            "name": "malformed",
+            "description": "",
+            "body": "# OP: delete-tag {not-json}\npass",
+        },
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs),
+    )
+
+    tasks_render._submit_queued_run(["malformed"], tmp_path)
+
+    assert submitted == []
+    assert any("Malformed operation marker" in error for error in fake_st.errors)
+
+
 def test_incomplete_kept_card_blocks_task_save_with_ordinal(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
