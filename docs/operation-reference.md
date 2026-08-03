@@ -88,7 +88,7 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **When to use:** Use copy field when that specific MARC change is required.
 
-**Inputs:** `src_tag`, `dst_tag`
+**Inputs:** `src_tag`, `dst_tag`, `predicate`
 
 **Behavior:** Duplicate every field with the source tag as a new field with the destination tag. The original stays in place.
 
@@ -211,17 +211,17 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Related:** none
 
-## Delete fields matching subfield value
+## Delete fields matching a field filter
 
 **Operation kind:** `delete-by-subfield`
 
-**Purpose:** Remove fields whose subfield value contains the given text.
+**Purpose:** Remove only fields selected by indicators or subfield values.
 
-**When to use:** Use delete fields matching subfield value when that specific MARC change is required.
+**When to use:** Use delete fields matching a field filter when that specific MARC change is required.
 
-**Inputs:** `tag`, `match`
+**Inputs:** `tag`, `match`, `predicate`
 
-**Behavior:** Remove fields whose subfield value contains the given text.
+**Behavior:** Remove only fields selected by indicators or subfield values.
 
 **Preserves:** Unrelated fields and values remain unchanged.
 
@@ -655,6 +655,32 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Related:** `sort-fields`
 
+## Set control field
+
+**Operation kind:** `set-control-field`
+
+**Purpose:** Set a complete control value or one fixed character position.
+
+**When to use:** Use set control field when that specific MARC change is required.
+
+**Inputs:** `tag`, `mode`, `value`, `position`, `condition`
+
+**Behavior:** Set a complete control value or one fixed character position.
+
+**Preserves:** Unrelated fields and values remain unchanged.
+
+**Skip behavior:** Records that do not match the operation are unchanged.
+
+**Error behavior:** Invalid inputs are reported before the task is saved or run.
+
+**Before:** `MARC field before operation`
+
+**After:** `MARC field after operation`
+
+**Stored representation:** Structured `set-control-field` parameters validated by the task form.
+
+**Related:** none
+
 ## Set indicators
 
 **Operation kind:** `edit-indicators`
@@ -717,7 +743,7 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **When to use:** Use structural find and replace when that specific MARC change is required.
 
-**Inputs:** `target_kind`, `tag`, `start_tag`, `end_tag`, `subfield`, `match_mode`, `find`, `pattern_pieces`, `action`, `replacement`, `replacement_pieces`, `replacement_ind1`, `replacement_ind2`, `replacement_subfields`, `destination_tag`, `new_ind1`, `new_ind2`, `occurrences`, `ignore_case`
+**Inputs:** `target_kind`, `tag`, `start_tag`, `end_tag`, `subfield`, `match_mode`, `find`, `pattern_pieces`, `action`, `replacement`, `replacement_pieces`, `replacement_ind1`, `replacement_ind2`, `replacement_subfields`, `match_ind1`, `match_ind2`, `match_subfields`, `destination_tag`, `new_ind1`, `new_ind2`, `occurrences`, `ignore_case`, `predicate`
 
 **Behavior:** Conditionally replace complete fields, retag fields, set indicators, or operate over a validated tag range.
 
@@ -734,5 +760,4 @@ This guide is generated from the checked-in deterministic operation registry.
 **Stored representation:** Structured `structural-find-replace` parameters validated by the task form.
 
 **Related:** none
-
 

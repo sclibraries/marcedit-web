@@ -31,6 +31,7 @@ class OperationDialogState:
     working_copy: Optional[dict[str, Any]]
     nonce: int
     discard_pending: bool = False
+    source_blocker: Optional[dict[str, Any]] = None
 
 
 def new_add_state(nonce: int) -> OperationDialogState:
@@ -57,6 +58,57 @@ def new_edit_state(
         opening_value=copy.deepcopy(operation),
         working_copy=copy.deepcopy(operation),
         nonce=nonce,
+    )
+
+
+def suggested_operation_for_blocker(
+    operation: dict[str, Any],
+) -> Optional[dict[str, Any]]:
+    """Return a validated structured operation for a safe blocker suggestion."""
+
+    if operation.get("kind") != "migration-blocker":
+        return None
+    params = operation.get("params")
+    suggestion = params.get("suggestion") if isinstance(params, dict) else None
+    if not isinstance(suggestion, dict):
+        return None
+    kind = suggestion.get("operation_kind")
+    prefilled = suggestion.get("prefilled_params")
+    if not isinstance(kind, str) or _palette_entry(kind) is None:
+        return None
+    if not isinstance(prefilled, dict):
+        return None
+    try:
+        candidate_params = default_params_for(kind)
+        candidate_params.update(copy.deepcopy(prefilled))
+        candidate = task_authoring.normalize_operation({
+            "kind": kind,
+            "params": candidate_params,
+        })
+    except (TypeError, ValueError):
+        return None
+    if task_authoring.validate_operation(candidate):
+        return None
+    return candidate
+
+
+def new_suggestion_state(
+    blocker: dict[str, Any],
+    suggested: dict[str, Any],
+    *,
+    index: int,
+    nonce: int,
+) -> OperationDialogState:
+    """Open a validated suggestion while retaining the original blocker."""
+
+    return OperationDialogState(
+        mode="edit",
+        source_index=index,
+        selected_kind=str(suggested.get("kind") or ""),
+        opening_value=copy.deepcopy(blocker),
+        working_copy=copy.deepcopy(suggested),
+        nonce=nonce,
+        source_blocker=copy.deepcopy(blocker),
     )
 
 
@@ -354,6 +406,27 @@ def render_selected_operation(
     entry = _palette_entry(str(operation.get("kind") or ""))
     authoring_error = str(operation.get("authoring_error") or "")
     params = operation.get("params")
+    if operation.get("kind") == "migration-blocker":
+        if isinstance(params, dict):
+            st.warning(
+                "Imported instruction needs review: {0}".format(
+                    params.get("intent") or "cataloging intent is not recorded"
+                )
+            )
+            st.caption(
+                "Reason: {0}".format(
+                    params.get("reason") or "exact external behavior is unproven"
+                )
+            )
+        suggested = suggested_operation_for_blocker(operation)
+        if suggested is not None and st.button(
+            "Open suggested operation",
+            key=_key(state, "open_suggestion"),
+        ):
+            state.working_copy = suggested
+            state.discard_pending = False
+            rerun_fragment_or_app()
+        return
     if entry is None or authoring_error or not isinstance(params, dict):
         message = authoring_error or (
             "This operation is not supported. Its technical values are "
@@ -605,7 +678,11 @@ def _render_preview(
     )
 
 
-def _render_technical(operation: dict[str, Any]) -> None:
+def _render_technical(
+    operation: dict[str, Any],
+    *,
+    source_blocker: Optional[dict[str, Any]] = None,
+) -> None:
     if (
         operation.get("kind") == "guided-find-replace"
         and not operation.get("authoring_error")
@@ -613,6 +690,9 @@ def _render_technical(operation: dict[str, Any]) -> None:
         task_authoring_render.render_guided_replace_technical_details(
             operation
         )
+    if source_blocker is not None:
+        st.caption("Original migration instruction")
+        st.json(source_blocker)
     st.json(operation)
 
 
@@ -676,7 +756,7 @@ def render_active_dialog(
         tab_labels = ["Workspace"]
         if current_operation is not None and _technical_form_required(
             current_operation, current_entry
-        ):
+        ) or state.source_blocker is not None:
             tab_labels.append("Technical details")
         tab_labels.append("Reference")
         tabs = dict(zip(tab_labels, st.tabs(tab_labels)))
@@ -736,7 +816,10 @@ def render_active_dialog(
             with tabs["Technical details"]:
                 _render_with_draft_restore(
                     state,
-                    lambda: _render_technical(state.working_copy),
+                    lambda: _render_technical(
+                        state.working_copy,
+                        source_blocker=state.source_blocker,
+                    ),
                 )
 
         with tabs["Reference"]:

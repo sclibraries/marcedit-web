@@ -27,6 +27,15 @@ def test_compose_mounts_large_batch_benchmark_read_only():
     ) in compose
 
 
+def test_compose_mounts_corpus_audit_read_only():
+    compose = Path("docker-compose.yml").read_text()
+
+    assert (
+        "- ./scripts/audit_external_task_corpus.py:"
+        "/app/scripts/audit_external_task_corpus.py:ro"
+    ) in compose
+
+
 def test_compose_worker_shares_private_configuration_without_a_port():
     """The worker needs app state and settings, never network exposure."""
     compose = Path("docker-compose.yml").read_text()

@@ -125,6 +125,90 @@ def test_clean_cancel_closes_without_confirmation():
     assert task_operation_dialog.cancel_result(state) == "close"
 
 
+def _migration_blocker_with_add_suggestion():
+    return {
+        "kind": "migration-blocker",
+        "params": {
+            "intent": "Add a MARC field using the external option policy",
+            "reason": "The external option is not fully proven.",
+            "suggestion": {
+                "operation_kind": "add-field",
+                "prefilled_params": {
+                    "tag": "877",
+                    "ind1": " ",
+                    "ind2": " ",
+                    "subfields": [["m", "Image"]],
+                },
+            },
+            "instruction_sha256": "a" * 64,
+        },
+    }
+
+
+def test_blocker_suggestion_is_prefilled_and_replaces_only_source_index():
+    blocker = _migration_blocker_with_add_suggestion()
+    suggested = task_operation_dialog.suggested_operation_for_blocker(
+        blocker
+    )
+
+    assert suggested == {
+        "kind": "add-field",
+        "params": {
+            "tag": "877",
+            "ind1": " ",
+            "ind2": " ",
+            "subfields": [["m", "Image"]],
+            "condition": "always",
+            "existing_field_action": "append",
+            "missing_control_action": "skip_field",
+        },
+    }
+
+    state = task_operation_dialog.new_suggestion_state(
+        blocker,
+        suggested,
+        index=1,
+        nonce=11,
+    )
+    assert task_operation_dialog.cancel_result(state) == "confirm"
+    kept = task_operation_dialog.keep_in_task(
+        [{"kind": "delete-tag", "params": {"tag": "001"}}, blocker],
+        state,
+    )
+    assert kept[0]["kind"] == "delete-tag"
+    assert kept[1] == suggested
+
+
+def test_blocker_card_summary_explains_intent_and_suggestion():
+    blocker = _migration_blocker_with_add_suggestion()
+    view = task_operation_cards.operation_card_view(
+        blocker,
+        position=1,
+        store=None,
+        previews={},
+    )
+
+    assert "Add a MARC field" in view.summary
+    assert "Add field" in view.summary
+    assert view.validation_status == "Needs attention"
+
+
+def test_blocker_without_safe_prefill_has_no_direct_open_action():
+    blocker = {
+        "kind": "migration-blocker",
+        "params": {
+            "intent": "Choose the intended operation",
+            "reason": "The external instruction has no proven equivalent.",
+            "suggestion": {
+                "operation_kind": "choose-operation",
+                "prefilled_params": {},
+            },
+        },
+    }
+
+    assert task_operation_dialog.suggested_operation_for_blocker(blocker) is None
+
+
 def test_edit_opening_and_working_values_are_independent_deep_copies():
     operation = {"kind": "custom", "params": {"nested": [["original"]]}}
     state = task_operation_dialog.new_edit_state(

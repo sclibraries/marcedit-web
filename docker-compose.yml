@@ -12,6 +12,7 @@ services:
       - ./.streamlit:/app/.streamlit:ro
       - ./tests:/app/tests:ro
       - ./scripts/benchmark-large-batch.py:/app/scripts/benchmark-large-batch.py:ro
+      - ./scripts/audit_external_task_corpus.py:/app/scripts/audit_external_task_corpus.py:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
     environment:
@@ -37,6 +38,7 @@ services:
       - ./.streamlit:/app/.streamlit:ro
       - ./tests:/app/tests:ro
       - ./scripts/benchmark-large-batch.py:/app/scripts/benchmark-large-batch.py:ro
+      - ./scripts/audit_external_task_corpus.py:/app/scripts/audit_external_task_corpus.py:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
     environment:

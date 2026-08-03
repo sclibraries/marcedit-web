@@ -1,0 +1,2 @@
+# Trailing tabs are required empty columns in external task fixtures.
+tests/fixtures/external_task_migration/*.tasksfile.txt whitespace=-trailing-space

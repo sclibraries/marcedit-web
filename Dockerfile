@@ -15,6 +15,7 @@ COPY LICENSE THIRD_PARTY_NOTICES.md ./
 COPY marcedit_web ./marcedit_web
 COPY data ./data
 COPY docs/jobs.md ./docs/jobs.md
+COPY scripts/audit_external_task_corpus.py ./scripts/audit_external_task_corpus.py
 # Copy ONLY the non-secret Streamlit config. secrets.toml is never baked into
 # the image — it is provided at runtime via a bind mount (see docker-compose)
 # or env. Baking it would leak OAuth/cookie secrets to anyone who pulls the

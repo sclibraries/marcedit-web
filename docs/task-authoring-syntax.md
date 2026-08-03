@@ -201,9 +201,10 @@ whole-selected-value replacement expands capture references from the first
 successful match.
 
 Structural field, tag, indicator, tag-range, and structured-pattern behavior
-is deferred to [TASK-184](../.tickets/TASK-184-structural-find-replace-authoring.md).
-External conversion and compatibility-corpus behavior is deferred to
-[TASK-185](../.tickets/TASK-185-external-find-replace-migration.md).
+is available through the Structural Find and Replace operation. External
+conversion uses the reviewed deterministic forms documented in
+[the migration guide](external-task-migration.md); unsupported external syntax
+remains a visible confirmation item.
 
 ## Save, reopen, and preview
 
@@ -216,11 +217,16 @@ modify that record or create an output file.
 
 ## External task imports
 
-External instructions are imported only when every line has an exact supported
-meaning. Unknown flags, numeric options, and unsupported instructions are
-listed for review and the task is not saved. Existing saved tasks containing
-an unresolved Add/Build marker remain editable but cannot be submitted until
-the marker is recreated with structured controls.
+External instructions are imported through a fail-closed migration review.
+Fully converted tasks open directly as editable deterministic drafts. Partial
+drafts may be saved for review, but each unresolved instruction remains an
+inert **Needs attention** card and blocks preview, execution, export, and
+background submission until it is replaced or removed. Unknown flags, numeric
+options, and unsupported instructions retain their source line and a plain-
+language next action under the migration review details.
+The reviewed Smith `RDAHELPER` signature opens as explicit RDA material
+classification operations; other switch combinations remain confirmation
+items rather than opaque execution.
 
 The existing AI drafting feature remains on its legacy contract. TASK-179 does
 not change its prompts or capabilities; accepted output is normalized
@@ -228,18 +234,14 @@ deterministically when it enters the editor.
 
 ## Unsupported and deferred syntax
 
-The following are not supported by the structured Add/Build editor:
-
-- `RDAHELPER`;
-- unproven trailing `buildnewfield` Boolean flags;
-- arbitrary regular expressions over `.mrk` record text;
-- undocumented numeric or pipe-delimited options; and
-- unknown external task verbs.
-
-Smith Metadata Studio does not guess these meanings. Explicit RDA operations,
-structural Find/Replace, external task conversion, and canonical MARC field
-reordering each remain separate deterministic operation families with their
-own validation and review behavior.
+The structured editor does not expose opaque external syntax such as
+undocumented numeric or pipe-delimited options, arbitrary regular expressions
+over `.mrk` record text, or unknown task verbs. Smith Metadata Studio does not
+guess these meanings. The importer instead presents a blocking review card
+with the likely intent, preserved source, and closest structured operation.
+Explicit RDA operations, structural Find/Replace, external task conversion,
+and canonical MARC field reordering are deterministic operation families with
+their own validation and review behavior.
 
 ## Explicit RDA operations
 

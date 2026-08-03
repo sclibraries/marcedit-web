@@ -453,7 +453,7 @@ def test_long_filename_derivation_bounds_and_stability():
     assert editor.is_valid_slug(derived_one)
 
     derived_nearby = marcedit_import._derive_name_from_filename(
-        f"{"A" * 500}B.tasksfile.txt"
+        f"{'A' * 500}B.tasksfile.txt"
     )
     assert len(derived_nearby) <= marcedit_import.MAX_DERIVED_TASK_NAME_CHARS
     assert derived_nearby != derived_one

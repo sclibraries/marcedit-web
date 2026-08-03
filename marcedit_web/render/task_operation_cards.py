@@ -12,6 +12,7 @@ from marcedit_web.lib import (
     task_authoring,
     task_builder,
 )
+from marcedit_web.render import task_operation_dialog
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,26 @@ def _operation_summary(
     operation: Mapping[str, Any],
     entry: Optional[Mapping[str, Any]],
 ) -> str:
+    if operation.get("kind") == "migration-blocker":
+        params = operation.get("params") or {}
+        if not isinstance(params, Mapping):
+            return "Imported instruction needs review."
+        intent = str(params.get("intent") or "Review imported instruction")
+        suggestion = params.get("suggestion")
+        suggested_kind = (
+            suggestion.get("operation_kind")
+            if isinstance(suggestion, Mapping)
+            else None
+        )
+        suggested_entry = _palette_entry(str(suggested_kind or ""))
+        if suggested_entry is not None:
+            return "{0}. Suggested operation: {1}.".format(
+                intent,
+                suggested_entry["label"],
+            )
+        return "{0}. Choose a structured operation to continue.".format(
+            intent
+        )
     if entry is None:
         return "Unsupported operation; technical values are preserved."
     kind = str(operation.get("kind") or "")
@@ -129,6 +150,8 @@ def operation_card_view(
             operation,
             validate_raw_syntax=False,
         )
+        if kind == "migration-blocker":
+            validation_errors = ("Imported instruction needs review",)
     return OperationCardView(
         position=position,
         kind=kind,
@@ -203,6 +226,7 @@ def render_operation_cards(
     previews: Mapping[str, guided_replace_preview.GuidedReplacePreview],
     on_edit: Callable[[int], None],
     on_change: Callable[[list[dict]], None],
+    on_suggestion: Callable[[int], None] | None = None,
     key_prefix: str = "task_operation_cards",
 ) -> None:
     """Render compact cards and report edit, move, or remove actions."""
@@ -231,6 +255,21 @@ def render_operation_cards(
                     status_text, view.preview_status
                 )
             status.caption(status_text)
+
+            if (
+                operation.get("kind") == "migration-blocker"
+                and on_suggestion is not None
+                and task_operation_dialog.suggested_operation_for_blocker(
+                    dict(operation)
+                )
+                is not None
+            ):
+                if st.button(
+                    "Open suggested operation",
+                    key=_key(key_prefix, index, "open_suggestion"),
+                ):
+                    on_suggestion(index)
+                    return
 
             actions = st.columns(4)
             edit_clicked = actions[0].button(

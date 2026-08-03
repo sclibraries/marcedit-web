@@ -58,9 +58,9 @@ Success Criteria:
 - Intent-focused RED/GREEN tests, complete Docker verification, and review
   pass before completion.
 
-Status: Completed (2026-08-03)
+Status: In-Progress (2026-08-03 remediation)
 
-Completion Evidence:
+Prior implementation evidence:
 - Added deterministic import provenance binding by attaching per-operation digests and
   enforcing them on retained-draft restore.
 - Added bounded task-name derivation for imported filenames with deterministic
@@ -73,6 +73,36 @@ Completion Evidence:
   - `pytest tests/test_external_task_migration.py` (143 passed)
   - `pytest tests/test_marcedit_import.py` (33 passed)
   - `pytest tests/test_tasks_workspace_modes.py -q -k "not raw_regex"` (242 passed, one expected legacy preexec issue outside this change)
+
+Remediation scope:
+- Make the committed suite parse and run under the required Python 3.9
+  container runtime.
+- Make migration blockers actionable in the task editor, including safe
+  suggested-operation replacement and retained import summaries/provenance.
+- Preserve unselected drafts from multi-entry archives.
+- Add the planned local corpus audit and make its fixture test cover every
+  instruction family rather than only ADD and Build Field.
+- Regenerate the cataloger operation reference, remove fixture whitespace
+  drift, and rerun the complete Docker and browser verification gates.
+
+Remediation verification checkpoint (2026-08-03):
+- Focused TASK-190 suite in the rebuilt runtime image: `393 passed`.
+- Full source-mounted suite with the local corpus mounted read-only:
+  `2423 passed, 4 skipped`; the skips are Docker CLI checks unavailable inside
+  the container.
+- Local corpus audit: `18 documents`, `297 instructions`, `293 converted`,
+  `4 actionable blockers`, `0 unclassified`, and `0 items without a next
+  action`.
+- Code-generation/native guards: `79 passed`; both checked-in manifests are
+  unchanged. `git diff --check` is clean.
+- Full runtime-image suite: `2379 passed, 40 skipped, 9 failed`. The nine
+  failures are the pre-existing image-only product-identity tests that read
+  repository files intentionally omitted from the runtime image; no
+  TASK-190 test failed. The runtime image includes the corpus audit script.
+- Rebuilt local Streamlit service is healthy and returns HTTP 200 at
+  `http://localhost:8501/`. Authenticated browser verification remains
+  pending because this environment has no browser automation or Google
+  session; do not treat the HTTP smoke check as a substitute.
 
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 

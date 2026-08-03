@@ -483,6 +483,51 @@ def test_form_editor_edit_opens_isolated_transactional_dialog(monkeypatch):
     assert calls == [("dialog", state)]
 
 
+def test_form_editor_blocker_opens_prefilled_suggestion_dialog(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    blocker = {
+        "kind": "migration-blocker",
+        "params": {
+            "intent": "Add a MARC field",
+            "reason": "External option needs confirmation.",
+            "suggestion": {
+                "operation_kind": "add-field",
+                "prefilled_params": {
+                    "tag": "877",
+                    "subfields": [["m", "Image"]],
+                },
+            },
+            "instruction_sha256": "a" * 64,
+        },
+    }
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = [blocker]
+    calls = []
+    _wire_compact_form(monkeypatch, tasks_render, calls)
+
+    def render_cards(_ops, **kwargs):
+        kwargs["on_suggestion"](0)
+
+    monkeypatch.setattr(
+        tasks_render.task_operation_cards,
+        "render_operation_cards",
+        render_cards,
+    )
+    monkeypatch.setattr(
+        tasks_render.task_operation_dialog,
+        "render_active_dialog",
+        lambda state, **kwargs: calls.append(("dialog", state)),
+    )
+
+    tasks_render._render_form_editor()
+
+    state = fake_st.session_state[tasks_render.K_OPERATION_DIALOG_STATE]
+    assert state.source_index == 0
+    assert state.working_copy["kind"] == "add-field"
+    assert state.opening_value == blocker
+    assert calls == [("dialog", state)]
+
+
 def test_active_operation_dialog_suppresses_stale_reference_request(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
@@ -1614,10 +1659,10 @@ def test_unresolved_import_result_keeps_actionable_warning_copy(
     tasks_render._render_marcedit_import_result()
 
     assert fake_st.warnings[0].startswith(
-        "Not imported: this task contains unresolved external instructions"
+        "Some instructions need your confirmation"
     )
     assert any(
-        "Recreate each listed instruction" in warning
+        "Open the editable draft" in warning
         for warning in fake_st.warnings
     )
 
@@ -1776,7 +1821,9 @@ def test_fully_converted_text_import_opens_draft_without_database_write(
         operation["kind"]
         for operation in fake_st.session_state[tasks_render.K_EDITOR_OPS]
     ] == ["delete-tag", "sort-fields"]
-    assert tasks_render.K_MARCEDIT_IMPORT_RESULT not in fake_st.session_state
+    assert fake_st.session_state[
+        tasks_render.K_EDITOR_IMPORT_SUMMARY
+    ] == {"converted": 2, "blocking": 0, "total": 2}
 
 
 def test_partial_text_import_waits_for_adoption_then_opens_ordered_blockers(
@@ -1807,9 +1854,8 @@ def test_partial_text_import_waits_for_adoption_then_opens_ordered_blockers(
     }
     tasks_render._render_marcedit_import_result()
     assert fake_st.warnings[0].startswith(
-        "Not imported: this task contains unresolved external instructions"
+        "Some instructions need your confirmation"
     )
-    assert tasks_render.K_MARCEDIT_IMPORT_RESULT in fake_st.session_state
 
     fake_st.session_state["unrelated_state"] = "preserved"
     fake_st.clicked_labels.add("Open migration draft")
@@ -1819,7 +1865,6 @@ def test_partial_text_import_waits_for_adoption_then_opens_ordered_blockers(
         operation["kind"]
         for operation in fake_st.session_state[tasks_render.K_EDITOR_OPS]
     ] == ["delete-tag", "migration-blocker", "sort-fields"]
-    assert tasks_render.K_MARCEDIT_IMPORT_RESULT not in fake_st.session_state
     assert fake_st.session_state["unrelated_state"] == "preserved"
 
 
@@ -1882,7 +1927,14 @@ def test_multi_entry_archive_presents_chooser_without_writing_tasks(
     fake_st.clicked_labels.add("Open selected draft")
     tasks_render._render_marcedit_import_result()
     assert fake_st.session_state[tasks_render.K_EDITOR_NAME] == "valid"
-    assert tasks_render.K_MARCEDIT_IMPORT_RESULT not in fake_st.session_state
+    assert tasks_render.K_MARCEDIT_IMPORT_RESULT in fake_st.session_state
+    assert fake_st.session_state[
+        tasks_render.K_MARCEDIT_IMPORT_ADOPTED_ENTRY
+    ] == "0"
+
+    fake_st.clicked_labels = {"Open migration draft"}
+    tasks_render._render_marcedit_import_result()
+    assert fake_st.session_state[tasks_render.K_EDITOR_NAME] == "blocked"
 
 
 def test_single_fully_converted_archive_opens_directly_without_task_write(
@@ -1910,7 +1962,6 @@ def test_single_fully_converted_archive_opens_directly_without_task_write(
         "kind": "sort-fields",
         "params": {},
     }]
-    assert tasks_render.K_MARCEDIT_IMPORT_RESULT not in fake_st.session_state
 
 
 def test_archive_import_preserves_mixed_entry_outcomes(monkeypatch, tmp_path):

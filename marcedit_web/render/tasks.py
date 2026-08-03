@@ -131,6 +131,10 @@ K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
 K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
 K_EDITOR_FROM_AI_DRAFT = "tasks_editor_from_ai_draft"
 K_EDITOR_AI_DRAFT_REVIEW = "tasks_editor_ai_draft_review"
+K_EDITOR_IMPORT_SUMMARY = "tasks_editor_import_summary"
+K_EDITOR_IMPORT_PROVENANCE = "tasks_editor_import_provenance"
+K_EDITOR_IMPORT_DISCLOSURES = "tasks_editor_import_disclosures"
+K_EDITOR_IMPORT_SOURCE = "tasks_editor_import_source"
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
 K_MATERIALIZED_DIR = "tasks_materialized_dir"
@@ -139,6 +143,7 @@ K_AI_DRAFT_REVIEW = "tasks_ai_draft_review"
 K_AI_DRAFT_ERROR = "tasks_ai_draft_error"
 K_AI_DRAFT_BLOCKING_ACK = "tasks_ai_draft_blocking_ack"
 K_MARCEDIT_IMPORT_RESULT = "tasks_marcedit_import_result"
+K_MARCEDIT_IMPORT_ADOPTED_ENTRY = "tasks_marcedit_import_adopted_entry"
 K_QB_DOWNLOAD_READY = "quick_batch_download_ready"
 K_GUIDED_REPLACE_PREVIEWS = "task_guided_replace_previews"
 K_OPERATION_DIALOG_STATE = "tasks_operation_dialog_state"
@@ -223,6 +228,7 @@ def render() -> None:
     st.session_state.setdefault(K_OPERATION_DIALOG_NONCE, 0)
     st.session_state.setdefault(K_OPERATION_REFERENCE_REQUESTED, False)
     st.session_state.setdefault(K_MARCEDIT_IMPORT_RESULT, None)
+    st.session_state.setdefault(K_MARCEDIT_IMPORT_ADOPTED_ENTRY, None)
 
     # Load the materialized dir so the importer sees the user's tasks.
     tasks.load_user_tasks(tasks_dir, force_reload=False)
@@ -555,9 +561,15 @@ def _set_marcedit_import_result(value: object) -> None:
 
 def _clear_marcedit_import_result() -> None:
     st.session_state.pop(K_MARCEDIT_IMPORT_RESULT, None)
+    st.session_state.pop(K_MARCEDIT_IMPORT_ADOPTED_ENTRY, None)
 
 
-def _adopt_migration_draft(draft: dict) -> None:
+def _adopt_migration_draft(
+    draft: dict,
+    *,
+    entry_name: str | None = None,
+    entry_key: str | None = None,
+) -> None:
     """Move one validated import draft into editor state without persistence."""
 
     _open_editor_for_new()
@@ -569,7 +581,21 @@ def _adopt_migration_draft(draft: dict) -> None:
     st.session_state[K_EDITOR_OPS] = copy.deepcopy(draft.get("operations") or [])
     st.session_state[K_EDITOR_BODY] = ""
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
-    _clear_marcedit_import_result()
+    st.session_state[K_EDITOR_IMPORT_SUMMARY] = copy.deepcopy(
+        draft.get("summary") or {}
+    )
+    st.session_state[K_EDITOR_IMPORT_PROVENANCE] = copy.deepcopy(
+        draft.get("provenance") or []
+    )
+    st.session_state[K_EDITOR_IMPORT_DISCLOSURES] = copy.deepcopy(
+        draft.get("disclosures") or []
+    )
+    st.session_state[K_EDITOR_IMPORT_SOURCE] = {
+        "entry_name": entry_name or "",
+        "task_name": name,
+        "description": description,
+    }
+    st.session_state[K_MARCEDIT_IMPORT_ADOPTED_ENTRY] = entry_key
     _reset_operation_dialog_state()
 
 
@@ -612,9 +638,16 @@ def _render_marcedit_import_result() -> None:
     status = raw["status"]
     category = raw.get("rejection_category")
 
-    st.markdown("### Import diagnostics")
+    st.markdown("### Imported task drafts")
     if status == "success":
-        if imported_task_names:
+        if entries:
+            ready_count = sum(
+                entry.get("status") == "draft_ready" for entry in entries
+            )
+            st.success(
+                f"{ready_count} editable task draft(s) are ready from `{filename}`."
+            )
+        elif imported_task_names:
             st.success(
                 f"Imported {len(imported_task_names)} task(s) from `{filename}`."
             )
@@ -625,9 +658,8 @@ def _render_marcedit_import_result() -> None:
     elif status == "partial":
         if category == "unresolved-instructions":
             st.warning(
-                "Not imported: this task contains unresolved external "
-                "instructions. Recreate each listed instruction with explicit "
-                "structured controls."
+                "Some instructions need your confirmation. Open the editable "
+                "draft to review the suggested structured operations."
             )
         else:
             st.warning(
@@ -641,19 +673,20 @@ def _render_marcedit_import_result() -> None:
             st.error(f"Import rejected (`{filename}`): quota exceeded.")
         elif category == "unresolved-instructions":
             st.warning(
-                "Not imported: this task contains unresolved external "
-                "instructions. Recreate each listed instruction with explicit "
-                "structured controls."
+                "Some instructions need your confirmation. Open the editable "
+                "draft to review the suggested structured operations."
             )
         elif category == "archive-validation":
             st.error(f"Import from `{filename}` was rejected due to archive validation.")
         else:
             st.error(f"Import from `{filename}` failed.")
 
+    adopted_entry = st.session_state.get(K_MARCEDIT_IMPORT_ADOPTED_ENTRY)
     draft_entries = [
         (index, entry)
         for index, entry in enumerate(entries)
         if isinstance(entry.get("draft"), dict)
+        and str(index) != adopted_entry
     ]
     if len(draft_entries) > 1:
         labels = [
@@ -672,7 +705,11 @@ def _render_marcedit_import_result() -> None:
         selected_offset = labels.index(selected)
         selected_entry = draft_entries[selected_offset][1]
         if st.button("Open selected draft", key="tasks_import_open_selected"):
-            _adopt_migration_draft(selected_entry["draft"])
+            _adopt_migration_draft(
+                selected_entry["draft"],
+                entry_name=selected_entry.get("entry_name") or filename,
+                entry_key=str(draft_entries[selected_offset][0]),
+            )
             st.rerun()
             return
 
@@ -683,6 +720,9 @@ def _render_marcedit_import_result() -> None:
         entry_status = entry.get("status") or ""
         task_name = entry.get("task_name")
         entry_message = entry.get("message") or ""
+        if str(index) == adopted_entry:
+            st.success(f"{entry_name}: opened in the task editor.")
+            continue
 
         if entry_status == "imported":
             if task_name:
@@ -703,7 +743,11 @@ def _render_marcedit_import_result() -> None:
                     "Open migration draft",
                     key=f"tasks_import_open_draft_{index}",
                 ):
-                    _adopt_migration_draft(entry["draft"])
+                    _adopt_migration_draft(
+                        entry["draft"],
+                        entry_name=entry_name,
+                        entry_key=str(index),
+                    )
                     st.rerun()
                     return
             continue
@@ -1024,6 +1068,13 @@ def _open_editor_for_new() -> None:
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+    for key in (
+        K_EDITOR_IMPORT_SUMMARY,
+        K_EDITOR_IMPORT_PROVENANCE,
+        K_EDITOR_IMPORT_DISCLOSURES,
+        K_EDITOR_IMPORT_SOURCE,
+    ):
+        st.session_state.pop(key, None)
     _reset_operation_dialog_state()
 
 
@@ -1046,6 +1097,13 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
+    for key in (
+        K_EDITOR_IMPORT_SUMMARY,
+        K_EDITOR_IMPORT_PROVENANCE,
+        K_EDITOR_IMPORT_DISCLOSURES,
+        K_EDITOR_IMPORT_SOURCE,
+    ):
+        st.session_state.pop(key, None)
     _reset_operation_dialog_state()
 
     parse_result = task_builder.parse_ops_from_source(row["body"])
@@ -1205,7 +1263,11 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                 and len(drafts) == 1
                 and drafts[0]["status"] == "draft_ready"
             ):
-                _adopt_migration_draft(drafts[0]["draft"])
+                _adopt_migration_draft(
+                    drafts[0]["draft"],
+                    entry_name=drafts[0].get("entry_name") or upl.name,
+                    entry_key="0",
+                )
                 audit_event(
                     "archive-draft-opened",
                     user=user,
@@ -1269,7 +1331,11 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                     blocking=conv.draft.summary.blocking,
                 )
                 return
-            _adopt_migration_draft(conv.draft.to_session_dict())
+            _adopt_migration_draft(
+                conv.draft.to_session_dict(),
+                entry_name=upl.name,
+                entry_key="0",
+            )
             audit_event(
                 "tasksfile-draft-opened",
                 user=user,
@@ -1532,6 +1598,53 @@ def _clear_ai_draft_review() -> None:
         _reset_operation_dialog_state()
 
 
+def _render_import_summary() -> None:
+    summary = st.session_state.get(K_EDITOR_IMPORT_SUMMARY)
+    if not isinstance(summary, dict):
+        return
+    converted = summary.get("converted", 0)
+    blocking = summary.get("blocking", 0)
+    total = summary.get("total", 0)
+    source = st.session_state.get(K_EDITOR_IMPORT_SOURCE) or {}
+    filename = source.get("entry_name") or source.get("description") or "the imported source"
+    if blocking:
+        st.warning(
+            "Imported draft: {0} of {1} instructions converted; {2} need "
+            "your confirmation before preview or execution.".format(
+                converted,
+                total,
+                blocking,
+            )
+        )
+    else:
+        st.success(
+            "Imported draft: {0} instructions converted and ready to edit.".format(
+                converted
+            )
+        )
+    disclosures = st.session_state.get(K_EDITOR_IMPORT_DISCLOSURES) or []
+    if disclosures:
+        st.caption("Open equivalent: " + " ".join(str(item) for item in disclosures))
+    provenance = st.session_state.get(K_EDITOR_IMPORT_PROVENANCE) or []
+    if provenance:
+        with st.expander("Technical details"):
+            st.caption("Source: " + str(filename))
+            for item in provenance[:50]:
+                st.code(
+                    "line {0}: {1}".format(
+                        item.get("line_number", "?"),
+                        item.get("source_line", ""),
+                    ),
+                    language="text",
+                )
+            if len(provenance) > 50:
+                st.caption(
+                    "{0} additional source lines omitted.".format(
+                        len(provenance) - 50
+                    )
+                )
+
+
 def _store_ai_draft_error(message: str) -> None:
     st.session_state[K_AI_DRAFT_ERROR] = message
     st.session_state[K_AI_DRAFT_REVIEW] = None
@@ -1557,6 +1670,7 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         if is_edit
         else "New task"
     )
+    _render_import_summary()
 
     # Mode toggle: admins see it, standard users are pinned to form.
     if is_admin:
@@ -1686,6 +1800,27 @@ def _open_edit_operation_dialog(index: int) -> None:
     )
 
 
+def _open_suggested_operation(index: int) -> None:
+    operations = st.session_state.get(K_EDITOR_OPS, [])
+    if index < 0 or index >= len(operations):
+        return
+    blocker = operations[index]
+    suggested = task_operation_dialog.suggested_operation_for_blocker(
+        blocker
+    )
+    if suggested is None:
+        _open_edit_operation_dialog(index)
+        return
+    st.session_state[K_OPERATION_DIALOG_STATE] = (
+        task_operation_dialog.new_suggestion_state(
+            blocker,
+            suggested,
+            index=index,
+            nonce=_next_operation_dialog_nonce(),
+        )
+    )
+
+
 def _close_operation_dialog() -> None:
     st.session_state[K_OPERATION_DIALOG_STATE] = None
 
@@ -1746,6 +1881,7 @@ def _render_form_editor() -> None:
         previews=previews,
         on_edit=_open_edit_operation_dialog,
         on_change=_change_editor_operations,
+        on_suggestion=_open_suggested_operation,
     )
 
     if st.button(

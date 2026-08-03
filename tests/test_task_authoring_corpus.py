@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from marcedit_web.lib import marcedit_import, task_authoring
+from marcedit_web.lib import task_authoring
+from scripts.audit_external_task_corpus import audit_corpus
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "task_authoring"
@@ -100,32 +101,14 @@ def test_reference_examples_match_executable_mnemonics():
     assert "not supported" in reference.lower()
 
 
-def test_local_task_corpus_add_and_build_signatures_are_classified():
+def test_local_task_corpus_classifies_every_instruction():
     if not CORPUS.exists():
         pytest.skip(
             "institutional MarcEdit Tasks corpus is unavailable; "
             "synthetic fixtures remain authoritative"
         )
-    task_files = sorted(CORPUS.rglob("*.txt"))
-    if not task_files:
-        pytest.fail(
-            "MarcEdit Tasks exists but contains no readable .txt definitions"
-        )
-    outcomes = []
-    for task_file in task_files:
-        for line in task_file.read_text(
-            encoding="utf-8", errors="replace"
-        ).splitlines():
-            if line.startswith("ADD\t") or line.startswith(
-                "buildnewfield\t"
-            ):
-                result = marcedit_import.convert_tasksfile_text(
-                    line + "\n",
-                    name="classification",
-                    description_fallback="",
-                )
-                outcomes.append(
-                    "unresolved" if result.unsupported else "exact"
-                )
-    assert outcomes, "corpus has no Add Field or Build Field signatures"
-    assert set(outcomes) <= {"exact", "unresolved"}
+    report = audit_corpus(CORPUS)
+    assert len(report.documents) == 18
+    assert report.unclassified == ()
+    assert report.items_without_next_action == ()
+    assert report.converted + report.blockers == len(report.items)
