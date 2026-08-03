@@ -152,8 +152,10 @@ K_OPERATION_CARDS_PENDING_REMOVE = "task_operation_cards_pending_remove"
 MAX_DRAFT_PROVENANCE_ITEMS = (50 * 1024 * 1024) // 2
 MAX_DRAFT_SOURCE_ENTRY_BYTES = 65_535
 MAX_DRAFT_SOURCE_LINE_BYTES = 50 * 1024 * 1024
+MAX_DRAFT_OPERATIONS = 10_000
 MAX_DRAFT_DISCLOSURES = len(external_task_migration.ADAPTER_REGISTRY)
 MAX_DRAFT_DISCLOSURE_CHARS = 1_024
+MAX_DRAFT_TASK_NAME_CHARS = 255
 
 # TASK-143: workspace mode switcher.
 MODE_RUN = "Run"
@@ -319,9 +321,11 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 and len(item) <= MAX_DRAFT_DISCLOSURE_CHARS
                 for item in disclosures_value
             )
+            or len(operations) > MAX_DRAFT_OPERATIONS
             or not isinstance(task_name, str)
             or task_name != entry_task_name
             or not editor.is_valid_slug(task_name)
+            or len(task_name) > MAX_DRAFT_TASK_NAME_CHARS
             or not isinstance(description, str)
         ):
             return None
@@ -365,6 +369,7 @@ def _normalize_marcedit_import_result(value: object) -> dict:
             source_entry = item.get("source_entry")
             source_line = item.get("source_line")
             operation_count = item.get("operation_count")
+            operation_digests = item.get("operation_digests")
             if (
                 not isinstance(line_number, int)
                 or isinstance(line_number, bool)
@@ -380,6 +385,13 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 > MAX_DRAFT_SOURCE_ENTRY_BYTES
                 or not isinstance(source_line, str)
                 or len(source_line.encode("utf-8")) > MAX_DRAFT_SOURCE_LINE_BYTES
+                or not isinstance(operation_digests, list)
+                or len(operation_digests) != operation_count
+                or not all(
+                    isinstance(digest_value, str)
+                    and re.fullmatch(r"[0-9a-f]{64}", digest_value)
+                    for digest_value in operation_digests
+                )
                 or hashlib.sha256(source_line.encode("utf-8")).hexdigest()
                 != digest
                 or line_number <= previous_line_number
@@ -392,6 +404,12 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 operation_offset:operation_offset + operation_count
             ]
             if len(operation_slice) != operation_count:
+                return None
+            expected_digests = [
+                external_task_migration.operation_fingerprint(operation)
+                for operation in operation_slice
+            ]
+            if expected_digests != operation_digests:
                 return None
             blockers_in_slice = task_authoring.migration_blockers(
                 operation_slice
@@ -413,6 +431,7 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 "instruction_sha256": digest,
                 "status": status_value,
                 "operation_count": operation_count,
+                "operation_digests": operation_digests,
             })
             previous_line_number = line_number
             operation_offset += operation_count

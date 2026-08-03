@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import re
 import unicodedata
 import zipfile
@@ -119,6 +120,10 @@ class ArchiveConversionResult:
     archive_name: str
     entries: list[EntryResult] = field(default_factory=list)
     archive_errors: list[str] = field(default_factory=list)
+
+
+MAX_DERIVED_TASK_NAME_CHARS = 180
+_DERIVED_TASK_NAME_SUFFIX_CHARS = 8
 
 
 # ---------------------------------------------------------------------------
@@ -756,6 +761,16 @@ def _derive_name_from_filename(filename: str) -> str:
     stem = re.sub(r"[^a-z0-9-]+", "-", stem)
     # Collapse runs of separators and trim.
     stem = re.sub(r"-+", "-", stem).strip("-")
+    if len(stem) > MAX_DERIVED_TASK_NAME_CHARS:
+        suffix = hashlib.sha256(stem.encode("utf-8")).hexdigest()[:
+            _DERIVED_TASK_NAME_SUFFIX_CHARS
+        ]
+        max_base = MAX_DERIVED_TASK_NAME_CHARS - (
+            _DERIVED_TASK_NAME_SUFFIX_CHARS + 1
+        )
+        if max_base <= 0:
+            return f"i{suffix}"
+        stem = f"{stem[:max_base]}-{suffix}"
     return stem or "imported-task"
 
 

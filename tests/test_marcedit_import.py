@@ -439,6 +439,26 @@ def test_filename_derived_names_are_saveable_slugs(filename, expected):
     assert editor.is_valid_slug(derived)
 
 
+def test_long_filename_derivation_bounds_and_stability():
+    source = "A" * 500
+    derived_one = marcedit_import._derive_name_from_filename(
+        f"/deep/{source}.tasksfile.txt"
+    )
+    derived_two = marcedit_import._derive_name_from_filename(
+        f"{source}.tasksfile.txt"
+    )
+
+    assert derived_one == derived_two
+    assert len(derived_one) <= marcedit_import.MAX_DERIVED_TASK_NAME_CHARS
+    assert editor.is_valid_slug(derived_one)
+
+    derived_nearby = marcedit_import._derive_name_from_filename(
+        f"{"A" * 500}B.tasksfile.txt"
+    )
+    assert len(derived_nearby) <= marcedit_import.MAX_DERIVED_TASK_NAME_CHARS
+    assert derived_nearby != derived_one
+
+
 def test_duplicate_archive_entry_names_remain_distinct_drafts(tmp_path):
     source = "SORTBY\tALL\tTrue\tTrue\n"
     with pytest.warns(UserWarning, match="Duplicate name"):

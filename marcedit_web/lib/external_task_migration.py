@@ -94,6 +94,7 @@ class MigrationProvenance:
     instruction_sha256: str
     status: str
     operation_count: int
+    operation_digests: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,7 @@ class MigrationDraft:
                     "instruction_sha256": item.instruction_sha256,
                     "status": item.status,
                     "operation_count": item.operation_count,
+                    "operation_digests": list(item.operation_digests),
                 }
                 for item in self.provenance
             ],
@@ -210,6 +212,16 @@ def _safe_build_params(template: str) -> dict[str, Any]:
         return parse_build_template(template)
     except ValueError:
         return {}
+
+
+def operation_fingerprint(operation: Mapping[str, Any]) -> str:
+    """Return a stable digest for operation identity checks."""
+
+    return hashlib.sha256(
+        json.dumps(dict(operation), sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 def _is_data_tag(value: object) -> bool:
@@ -1555,6 +1567,10 @@ def build_migration_draft(
                 },
             }]
             operations.extend(item_operations)
+
+        item_operation_digests = tuple(
+            operation_fingerprint(operation) for operation in item_operations
+        )
         provenance.append(MigrationProvenance(
             source_entry=source_entry,
             line_number=line_number,
@@ -1562,6 +1578,7 @@ def build_migration_draft(
             instruction_sha256=item.instruction_sha256,
             status=item.status,
             operation_count=len(item_operations),
+            operation_digests=item_operation_digests,
         ))
 
     return MigrationDraft(

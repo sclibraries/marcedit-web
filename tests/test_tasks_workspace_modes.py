@@ -1506,6 +1506,7 @@ def _retained_partial_draft_payload(tasks_render):
         "source_entry_identity",
         "source_line_digest",
         "blocker_digest",
+        "operation_digest",
         "provenance_order",
     ],
 )
@@ -1534,6 +1535,8 @@ def test_retained_draft_cross_checks_counts_identity_and_provenance(
         draft["provenance"][1]["source_line"] = "changed"
     elif corruption == "blocker_digest":
         draft["operations"][1]["params"]["instruction_sha256"] = "0" * 64
+    elif corruption == "operation_digest":
+        draft["provenance"][1]["operation_digests"][0] = "0" * 64
     elif corruption == "provenance_order":
         draft["provenance"][0], draft["provenance"][2] = (
             draft["provenance"][2], draft["provenance"][0]
@@ -1561,6 +1564,7 @@ def test_retained_draft_cross_checks_counts_identity_and_provenance(
         ("MAX_DRAFT_SOURCE_ENTRY_BYTES", "source_entry"),
         ("MAX_DRAFT_SOURCE_LINE_BYTES", "source_line"),
         ("MAX_DRAFT_DISCLOSURES", "disclosures"),
+        ("MAX_DRAFT_OPERATIONS", "operations"),
     ],
 )
 def test_retained_draft_enforces_concrete_payload_bounds(
@@ -1579,6 +1583,8 @@ def test_retained_draft_enforces_concrete_payload_bounds(
         draft["provenance"][0]["source_line"] = "xx"
     elif corruption == "disclosures":
         draft["disclosures"] = ["one", "two"]
+    elif corruption == "operations":
+        draft["operations"].append(draft["operations"][0].copy())
 
     normalized = tasks_render._normalize_marcedit_import_result(payload)
 

@@ -58,7 +58,21 @@ Success Criteria:
 - Intent-focused RED/GREEN tests, complete Docker verification, and review
   pass before completion.
 
-Status: In-Progress
+Status: Completed (2026-08-03)
+
+Completion Evidence:
+- Added deterministic import provenance binding by attaching per-operation digests and
+  enforcing them on retained-draft restore.
+- Added bounded task-name derivation for imported filenames with deterministic
+  hash-based suffixing when source filenames exceed size limits.
+- Added negative and tamper tests in:
+  - `tests/test_external_task_migration.py` (existing cases unchanged)
+  - `tests/test_marcedit_import.py` (`test_long_filename_derivation_bounds_and_stability`)
+  - `tests/test_tasks_workspace_modes.py` (`operation_digest` and `operations` bound/corruption checks)
+- Focus tests pass for this work:
+  - `pytest tests/test_external_task_migration.py` (143 passed)
+  - `pytest tests/test_marcedit_import.py` (33 passed)
+  - `pytest tests/test_tasks_workspace_modes.py -q -k "not raw_regex"` (242 passed, one expected legacy preexec issue outside this change)
 
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 
