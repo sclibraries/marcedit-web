@@ -24,4 +24,20 @@ Success Criteria:
 - Review confirms that no runtime data, Smith institutional task, or importer
   implementation change is included.
 
-Status: In-Progress
+Status: Completed
+
+Completion evidence (2026-08-03):
+- Preserved 49 byte-identical upstream archives from commit
+  `d07377a58cba9d0936a63863c9d428498609d5e5` with the GPL-3.0 license,
+  provenance notice, and a checked-in SHA-256 manifest.
+- The committed corpus audit reports 49 documents and 1,239 instructions:
+  693 converted and 546 actionable blockers, with zero unclassified items and
+  zero blockers without a cataloger next action.
+- TDD regression tests cover complete filename/hash equality, corpus counts,
+  classification completeness, and visible cataloger-action CLI output.
+- Supported Python 3.9 Docker verification:
+  `147 passed in 0.60s`, with zero failures and zero skips.
+- Independent review and re-review reported no remaining Critical, Important,
+  or Minor findings.
+- No importer implementation, application runtime, production data, Smith
+  institutional fixture, service, or deployment behavior changed.
