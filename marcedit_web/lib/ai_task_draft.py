@@ -67,6 +67,7 @@ _UNSUPPORTED_AI_OPERATION_KINDS = {
     "rda-normalize-relators",
     "rda-promote-260",
     "structural-find-replace",
+    "copy-fields-with-policy",
     "empty-find-subfield-policy",
 }
 _CODE_SHAPED_RE = re.compile(

@@ -1417,3 +1417,21 @@ def test_set_control_field_validation_accepts_nonempty_whole_value():
             "condition": "always",
         },
     }) == ()
+
+
+def test_partner_copy_with_policy_rejects_unknown_policy_and_cross_shape_tags():
+    base = {
+        "kind": "copy-fields-with-policy",
+        "params": {
+            "source_tag": "001",
+            "destination_tag": "035",
+            "occurrence": "all",
+            "existing_field_action": "future-policy",
+            "max_fields_per_record": "100",
+        },
+    }
+
+    errors = task_authoring.validate_operation(base)
+
+    assert any("existing field action" in error for error in errors)
+    assert any("both be control fields or both be data fields" in error for error in errors)

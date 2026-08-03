@@ -366,6 +366,27 @@ def test_palette_includes_new_typed_ops():
         assert new in kinds, f"{new} missing from OPERATIONS_PALETTE"
 
 
+def test_partner_copy_with_policy_has_structured_palette_and_safe_codegen():
+    kinds = {entry["kind"] for entry in task_builder.OPERATIONS_PALETTE}
+    assert "copy-fields-with-policy" in kinds
+    rendered = task_builder.render_ops_to_python([
+        task_builder.Operation(
+            kind="copy-fields-with-policy",
+            params={
+                "source_tag": "856",
+                "destination_tag": "956",
+                "occurrence": "first",
+                "existing_field_action": "replace",
+                "predicate": {"ind1": "4"},
+                "max_fields_per_record": 10,
+            },
+        )
+    ])
+    assert "copy_fields_with_policy(record" in rendered["body"]
+    assert "repr(dict" not in rendered["body"]
+    assert task_builder.parse_ops_from_source(rendered["body"])["form_editable"]
+
+
 def test_replace_field_subfield_and_indicators_palette_exposes_regex_options():
     entry = next(
         op for op in task_builder.OPERATIONS_PALETTE

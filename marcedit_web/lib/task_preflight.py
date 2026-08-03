@@ -22,6 +22,7 @@ ALLOWED_OPERATION_MARKER_KINDS = frozenset({
     "guided-find-replace",
     "empty-find-subfield-policy",
     "copy-field",
+    "copy-fields-with-policy",
     "move-field",
     "add-subfield",
     "delete-subfield",

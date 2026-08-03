@@ -351,6 +351,38 @@ OPERATIONS_PALETTE: list[dict] = [
         ],
     },
     {
+        "kind": "copy-fields-with-policy",
+        "label": "Copy fields with occurrence policy",
+        "summary": (
+            "Copy selected source fields while choosing first, last, or all "
+            "occurrences and an explicit destination collision policy."
+        ),
+        "params": [
+            {"name": "source_tag", "label": "Source tag", "type": "text", "required": True},
+            {"name": "destination_tag", "label": "Destination tag", "type": "text", "required": True},
+            {
+                "name": "occurrence", "label": "Source occurrences", "type": "select",
+                "options": [
+                    {"value": "first", "label": "First"},
+                    {"value": "last", "label": "Last"},
+                    {"value": "all", "label": "All"},
+                ],
+                "default": "all",
+            },
+            {
+                "name": "existing_field_action", "label": "If destination exists", "type": "select",
+                "options": [
+                    {"value": "append", "label": "Append"},
+                    {"value": "replace", "label": "Replace existing"},
+                    {"value": "skip", "label": "Skip this record"},
+                ],
+                "default": "append",
+            },
+            {"name": "predicate", "label": "Limit source fields", "type": "json", "default": {}},
+            {"name": "max_fields_per_record", "label": "Maximum fields per record", "type": "text", "default": "100"},
+        ],
+    },
+    {
         "kind": "move-field",
         "label": "Move (re-tag) field",
         "summary": (
@@ -1200,6 +1232,34 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         return (
             [f"copy_field(record, {lit(src)}, {lit(dst)}{predicate_arg})"],
             {"copy_field"},
+            False,
+        )
+
+    if op.kind == "copy-fields-with-policy":
+        source_tag = str(p.get("source_tag", "")).strip()
+        destination_tag = str(p.get("destination_tag", "")).strip()
+        occurrence = str(p.get("occurrence", "all")).strip() or "all"
+        existing_action = (
+            str(p.get("existing_field_action", "append")).strip() or "append"
+        )
+        predicate = p.get("predicate")
+        max_fields = int(p.get("max_fields_per_record", 100))
+        predicate_arg = (
+            f", predicate={data_lit(predicate)}"
+            if predicate not in (None, {})
+            else ""
+        )
+        return (
+            [
+                "copy_fields_with_policy("
+                f"record, source_tag={lit(source_tag)}, "
+                f"destination_tag={lit(destination_tag)}, "
+                f"occurrence={lit(occurrence)}, "
+                f"existing_field_action={lit(existing_action)}, "
+                f"max_fields_per_record={lit(max_fields)}"
+                f"{predicate_arg})"
+            ],
+            {"copy_fields_with_policy"},
             False,
         )
 

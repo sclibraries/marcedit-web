@@ -331,6 +331,51 @@ def validate_operation(
     )
     if entry is None:
         return ("operation kind is not supported: {0}".format(kind),)
+    if kind == "copy-fields-with-policy":
+        params = op.get("params") or {}
+        errors = []
+        source_tag = params.get("source_tag")
+        destination_tag = params.get("destination_tag")
+        if not isinstance(source_tag, str) or not _TAG_RE.fullmatch(source_tag):
+            errors.append("Source tag must be a three-character MARC tag")
+        if not isinstance(destination_tag, str) or not _TAG_RE.fullmatch(destination_tag):
+            errors.append("Destination tag must be a three-character MARC tag")
+        if (
+            isinstance(source_tag, str)
+            and isinstance(destination_tag, str)
+            and _TAG_RE.fullmatch(source_tag)
+            and _TAG_RE.fullmatch(destination_tag)
+            and is_control_tag(source_tag) != is_control_tag(destination_tag)
+        ):
+            errors.append(
+                "source and destination must both be control fields or both be data fields"
+            )
+        if params.get("occurrence", "all") not in {"first", "last", "all"}:
+            errors.append("occurrence must be first, last, or all")
+        if params.get("existing_field_action", "append") not in {"append", "replace", "skip"}:
+            errors.append("existing field action is not supported")
+        try:
+            bound = int(params.get("max_fields_per_record", 100))
+            if bound <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append("maximum fields per record must be a positive integer")
+        if params.get("predicate") not in (None, {}):
+            errors.extend(field_predicates.validate_field_predicate(params["predicate"]))
+            if is_control_tag(str(source_tag or "")):
+                errors.append("control fields cannot use indicator or subfield predicates")
+        allowed = {parameter["name"] for parameter in entry["params"]}
+        unexpected = sorted(set(params) - allowed)
+        if unexpected:
+            errors.append(
+                "operation parameters contain unexpected keys: {0}".format(
+                    ", ".join(unexpected)
+                )
+            )
+        for parameter in entry["params"]:
+            if parameter.get("required") and params.get(parameter["name"]) in (None, "", []):
+                errors.append("{0} is required".format(parameter["label"]))
+        return tuple(errors)
     if kind in {"copy-field", "delete-by-subfield"}:
         params = op.get("params") or {}
         errors = []

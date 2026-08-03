@@ -162,6 +162,23 @@ def test_ai_copy_rejects_crossing_control_and_data_field_shapes():
     )
 
 
+def test_partner_copy_with_policy_is_not_in_ai_draft_vocabulary():
+    review = parse_ai_task_draft(
+        _draft(operations=[{
+            "kind": "copy-fields-with-policy",
+            "params": {
+                "source_tag": "856",
+                "destination_tag": "956",
+                "occurrence": "all",
+                "existing_field_action": "append",
+            },
+        }])
+    )
+
+    assert review.operations == ()
+    assert "not supported" in review.rejected_operations[0].reason
+
+
 def test_ai_draft_editor_ops_round_trip_through_task_builder_markers():
     review = parse_ai_task_draft(
         _draft(
