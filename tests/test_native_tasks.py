@@ -105,8 +105,8 @@ def test_delete_and_sort_compile_in_source_order():
 
 def test_structured_build_field_compiles_without_source_text():
     compiled = native_tasks.compile_definition(_definition("build-field.json"))
-    assert "_t_003 = control_value(record, '003')" in compiled.body
-    assert "_t_001 = control_value(record, '001')" in compiled.body
+    assert "_build_source_0 = control_value(record, '003')" in compiled.body
+    assert "_build_source_1 = control_value(record, '001')" in compiled.body
     assert "'B({003}){001}-SC'" in compiled.body
     assert "marcedit-task" not in compiled.body
     assert "8c7d6e7a" not in compiled.body
