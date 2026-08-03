@@ -16,8 +16,14 @@
     {
       "adapter_id": "delete-v1",
       "verbs": ["DELETE"],
-      "shape_ids": ["delete-exact", "delete-wildcard"],
-      "fixture_ids": ["delete-exact", "delete-wildcard"]
+      "shape_ids": ["delete-exact", "delete-wildcard", "delete-subfield-text", "delete-mnemonic-exists", "delete-mnemonic-regex"],
+      "fixture_ids": ["delete-exact", "delete-wildcard", "delete-subfield-text", "delete-mnemonic-exists", "delete-mnemonic-regex"]
+    },
+    {
+      "adapter_id": "copy-v1",
+      "verbs": ["COPY"],
+      "shape_ids": ["copy-filter-subfield"],
+      "fixture_ids": ["copy-filter-subfield"]
     },
     {
       "adapter_id": "add-v1",

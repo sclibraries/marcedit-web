@@ -9,6 +9,7 @@ from typing import Any, Mapping, Optional, Sequence, TypeVar
 
 from pymarc import Record
 from marcedit_web.lib import (
+    field_predicates,
     guided_replace,
     guided_replace_validation,
     task_builder,
@@ -297,6 +298,55 @@ def validate_operation(
     )
     if entry is None:
         return ("operation kind is not supported: {0}".format(kind),)
+    if kind in {"copy-field", "delete-by-subfield"}:
+        params = op.get("params") or {}
+        errors = []
+        if kind == "copy-field":
+            src_tag = params.get("src_tag")
+            dst_tag = params.get("dst_tag")
+            if (
+                isinstance(src_tag, str)
+                and isinstance(dst_tag, str)
+                and _TAG_RE.fullmatch(src_tag)
+                and _TAG_RE.fullmatch(dst_tag)
+                and is_control_tag(src_tag) != is_control_tag(dst_tag)
+            ):
+                errors.append(
+                    "source and destination must both be control fields or "
+                    "both be data fields"
+                )
+        predicate_present = "predicate" in params and params["predicate"] != {}
+        predicate = params.get("predicate")
+        if predicate_present:
+            errors.extend(field_predicates.validate_field_predicate(predicate))
+            source_tag = (
+                params.get("src_tag")
+                if kind == "copy-field"
+                else params.get("tag")
+            )
+            if is_control_tag(str(source_tag or "")):
+                errors.append(
+                    "control fields cannot use indicator or subfield predicates"
+                )
+        if (
+            kind == "delete-by-subfield"
+            and not predicate
+            and not params.get("match")
+        ):
+            errors.append("Limit which fields are affected is required")
+        entry_names = {parameter["name"] for parameter in entry["params"]}
+        unexpected = sorted(set(params) - entry_names)
+        if unexpected:
+            errors.append(
+                "operation parameters contain unexpected keys: {0}".format(
+                    ", ".join(unexpected)
+                )
+            )
+        for parameter in entry["params"]:
+            value = params.get(parameter["name"])
+            if parameter.get("required") and value in (None, "", []):
+                errors.append("{0} is required".format(parameter["label"]))
+        return tuple(errors)
     if kind == "guided-find-replace":
         try:
             normalized = normalize_guided_replace_operation(op)
@@ -735,6 +785,50 @@ def _legacy_mnemonic(op: Mapping[str, Any]) -> str:
 def describe_operation(op: Mapping[str, Any]) -> str:
     """Describe one Add/Build operation in cataloger-facing language."""
 
+    kind = str(op.get("kind") or "")
+    params_value = op.get("params", {})
+    params = dict(params_value) if isinstance(params_value, Mapping) else {}
+    if kind in {"copy-field", "delete-by-subfield"}:
+        predicate = params.get("predicate") or {}
+        conditions = []
+        for name, label in (
+            ("ind1", "indicator 1 is"),
+            ("ind2", "indicator 2 is"),
+            ("ind1_not", "indicator 1 is not"),
+            ("ind2_not", "indicator 2 is not"),
+        ):
+            if name in predicate:
+                display_value = (
+                    "blank" if predicate[name] == " " else predicate[name]
+                )
+                conditions.append("{0} {1}".format(label, display_value))
+        for match in predicate.get("subfield_matches", []):
+            if match.get("mode") == "exists":
+                conditions.append("${0} exists".format(match.get("code", "?")))
+                continue
+            mode = {
+                "exact": "equals",
+                "contains": "contains",
+                "starts_with": "starts with",
+                "ends_with": "ends with",
+                "regex": "matches regular expression",
+            }.get(match.get("mode"), "matches")
+            conditions.append(
+                "${0} {1} {2}".format(
+                    match.get("code", "?"),
+                    mode,
+                    match.get("value", ""),
+                )
+            )
+        condition = " and ".join(conditions)
+        if kind == "copy-field":
+            summary = "Copy {0} to {1}".format(
+                params.get("src_tag", ""), params.get("dst_tag", "")
+            )
+        else:
+            summary = "Delete selected {0} fields".format(params.get("tag", ""))
+        return summary + (" only when " + condition if condition else "") + "."
+
     try:
         normalized = normalize_operation(op)
     except ValueError as exc:
@@ -810,6 +904,9 @@ def render_mnemonic(
 ) -> str:
     """Render transparent MARC mnemonic from structured values."""
 
+    if op.get("kind") in {"copy-field", "delete-by-subfield"}:
+        return describe_operation(op)
+
     try:
         normalized = normalize_operation(op)
     except ValueError:
@@ -839,6 +936,9 @@ def render_mnemonic(
 
 def token_annotations(op: Mapping[str, Any]) -> tuple[str, ...]:
     """Explain each displayed MARC token in order."""
+
+    if op.get("kind") in {"copy-field", "delete-by-subfield"}:
+        return (describe_operation(op),)
 
     try:
         normalized = normalize_operation(op)

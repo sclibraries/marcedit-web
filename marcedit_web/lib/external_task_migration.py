@@ -170,6 +170,20 @@ def _core_parse_failure(source_line: str, exc: ExternalParseError) -> MigrationI
                 "option should affect matching fields."
             ),
         )
+    if verb == "COPY":
+        src = parts[1].strip() if len(parts) > 1 else ""
+        dst = parts[2].strip() if len(parts) > 2 else ""
+        return _suggestion(
+            source_line,
+            intent="Copy selected MARC fields while preserving the source",
+            reason=exc.message,
+            recommended_operation="copy-field",
+            prefilled_params={"src_tag": src, "dst_tag": dst},
+            cataloger_action=(
+                "Open Copy Field and confirm every external filter and option "
+                "before saving."
+            ),
+        )
     if verb == "buildnewfield":
         template = parts[1] if len(parts) > 1 else ""
         return _suggestion(
@@ -296,17 +310,89 @@ def adapt_delete(source_line: str) -> MigrationItem:
     assert instruction is not None
     tag, match = instruction.arguments[:2]
     params = {"tag": tag.strip()} if tag.strip() else {}
-    if match:
+    mnemonic = re.fullmatch(r"([0-9\\])([0-9\\])\$([a-z0-9])(.*)", match)
+    if mnemonic is not None and _is_data_tag(tag.strip()):
+        ind1, ind2, code, value = mnemonic.groups()
+        predicate = {
+            "ind1": " " if ind1 == "\\" else ind1,
+            "ind2": " " if ind2 == "\\" else ind2,
+            "subfield_matches": [{
+                "code": code,
+                "mode": "exists" if value == "" else "regex",
+                "value": "*" if value == "" else value,
+                "ignore_case": False,
+            }],
+        }
+        expected_flags = (
+            (False, False, False, False, False)
+            if value == ""
+            else (True, False, False, False, False)
+        )
+        regex_valid = True
+        if value:
+            try:
+                re.compile(value)
+            except re.error:
+                regex_valid = False
+        if instruction.boolean_flags == expected_flags and regex_valid:
+            return _item(
+                source_line,
+                status="converted",
+                operations=({
+                    "kind": "delete-by-subfield",
+                    "params": {"tag": tag.strip(), "predicate": predicate},
+                },),
+            )
+    if any(instruction.boolean_flags):
+        enabled = ", ".join(
+            "flag {0}".format(index)
+            for index, value in enumerate(instruction.boolean_flags, start=1)
+            if value
+        )
         return _suggestion(
             source_line,
-            intent="Delete fields whose value matches external text",
-            reason="matched DELETE behavior is not yet proven for automatic conversion",
-            recommended_operation="delete-by-subfield",
-            prefilled_params={"tag": tag.strip(), "match": match},
-            cataloger_action=(
-                "Open Delete Fields Matching Subfield Value and confirm the "
-                "external match mode before saving."
+            intent="Delete selected MARC fields",
+            reason=(
+                "DELETE {0} is enabled, and that external policy has no proven "
+                "open equivalent".format(enabled)
             ),
+            recommended_operation=(
+                "delete-by-subfield" if match else "delete-tag"
+            ),
+            prefilled_params=params,
+            cataloger_action=(
+                "Open the suggested Delete operation and confirm how the "
+                "enabled external policy should affect matching fields."
+            ),
+        )
+    if match:
+        if (
+            not _is_data_tag(tag.strip())
+            or "$" in match
+            or "\\" in match
+            or match == ""
+        ):
+            return _suggestion(
+                source_line,
+                intent="Delete fields matching an external field filter",
+                reason=(
+                    "only a nonempty plain-text data-field match has a proven "
+                    "structured conversion"
+                ),
+                recommended_operation="delete-by-subfield",
+                prefilled_params={"tag": tag.strip()},
+                cataloger_action=(
+                    "Open Delete Fields Matching a Field Filter and recreate "
+                    "the mnemonic indicator and subfield conditions explicitly."
+                ),
+            )
+        return _item(
+            source_line,
+            status="converted",
+            operations=({
+                "kind": "delete-by-subfield",
+                "params": {"tag": tag.strip(), "match": match},
+            },),
         )
     if not re.fullmatch(r"[0-9Xx]{3}", tag.strip()):
         return _suggestion(
@@ -317,30 +403,64 @@ def adapt_delete(source_line: str) -> MigrationItem:
             prefilled_params=params,
             cataloger_action="Open Delete Tag and enter a valid exact or wildcard tag.",
         )
-    if any(instruction.boolean_flags):
-        enabled = ", ".join(
-            "flag {0}".format(index)
-            for index, value in enumerate(instruction.boolean_flags, start=1)
-            if value
+    return _item(
+        source_line,
+        status="converted",
+        operations=({"kind": "delete-tag", "params": params},),
+    )
+
+
+def adapt_copy(source_line: str) -> MigrationItem:
+    instruction, failure = _parse_core(source_line)
+    if failure is not None:
+        return failure
+    assert instruction is not None
+    src, dst, _flag_1, external_filter, extra_filter, _flag_2, surplus = (
+        instruction.arguments
+    )
+    params = {"src_tag": src.strip(), "dst_tag": dst.strip()}
+    reason = ""
+    if (
+        not re.fullmatch(r"\d{3}", src.strip())
+        or not re.fullmatch(r"\d{3}", dst.strip())
+    ):
+        reason = "COPY source and destination tags must be three digits"
+    elif src.strip().startswith("00") != dst.strip().startswith("00"):
+        reason = (
+            "COPY crosses control-field and data-field shapes, which would "
+            "discard the source value"
         )
+    elif instruction.boolean_flags != (False, False):
+        reason = "COPY filter flags differ from the proven false/false signature"
+    elif extra_filter or surplus:
+        reason = "COPY contains an unproven additional filter value"
+    elif external_filter:
+        match = re.fullmatch(r"\$([a-z0-9])(.+)", external_filter)
+        if match is None or src.strip().startswith("00"):
+            reason = "COPY filter must be a nonempty data-subfield text filter"
+        else:
+            params["predicate"] = {"subfield_matches": [{
+                "code": match.group(1),
+                "mode": "contains",
+                "value": match.group(2),
+                "ignore_case": False,
+            }]}
+    if reason:
         return _suggestion(
             source_line,
-            intent="Delete every field matching a MARC tag pattern",
-            reason=(
-                "DELETE {0} is enabled, and that external policy has no proven "
-                "open equivalent".format(enabled)
-            ),
-            recommended_operation="delete-tag",
+            intent="Copy selected MARC fields while preserving the source",
+            reason=reason,
+            recommended_operation="copy-field",
             prefilled_params=params,
             cataloger_action=(
-                "Open Delete Tag and confirm whether the enabled external "
-                "policy can be omitted or recreated separately."
+                "Open Copy Field and confirm the external filter and options "
+                "before saving."
             ),
         )
     return _item(
         source_line,
         status="converted",
-        operations=({"kind": "delete-tag", "params": params},),
+        operations=({"kind": "copy-field", "params": params},),
     )
 
 
@@ -842,6 +962,7 @@ def adapt_sortby(source_line: str) -> MigrationItem:
 
 ADAPTER_REGISTRY = {
     "ADD": adapt_add,
+    "COPY": adapt_copy,
     "DELETE": adapt_delete,
     "RDAHELPER": adapt_rdahelper,
     "SUBFIELD_EDIT": adapt_subfield_edit,
@@ -877,8 +998,20 @@ COMPATIBILITY_ADAPTER_REGISTRY = {
     "delete-v1": CompatibilityAdapter(
         adapter=adapt_delete,
         verbs=("DELETE",),
-        shape_ids=("delete-exact", "delete-wildcard"),
-        fixture_ids=("delete-exact", "delete-wildcard"),
+        shape_ids=(
+            "delete-exact", "delete-wildcard", "delete-subfield-text",
+            "delete-mnemonic-exists", "delete-mnemonic-regex",
+        ),
+        fixture_ids=(
+            "delete-exact", "delete-wildcard", "delete-subfield-text",
+            "delete-mnemonic-exists", "delete-mnemonic-regex",
+        ),
+    ),
+    "copy-v1": CompatibilityAdapter(
+        adapter=adapt_copy,
+        verbs=("COPY",),
+        shape_ids=("copy-filter-subfield",),
+        fixture_ids=("copy-filter-subfield",),
     ),
     "add-v1": CompatibilityAdapter(
         adapter=adapt_add,

@@ -361,6 +361,18 @@ def render_selected_operation(
         task_authoring_render.render_guided_find_replace_params(
             params, key_prefix=key_prefix, rerun=rerun_fragment_or_app
         )
+    elif kind in {"copy-field", "delete-by-subfield"}:
+        for parameter in entry["params"]:
+            if parameter["name"] != "predicate":
+                render_param_input(
+                    parameter,
+                    params,
+                    key_prefix=key_prefix,
+                    is_admin=is_admin,
+                )
+        task_authoring_render.render_field_predicate_params(
+            params, key_prefix=key_prefix, rerun=rerun_fragment_or_app
+        )
     elif kind == "structural-find-replace":
         target = params.get("target_kind", "data_field")
         action = params.get("action", "replace_matched_text")

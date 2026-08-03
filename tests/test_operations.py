@@ -13,8 +13,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from pymarc import Field, Record, Subfield
 
-from marcedit_web.lib import db, operations, sandbox
+from marcedit_web.lib import db, operations, sandbox, transforms
 
 
 SAFE_VISIBLE_KEYS = {
@@ -30,6 +31,59 @@ ADMIN_DIAGNOSTIC_KEYS = {
     "attempt", "lease_owner", "lease_heartbeat_at", "lease_expires_at",
     "cancel_requested_by", "cancel_requested_at",
 }
+
+
+def test_filtered_copy_preserves_sources_shape_and_source_order():
+    record = Record()
+    first = Field(
+        tag="856", indicators=["4", "1"],
+        subfields=[Subfield("3", "JSTOR collection"), Subfield("u", "one")],
+    )
+    other = Field(
+        tag="856", indicators=["4", "0"],
+        subfields=[Subfield("3", "Other"), Subfield("u", "two")],
+    )
+    last = Field(
+        tag="856", indicators=["4", "2"],
+        subfields=[Subfield("u", "three"), Subfield("3", "JSTOR archive")],
+    )
+    record.add_field(first, other, last)
+
+    transforms.copy_field(
+        record,
+        "856",
+        "857",
+        predicate={"subfield_matches": [{
+            "code": "3", "mode": "contains", "value": "JSTOR",
+            "ignore_case": False,
+        }]},
+    )
+
+    assert record.get_fields("856") == [first, other, last]
+    copies = record.get_fields("857")
+    assert [tuple(field.indicators) for field in copies] == [("4", "1"), ("4", "2")]
+    assert [[(sf.code, sf.value) for sf in field.subfields] for field in copies] == [
+        [("3", "JSTOR collection"), ("u", "one")],
+        [("u", "three"), ("3", "JSTOR archive")],
+    ]
+
+
+def test_matched_delete_removes_only_selected_fields():
+    record = Record()
+    selected = Field(tag="655", indicators=[" ", "7"], subfields=[Subfield("a", "Electronic books"), Subfield("2", "local")])
+    retained = Field(tag="655", indicators=[" ", "7"], subfields=[Subfield("a", "Streaming videos"), Subfield("2", "local")])
+    record.add_field(selected, retained)
+
+    transforms.delete_fields_matching_predicate(
+        record,
+        "655",
+        {"subfield_matches": [{
+            "code": "a", "mode": "contains", "value": "Electronic books",
+            "ignore_case": False,
+        }]},
+    )
+
+    assert record.get_fields("655") == [retained]
 
 
 @pytest.fixture

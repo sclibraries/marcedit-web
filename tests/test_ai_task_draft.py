@@ -115,6 +115,37 @@ def test_delete_subfield_if_value_operation_is_valid_for_task_drafts():
     assert review.operations[0].kind == "delete-subfield-if-value"
 
 
+def test_ai_copy_rejects_non_object_field_predicate():
+    review = parse_ai_task_draft(
+        _draft(operations=[{
+            "kind": "copy-field",
+            "params": {
+                "src_tag": "856", "dst_tag": "857", "predicate": [],
+            },
+        }])
+    )
+
+    assert review.operations == ()
+    assert review.rejected_operations[0].reason == (
+        "param 'predicate' must be an object"
+    )
+
+
+def test_ai_copy_rejects_crossing_control_and_data_field_shapes():
+    review = parse_ai_task_draft(
+        _draft(operations=[{
+            "kind": "copy-field",
+            "params": {"src_tag": "001", "dst_tag": "035"},
+        }])
+    )
+
+    assert review.operations == ()
+    assert review.rejected_operations[0].reason == (
+        "copy-field source and destination must both be control fields or "
+        "both be data fields"
+    )
+
+
 def test_ai_draft_editor_ops_round_trip_through_task_builder_markers():
     review = parse_ai_task_draft(
         _draft(

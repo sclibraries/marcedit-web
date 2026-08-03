@@ -53,6 +53,14 @@ GUIDED_VALUE_SCOPE_OPTIONS = (
     ("first", "First selected value"),
     ("last", "Last selected value"),
 )
+FIELD_PREDICATE_MATCH_OPTIONS = (
+    ("contains", "Contains"),
+    ("exact", "Equals"),
+    ("starts_with", "Starts with"),
+    ("ends_with", "Ends with"),
+    ("exists", "Subfield exists"),
+    ("regex", "Regular expression"),
+)
 
 
 def _key(prefix: str, *parts: object) -> str:
@@ -149,6 +157,106 @@ def _move_or_remove(
     ):
         return items[:index] + items[index + 1 :], True
     return items, False
+
+
+def render_field_predicate_params(
+    params: dict,
+    *,
+    key_prefix: str,
+    rerun: Optional[Callable[[], None]] = None,
+) -> None:
+    """Render optional indicator and subfield conditions for one operation."""
+
+    current = copy.deepcopy(params.get("predicate") or {})
+    limited = st.checkbox(
+        "Limit which fields are affected",
+        value=bool(current),
+        key=_key(key_prefix, "predicate_enabled"),
+    )
+    if not limited:
+        params.pop("predicate", None)
+        return
+    st.caption("Every filled condition must match the same source field.")
+    predicate = {}
+    indicator_columns = st.columns(4)
+    for column, (name, label) in zip(
+        indicator_columns,
+        (
+            ("ind1", "Indicator 1 is"),
+            ("ind2", "Indicator 2 is"),
+            ("ind1_not", "Indicator 1 is not"),
+            ("ind2_not", "Indicator 2 is not"),
+        ),
+    ):
+        value = column.text_input(
+            label,
+            value=str(current.get(name, "")),
+            max_chars=1,
+            key=_key(key_prefix, name),
+        )
+        if value != "":
+            predicate[name] = value
+    matches = []
+    rows = list(current.get("subfield_matches") or [])
+    for index, row in enumerate(rows):
+        columns = st.columns([1, 2, 4, 1, 1])
+        code = columns[0].text_input(
+            "Subfield code",
+            value=str(row.get("code", "")),
+            max_chars=1,
+            key=_key(key_prefix, "subfield", index, "code"),
+        )
+        mode_values = [value for value, _label in FIELD_PREDICATE_MATCH_OPTIONS]
+        mode_labels = dict(FIELD_PREDICATE_MATCH_OPTIONS)
+        mode = str(row.get("mode") or "contains")
+        if mode not in mode_values:
+            mode = "contains"
+        mode = columns[1].selectbox(
+            "Match",
+            options=mode_values,
+            index=mode_values.index(mode),
+            format_func=lambda value: mode_labels[value],
+            key=_key(key_prefix, "subfield", index, "mode"),
+        )
+        value = columns[2].text_input(
+            "Value",
+            value=str(row.get("value", "*" if mode == "exists" else "")),
+            key=_key(key_prefix, "subfield", index, "value"),
+        )
+        ignore_case = columns[3].checkbox(
+            "Ignore case",
+            value=bool(row.get("ignore_case", False)),
+            key=_key(key_prefix, "subfield", index, "ignore_case"),
+        )
+        if columns[4].button(
+            "Remove",
+            key=_key(key_prefix, "subfield", index, "remove"),
+        ):
+            params["predicate"] = {
+                **predicate,
+                "subfield_matches": matches + rows[index + 1 :],
+            }
+            _request_rerun(rerun)
+            return
+        matches.append({
+            "code": code,
+            "mode": mode,
+            "value": "*" if mode == "exists" else value,
+            "ignore_case": ignore_case,
+        })
+    if matches:
+        predicate["subfield_matches"] = matches
+    if st.button("Add subfield condition", key=_key(key_prefix, "predicate_add")):
+        predicate.setdefault("subfield_matches", []).append({
+            "code": "",
+            "mode": "contains",
+            "value": "",
+            "ignore_case": False,
+        })
+        params["predicate"] = predicate
+        _request_rerun(rerun)
+        return
+    params["predicate"] = predicate
 
 
 def render_add_field_params(

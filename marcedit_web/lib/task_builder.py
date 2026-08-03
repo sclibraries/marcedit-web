@@ -108,14 +108,18 @@ OPERATIONS_PALETTE: list[dict] = [
     },
     {
         "kind": "delete-by-subfield",
-        "label": "Delete fields matching subfield value",
-        "summary": "Remove fields whose subfield value contains the given text.",
+        "label": "Delete fields matching a field filter",
+        "summary": "Remove only fields selected by indicators or subfield values.",
         "params": [
             {"name": "tag", "label": "Tag", "type": "text", "required": True},
             {
                 "name": "match", "label": "Match (any subfield contains)",
-                "type": "text", "required": True,
+                "type": "text",
                 "placeholder": "e.g. Electronic books",
+            },
+            {
+                "name": "predicate", "label": "Limit which fields are affected",
+                "type": "json", "default": {},
             },
         ],
     },
@@ -338,6 +342,10 @@ OPERATIONS_PALETTE: list[dict] = [
         "params": [
             {"name": "src_tag", "label": "Source tag", "type": "text", "required": True},
             {"name": "dst_tag", "label": "Destination tag", "type": "text", "required": True},
+            {
+                "name": "predicate", "label": "Limit which fields are affected",
+                "type": "json", "default": {},
+            },
         ],
     },
     {
@@ -824,6 +832,17 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
 
     if op.kind == "delete-by-subfield":
         tag = str(p.get("tag", "")).strip()
+        predicate = p.get("predicate")
+        if "predicate" in p and predicate != {}:
+            return (
+                [
+                    "delete_fields_matching_predicate(record, {0}, {1})".format(
+                        lit(tag), data_lit(predicate)
+                    )
+                ],
+                {"delete_fields_matching_predicate"},
+                False,
+            )
         match = str(p.get("match", ""))
         return (
             [f"delete_fields_matching_subfield(record, {lit(tag)}, None, {lit(match)})"],
@@ -1146,8 +1165,14 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
     if op.kind == "copy-field":
         src = str(p.get("src_tag", "")).strip()
         dst = str(p.get("dst_tag", "")).strip()
+        predicate = p.get("predicate")
+        predicate_arg = (
+            ", predicate={0}".format(data_lit(predicate))
+            if "predicate" in p and predicate != {}
+            else ""
+        )
         return (
-            [f"copy_field(record, {lit(src)}, {lit(dst)})"],
+            [f"copy_field(record, {lit(src)}, {lit(dst)}{predicate_arg})"],
             {"copy_field"},
             False,
         )

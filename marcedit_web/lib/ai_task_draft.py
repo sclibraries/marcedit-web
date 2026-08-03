@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from marcedit_web.lib import editor, task_builder
+from marcedit_web.lib.transforms import is_control_tag
 
 
 class DraftValidationError(ValueError):
@@ -228,6 +229,24 @@ def _validate_operation(raw_op: Any, index: int) -> DraftOperation | RejectedOpe
     if regex_error is not None:
         return RejectedOperation(kind, dict(params), regex_error, index, source_text)
 
+    if (
+        kind == "copy-field"
+        and re.fullmatch(r"\d{3}", str(params.get("src_tag", "")))
+        and re.fullmatch(r"\d{3}", str(params.get("dst_tag", "")))
+        and (
+            is_control_tag(str(params.get("src_tag", "")))
+            != is_control_tag(str(params.get("dst_tag", "")))
+        )
+    ):
+        return RejectedOperation(
+            kind,
+            dict(params),
+            "copy-field source and destination must both be control fields or "
+            "both be data fields",
+            index,
+            source_text,
+        )
+
     return DraftOperation(
         kind=kind,
         params=_copy_jsonish(params),
@@ -270,6 +289,12 @@ def _param_type_error(name: str, value: Any, spec: dict) -> str | None:
                 or not isinstance(item[1], str)
             ):
                 return expected
+    if param_type == "json":
+        default = spec.get("default")
+        if isinstance(default, dict) and not isinstance(value, dict):
+            return f"param '{name}' must be an object"
+        if isinstance(default, list) and not isinstance(value, list):
+            return f"param '{name}' must be a list"
     return None
 
 

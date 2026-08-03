@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import copy
+from types import SimpleNamespace
 
 import pytest
 from pymarc import Field, MARCReader, Record, Subfield
 
-from marcedit_web.lib import sandbox, task_authoring, task_builder
+from marcedit_web.lib import sandbox, task_authoring, task_builder, transforms
 from marcedit_web.lib.task_builder import Operation
+from marcedit_web.render import task_authoring as task_authoring_render
 
 
 def _guided_operation(**changes):
@@ -745,6 +747,150 @@ def test_first_subfield_value_is_deterministically_first_field_first_value():
 
     assert task_builder.first_subfield_value(record, "035", "a") == "first"
     assert task_builder.first_subfield_value(record, "035", "z") is None
+
+
+def test_copy_field_predicate_compiles_as_safe_complete_data_literal():
+    operation = {
+        "kind": "copy-field",
+        "params": {
+            "src_tag": "856",
+            "dst_tag": "857",
+            "predicate": {"subfield_matches": [{
+                "code": "3", "mode": "contains", "value": "JSTOR",
+                "ignore_case": False,
+            }]},
+        },
+    }
+
+    assert task_authoring.validate_operation(operation) == ()
+    assert task_authoring.describe_operation(operation) == (
+        "Copy 856 to 857 only when $3 contains JSTOR."
+    )
+    rendered = task_builder.render_ops_to_python([
+        Operation.from_dict(operation)
+    ])["body"]
+    assert "predicate={'subfield_matches': [{'code': '3'" in rendered
+    assert "repr(dict(params))" not in rendered
+
+
+def test_matched_delete_summary_explains_blank_indicator_and_subfield_exists():
+    operation = {
+        "kind": "delete-by-subfield",
+        "params": {
+            "tag": "650",
+            "predicate": {
+                "ind1": " ",
+                "ind2": "6",
+                "subfield_matches": [{
+                    "code": "a", "mode": "exists", "value": "*",
+                    "ignore_case": False,
+                }],
+            },
+        },
+    }
+
+    assert task_authoring.describe_operation(operation) == (
+        "Delete selected 650 fields only when indicator 1 is blank and "
+        "indicator 2 is 6 and $a exists."
+    )
+
+
+def test_copy_field_rejects_predicates_on_control_sources():
+    operation = {
+        "kind": "copy-field",
+        "params": {
+            "src_tag": "001",
+            "dst_tag": "002",
+            "predicate": {"ind1": " "},
+        },
+    }
+
+    assert task_authoring.validate_operation(operation) == (
+        "control fields cannot use indicator or subfield predicates",
+    )
+
+
+def test_copy_field_rejects_crossing_control_and_data_field_shapes():
+    operation = {
+        "kind": "copy-field",
+        "params": {"src_tag": "001", "dst_tag": "035"},
+    }
+
+    assert task_authoring.validate_operation(operation) == (
+        "source and destination must both be control fields or both be data fields",
+    )
+    with pytest.raises(ValueError, match="both be control fields or both be data"):
+        transforms.copy_field(Record(), "001", "035")
+
+
+@pytest.mark.parametrize("predicate", [[], False, None])
+def test_copy_field_rejects_malformed_falsy_predicates(predicate):
+    operation = {
+        "kind": "copy-field",
+        "params": {
+            "src_tag": "856", "dst_tag": "857", "predicate": predicate,
+        },
+    }
+
+    assert task_authoring.validate_operation(operation) == (
+        "field predicate must be an object",
+    )
+    rendered = task_builder.render_ops_to_python([
+        Operation.from_dict(operation)
+    ])["body"]
+    assert "predicate=" in rendered
+
+
+def test_field_predicate_controls_preserve_guided_indicator_and_subfield_rows(
+    monkeypatch,
+):
+    params = {
+        "predicate": {
+            "ind1": "4",
+            "ind2_not": "0",
+            "subfield_matches": [{
+                "code": "3", "mode": "contains", "value": "JSTOR",
+                "ignore_case": False,
+            }],
+        },
+    }
+
+    class Input:
+        def text_input(self, _label, *, value, **_kwargs):
+            return value
+
+        def checkbox(self, _label, *, value, **_kwargs):
+            return value
+
+        def selectbox(self, _label, *, options, index, **_kwargs):
+            return options[index]
+
+        def button(self, *_args, **_kwargs):
+            return False
+
+    control = Input()
+    fake_streamlit = SimpleNamespace(
+        checkbox=control.checkbox,
+        text_input=control.text_input,
+        selectbox=control.selectbox,
+        button=control.button,
+        columns=lambda count: [control] * (count if isinstance(count, int) else len(count)),
+        caption=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(task_authoring_render, "st", fake_streamlit)
+
+    task_authoring_render.render_field_predicate_params(
+        params, key_prefix="op_0"
+    )
+
+    assert params["predicate"] == {
+        "ind1": "4",
+        "ind2_not": "0",
+        "subfield_matches": [{
+            "code": "3", "mode": "contains", "value": "JSTOR",
+            "ignore_case": False,
+        }],
+    }
 
 
 def test_missing_control_preview_obeys_skip_and_fail_policies():

@@ -37,6 +37,12 @@ SUBFIELD_FIXTURE = (
     / "external_task_migration"
     / "subfield-operations.tasksfile.txt"
 )
+TASK_5_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "external_task_migration"
+    / "field-predicate-operations.tasksfile.txt"
+)
 
 
 def _compatibility_manifest():
@@ -46,7 +52,7 @@ def _compatibility_manifest():
 def _exercised_fixtures():
     exercised = {}
     fixture_id = None
-    for fixture in (PARSER_FIXTURE, CORE_FIXTURE, SUBFIELD_FIXTURE):
+    for fixture in (PARSER_FIXTURE, CORE_FIXTURE, SUBFIELD_FIXTURE, TASK_5_FIXTURE):
         for line in fixture.read_text().splitlines():
             if line.startswith("# FIXTURE_ID: "):
                 fixture_id = line.removeprefix("# FIXTURE_ID: ")
@@ -146,6 +152,147 @@ def test_delete_exact_and_wildcard_tags_convert(tag):
 
     assert item.status == "converted"
     assert item.operations == ({"kind": "delete-tag", "params": {"tag": tag}},)
+
+
+def test_filtered_copy_and_plain_matched_delete_emit_predicate_operations():
+    copied = migration.adapt_instruction(
+        "COPY\t856\t857\tfalse\t$3JSTOR\t\tfalse\t"
+    )
+    deleted = migration.adapt_instruction(
+        "DELETE\t655\tElectronic books\t0\tFalse\tFalse\tFalse\tFalse\tFalse"
+    )
+
+    assert copied.status == "converted"
+    assert copied.operations == ({
+        "kind": "copy-field",
+        "params": {
+            "src_tag": "856",
+            "dst_tag": "857",
+            "predicate": {"subfield_matches": [{
+                "code": "3", "mode": "contains", "value": "JSTOR",
+                "ignore_case": False,
+            }]},
+        },
+    },)
+    assert deleted.status == "converted"
+    assert deleted.operations[0]["kind"] == "delete-by-subfield"
+    assert deleted.operations[0]["params"] == {
+        "tag": "655", "match": "Electronic books",
+    }
+
+
+def test_cross_type_unfiltered_copy_blocks_instead_of_losing_control_value():
+    item = migration.adapt_instruction(
+        "COPY\t001\t035\tfalse\t\t\tfalse\t"
+    )
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert item.recommended_operation == "copy-field"
+    assert "control" in item.reason
+    assert item.cataloger_action
+
+
+def test_plain_matched_delete_preserves_any_subfield_scope():
+    record = pymarc.Record()
+    selected = pymarc.Field(
+        tag="655", indicators=[" ", "7"],
+        subfields=[pymarc.Subfield("x", "Electronic books")],
+    )
+    retained = pymarc.Field(
+        tag="655", indicators=[" ", "7"],
+        subfields=[pymarc.Subfield("a", "Streaming video")],
+    )
+    record.add_field(selected, retained)
+
+    item = migration.adapt_instruction(
+        "DELETE\t655\tElectronic books\t0\tFalse\tFalse\tFalse\tFalse\tFalse"
+    )
+    _run_operations(item, record)
+
+    assert item.operations == ({
+        "kind": "delete-by-subfield",
+        "params": {"tag": "655", "match": "Electronic books"},
+    },)
+    assert record.get_fields("655") == [retained]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "COPY\t856\t857\ttrue\t$3JSTOR\t\tfalse\t",
+        "COPY\t856\t857\tfalse\t$3JSTOR\tchanged\tfalse\t",
+        "DELETE\t650\t\\6$a\t0\tTrue\tFalse\tFalse\tFalse\tFalse",
+        "DELETE\t035\t9\\$a(ABC)\t0\tFalse\tFalse\tFalse\tFalse\tFalse",
+    ],
+)
+def test_changed_filter_flags_and_mnemonic_near_misses_block_safely(line):
+    item = migration.adapt_instruction(line)
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert item.recommended_operation in {"copy-field", "delete-by-subfield"}
+    assert isinstance(item.prefilled_params, dict)
+    assert item.cataloger_action
+
+
+@pytest.mark.parametrize(
+    ("line", "predicate"),
+    [
+        (
+            "DELETE\t650\t\\6$a\t0\tFalse\tFalse\tFalse\tFalse\tFalse",
+            {
+                "ind1": " ", "ind2": "6",
+                "subfield_matches": [{
+                    "code": "a", "mode": "exists", "value": "*",
+                    "ignore_case": False,
+                }],
+            },
+        ),
+        (
+            "DELETE\t035\t9\\$a(ABC)\t0\tTrue\tFalse\tFalse\tFalse\tFalse",
+            {
+                "ind1": "9", "ind2": " ",
+                "subfield_matches": [{
+                    "code": "a", "mode": "regex", "value": "(ABC)",
+                    "ignore_case": False,
+                }],
+            },
+        ),
+    ],
+)
+def test_proven_mnemonic_delete_filters_convert_structurally(line, predicate):
+    item = migration.adapt_instruction(line)
+
+    assert item.status == "converted"
+    assert item.operations == ({
+        "kind": "delete-by-subfield",
+        "params": {"tag": line.split("\t")[1], "predicate": predicate},
+    },)
+
+
+def test_mnemonic_delete_removes_only_the_complete_selected_signature():
+    record = pymarc.Record()
+    selected = pymarc.Field(
+        tag="650", indicators=[" ", "6"],
+        subfields=[pymarc.Subfield("a", "Topic")],
+    )
+    wrong_indicator = pymarc.Field(
+        tag="650", indicators=[" ", "7"],
+        subfields=[pymarc.Subfield("a", "Topic")],
+    )
+    missing_subfield = pymarc.Field(
+        tag="650", indicators=[" ", "6"],
+        subfields=[pymarc.Subfield("x", "Topic")],
+    )
+    record.add_field(selected, wrong_indicator, missing_subfield)
+
+    item = migration.adapt_instruction(
+        "DELETE\t650\t\\6$a\t0\tFalse\tFalse\tFalse\tFalse\tFalse"
+    )
+    _run_operations(item, record)
+
+    assert record.get_fields("650") == [wrong_indicator, missing_subfield]
 
 
 @pytest.mark.parametrize(

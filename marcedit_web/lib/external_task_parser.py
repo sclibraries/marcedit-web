@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, replace
 
 
@@ -365,6 +366,11 @@ def parse_instruction(
 
 def instruction_shape(value: ExternalInstruction) -> str:
     """Return a value-neutral compatibility shape identifier."""
+    if value.verb == "COPY" and value.boolean_flags == (False, False):
+        if value.arguments[3].startswith("$"):
+            return "copy-filter-subfield"
+        if not value.arguments[3]:
+            return "copy-unfiltered"
     if value.verb == "SUBFIELD_EDIT":
         find = value.arguments[2]
         replacement = value.arguments[3]
@@ -393,6 +399,22 @@ def instruction_shape(value: ExternalInstruction) -> str:
             if "X" in value.arguments[0].upper()
             else "delete-exact"
         )
+    if (
+        value.verb == "DELETE"
+        and value.arguments[1]
+        and not any(value.boolean_flags)
+        and "$" not in value.arguments[1]
+        and "\\" not in value.arguments[1]
+    ):
+        return "delete-subfield-text"
+    if value.verb == "DELETE" and re.fullmatch(
+        r"[0-9\\][0-9\\]\$[a-z0-9]", value.arguments[1]
+    ) and value.boolean_flags == (False, False, False, False, False):
+        return "delete-mnemonic-exists"
+    if value.verb == "DELETE" and re.fullmatch(
+        r"[0-9\\][0-9\\]\$[a-z0-9].+", value.arguments[1]
+    ) and value.boolean_flags == (True, False, False, False, False):
+        return "delete-mnemonic-regex"
     if value.verb == "ADD" and not value.arguments[3]:
         return {
             100: "add-append",

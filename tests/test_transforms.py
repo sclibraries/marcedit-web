@@ -197,11 +197,11 @@ def test_copy_field_duplicates_with_same_data(record):
 
 def test_copy_field_handles_control_field(record):
     """Control fields use ``.data`` rather than indicators + subfields."""
-    transforms.copy_field(record, "001", "010")
-    f010 = record.get("010")
-    # ``010`` is variable in our rule set but the copy honors the source
-    # shape — a control-field copy keeps ``.data``.
-    assert f010 is not None
+    source = record.get("001")
+    transforms.copy_field(record, "001", "002")
+    copied = record.get("002")
+    assert copied is not None
+    assert copied.data == source.data
 
 
 def test_copy_field_noop_on_missing_source(make_record):

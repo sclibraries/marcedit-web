@@ -100,7 +100,7 @@ def delete_tags(record: Record, *tags: str) -> None:
 
 
 def delete_fields_matching_subfield(
-    record: Record, tag: str, subfield_code: str, contains: str
+    record: Record, tag: str, subfield_code: str | None, contains: str
 ) -> None:
     """Delete fields with `tag` whose `subfield_code` contains `contains`.
 
@@ -110,7 +110,12 @@ def delete_fields_matching_subfield(
     needle = contains.lower()
     keep = []
     for field in record.get_fields(tag):
-        values = " ".join(field.get_subfields(subfield_code)).lower()
+        selected = (
+            field.get_subfields(subfield_code)
+            if subfield_code is not None
+            else [subfield.value for subfield in field.subfields]
+        )
+        values = " ".join(selected).lower()
         if needle not in values:
             keep.append(field)
     record.remove_fields(tag)
@@ -330,7 +335,13 @@ def normalize_oclc_035(value: str) -> str | None:
 # value, so a malicious tag/value can't escape its string literal.
 
 
-def copy_field(record: Record, src_tag: str, dst_tag: str) -> None:
+def copy_field(
+    record: Record,
+    src_tag: str,
+    dst_tag: str,
+    *,
+    predicate: dict | None = None,
+) -> None:
     """Duplicate every ``src_tag`` field as a new ``dst_tag`` field.
 
     Same indicators + same subfields. The original ``src_tag`` field
@@ -338,8 +349,15 @@ def copy_field(record: Record, src_tag: str, dst_tag: str) -> None:
     """
     if not src_tag or not dst_tag:
         return
+    if is_control_tag(src_tag) != is_control_tag(dst_tag):
+        raise ValueError(
+            "source and destination must both be control fields or both be "
+            "data fields"
+        )
     sources = list(record.get_fields(src_tag))
     for field in sources:
+        if predicate is not None and not field_matches(field, predicate):
+            continue
         if field.is_control_field():
             # Control fields have ``.data`` instead of indicators +
             # subfields. Copy that shape.
@@ -351,6 +369,21 @@ def copy_field(record: Record, src_tag: str, dst_tag: str) -> None:
             subfields=[Subfield(code=sf.code, value=sf.value)
                        for sf in field.subfields],
         ))
+
+
+def delete_fields_matching_predicate(
+    record: Record,
+    tag: str,
+    predicate: dict,
+) -> None:
+    """Remove only fields with ``tag`` that satisfy ``predicate``."""
+
+    retained = [
+        field
+        for field in record.fields
+        if field.tag != tag or not field_matches(field, predicate)
+    ]
+    record.fields[:] = retained
 
 
 def move_field(record: Record, src_tag: str, dst_tag: str) -> None:
@@ -672,3 +705,7 @@ def dedupe_035(record: Record) -> None:
 # TASK-180 leaf engine re-export. Keep this import at module scope only after
 # guided_replace is verified not to import marcedit_web.lib.
 from marcedit_web.lib.guided_replace import apply_guided_find_replace  # noqa: E402,F401
+from marcedit_web.lib.field_predicates import (  # noqa: E402,F401
+    field_matches,
+    validate_field_predicate,
+)

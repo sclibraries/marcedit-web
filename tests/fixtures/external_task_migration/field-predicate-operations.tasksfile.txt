@@ -1,0 +1,8 @@
+# FIXTURE_ID: copy-filter-subfield
+COPY	856	857	false	$3JSTOR		false	
+# FIXTURE_ID: delete-subfield-text
+DELETE	655	Electronic books	0	False	False	False	False	False
+# FIXTURE_ID: delete-mnemonic-exists
+DELETE	650	\6$a	0	False	False	False	False	False
+# FIXTURE_ID: delete-mnemonic-regex
+DELETE	035	9\$a(ABC)	0	True	False	False	False	False
