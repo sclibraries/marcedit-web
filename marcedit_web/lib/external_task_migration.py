@@ -186,7 +186,45 @@ def _core_parse_failure(source_line: str, exc: ExternalParseError) -> MigrationI
     if verb == "RDAHELPER":
         reason = exc.message
         serialized = parts[1].split("|") if len(parts) > 1 else []
-        if (
+        if exc.failure_code == "invalid_rda_position_count":
+            count = len(serialized)
+            details = [
+                f"RDAHELPER has {count} serialized values; expected 18"
+            ]
+            enabled_options = []
+            for position in RDA_SWITCH_POSITIONS:
+                if position > count:
+                    break
+                switch = serialized[position - 1]
+                if switch not in {"0", "1"}:
+                    details.append(
+                        "{0} has an unrecognized serialized value; later "
+                        "values were not interpreted".format(
+                            rda_option_label(position)
+                        )
+                    )
+                    break
+                if switch == "1":
+                    enabled_options.append(rda_option_label(position))
+            if enabled_options:
+                details.append(
+                    "Enabled external options in the recognizable prefix: "
+                    + "; ".join(enabled_options)
+                )
+            if count < 18:
+                missing = 18 - count
+                details.append(
+                    f"{missing} serialized "
+                    f"{'value is' if missing == 1 else 'values are'} missing"
+                )
+            elif count > 18:
+                extra = count - 18
+                details.append(
+                    f"{extra} unrecognized extra serialized "
+                    f"{'value' if extra == 1 else 'values'}"
+                )
+            reason = ". ".join(details)
+        elif (
             exc.failure_code == "invalid_rda_switch"
             and exc.failing_position is not None
             and len(serialized) == 18

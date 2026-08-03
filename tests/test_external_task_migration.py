@@ -270,6 +270,64 @@ def test_malformed_rda_switch_names_option_and_other_enabled_intent():
     assert "position" not in item.reason.casefold()
 
 
+@pytest.mark.parametrize(
+    ("enabled_position", "cataloger_label"),
+    [
+        (1, "Add MARC 336 Content Type"),
+        (12, "Modify MARC 040 to add $e rda"),
+    ],
+)
+def test_short_rda_near_miss_preserves_recognizable_enabled_intent(
+    enabled_position, cataloger_label
+):
+    positions = ["0"] * 16
+    positions[enabled_position - 1] = "1"
+    positions.append("language of cataloging")
+
+    item = migration.adapt_instruction(
+        "RDAHELPER\t" + "|".join(positions)
+    )
+
+    assert item.status == "unresolved"
+    assert "17 serialized values; expected 18" in item.reason
+    assert cataloger_label in item.reason
+    assert "1 serialized value is missing" in item.reason
+    assert "position" not in item.reason.casefold()
+
+
+def test_short_rda_near_miss_stops_before_malformed_prefix_value():
+    positions = ["0"] * 16
+    positions[2] = ""
+    positions[11] = "1"
+    positions.append("language of cataloging")
+
+    item = migration.adapt_instruction(
+        "RDAHELPER\t" + "|".join(positions)
+    )
+
+    assert "17 serialized values; expected 18" in item.reason
+    assert "Add MARC 344 Sound Characteristics" in item.reason
+    assert "Modify MARC 040 to add $e rda" not in item.reason
+    assert "position" not in item.reason.casefold()
+
+
+def test_long_rda_near_miss_does_not_guess_extra_value_as_known_intent():
+    positions = ["0"] * 18
+    positions[0] = "1"
+    positions[16] = "language of cataloging"
+    positions.append("1")
+
+    item = migration.adapt_instruction(
+        "RDAHELPER\t" + "|".join(positions)
+    )
+
+    assert "19 serialized values; expected 18" in item.reason
+    assert "Add MARC 336 Content Type" in item.reason
+    assert "1 unrecognized extra serialized value" in item.reason
+    assert "Add a relator term in MARC 100 $e" not in item.reason
+    assert "position" not in item.reason.casefold()
+
+
 def test_unknown_numeric_option_is_not_normalized_to_supported_add_policy():
     item = migration.adapt_instruction("ADD\t506\t1\\$aAccess\t107\t")
 
