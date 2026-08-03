@@ -1,0 +1,8 @@
+# FIXTURE_ID: subfield-edit-prepend
+SUBFIELD_EDIT	856	u	^b	https://proxy/	0|0
+# FIXTURE_ID: subfield-edit-append
+SUBFIELD_EDIT	050	b	^e	eb	0|0
+# FIXTURE_ID: subfield-edit-add-if-missing
+SUBFIELD_EDIT	856	y		Link to resource	101|0
+# FIXTURE_ID: subfield-remove-exact
+SUBFIELD_REMOVE	035	z	(OCoLC)	107|0

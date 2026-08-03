@@ -536,23 +536,162 @@ def adapt_rdahelper(source_line: str) -> MigrationItem:
     )
 
 
+def _is_subfield_target(tag: str, code: str) -> bool:
+    return _is_data_tag(tag) and bool(re.fullmatch(r"[a-z0-9]", code))
+
+
+def _guided_subfield_params(
+    tag: str,
+    code: str,
+    find: str,
+    replacement: str,
+) -> dict[str, Any]:
+    return {
+        "target_kind": "subfield",
+        "tag": tag if _is_data_tag(tag) else "",
+        "subfield": code if re.fullmatch(r"[a-z0-9]", code) else "",
+        "match_mode": "contains",
+        "find": find,
+        "ignore_case": False,
+        "replacement_mode": "matched_text",
+        "replacement": replacement,
+        "occurrences": "all",
+        "value_scope": "all",
+        "condition": "always",
+    }
+
+
+def _subfield_edit_suggestion(
+    source_line: str,
+    *,
+    tag: str,
+    code: str,
+    find: str,
+    replacement: str,
+    reason: str,
+    prefer_guided: bool = False,
+) -> MigrationItem:
+    if not find and not prefer_guided:
+        params = {
+            key: value
+            for key, value in {
+                "tag": tag if _is_data_tag(tag) else "",
+                "code": code if re.fullmatch(r"[a-z0-9]", code) else "",
+                "value": replacement,
+            }.items()
+            if value != ""
+        }
+        return _suggestion(
+            source_line,
+            intent="Add or update a selected MARC subfield when Find is empty",
+            reason=reason,
+            recommended_operation="empty-find-subfield-policy",
+            prefilled_params=params,
+            cataloger_action=(
+                "Open Imported Empty-Find Subfield Policy, choose the intended "
+                "missing/existing-value behavior, and confirm the prefilled value."
+            ),
+        )
+    guided_params = _guided_subfield_params(tag, code, find, replacement)
+    if prefer_guided:
+        guided_params = {
+            name: guided_params[name]
+            for name in ("target_kind", "tag", "subfield")
+        }
+    return _suggestion(
+        source_line,
+        intent="Edit selected MARC subfield values",
+        reason=reason,
+        recommended_operation="guided-find-replace",
+        prefilled_params=guided_params,
+        cataloger_action=(
+            "Open Guided Find and Replace, review the prefilled target and text, "
+            "and choose an explicit supported replacement action."
+        ),
+    )
+
+
+def _subfield_remove_suggestion(
+    source_line: str,
+    *,
+    tag: str,
+    code: str,
+    value: str,
+    reason: str,
+) -> MigrationItem:
+    params = {
+        "tag": tag if _is_data_tag(tag) else "",
+        "code": code if re.fullmatch(r"[a-z0-9]", code) else "",
+        "value": value,
+        "match": "exact",
+        "trim": False,
+        "ignore_case": False,
+    }
+    return _suggestion(
+        source_line,
+        intent="Remove selected MARC subfields whose value matches text",
+        reason=reason,
+        recommended_operation="delete-subfield-if-value",
+        prefilled_params=params,
+        cataloger_action=(
+            "Open Delete Subfield When Value Matches, review the prefilled exact "
+            "comparison, and confirm the unsupported external settings."
+        ),
+    )
+
+
 def adapt_subfield_edit(
     source_line: str,
     *,
     empty_find_choice: str | None = None,
 ) -> MigrationItem:
-    """Convert only literal, nonempty SUBFIELD_EDIT semantics."""
-    parts = source_line.rstrip("\n").split("\t")
-    if len(parts) < 5 or parts[0].strip() != "SUBFIELD_EDIT":
-        return _item(source_line, status="unresolved", reason="not a supported SUBFIELD_EDIT signature")
-    tag, code, find, replacement = parts[1].strip(), parts[2].strip(), parts[3], parts[4]
+    """Convert only complete, evidence-backed SUBFIELD_EDIT semantics."""
+    try:
+        instruction = parse_instruction(source_line)
+    except ExternalParseError as exc:
+        parts = source_line.rstrip("\r\n").split("\t")
+        return _subfield_edit_suggestion(
+            source_line,
+            tag=parts[1].strip() if len(parts) > 1 else "",
+            code=parts[2].strip() if len(parts) > 2 else "",
+            find=parts[3] if len(parts) > 3 else "",
+            replacement=parts[4] if len(parts) > 4 else "",
+            reason=exc.message,
+        )
+    tag, code, find, replacement, _option = instruction.arguments[:5]
+    tag, code = tag.strip(), code.strip()
+    if not _is_subfield_target(tag, code):
+        return _subfield_edit_suggestion(
+            source_line,
+            tag=tag,
+            code=code,
+            find=find,
+            replacement=replacement,
+            reason="tag must be a data field and subfield code must be one lowercase letter or digit",
+        )
+    if "|" in replacement:
+        return _subfield_edit_suggestion(
+            source_line,
+            tag=tag,
+            code=code,
+            find=find,
+            replacement=replacement,
+            reason="pipe-move replacement syntax has no proven structured adapter",
+            prefer_guided=True,
+        )
     if find == "":
+        if empty_find_choice is None and instruction.option_code == 101:
+            empty_find_choice = "add_if_missing"
         if empty_find_choice not in EMPTY_FIND_CHOICES:
-            return _item(
+            return _subfield_edit_suggestion(
                 source_line,
-                status="choice_required",
-                reason="empty Find has no implicit meaning; select an explicit policy",
-                choices=EMPTY_FIND_CHOICES,
+                tag=tag,
+                code=code,
+                find=find,
+                replacement=replacement,
+                reason=(
+                    "empty Find converts automatically only with external option 101|0"
+                ),
             )
         return _item(
             source_line,
@@ -568,16 +707,28 @@ def adapt_subfield_edit(
                 },
             },
         )
-    if find == "^b":
-        return _item(source_line, status="unresolved", reason="^b syntax is not proven")
-    if find.startswith("^"):
-        return _item(
+    if instruction.option_code != 0:
+        return _subfield_edit_suggestion(
             source_line,
-            status="unresolved",
-            reason="caret-prefixed syntax is not proven",
+            tag=tag,
+            code=code,
+            find=find,
+            replacement=replacement,
+            reason="nonempty Find converts automatically only with external option 0|0",
         )
-    if len(tag) != 3 or len(code) != 1:
-        return _item(source_line, status="unresolved", reason="tag or subfield code is malformed")
+    replacement_modes = {"^b": "prepend", "^e": "append"}
+    replacement_mode = replacement_modes.get(find)
+    if find.startswith("^") and replacement_mode is None:
+        return _subfield_edit_suggestion(
+            source_line,
+            tag=tag,
+            code=code,
+            find=find,
+            replacement=replacement,
+            reason="only exact ^b prepend and ^e append caret forms are proven",
+        )
+    match_mode = "none" if replacement_mode else "contains"
+    guided_find = "" if replacement_mode else find
     return _item(
         source_line,
         status="converted",
@@ -587,16 +738,59 @@ def adapt_subfield_edit(
                 "target_kind": "subfield",
                 "tag": tag,
                 "subfield": code,
-                "match_mode": "contains",
-                "find": find,
+                "match_mode": match_mode,
+                "find": guided_find,
                 "ignore_case": False,
-                "replacement_mode": "matched_text",
+                "replacement_mode": replacement_mode or "matched_text",
                 "replacement": replacement,
                 "occurrences": "all",
                 "value_scope": "all",
                 "condition": "always",
             },
         },
+    )
+
+
+def adapt_subfield_remove(source_line: str) -> MigrationItem:
+    """Convert proven 107|0 exact-value subfield removal."""
+    try:
+        instruction = parse_instruction(source_line)
+    except ExternalParseError as exc:
+        parts = source_line.rstrip("\r\n").split("\t")
+        return _subfield_remove_suggestion(
+            source_line,
+            tag=parts[1].strip() if len(parts) > 1 else "",
+            code=parts[2].strip() if len(parts) > 2 else "",
+            value=parts[3] if len(parts) > 3 else "",
+            reason=exc.message,
+        )
+    tag, code, value, _option = instruction.arguments[:4]
+    tag, code = tag.strip(), code.strip()
+    if not _is_subfield_target(tag, code) or value == "":
+        return _subfield_remove_suggestion(
+            source_line,
+            tag=tag,
+            code=code,
+            value=value,
+            reason=(
+                "tag must be a data field, subfield code must be one lowercase "
+                "letter or digit, and match value must be nonempty"
+            ),
+        )
+    return _item(
+        source_line,
+        status="converted",
+        operations=({
+            "kind": "delete-subfield-if-value",
+            "params": {
+                "tag": tag,
+                "code": code,
+                "value": value,
+                "match": "exact",
+                "trim": False,
+                "ignore_case": False,
+            },
+        },),
     )
 
 
@@ -651,17 +845,34 @@ ADAPTER_REGISTRY = {
     "DELETE": adapt_delete,
     "RDAHELPER": adapt_rdahelper,
     "SUBFIELD_EDIT": adapt_subfield_edit,
+    "SUBFIELD_REMOVE": adapt_subfield_remove,
     "REPLACE": adapt_replace,
     "SORTBY": adapt_sortby,
     "buildnewfield": adapt_build_field,
 }
 
 COMPATIBILITY_ADAPTER_REGISTRY = {
-    "subfield-edit-v1": CompatibilityAdapter(
+    "subfield-edit-v2": CompatibilityAdapter(
         adapter=adapt_subfield_edit,
         verbs=("SUBFIELD_EDIT",),
-        shape_ids=("subfield-edit-literal",),
-        fixture_ids=("subfield-edit-literal",),
+        shape_ids=(
+            "subfield-edit-literal",
+            "subfield-edit-prepend",
+            "subfield-edit-append",
+            "subfield-edit-add-if-missing",
+        ),
+        fixture_ids=(
+            "subfield-edit-literal",
+            "subfield-edit-prepend",
+            "subfield-edit-append",
+            "subfield-edit-add-if-missing",
+        ),
+    ),
+    "subfield-remove-v1": CompatibilityAdapter(
+        adapter=adapt_subfield_remove,
+        verbs=("SUBFIELD_REMOVE",),
+        shape_ids=("subfield-remove-exact",),
+        fixture_ids=("subfield-remove-exact",),
     ),
     "delete-v1": CompatibilityAdapter(
         adapter=adapt_delete,

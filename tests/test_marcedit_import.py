@@ -94,7 +94,7 @@ def test_buildnewfield_flags_remain_visible_and_unresolved():
     assert "recreate with structured Build Field" in result.body
 
 
-def test_empty_find_subfield_edit_is_unresolved_not_python_replace():
+def test_empty_find_subfield_edit_maps_to_explicit_add_if_missing():
     source = (
         "#DESCRIPTION#Synthetic empty-find safety\n"
         "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0\n"
@@ -105,15 +105,14 @@ def test_empty_find_subfield_edit_is_unresolved_not_python_replace():
         description_fallback="",
     )
 
-    assert result.unsupported == [
-        "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0",
-    ]
+    assert result.unsupported == []
     assert "sf.value.replace(''," not in result.body
-    assert "# OP: custom" in result.body
-    assert "empty Find has no implicit meaning" in result.body
+    assert "# OP: empty-find-subfield-policy" in result.body
+    assert "apply_empty_find_subfield_policy" in result.body
+    assert '"policy": "add_if_missing"' in result.body
 
 
-def test_unproven_caret_b_subfield_edit_remains_unresolved():
+def test_caret_b_subfield_edit_maps_to_guided_prepend():
     source = (
         "SUBFIELD_EDIT\t856\tu\t^b\t"
         "http://libproxy.smith.edu/login?url=\t0|0\n"
@@ -123,11 +122,9 @@ def test_unproven_caret_b_subfield_edit_remains_unresolved():
         name="caret-b",
         description_fallback="",
     )
-    assert result.unsupported == [
-        "SUBFIELD_EDIT\t856\tu\t^b\t"
-        "http://libproxy.smith.edu/login?url=\t0|0",
-    ]
-    assert "^b syntax is not proven" in result.body
+    assert result.unsupported == []
+    assert "# OP: guided-find-replace" in result.body
+    assert '"replacement_mode": "prepend"' in result.body
     assert "sf.value.replace('^b'," not in result.body
 
 
@@ -144,7 +141,23 @@ def test_unproven_caret_prefixed_subfield_edit_remains_unresolved():
     )
 
     assert result.unsupported == [source.rstrip("\n")]
-    assert "caret-prefixed syntax is not proven" in result.body
+    assert "only exact ^b prepend and ^e append caret forms are proven" in result.body
+
+
+def test_subfield_remove_maps_to_exact_value_deletion():
+    source = "SUBFIELD_REMOVE\t035\tz\t(OCoLC)\t107|0\n"
+
+    result = marcedit_import.convert_tasksfile_text(
+        source,
+        name="remove-035-z",
+        description_fallback="",
+    )
+
+    assert result.unsupported == []
+    assert "# OP: delete-subfield-if-value" in result.body
+    assert "delete_subfields_matching_value" in result.body
+    assert '"match": "exact"' in result.body
+    assert '"trim": false' in result.body
 
 
 def test_nonempty_subfield_edit_maps_to_guided_contract():

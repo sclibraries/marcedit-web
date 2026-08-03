@@ -131,6 +131,53 @@ def test_prepend_has_no_find_or_regex_and_runs_once_per_selected_value():
     assert result["matched_occurrences"] == 0
 
 
+@pytest.mark.parametrize(
+    ("replacement_mode", "replacement", "expected"),
+    [
+        ("prepend", "prefix:", ["prefix:one", "prefix:two"]),
+        ("append", ":suffix", ["one:suffix", "two:suffix"]),
+    ],
+)
+def test_prepend_append_changes_existing_values_across_fields_only(
+    replacement_mode, replacement, expected
+):
+    record = Record()
+    record.add_field(Field(
+        tag="856",
+        indicators=["4", "0"],
+        subfields=[Subfield("u", "one")],
+    ))
+    record.add_field(Field(
+        tag="856",
+        indicators=["4", "1"],
+        subfields=[Subfield("u", "two")],
+    ))
+    record.add_field(Field(
+        tag="856",
+        indicators=["4", "0"],
+        subfields=[Subfield("y", "missing source")],
+    ))
+
+    guided_replace.apply_guided_find_replace(
+        record,
+        **_params(
+            tag="856",
+            subfield="u",
+            match_mode="none",
+            find="",
+            replacement_mode=replacement_mode,
+            replacement=replacement,
+        ),
+    )
+
+    assert [
+        value
+        for field in record.get_fields("856")
+        for value in field.get_subfields("u")
+    ] == expected
+    assert record.get_fields("856")[2].get_subfields("u") == []
+
+
 def test_preexisting_generated_call_without_value_scope_still_changes_all():
     """Earlier saved task bodies retain their established all-values scope."""
 

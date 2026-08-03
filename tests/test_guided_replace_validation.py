@@ -2,7 +2,12 @@ from pathlib import Path
 import subprocess
 
 import pytest
-from marcedit_web.lib import guided_replace_validation, sandbox
+from marcedit_web.lib import (
+    external_task_migration,
+    guided_replace_validation,
+    sandbox,
+    task_authoring,
+)
 
 
 def _result(tmp_path, *, errors=None, **changes):
@@ -31,6 +36,26 @@ def _operation_params(**changes):
     }
     params.update(changes)
     return params
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "SUBFIELD_EDIT\t856\tu\tOld\tNew\t0|0",
+        "SUBFIELD_EDIT\t856\tu\t^b\thttps://proxy/\t0|0",
+        "SUBFIELD_EDIT\t050\tb\t^e\teb\t0|0",
+        "SUBFIELD_EDIT\t856\ty\t\tLink to resource\t101|0",
+        "SUBFIELD_REMOVE\t035\tz\t(OCoLC)\t107|0",
+    ],
+)
+def test_automatic_subfield_adapter_outputs_are_valid_authoring_operations(line):
+    item = external_task_migration.adapt_instruction(line)
+
+    assert item.status == "converted"
+    assert all(
+        task_authoring.validate_operation(operation) == ()
+        for operation in item.operations
+    )
 
 
 def test_oversized_request_is_rejected_before_raw_validator(monkeypatch):

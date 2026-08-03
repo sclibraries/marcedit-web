@@ -392,31 +392,76 @@ def _emit_sortby(_: list[str]) -> HandlerEmission:
     )
 
 
+def _emit_adapted_subfield_operation(
+    item: external_task_migration.MigrationItem,
+    verb: str,
+) -> HandlerEmission:
+    if item.status != "converted" or item.operation is None:
+        return HandlerEmission(
+            code=(
+                f"# TODO: {verb} {item.reason} — recreate with an explicit "
+                "guided action"
+            ),
+        )
+    kind = item.operation["kind"]
+    params = item.operation["params"]
+    if kind == "guided-find-replace":
+        body = (
+            "apply_guided_find_replace(record, "
+            f"target_kind={lit(params['target_kind'])}, "
+            f"tag={lit(params['tag'])}, "
+            f"subfield={lit(params['subfield'])}, "
+            f"match_mode={lit(params['match_mode'])}, "
+            f"find={lit(params['find'])}, "
+            f"ignore_case={lit(params['ignore_case'])}, "
+            f"replacement_mode={lit(params['replacement_mode'])}, "
+            f"replacement={lit(params['replacement'])}, "
+            f"occurrences={lit(params['occurrences'])}, "
+            f"value_scope={lit(params['value_scope'])})"
+        )
+        imports = {"apply_guided_find_replace"}
+    elif kind == "empty-find-subfield-policy":
+        body = (
+            "apply_empty_find_subfield_policy("
+            f"record, {lit(params['tag'])}, {lit(params['code'])}, "
+            f"{lit(params['value'])}, {lit(params['policy'])})"
+        )
+        imports = {"apply_empty_find_subfield_policy"}
+    elif kind == "delete-subfield-if-value":
+        body = (
+            "delete_subfields_matching_value("
+            f"record, {lit(params['tag'])}, {lit(params['code'])}, "
+            f"{lit(params['value'])}, match={lit(params['match'])}, "
+            f"trim={lit(params['trim'])}, "
+            f"ignore_case={lit(params['ignore_case'])})"
+        )
+        imports = {"delete_subfields_matching_value"}
+    else:
+        return HandlerEmission(
+            code=f"# TODO: {verb} converted to an unsupported operation kind",
+        )
+    return HandlerEmission(
+        code=body,
+        imports=imports,
+        op_kind=kind,
+        op_params=params,
+    )
+
+
 def _emit_subfield_edit(parts: list[str]) -> HandlerEmission:
     """SUBFIELD_EDIT\t<tag>\t<subfield>\t<find>\t<replace>\t…"""
     if len(parts) < 5:
         return HandlerEmission(code=None)
-    source_line = "\t".join(parts)
-    item = external_task_migration.adapt_subfield_edit(source_line)
-    if item.status != "converted" or item.operation is None:
-        return HandlerEmission(
-            code=f"# TODO: SUBFIELD_EDIT {item.reason} — recreate with an explicit guided action",
-        )
-    params = item.operation["params"]
-    body = (
-        "apply_guided_find_replace(record, "
-        f"target_kind={lit(params['target_kind'])}, tag={lit(params['tag'])}, "
-        f"subfield={lit(params['subfield'])}, match_mode={lit(params['match_mode'])}, "
-        f"find={lit(params['find'])}, ignore_case=False, "
-        f"replacement_mode='matched_text', replacement={lit(params['replacement'])}, "
-        "occurrences='all', value_scope='all')"
-    )
-    return HandlerEmission(
-        code=body,
-        imports={"apply_guided_find_replace"},
-        op_kind="guided-find-replace",
-        op_params=params,
-    )
+    item = external_task_migration.adapt_subfield_edit("\t".join(parts))
+    return _emit_adapted_subfield_operation(item, "SUBFIELD_EDIT")
+
+
+def _emit_subfield_remove(parts: list[str]) -> HandlerEmission:
+    """SUBFIELD_REMOVE\t<tag>\t<subfield>\t<value>\t<option>."""
+    if len(parts) < 4:
+        return HandlerEmission(code=None)
+    item = external_task_migration.adapt_subfield_remove("\t".join(parts))
+    return _emit_adapted_subfield_operation(item, "SUBFIELD_REMOVE")
 
 
 _HANDLERS = {
@@ -426,6 +471,7 @@ _HANDLERS = {
     "buildnewfield": _emit_buildnewfield,
     "SORTBY": _emit_sortby,
     "SUBFIELD_EDIT": _emit_subfield_edit,
+    "SUBFIELD_REMOVE": _emit_subfield_remove,
 }
 
 

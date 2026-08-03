@@ -31,6 +31,12 @@ CORE_FIXTURE = (
     / "external_task_migration"
     / "core-automatic.tasksfile.txt"
 )
+SUBFIELD_FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "external_task_migration"
+    / "subfield-operations.tasksfile.txt"
+)
 
 
 def _compatibility_manifest():
@@ -40,7 +46,7 @@ def _compatibility_manifest():
 def _exercised_fixtures():
     exercised = {}
     fixture_id = None
-    for fixture in (PARSER_FIXTURE, CORE_FIXTURE):
+    for fixture in (PARSER_FIXTURE, CORE_FIXTURE, SUBFIELD_FIXTURE):
         for line in fixture.read_text().splitlines():
             if line.startswith("# FIXTURE_ID: "):
                 fixture_id = line.removeprefix("# FIXTURE_ID: ")
@@ -515,7 +521,26 @@ def test_delete_and_sort_effects_compare_complete_field_lists():
     ]
 
 
-def test_nonempty_subfield_edit_converts_to_guided_operation_with_provenance():
+@pytest.mark.parametrize(
+    ("find", "replacement", "mode"),
+    [
+        ("Old", "New", "matched_text"),
+        ("^b", "https://proxy/", "prepend"),
+        ("^e", "eb", "append"),
+    ],
+)
+def test_subfield_special_forms_convert(find, replacement, mode):
+    line = f"SUBFIELD_EDIT\t856\tu\t{find}\t{replacement}\t0|0"
+
+    item = migration.adapt_instruction(line)
+
+    assert item.status == "converted"
+    assert item.operations[0]["params"]["replacement_mode"] == mode
+    assert item.instruction_sha256
+    assert item.source_line == line
+
+
+def test_literal_subfield_edit_preserves_matched_text_parameters():
     line = "SUBFIELD_EDIT\t035\ta\tTFeba\t(SCTFEBA)\t0|0"
 
     item = migration.adapt_instruction(line)
@@ -527,14 +552,34 @@ def test_nonempty_subfield_edit_converts_to_guided_operation_with_provenance():
     assert item.source_line == line
 
 
-def test_empty_find_requires_one_explicit_choice_and_never_executes():
+def test_empty_find_101_adds_only_when_missing():
     line = "SUBFIELD_EDIT\t856\ty\t\tSmith: Link to resource\t101|0"
 
     item = migration.adapt_instruction(line)
 
-    assert item.status == "choice_required"
-    assert item.choices == migration.EMPTY_FIND_CHOICES
-    assert item.operation is None
+    assert item.status == "converted"
+    assert item.operations == ({
+        "kind": "empty-find-subfield-policy",
+        "params": {
+            "tag": "856",
+            "code": "y",
+            "value": "Smith: Link to resource",
+            "policy": "add_if_missing",
+        },
+    },)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "SUBFIELD_EDIT\t856\tu\tOld\tNew\t0|0\t",
+        "SUBFIELD_REMOVE\t035\tz\t(OCoLC)\t107|0\t",
+    ],
+)
+def test_subfield_adapters_accept_parser_approved_empty_surplus(line):
+    item = migration.adapt_instruction(line)
+
+    assert item.status == "converted"
 
 
 def test_selected_empty_find_choice_becomes_explicit_operation():
@@ -547,29 +592,226 @@ def test_selected_empty_find_choice_becomes_explicit_operation():
     assert item.operation["params"]["policy"] == "ensure_one"
 
 
-def test_unproven_external_syntax_remains_blocking():
-    line = "SUBFIELD_EDIT\t856\tu\t^b\thttps://proxy/\t0|0"
-
+@pytest.mark.parametrize(
+    ("line", "recommended_operation"),
+    [
+        ("SUBFIELD_EDIT\t856\tu\t^c\tz\t0|0", "guided-find-replace"),
+        (
+            "SUBFIELD_EDIT\t856\tu\t^bhttp://\thttps://proxy/\t0|0",
+            "guided-find-replace",
+        ),
+        (
+            "SUBFIELD_EDIT\t260\tc\t\t008|7|. ?u|\t0|0",
+            "guided-find-replace",
+        ),
+        (
+            "SUBFIELD_EDIT\t856\ty\tOld\tNew\t101|0",
+            "guided-find-replace",
+        ),
+        (
+            "SUBFIELD_EDIT\t856\ty\t\tNew\t999|0",
+            "empty-find-subfield-policy",
+        ),
+        (
+            "SUBFIELD_EDIT\t85X\tu\tOld\tNew\t0|0",
+            "guided-find-replace",
+        ),
+        (
+            "SUBFIELD_EDIT\t856\tupper\tOld\tNew\t0|0",
+            "guided-find-replace",
+        ),
+        (
+            "SUBFIELD_EDIT\t856\tu\tOld\tNew",
+            "guided-find-replace",
+        ),
+    ],
+)
+def test_subfield_edit_near_misses_are_actionable_blockers(
+    line, recommended_operation
+):
     item = migration.adapt_instruction(line)
 
     assert item.status == "unresolved"
-    assert "not proven" in item.reason
+    assert item.intent
+    assert item.reason
+    assert item.recommended_operation == recommended_operation
+    assert isinstance(item.prefilled_params, dict)
+    assert item.cataloger_action
 
 
-def test_any_unproven_caret_prefixed_find_remains_blocking():
-    line = "SUBFIELD_EDIT\t856\tu\t^bhttp://\thttps://proxy/\t0|0"
+def test_pipe_move_blocker_explains_why_it_cannot_convert():
+    item = migration.adapt_instruction(
+        "SUBFIELD_EDIT\t260\tc\t\t008|7|. ?u|\t0|0"
+    )
 
+    assert "pipe-move" in item.reason
+    assert item.prefilled_params == {
+        "target_kind": "subfield",
+        "tag": "260",
+        "subfield": "c",
+    }
+
+
+def test_subfield_remove_107_converts_to_exact_value_deletion():
+    item = migration.adapt_instruction(
+        "SUBFIELD_REMOVE\t035\tz\t(OCoLC)\t107|0"
+    )
+
+    assert item.status == "converted"
+    assert item.operations == ({
+        "kind": "delete-subfield-if-value",
+        "params": {
+            "tag": "035",
+            "code": "z",
+            "value": "(OCoLC)",
+            "match": "exact",
+            "trim": False,
+            "ignore_case": False,
+        },
+    },)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "SUBFIELD_REMOVE\t035\tz\t(OCoLC)\t108|0",
+        "SUBFIELD_REMOVE\t03X\tz\t(OCoLC)\t107|0",
+        "SUBFIELD_REMOVE\t035\tupper\t(OCoLC)\t107|0",
+        "SUBFIELD_REMOVE\t035\tz\t(OCoLC)",
+    ],
+)
+def test_subfield_remove_near_misses_are_actionable_blockers(line):
     item = migration.adapt_instruction(line)
 
     assert item.status == "unresolved"
-    assert "caret-prefixed" in item.reason
+    assert item.intent
+    assert item.reason
+    assert item.recommended_operation == "delete-subfield-if-value"
+    assert isinstance(item.prefilled_params, dict)
+    assert item.cataloger_action
+
+
+@pytest.mark.parametrize("mode", ["prepend", "append"])
+def test_subfield_special_forms_change_selected_values_without_creating_source(
+    mode,
+):
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(
+        tag="856",
+        indicators=["4", "0"],
+        subfields=[pymarc.Subfield("u", "one"), pymarc.Subfield("y", "First")],
+    ))
+    record.add_field(pymarc.Field(
+        tag="856",
+        indicators=["4", "1"],
+        subfields=[pymarc.Subfield("u", "two")],
+    ))
+    record.add_field(pymarc.Field(
+        tag="856",
+        indicators=["4", "0"],
+        subfields=[pymarc.Subfield("y", "No URL")],
+    ))
+    marker = "prefix:" if mode == "prepend" else ":suffix"
+    find = "^b" if mode == "prepend" else "^e"
+
+    _run_operations(
+        migration.adapt_instruction(
+            f"SUBFIELD_EDIT\t856\tu\t{find}\t{marker}\t0|0"
+        ),
+        record,
+    )
+
+    expected = (
+        ["prefix:one", "prefix:two"]
+        if mode == "prepend"
+        else ["one:suffix", "two:suffix"]
+    )
+    assert [
+        value
+        for field in record.get_fields("856")
+        for value in field.get_subfields("u")
+    ] == expected
+    assert record.get_fields("856")[2].get_subfields("u") == []
+
+
+def test_empty_find_101_adds_once_only_to_fields_missing_the_subfield():
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(
+        tag="856",
+        indicators=["4", "0"],
+        subfields=[pymarc.Subfield("u", "one"), pymarc.Subfield("y", "Existing")],
+    ))
+    record.add_field(pymarc.Field(
+        tag="856",
+        indicators=["4", "1"],
+        subfields=[pymarc.Subfield("u", "two")],
+    ))
+
+    _run_operations(
+        migration.adapt_instruction(
+            "SUBFIELD_EDIT\t856\ty\t\tLink to resource\t101|0"
+        ),
+        record,
+    )
+
+    assert [
+        field.get_subfields("y") for field in record.get_fields("856")
+    ] == [["Existing"], ["Link to resource"]]
+
+
+def test_subfield_remove_preserves_fields_nonmatches_and_other_subfields():
+    record = pymarc.Record()
+    record.add_field(pymarc.Field(
+        tag="035",
+        indicators=[" ", " "],
+        subfields=[
+            pymarc.Subfield("a", "keep-a"),
+            pymarc.Subfield("z", "(OCoLC)"),
+            pymarc.Subfield("z", "keep-z"),
+            pymarc.Subfield("z", "(OCoLC)"),
+            pymarc.Subfield("z", " (OCoLC) "),
+        ],
+    ))
+    record.add_field(pymarc.Field(
+        tag="035",
+        indicators=[" ", " "],
+        subfields=[
+            pymarc.Subfield("a", "second"),
+            pymarc.Subfield("z", "not a match"),
+        ],
+    ))
+
+    _run_operations(
+        migration.adapt_instruction(
+            "SUBFIELD_REMOVE\t035\tz\t(OCoLC)\t107|0"
+        ),
+        record,
+    )
+
+    assert _field_list(record) == [
+        (
+            "035",
+            (" ", " "),
+            (("a", "keep-a"), ("z", "keep-z"), ("z", " (OCoLC) ")),
+        ),
+        (
+            "035",
+            (" ", " "),
+            (("a", "second"), ("z", "not a match")),
+        ),
+    ]
 
 
 def test_review_preserves_source_order_and_unknown_lines():
-    review = migration.build_review("DELETE\t001\nSUBFIELD_EDIT\t035\ta\tX\tY\n")
+    review = migration.build_review(
+        "DELETE\t001\nSUBFIELD_EDIT\t035\ta\tX\tY\t0|0\n"
+    )
     items = review.items
 
-    assert [item.source_line for item in items] == ["DELETE\t001", "SUBFIELD_EDIT\t035\ta\tX\tY"]
+    assert [item.source_line for item in items] == [
+        "DELETE\t001",
+        "SUBFIELD_EDIT\t035\ta\tX\tY\t0|0",
+    ]
     assert items[0].status == "unresolved"
     assert items[1].status == "converted"
     assert len(review.blocking_items) == 1
@@ -577,18 +819,21 @@ def test_review_preserves_source_order_and_unknown_lines():
     assert "SUBFIELD_EDIT" in migration.ADAPTER_REGISTRY
 
 
-def test_review_keeps_blocking_source_provenance_and_choices():
+def test_review_keeps_blocking_source_provenance_and_suggestions():
     review = migration.build_review(
-        "SUBFIELD_EDIT\t856\tu\tfoo\tbar\n"
-        "SUBFIELD_EDIT\t856\tu\t\tbar\n"
+        "SUBFIELD_EDIT\t856\tu\tfoo\tbar\t0|0\n"
+        "SUBFIELD_EDIT\t856\tu\t\tbar\t0|0\n"
         "REPLACE\t(=856)\t=956\n"
     )
     assert [item.status for item in review.items] == [
-        "converted", "choice_required", "unresolved"
+        "converted", "unresolved", "unresolved"
     ]
     assert review.items[1].source_line.startswith("SUBFIELD_EDIT")
     assert len(review.items[1].instruction_sha256) == 64
-    assert review.items[1].choices == migration.EMPTY_FIND_CHOICES
+    assert review.items[1].recommended_operation == (
+        "empty-find-subfield-policy"
+    )
+    assert review.items[1].cataloger_action
 
 
 def test_proven_known_replace_and_sortby_signatures_convert():

@@ -365,13 +365,26 @@ def parse_instruction(
 
 def instruction_shape(value: ExternalInstruction) -> str:
     """Return a value-neutral compatibility shape identifier."""
+    if value.verb == "SUBFIELD_EDIT":
+        find = value.arguments[2]
+        replacement = value.arguments[3]
+        if value.option_code == 101 and not find:
+            return "subfield-edit-add-if-missing"
+        if value.option_code == 0 and "|" not in replacement:
+            if find == "^b":
+                return "subfield-edit-prepend"
+            if find == "^e":
+                return "subfield-edit-append"
     if (
         value.verb == "SUBFIELD_EDIT"
         and value.option_code == 0
         and value.arguments[2]
         and not value.arguments[2].startswith("^")
+        and "|" not in value.arguments[3]
     ):
         return "subfield-edit-literal"
+    if value.verb == "SUBFIELD_REMOVE" and value.option_code == 107:
+        return "subfield-remove-exact"
     if value.verb == "DELETE" and not value.arguments[1] and not any(
         value.boolean_flags
     ):

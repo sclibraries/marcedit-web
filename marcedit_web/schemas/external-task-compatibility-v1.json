@@ -2,10 +2,16 @@
   "schema_version": 1,
   "adapters": [
     {
-      "adapter_id": "subfield-edit-v1",
+      "adapter_id": "subfield-edit-v2",
       "verbs": ["SUBFIELD_EDIT"],
-      "shape_ids": ["subfield-edit-literal"],
-      "fixture_ids": ["subfield-edit-literal"]
+      "shape_ids": ["subfield-edit-literal", "subfield-edit-prepend", "subfield-edit-append", "subfield-edit-add-if-missing"],
+      "fixture_ids": ["subfield-edit-literal", "subfield-edit-prepend", "subfield-edit-append", "subfield-edit-add-if-missing"]
+    },
+    {
+      "adapter_id": "subfield-remove-v1",
+      "verbs": ["SUBFIELD_REMOVE"],
+      "shape_ids": ["subfield-remove-exact"],
+      "fixture_ids": ["subfield-remove-exact"]
     },
     {
       "adapter_id": "delete-v1",
