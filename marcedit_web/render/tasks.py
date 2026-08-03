@@ -1509,6 +1509,16 @@ def _render_form_editor() -> None:
     previews = st.session_state.setdefault(K_GUIDED_REPLACE_PREVIEWS, {})
     store = session.current_store()
 
+    blocker_count = len(task_authoring.migration_blockers(operations))
+    if blocker_count:
+        st.warning(
+            "Needs migration review — resolve {0} imported {1} before "
+            "previewing or running this task.".format(
+                blocker_count,
+                "instruction" if blocker_count == 1 else "instructions",
+            )
+        )
+
     if not is_admin and any(
         operation.get("kind") == "custom" for operation in operations
     ):
@@ -1624,6 +1634,7 @@ def _save_callback(tasks_dir: Path) -> None:
     mode = st.session_state.get(K_EDITOR_MODE, "form")
     visibility = st.session_state.get(K_EDITOR_VISIBILITY, "private")
     user = session.current_user_id()
+    needs_migration_review = False
 
     if _ai_draft_save_blocked_for_new_task():
         st.session_state[K_SAVE_ERROR] = (
@@ -1638,8 +1649,15 @@ def _save_callback(tasks_dir: Path) -> None:
             validation_errors = task_authoring.validate_operations(raw_ops)
             if validation_errors:
                 raise ValueError("\n".join(validation_errors))
+            needs_migration_review = bool(
+                task_authoring.migration_blockers(raw_ops)
+            )
             ops = [
-                Operation.from_dict(op)
+                Operation.from_dict(
+                    task_authoring.normalize_operation(op)
+                    if op.get("kind") == "migration-blocker"
+                    else op
+                )
                 for op in raw_ops
             ]
             rendered = task_builder.render_ops_to_python(ops)
@@ -1693,7 +1711,11 @@ def _save_callback(tasks_dir: Path) -> None:
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
     _clear_marcedit_import_result()
     _reset_operation_dialog_state()
-    st.session_state[K_SAVE_SUCCESS] = f"Saved `{name}`."
+    st.session_state[K_SAVE_SUCCESS] = (
+        f"Saved `{name}`. Needs migration review."
+        if needs_migration_review
+        else f"Saved `{name}`."
+    )
     is_admin = task_admin.is_admin(user)
     audit_event(
         "task-saved",

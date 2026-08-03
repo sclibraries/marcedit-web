@@ -585,6 +585,72 @@ def _form_save_state(tasks_render, operations):
     }
 
 
+def _migration_blocker():
+    return {
+        "kind": "migration-blocker",
+        "params": {
+            "intent": "Edit control field 001",
+            "reason": "Exact external mode is unproven",
+            "suggestion": {
+                "operation_kind": "set-control-field",
+                "prefilled_params": {"tag": "001"},
+            },
+            "instruction_sha256": "a" * 64,
+        },
+    }
+
+
+def test_form_save_persists_blocker_and_labels_migration_review(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update(
+        _form_save_state(tasks_render, [_migration_blocker()])
+    )
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+
+    tasks_render._save_callback(tmp_path)
+
+    assert len(saved) == 1
+    assert "# OP: migration-blocker" in saved[0]["body"]
+    assert fake_st.session_state[tasks_render.K_SAVE_SUCCESS] == (
+        "Saved `structured-fields`. Needs migration review."
+    )
+
+
+def test_queued_submission_rejects_marker_before_constructing_task_spec(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    rendered = tasks_render.task_builder.render_ops_to_python([
+        tasks_render.Operation.from_dict(_migration_blocker())
+    ])
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {
+            "name": "blocked",
+            "description": "",
+            "body": rendered["body"],
+        },
+    )
+    submitted = []
+    monkeypatch.setattr(
+        tasks_render.operation_submission,
+        "submit_quick_load_task_run",
+        lambda **kwargs: submitted.append(kwargs),
+    )
+    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: False)
+
+    tasks_render._submit_queued_run(["blocked"], tmp_path)
+
+    assert submitted == []
+    assert any("Resolve 1 imported instruction" in error for error in fake_st.errors)
+
+
 def test_incomplete_kept_card_blocks_task_save_with_ordinal(monkeypatch, tmp_path):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)

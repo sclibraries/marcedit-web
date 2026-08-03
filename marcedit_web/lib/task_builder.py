@@ -1403,6 +1403,24 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             "apply_structural_find_replace(record, **" + data_lit(dict(p)) + ")"
         ], {"apply_structural_find_replace"}, False)
 
+    if op.kind == "migration-blocker":
+        def comment_value(value: object) -> str:
+            return " ".join(str(value or "").split())
+
+        suggestion = p.get("suggestion")
+        operation_kind = (
+            suggestion.get("operation_kind", "")
+            if isinstance(suggestion, dict)
+            else ""
+        )
+        return ([
+            "# Needs migration review.",
+            "# Intent: " + comment_value(p.get("intent")),
+            "# Reason: " + comment_value(p.get("reason")),
+            "# Suggested operation: " + comment_value(operation_kind),
+            "pass",
+        ], set(), False)
+
     if op.kind == "custom":
         code = p.get("code") or ""
         lines = code.splitlines() or ["pass"]

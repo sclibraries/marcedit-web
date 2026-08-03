@@ -12,7 +12,7 @@ from typing import Any
 
 import pymarc
 
-from . import operations, sandbox, task_diff
+from . import operations, sandbox, task_authoring, task_builder, task_diff
 from .record_store import RecordStore
 
 logger = logging.getLogger("marcedit_web.operation_runner")
@@ -424,6 +424,19 @@ def _parse_tasks(request: dict[str, Any]) -> tuple[sandbox.TaskSpec, ...]:
             raise OperationRunError(
                 "invalid-request", "Operation tasks are invalid."
             )
+        parsed_operations = task_builder.parse_ops_from_source(body)
+        if parsed_operations["form_editable"]:
+            try:
+                task_authoring.assert_runnable_operations(
+                    [
+                        operation.to_dict()
+                        for operation in parsed_operations["ops"]
+                    ]
+                )
+            except ValueError as exc:
+                raise OperationRunError(
+                    "migration-review-required", str(exc)
+                ) from exc
         parsed.append(
             sandbox.TaskSpec(name=name, body=body, imports=list(imports))
         )

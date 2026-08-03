@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, TypeVar
@@ -127,6 +128,24 @@ def normalize_operation(op: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize an exact legacy Add/Build operation for structured editing."""
 
     normalized = copy.deepcopy(dict(op))
+    if normalized.get("kind") == "migration-blocker":
+        params_value = normalized.setdefault("params", {})
+        if not isinstance(params_value, Mapping):
+            raise ValueError("operation parameters must be an object")
+        params = dict(params_value)
+        normalized["params"] = params
+        for name in ("intent", "reason"):
+            value = params.get(name)
+            if isinstance(value, str):
+                params[name] = " ".join(value.split())
+        suggestion_value = params.get("suggestion")
+        if isinstance(suggestion_value, Mapping):
+            suggestion = copy.deepcopy(dict(suggestion_value))
+            operation_kind = suggestion.get("operation_kind")
+            if isinstance(operation_kind, str):
+                suggestion["operation_kind"] = operation_kind.strip()
+            params["suggestion"] = suggestion
+        return normalized
     if normalized.get("kind") == "guided-find-replace":
         return normalize_guided_replace_operation(normalized)
     if normalized.get("kind") not in {"add-field", "build-field"}:
@@ -181,33 +200,45 @@ def normalize_operations_for_editor(
     return normalized
 
 
-_UNRESOLVED_ADD_BUILD_PREFIXES = (
-    "# TODO: buildnewfield template ",
-    "# TODO: unresolved ADD option(s);",
-    "# TODO: invalid ADD ",
-    "# TODO: ADD with unsupported condition ",
-    "# TODO: malformed 'ADD' ",
-    "# TODO: malformed 'buildnewfield' ",
-)
-
-
-def unresolved_add_build_instructions(body: str) -> tuple[str, ...]:
-    """Return only unresolved Add/Build markers that block submission."""
+def migration_blockers(
+    operations: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Return copied structured migration blockers in source order."""
 
     return tuple(
-        line.strip()
-        for line in body.splitlines()
-        if line.strip().startswith(_UNRESOLVED_ADD_BUILD_PREFIXES)
+        copy.deepcopy(dict(operation))
+        for operation in operations
+        if operation.get("kind") == "migration-blocker"
+    )
+
+
+def assert_runnable_operations(
+    operations: Sequence[Mapping[str, Any]],
+) -> None:
+    """Reject an operation list while imported instructions need review."""
+
+    blockers = migration_blockers(operations)
+    if not blockers:
+        return
+    noun = "instruction" if len(blockers) == 1 else "instructions"
+    raise ValueError(
+        "Resolve {0} imported {1} before previewing or running this task."
+        .format(len(blockers), noun)
     )
 
 
 def submission_preflight_issues(body: str) -> tuple[str, ...]:
     """Return pure marker-aware issues that block task submission."""
 
-    issues = list(unresolved_add_build_instructions(body))
+    issues = []
     superseded_issues = set()
     parsed = task_builder.parse_ops_from_source(body)
     if parsed["form_editable"]:
+        operations = [operation.to_dict() for operation in parsed["ops"]]
+        try:
+            assert_runnable_operations(operations)
+        except ValueError as exc:
+            issues.append(str(exc))
         for index, op in enumerate(parsed["ops"], start=1):
             if (
                 op.kind == "subfield-replace"
@@ -222,9 +253,7 @@ def submission_preflight_issues(body: str) -> tuple[str, ...]:
                     "Operation {0}: Find is required".format(index)
                 )
         issues.extend(
-            validate_operations(
-                [operation.to_dict() for operation in parsed["ops"]]
-            )
+            validate_operations(operations)
         )
     return tuple(
         issue
@@ -276,6 +305,77 @@ def _validate_code(value: object, label: str) -> list[str]:
     return []
 
 
+def _is_safe_literal(value: object) -> bool:
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, (list, tuple)):
+        return all(_is_safe_literal(item) for item in value)
+    if isinstance(value, Mapping):
+        return all(
+            isinstance(key, str) and _is_safe_literal(item)
+            for key, item in value.items()
+        )
+    return False
+
+
+def _validate_migration_blocker(
+    op: Mapping[str, Any],
+) -> tuple[str, ...]:
+    params = op.get("params") or {}
+    errors = []
+    allowed_params = {
+        "intent",
+        "reason",
+        "suggestion",
+        "instruction_sha256",
+    }
+    unexpected = sorted(set(params) - allowed_params)
+    if unexpected:
+        errors.append(
+            "migration blocker parameters contain unexpected keys: {0}"
+            .format(", ".join(unexpected))
+        )
+    for name in ("intent", "reason"):
+        value = params.get(name)
+        if not isinstance(value, str):
+            errors.append("{0} must be text".format(name))
+        elif not " ".join(value.split()):
+            errors.append("{0} is required".format(name))
+    suggestion = params.get("suggestion")
+    if not isinstance(suggestion, Mapping):
+        errors.append("suggestion must be an object")
+    else:
+        unexpected_suggestion = sorted(
+            set(suggestion) - {"operation_kind", "prefilled_params"}
+        )
+        if unexpected_suggestion:
+            errors.append(
+                "suggestion contains unexpected keys: {0}".format(
+                    ", ".join(unexpected_suggestion)
+                )
+            )
+        operation_kind = suggestion.get("operation_kind")
+        if not isinstance(operation_kind, str):
+            errors.append("suggested operation kind must be text")
+        elif not operation_kind.strip():
+            errors.append("suggested operation kind is required")
+        elif not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", operation_kind):
+            errors.append("suggested operation kind is invalid")
+        prefilled = suggestion.get("prefilled_params")
+        if not isinstance(prefilled, Mapping):
+            errors.append("suggested prefilled parameters must be an object")
+        elif not _is_safe_literal(prefilled):
+            errors.append("suggested prefilled parameters must use safe literals")
+    digest = params.get("instruction_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        errors.append(
+            "instruction digest must be 64 lowercase hexadecimal characters"
+        )
+    return tuple(errors)
+
+
 def validate_operation(
     op: Mapping[str, Any],
     *,
@@ -289,6 +389,8 @@ def validate_operation(
         return (str(authoring_error),)
     if not isinstance(op.get("params", {}), Mapping):
         return ("operation parameters must be an object",)
+    if kind == "migration-blocker":
+        return _validate_migration_blocker(op)
     entry = next(
         (
             item
@@ -1014,6 +1116,7 @@ def preview_operation(
 ) -> AuthoringPreview:
     """Preview one operation without mutating the loaded record."""
 
+    assert_runnable_operations([op])
     errors = validate_operation(op)
     if errors:
         return AuthoringPreview("error", "", "; ".join(errors))

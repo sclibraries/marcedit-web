@@ -16,6 +16,29 @@ import pytest
 from marcedit_web.lib import db, operation_runner, operations, sandbox
 
 
+def test_queued_runner_reconstruction_rejects_saved_migration_blocker():
+    body = (
+        '# OP: migration-blocker {"instruction_sha256":"' + "a" * 64
+        + '","intent":"Edit control field 001",'
+        '"reason":"Exact external mode is unproven",'
+        '"suggestion":{"operation_kind":"set-control-field",'
+        '"prefilled_params":{"tag":"001"}}}\n'
+        '# Needs migration review\npass'
+    )
+    request = {
+        "version": 1,
+        "tasks": [{"name": "blocked", "body": body, "imports": []}],
+    }
+
+    with pytest.raises(
+        operation_runner.OperationRunError,
+        match="Resolve 1 imported instruction",
+    ) as exc_info:
+        operation_runner._parse_tasks(request)
+
+    assert exc_info.value.code == "migration-review-required"
+
+
 def _mrc_bytes(count: int) -> bytes:
     output = io.BytesIO()
     writer = pymarc.MARCWriter(output)

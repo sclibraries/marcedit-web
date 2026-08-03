@@ -159,3 +159,25 @@ def test_compile_definition_rejects_renderer_todo_output(monkeypatch):
         match="produced unsupported code",
     ):
         native_tasks.compile_definition(_definition("delete-and-sort.json"))
+
+
+def test_native_runnable_compilation_rejects_migration_blocker(monkeypatch):
+    blocker = native_tasks.task_builder.Operation(
+        "migration-blocker",
+        {
+            "intent": "Edit control field 001",
+            "reason": "Exact external mode is unproven",
+            "suggestion": {
+                "operation_kind": "set-control-field",
+                "prefilled_params": {"tag": "001"},
+            },
+            "instruction_sha256": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(native_tasks, "_operation_for_step", lambda _step: blocker)
+
+    with pytest.raises(
+        native_tasks.NativeDefinitionError,
+        match="Resolve 2 imported instructions",
+    ):
+        native_tasks.compile_definition(_definition("delete-and-sort.json"))

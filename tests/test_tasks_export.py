@@ -749,10 +749,22 @@ def test_literal_guided_submission_does_not_require_preview(
     assert len(submitted) == 1
 
 
-def test_unresolved_add_build_task_is_not_submitted(monkeypatch, tmp_path):
+def test_historical_add_build_todo_does_not_trigger_marker_gate(
+    monkeypatch, tmp_path
+):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render()
     monkeypatch.setattr(tasks_render, "st", fake_st)
+    source = tmp_path / "current.mrc"
+    source.write_bytes(b"records")
+    store = SimpleNamespace(path=source, count=lambda: 1)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "owner@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_filename", lambda: "vendor.mrc"
+    )
     monkeypatch.setattr(
         tasks_render.editor,
         "parse_user_task_file",
@@ -767,14 +779,12 @@ def test_unresolved_add_build_task_is_not_submitted(monkeypatch, tmp_path):
     monkeypatch.setattr(
         tasks_render.operation_submission,
         "submit_quick_load_task_run",
-        lambda **kwargs: submitted.append(kwargs),
+        lambda **kwargs: submitted.append(kwargs) or {"id": 47},
     )
 
     tasks_render._submit_queued_run(["needs-review"], tmp_path)
 
-    assert submitted == []
-    assert "cannot run" in fake_st.errors[-1]
-    assert "Build Field" in fake_st.errors[-1]
+    assert len(submitted) == 1
 
 
 def test_saved_empty_find_marker_is_not_submitted(monkeypatch, tmp_path):

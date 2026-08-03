@@ -31,6 +31,95 @@ def _guided_operation(**changes):
     return {"kind": "guided-find-replace", "params": params}
 
 
+def _migration_blocker(**param_changes):
+    params = {
+        "intent": "Edit control field 001",
+        "reason": "Exact external mode is unproven",
+        "suggestion": {
+            "operation_kind": "set-control-field",
+            "prefilled_params": {"tag": "001"},
+        },
+        "instruction_sha256": "a" * 64,
+    }
+    params.update(param_changes)
+    return {"kind": "migration-blocker", "params": params}
+
+
+def test_migration_blocker_round_trips_as_inert_marker_and_never_runs():
+    blocker = Operation.from_dict(_migration_blocker())
+
+    rendered = task_builder.render_ops_to_python([blocker])
+    reopened = task_builder.parse_ops_from_source(rendered["body"])
+
+    assert reopened["ops"][0].to_dict() == blocker.to_dict()
+    assert all(
+        not line.strip() or line.lstrip().startswith("#") or line.strip() == "pass"
+        for line in rendered["body"].splitlines()
+    )
+    with pytest.raises(ValueError, match="Resolve 1 imported instruction"):
+        task_authoring.assert_runnable_operations([blocker.to_dict()])
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"intent": "  \n "}, "intent is required"),
+        ({"reason": 7}, "reason must be text"),
+        ({"suggestion": {"operation_kind": "", "prefilled_params": {}}},
+         "suggested operation kind is required"),
+        ({
+            "suggestion": {
+                "operation_kind": "set-control-field",
+                "prefilled_params": {"position": float("nan")},
+            }
+         }, "safe literals"),
+        ({"instruction_sha256": "A" * 64}, "instruction digest"),
+    ],
+)
+def test_migration_blocker_validates_user_facing_fields_and_digest(
+    change, message
+):
+    assert any(
+        message in error
+        for error in task_authoring.validate_operation(
+            _migration_blocker(**change)
+        )
+    )
+
+
+def test_migration_blocker_normalizes_display_text_without_mutating_input():
+    blocker = _migration_blocker(
+        intent="  Edit   control\nfield 001  ",
+        reason=" Exact external mode\t is unproven ",
+    )
+    original = copy.deepcopy(blocker)
+
+    normalized = task_authoring.normalize_operation(blocker)
+
+    assert normalized["params"]["intent"] == "Edit control field 001"
+    assert normalized["params"]["reason"] == "Exact external mode is unproven"
+    assert blocker == original
+
+
+def test_migration_blocker_explanation_cannot_escape_inert_comments():
+    blocker = Operation.from_dict(_migration_blocker(
+        intent="Review source\nrecord.remove_fields('001')",
+        reason="Confirm mode\nraise RuntimeError('unsafe')",
+    ))
+
+    body = task_builder.render_ops_to_python([blocker])["body"]
+
+    assert all(
+        line.lstrip().startswith("#") or line.strip() == "pass"
+        for line in body.splitlines()
+    )
+
+
+def test_per_operation_preview_rejects_migration_blocker_with_shared_gate():
+    with pytest.raises(ValueError, match="Resolve 1 imported instruction"):
+        task_authoring.preview_operation(_migration_blocker(), _source_record())
+
+
 def test_guided_summary_promises_to_keep_both_sides_of_match():
     assert task_authoring.describe_guided_replace(
         _guided_operation()
@@ -421,11 +510,8 @@ def test_unconvertible_legacy_build_stays_visible_in_editor_state():
         "# TODO: malformed 'buildnewfield' — buildnewfield",
     ],
 )
-def test_only_unresolved_add_build_markers_are_execution_blocking(line):
-    assert task_authoring.unresolved_add_build_instructions(line) == (line,)
-    assert task_authoring.unresolved_add_build_instructions(
-        "# TODO: REPLACE arbitrary regex"
-    ) == ()
+def test_historical_todo_comments_do_not_block_without_operation_marker(line):
+    assert task_authoring.submission_preflight_issues(line) == ()
 
 
 def test_submission_preflight_composes_add_build_and_empty_find_issues():
@@ -442,9 +528,8 @@ def test_submission_preflight_composes_add_build_and_empty_find_issues():
         ]
     )
     issues = task_authoring.submission_preflight_issues(body)
-    assert len(issues) == 2
-    assert "buildnewfield" in issues[0]
-    assert "empty Find" in issues[1]
+    assert len(issues) == 1
+    assert "empty Find" in issues[0]
 
 
 def test_preflight_does_not_pattern_match_arbitrary_python_source():
