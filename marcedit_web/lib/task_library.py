@@ -164,3 +164,98 @@ def create_folder(
     )
     return _folder_dict(row)
 
+
+def _task_row(conn, task_id: int):
+    row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if row is None:
+        raise ValueError("task not found")
+    return row
+
+
+def move_task(
+    actor: str,
+    *,
+    task_id: int,
+    folder_id: int,
+    expected_revision: int,
+) -> dict[str, Any]:
+    """Move a visible task to a compatible folder with optimistic locking."""
+    db.init_schema()
+    with db.connect() as conn:
+        task = _task_row(conn, task_id)
+        if task["owner_email"] != actor and task["visibility"] != "shared":
+            raise ValueError("task is not accessible")
+        folder = conn.execute(
+            "SELECT * FROM task_folders WHERE id=?", (folder_id,)
+        ).fetchone()
+        if folder is None:
+            raise ValueError("folder is not accessible")
+        if task["visibility"] == "shared" and folder["scope"] != "shared":
+            raise ValueError("shared task requires a shared folder")
+        if task["visibility"] == "private" and (
+            folder["scope"] != "personal" or folder["owner_email"] != actor
+        ):
+            raise ValueError("private task requires its owner's personal folder")
+        if int(task["revision"]) != int(expected_revision):
+            raise ValueError("task changed; refresh before moving it")
+        now = _now()
+        cursor = conn.execute(
+            "UPDATE tasks SET folder_id=?, revision=revision+1, updated_at=?"
+            " WHERE id=? AND revision=?",
+            (folder_id, now, task_id, expected_revision),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("task changed; refresh before moving it")
+        updated = _task_row(conn, task_id)
+    audit.audit_event(
+        "task-folder-moved",
+        user=actor,
+        task_id=task_id,
+        owner_email=task["owner_email"],
+        old_folder_id=task["folder_id"],
+        new_folder_id=folder_id,
+    )
+    return {key: updated[key] for key in updated.keys()}
+
+
+def rename_task(
+    actor: str,
+    *,
+    task_id: int,
+    new_name: str,
+    expected_revision: int,
+) -> dict[str, Any]:
+    """Rename an owned task in place, preserving ID/folder/history."""
+    from . import editor
+
+    if not editor.is_valid_slug(new_name):
+        raise ValueError("invalid task name: use lowercase letters, digits, and hyphens")
+    db.init_schema()
+    with db.connect() as conn:
+        task = _task_row(conn, task_id)
+        if task["owner_email"] != actor:
+            raise ValueError("only the task owner can rename it")
+        if int(task["revision"]) != int(expected_revision):
+            raise ValueError("task changed; refresh before renaming it")
+        now = _now()
+        try:
+            cursor = conn.execute(
+                "UPDATE tasks SET name=?, revision=revision+1, updated_at=?"
+                " WHERE id=? AND owner_email=? AND revision=?",
+                (new_name, now, task_id, actor, expected_revision),
+            )
+        except Exception as exc:
+            if "UNIQUE" in str(exc).upper():
+                raise ValueError("a task with that name already exists") from exc
+            raise
+        if cursor.rowcount != 1:
+            raise ValueError("task changed; refresh before renaming it")
+        updated = _task_row(conn, task_id)
+    audit.audit_event(
+        "task-renamed",
+        user=actor,
+        task_id=task_id,
+        old_name=task["name"],
+        new_name=new_name,
+    )
+    return {key: updated[key] for key in updated.keys()}

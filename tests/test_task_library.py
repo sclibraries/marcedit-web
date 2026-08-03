@@ -81,3 +81,43 @@ def test_shared_folder_creation_rejects_personal_parent_and_is_audited():
             parent_id=99999,
             name="Imports",
         )
+
+
+def test_task_move_and_rename_preserve_id_folder_and_increment_revision():
+    db.init_schema()
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="strip-029",
+        description="Drop 029",
+        body="pass\n",
+    )
+    before = task_db.get_task("alice@example.edu", "strip-029")
+    personal_root = next(
+        folder for folder in task_library.list_folder_tree("alice@example.edu")
+        if folder["scope"] == "personal" and folder["parent_id"] is None
+    )
+    child = task_library.create_folder(
+        "alice@example.edu",
+        scope="personal",
+        parent_id=personal_root["id"],
+        name="Imports",
+    )
+
+    moved = task_library.move_task(
+        "alice@example.edu",
+        task_id=before["id"],
+        folder_id=child["id"],
+        expected_revision=before["revision"],
+    )
+    renamed = task_library.rename_task(
+        "alice@example.edu",
+        task_id=before["id"],
+        new_name="strip-029-imported",
+        expected_revision=moved["revision"],
+    )
+
+    assert renamed["id"] == before["id"]
+    assert renamed["folder_id"] == child["id"]
+    assert renamed["revision"] == before["revision"] + 2
+    assert task_db.get_task("alice@example.edu", "strip-029") is None
+    assert task_db.get_task("alice@example.edu", "strip-029-imported")["id"] == before["id"]
