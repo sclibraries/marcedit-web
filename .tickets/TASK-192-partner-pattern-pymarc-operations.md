@@ -1,0 +1,30 @@
+Title: Convert repeated partner-task patterns into deterministic pymarc operations
+
+Parent: TASK-174
+
+Design: [Partner-corpus pattern migration](../docs/superpowers/specs/2026-08-03-task-192-partner-pattern-pymarc-operations-design.md)
+
+Scope:
+- Recognize reviewed multi-instruction patterns in the TASK-191 partner corpus
+  and convert them into concise native operations.
+- Add deterministic pymarc-backed operations for per-source-field creation,
+  institution mappings, explicit field copying, generalized predicates, and
+  explicit subfield actions.
+- Preserve source ranges and actionable blockers when semantics are unproven.
+- Keep arbitrary Python and opaque external option numbers out of stored native
+  task definitions.
+
+Success Criteria:
+- Reviewed repeated 856 and 945-949 workflows convert to concise editable
+  operations with equivalent golden-record output.
+- Every newly accepted external signature has before/after evidence and a
+  characterization test; repetition alone is never treated as proof.
+- Preview reports matched, created, replaced, and skipped counts and enforces a
+  per-record expansion bound.
+- Missing TASK_LIST dependencies remain actionable and are never guessed.
+- The complete partner corpus has a checked-in converted/blocker report with
+  zero silent omissions and zero blockers without a next action.
+- Supported Python 3.9 Docker tests and independent review pass with no
+  unreported skips or unresolved Critical/Important findings.
+
+Status: Todo
