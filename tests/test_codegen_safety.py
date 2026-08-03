@@ -232,7 +232,7 @@ def _sample_record_bytes() -> bytes:
 
 @pytest.mark.parametrize("label,text", MALICIOUS_CASES, ids=[c[0] for c in MALICIOUS_CASES])
 def test_malicious_tasksfile_does_not_execute_canary(label, text, tmp_path):
-    """End-to-end: convert → sandbox-run → canary file must not exist.
+    """End-to-end: blocked migration never reaches sandbox execution.
 
     Many payloads embed ``open(os.environ["MARCEDIT_CANARY"], "w")`` —
     a v2 bare-interpolation regression would actually run that and
@@ -257,18 +257,14 @@ def test_malicious_tasksfile_does_not_execute_canary(label, text, tmp_path):
         body=result.body or "pass",
         imports=[prelude] + result.imports,
     )
-    sandbox_result = run_tasks_subprocess(
-        [task],
-        _sample_record_bytes(),
-        timeout=10.0,
-        tmp_dir=tmp_path / "sandbox",
-    )
-    # The sandbox must not have created the canary — meaning no payload
-    # escaped into running code.
-    assert not canary.exists(), (
-        f"{label}: sandbox executed an injected payload "
-        f"(canary {canary} was created). stderr={sandbox_result.stderr!r}"
-    )
+    with pytest.raises(ValueError, match="Resolve .* imported instruction"):
+        run_tasks_subprocess(
+            [task],
+            _sample_record_bytes(),
+            timeout=10.0,
+            tmp_dir=tmp_path / "sandbox",
+        )
+    assert not canary.exists()
 
 
 # ---------------------------------------------------------------------------

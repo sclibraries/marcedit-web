@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import re
 from dataclasses import dataclass
@@ -72,6 +73,57 @@ class MigrationReview:
             if item.status == "converted"
             for operation in item.operations
         )
+
+
+@dataclass(frozen=True)
+class MigrationSummary:
+    converted: int
+    blocking: int
+
+
+@dataclass(frozen=True)
+class MigrationProvenance:
+    source_entry: str
+    line_number: int
+    source_line: str
+    instruction_sha256: str
+    status: str
+
+
+@dataclass(frozen=True)
+class MigrationDraft:
+    task_name: str
+    description: str
+    operations: tuple[dict[str, Any], ...]
+    summary: MigrationSummary
+    disclosures: tuple[str, ...]
+    provenance: tuple[MigrationProvenance, ...]
+
+    @property
+    def status(self) -> str:
+        return "needs_review" if self.summary.blocking else "draft_ready"
+
+    def to_session_dict(self) -> dict[str, Any]:
+        return {
+            "task_name": self.task_name,
+            "description": self.description,
+            "operations": copy.deepcopy(list(self.operations)),
+            "summary": {
+                "converted": self.summary.converted,
+                "blocking": self.summary.blocking,
+            },
+            "disclosures": list(self.disclosures),
+            "provenance": [
+                {
+                    "source_entry": item.source_entry,
+                    "line_number": item.line_number,
+                    "source_line": item.source_line,
+                    "instruction_sha256": item.instruction_sha256,
+                    "status": item.status,
+                }
+                for item in self.provenance
+            ],
+        }
 
 
 class CompatibilityContractError(ValueError):
@@ -1416,3 +1468,63 @@ def review_tasksfile(text: str) -> tuple[MigrationItem, ...]:
 
 def build_review(text: str) -> MigrationReview:
     return MigrationReview(items=review_tasksfile(text))
+
+
+def build_migration_draft(
+    text: str,
+    *,
+    task_name: str,
+    description: str,
+    source_entry: str = "",
+) -> MigrationDraft:
+    """Build one side-effect-free editable draft through the adapter registry."""
+
+    operations: list[dict[str, Any]] = []
+    provenance: list[MigrationProvenance] = []
+    disclosures: list[str] = []
+    converted = 0
+    blocking = 0
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        item = adapt_instruction(line)
+        if item.status == "converted":
+            converted += 1
+            operations.extend(copy.deepcopy(list(item.operations)))
+            if item.disclosure and item.disclosure not in disclosures:
+                disclosures.append(item.disclosure)
+        else:
+            blocking += 1
+            operations.append({
+                "kind": "migration-blocker",
+                "params": {
+                    "intent": item.intent or "Review an external instruction",
+                    "reason": item.reason or "Exact external behavior is unproven",
+                    "suggestion": {
+                        "operation_kind": (
+                            item.recommended_operation or "choose-operation"
+                        ),
+                        "prefilled_params": copy.deepcopy(
+                            item.prefilled_params or {}
+                        ),
+                    },
+                    "instruction_sha256": item.instruction_sha256,
+                },
+            })
+        provenance.append(MigrationProvenance(
+            source_entry=source_entry,
+            line_number=line_number,
+            source_line=item.source_line,
+            instruction_sha256=item.instruction_sha256,
+            status=item.status,
+        ))
+
+    return MigrationDraft(
+        task_name=task_name,
+        description=description,
+        operations=tuple(operations),
+        summary=MigrationSummary(converted=converted, blocking=blocking),
+        disclosures=tuple(disclosures),
+        provenance=tuple(provenance),
+    )

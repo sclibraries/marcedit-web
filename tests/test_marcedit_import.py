@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from marcedit_web.lib import marcedit_import
+from marcedit_web.lib import marcedit_import, task_authoring
 
 
 def test_dropped_handlers_are_gone():
@@ -21,7 +21,7 @@ def test_dropped_handlers_are_gone():
 
 
 def test_convert_simple_delete():
-    src = "DELETE\t029\n"
+    src = "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n"
     result = marcedit_import.convert_tasksfile_text(src, description_fallback="", name="delete-029")
     assert result.name == "delete-029"
     assert "delete_tags" in result.body
@@ -45,8 +45,8 @@ def test_build_full_task_file_uses_new_import_path():
     assert "from marc_processing" not in rendered
 
 
-def test_add_with_empty_priority_and_known_condition_is_exact():
-    src = "ADD\t877\t\\\\$mMap\t\t/=LDR.{8}[e,f].+/\n"
+def test_add_with_proven_conditional_policy_is_exact():
+    src = "ADD\t877\t\\\\$mMap\t106\t/=LDR.{8}[e,f].+/\n"
     result = marcedit_import.convert_tasksfile_text(
         src, name="map", description_fallback=""
     )
@@ -68,20 +68,20 @@ def test_structurally_invalid_add_lines_remain_unresolved(line):
     result = marcedit_import.convert_tasksfile_text(
         line + "\n", name="invalid-add", description_fallback=""
     )
-    assert result.unsupported == [line.rstrip()]
-    assert "# TODO: invalid ADD" in result.body
+    assert result.unsupported == [line]
+    assert "# OP: migration-blocker" in result.body
 
 
 def test_add_with_unmapped_numeric_priority_remains_blocking():
-    src = "ADD\t877\t\\\\$mMap\t106\t/=LDR.{8}[e,f].+/\n"
+    src = "ADD\t877\t\\\\$mMap\t107\t/=LDR.{8}[e,f].+/\n"
     result = marcedit_import.convert_tasksfile_text(
         src, name="map", description_fallback=""
     )
     assert result.unsupported == [src.rstrip()]
-    assert "unresolved ADD option" in result.body
+    assert "# OP: migration-blocker" in result.body
 
 
-def test_buildnewfield_flags_remain_visible_and_unresolved():
+def test_proven_buildnewfield_flags_convert_to_structured_operation():
     line = (
         "buildnewfield\t=876  \\\\$aB({003}){001}-SC$lInternet"
         "\tFalse\tFalse\tTrue\tFalse"
@@ -89,9 +89,10 @@ def test_buildnewfield_flags_remain_visible_and_unresolved():
     result = marcedit_import.convert_tasksfile_text(
         line + "\n", name="holdings", description_fallback=""
     )
-    assert result.unsupported == [line]
-    assert repr(line.split("\t")[1]) in result.body
-    assert "recreate with structured Build Field" in result.body
+    assert result.unsupported == []
+    assert result.draft is not None
+    assert result.draft.operations[0]["kind"] == "build-field"
+    assert "# OP: build-field" in result.body
 
 
 def test_empty_find_subfield_edit_maps_to_explicit_add_if_missing():
@@ -220,3 +221,111 @@ def test_convert_task_archive_within_caps_succeeds(tmp_path):
     assert result.archive_errors == []
     assert len(result.entries) == 1
     assert result.entries[0].success
+
+
+def test_fully_converted_archive_entry_returns_editable_draft(tmp_path):
+    source = (
+        "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n"
+        "SORTBY\tALL\tTrue\tTrue\n"
+    )
+    path = _build_archive(tmp_path, [("core.tasksfile.txt", source)])
+
+    result = marcedit_import.convert_task_archive(path)
+
+    entry = result.entries[0]
+    assert entry.status == "draft_ready"
+    assert entry.task_name == "core-tasksfile"
+    assert entry.summary.converted == 2
+    assert entry.summary.blocking == 0
+    assert [operation["kind"] for operation in entry.operations] == [
+        "delete-tag",
+        "sort-fields",
+    ]
+    assert [item.line_number for item in entry.provenance] == [1, 2]
+    assert all(item.source_entry == "core.tasksfile.txt" for item in entry.provenance)
+
+
+def test_partial_archive_entry_preserves_blocker_in_exact_source_order(tmp_path):
+    source = (
+        "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n"
+        "UNKNOWN\tapparent external intent\n"
+        "SORTBY\tALL\tTrue\tTrue\n"
+    )
+    path = _build_archive(tmp_path, [("mixed.tasksfile.txt", source)])
+
+    result = marcedit_import.convert_task_archive(path)
+
+    entry = result.entries[0]
+    assert entry.status == "needs_review"
+    assert entry.summary.converted == 2
+    assert entry.summary.blocking == 1
+    assert [operation["kind"] for operation in entry.operations] == [
+        "delete-tag",
+        "migration-blocker",
+        "sort-fields",
+    ]
+    with pytest.raises(ValueError, match="Resolve 1 imported instruction"):
+        task_authoring.assert_runnable_operations(list(entry.operations))
+
+
+def test_blocked_archive_entry_does_not_discard_valid_sibling(tmp_path):
+    path = _build_archive(tmp_path, [
+        ("valid.txt", "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n"),
+        ("blocked.txt", "UNKNOWN\texternal intent\n"),
+    ])
+
+    result = marcedit_import.convert_task_archive(path)
+
+    assert result.archive_errors == []
+    assert [entry.status for entry in result.entries] == [
+        "draft_ready",
+        "needs_review",
+    ]
+    assert [entry.task_name for entry in result.entries] == ["valid", "blocked"]
+
+
+def test_text_conversion_uses_registry_for_every_instruction():
+    source = (
+        "DELETE\t029\t\t0\tFalse\tFalse\tFalse\tFalse\tFalse\n"
+        "RDAHELPER\t1|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|language of cataloging|0\n"
+        "SORTBY\tALL\tTrue\tTrue\n"
+    )
+
+    result = marcedit_import.convert_tasksfile_text(
+        source,
+        name="registry-backed",
+        description_fallback="",
+    )
+
+    assert result.draft is not None
+    assert result.draft.summary.converted == 3
+    assert result.unsupported == []
+    assert [operation["kind"] for operation in result.draft.operations] == [
+        "delete-tag",
+        "rda-classify-material",
+        "sort-fields",
+    ]
+    assert result.draft.disclosures == (
+        "Smith open equivalent; not a byte-for-byte external emulation",
+    )
+
+
+def test_duplicate_archive_entry_names_remain_distinct_drafts(tmp_path):
+    source = "SORTBY\tALL\tTrue\tTrue\n"
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        path = _build_archive(tmp_path, [
+            ("duplicate.txt", source),
+            ("duplicate.txt", source),
+        ])
+
+    result = marcedit_import.convert_task_archive(path)
+
+    assert result.archive_errors == []
+    assert [entry.entry_name for entry in result.entries] == [
+        "duplicate.txt",
+        "duplicate.txt",
+    ]
+    assert [entry.status for entry in result.entries] == [
+        "draft_ready",
+        "draft_ready",
+    ]

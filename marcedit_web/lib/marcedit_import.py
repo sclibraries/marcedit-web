@@ -1,20 +1,10 @@
-"""Convert a MarcEdit `.tasksfile.txt` to an equivalent Python task body.
+"""Convert MarcEdit task text and archives into editable migration drafts.
 
-This is a one-shot import — the user picks a MarcEdit tasksfile, the
-converter emits Python code, and the result is saved as a normal user task
-under `tasks/<slug>.py`. After import the task is fully editable through
-the GUI (or `tasks.py` directly).
-
-Coverage: the operations actually present across the five Smith / 5C
-tasksfiles under `docs/source/` — ADD, DELETE, REPLACE (for known 008
-patterns), RDAHELPER, SORTBY, SUBFIELD_EDIT, `buildnewfield`. Anything
-unrecognized becomes a `# TODO: convert manually — <original line>` so
-the user sees what's missing and can hand-edit.
-
-Format reference: MarcEdit tasksfiles are tab-separated, one operation per
-line. The first column is the verb (ADD, DELETE, …); subsequent columns
-are operation-specific. Leader-based regex conditions appear in the last
-few columns and are normalized through `_translate_condition`.
+Every instruction goes through the evidence-backed adapter registry. Proven
+instructions become structured operations; all other instructions become
+inert ``migration-blocker`` operations in exact source order. Conversion is
+side-effect free. The Tasks page may adopt a returned draft into session
+editor state, but parsing never writes a task row.
 """
 
 from __future__ import annotations
@@ -26,7 +16,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from marcedit_web.lib import external_task_migration, task_authoring
+from marcedit_web.lib import external_task_migration, task_authoring, task_builder
 from marcedit_web.lib.codegen_safety import lit
 
 logger = logging.getLogger("marcedit_web.marcedit_import")
@@ -59,10 +49,9 @@ class HandlerEmission:
 class ConversionResult:
     """Output of `convert_tasksfile`.
 
-    `body` is ready to drop into a `@task` body (after the standard imports
-    written by `serialize_user_task`). `unsupported` lists the source-file
-    lines that couldn't be translated; they appear as `# TODO …` comments
-    in the body so the user can find them.
+    `draft` is the authoritative editable result. `body` and `imports` are a
+    compatibility rendering of the same ordered operations. `unsupported`
+    lists source lines represented by draft-only migration blockers.
     """
 
     name: str
@@ -71,6 +60,7 @@ class ConversionResult:
     imports: list[str] = field(default_factory=list)
     unsupported: list[str] = field(default_factory=list)
     migration_review: external_task_migration.MigrationReview | None = None
+    draft: external_task_migration.MigrationDraft | None = None
 
 
 @dataclass
@@ -86,6 +76,34 @@ class EntryResult:
     success: bool
     conversion: ConversionResult | None = None
     error: str | None = None
+
+    @property
+    def draft(self) -> external_task_migration.MigrationDraft | None:
+        return self.conversion.draft if self.conversion is not None else None
+
+    @property
+    def status(self) -> str:
+        return self.draft.status if self.draft is not None else "failed"
+
+    @property
+    def task_name(self) -> str:
+        return self.draft.task_name if self.draft is not None else ""
+
+    @property
+    def operations(self) -> tuple[dict, ...]:
+        return self.draft.operations if self.draft is not None else ()
+
+    @property
+    def summary(self) -> external_task_migration.MigrationSummary | None:
+        return self.draft.summary if self.draft is not None else None
+
+    @property
+    def disclosures(self) -> tuple[str, ...]:
+        return self.draft.disclosures if self.draft is not None else ()
+
+    @property
+    def provenance(self) -> tuple[external_task_migration.MigrationProvenance, ...]:
+        return self.draft.provenance if self.draft is not None else ()
 
 
 @dataclass
@@ -499,6 +517,7 @@ def convert_tasksfile(path: Path, *, name: str | None = None) -> ConversionResul
         text,
         name=derived_name,
         description_fallback=f"Imported from {path.name}",
+        source_entry=path.name,
     )
 
 
@@ -515,7 +534,11 @@ def _op_marker(kind: str, params: dict) -> str:
 
 
 def convert_tasksfile_text(
-    text: str, *, name: str, description_fallback: str
+    text: str,
+    *,
+    name: str,
+    description_fallback: str,
+    source_entry: str = "",
 ) -> ConversionResult:
     """Parse already-loaded MarcEdit tasksfile text into a ConversionResult.
 
@@ -526,78 +549,33 @@ def convert_tasksfile_text(
     text doesn't begin with `#DESCRIPTION#`).
     """
     description = ""
-    body_lines: list[str] = []
-    imports_needed: set[str] = set()
-    needs_subfield_import = False
-    unsupported: list[str] = []
-
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        if not line.strip():
-            continue
+    for line in text.splitlines():
         if line.startswith(_DESCRIPTION_PREFIX):
             description = line[len(_DESCRIPTION_PREFIX):].strip()
-            continue
-        if line.startswith("#"):
-            continue  # other comments — drop
-
-        parts = line.split("\t")
-        verb = parts[0].strip()
-        handler = _HANDLERS.get(verb)
-        if handler is None:
-            # Unknown verb — wrap as a `custom` block so the imported task
-            # stays form-editable even when individual lines can't be
-            # cleanly typed.
-            unsupported.append(line)
-            todo = f"# TODO: unknown verb {verb!r} — {line}"
-            body_lines.append(_op_marker("custom", {"code": todo}))
-            body_lines.append(todo)
-            continue
-        emission = handler(parts)
-        if emission.code is None:
-            # Malformed source line — same `custom` fallback.
-            unsupported.append(line)
-            todo = f"# TODO: malformed {verb!r} — {line}"
-            body_lines.append(_op_marker("custom", {"code": todo}))
-            body_lines.append(todo)
-            continue
-        needed = emission.imports
-        if "_subfield_import" in needed:
-            needs_subfield_import = True
-            needed = needed - {"_subfield_import"}
-        imports_needed |= needed
-        # Resolve the OP marker. Handlers that have a clean palette
-        # mapping (op_kind set) emit their kind directly; everything
-        # else falls through to a `custom` block carrying the raw code
-        # so the imported task remains form-editable as a whole.
-        if emission.op_kind is not None and emission.op_params is not None:
-            body_lines.append(_op_marker(emission.op_kind, emission.op_params))
-        else:
-            body_lines.append(_op_marker("custom", {"code": emission.code}))
-        body_lines.append(emission.code)
-        # Handlers that couldn't translate a line in full still emit a
-        # `# TODO …` placeholder. Track those as unsupported so the GUI
-        # can warn the user, while keeping the placeholder in-line.
-        if emission.code.lstrip().startswith("# TODO"):
-            unsupported.append(line)
-
-    transforms_imports = sorted(imports_needed)
-    import_lines: list[str] = []
-    if transforms_imports:
-        import_lines.append(
-            "from marcedit_web.lib.transforms import "
-            + ", ".join(transforms_imports)
-        )
-    if needs_subfield_import:
-        import_lines.append("from pymarc import Subfield")
+    description = description or description_fallback
+    draft = external_task_migration.build_migration_draft(
+        text,
+        task_name=name,
+        description=description,
+        source_entry=source_entry,
+    )
+    rendered = task_builder.render_ops_to_python([
+        task_builder.Operation.from_dict(operation)
+        for operation in draft.operations
+    ])
+    review = external_task_migration.build_review(text)
+    unsupported = [
+        item.source_line for item in review.items if item.status != "converted"
+    ]
 
     return ConversionResult(
         name=name,
-        description=description or description_fallback,
-        body="\n".join(body_lines),
-        imports=import_lines,
+        description=description,
+        body=rendered["body"],
+        imports=rendered["imports"],
         unsupported=unsupported,
-        migration_review=external_task_migration.build_review(text),
+        migration_review=review,
+        draft=draft,
     )
 
 
@@ -731,6 +709,7 @@ def convert_task_archive(
                     description_fallback=(
                         f"Imported from {entry_name} (in {archive_name})"
                     ),
+                    source_entry=entry_name,
                 )
                 entries.append(EntryResult(
                     entry_name=entry_name,

@@ -23,6 +23,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import re
 import shutil
 import tempfile
 import uuid
@@ -281,6 +282,78 @@ def _normalize_marcedit_import_result(value: object) -> dict:
             })
         return normalized
 
+    def safe_draft(raw: object) -> dict | None:
+        if not isinstance(raw, dict):
+            return None
+        operations = raw.get("operations")
+        summary = raw.get("summary")
+        if not isinstance(operations, list) or not isinstance(summary, dict):
+            return None
+        converted = summary.get("converted")
+        blocking = summary.get("blocking")
+        if (
+            not isinstance(converted, int)
+            or isinstance(converted, bool)
+            or converted < 0
+            or not isinstance(blocking, int)
+            or isinstance(blocking, bool)
+            or blocking < 0
+        ):
+            return None
+        normalized_operations = []
+        for operation in operations:
+            if not isinstance(operation, dict):
+                return None
+            try:
+                normalized_operation = task_authoring.normalize_operation(
+                    operation
+                )
+            except (TypeError, ValueError):
+                return None
+            if task_authoring.validate_operation(normalized_operation):
+                return None
+            normalized_operations.append(normalized_operation)
+        normalized_provenance = []
+        raw_provenance = raw.get("provenance")
+        if not isinstance(raw_provenance, list):
+            return None
+        for item in raw_provenance:
+            if not isinstance(item, dict):
+                return None
+            line_number = item.get("line_number")
+            status_value = item.get("status")
+            digest = item.get("instruction_sha256")
+            source_entry = item.get("source_entry")
+            source_line = item.get("source_line")
+            if (
+                not isinstance(line_number, int)
+                or isinstance(line_number, bool)
+                or line_number < 1
+                or status_value not in {
+                    "converted", "choice_required", "unresolved"
+                }
+                or not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or not isinstance(source_entry, str)
+                or not isinstance(source_line, str)
+            ):
+                return None
+            normalized_provenance.append({
+                "source_entry": source_entry,
+                "line_number": line_number,
+                "source_line": source_line,
+                "instruction_sha256": digest,
+                "status": status_value,
+            })
+        return {
+            "task_name": str(raw.get("task_name") or "")[:256],
+            "description": str(raw.get("description") or "")[:2048],
+            "operations": normalized_operations,
+            "summary": {"converted": converted, "blocking": blocking},
+            "disclosures": safe_text_list(raw.get("disclosures"))[:20],
+            "provenance": normalized_provenance,
+        }
+
     normalized_entries = []
     raw_entries = value.get("entries")
     if isinstance(raw_entries, list):
@@ -288,7 +361,13 @@ def _normalize_marcedit_import_result(value: object) -> dict:
             if not isinstance(raw_entry, dict):
                 continue
             entry_status = raw_entry.get("status")
-            if entry_status not in {"imported", "unresolved", "failed"}:
+            if entry_status not in {
+                "imported",
+                "unresolved",
+                "draft_ready",
+                "needs_review",
+                "failed",
+            }:
                 continue
             omitted = raw_entry.get("omitted_unresolved", 0)
             if not isinstance(omitted, int) or isinstance(omitted, bool):
@@ -309,6 +388,7 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 "migration_items": safe_migration_items(
                     raw_entry.get("migration_items")
                 ),
+                "draft": safe_draft(raw_entry.get("draft")),
             })
 
     category = value.get("rejection_category")
@@ -342,6 +422,40 @@ def _clear_marcedit_import_result() -> None:
     st.session_state.pop(K_MARCEDIT_IMPORT_RESULT, None)
 
 
+def _adopt_migration_draft(draft: dict) -> None:
+    """Move one validated import draft into editor state without persistence."""
+
+    _open_editor_for_new()
+    name = str(draft.get("task_name") or "")
+    description = str(draft.get("description") or "")
+    st.session_state[K_EDITOR_NAME] = name
+    st.session_state[K_EDITOR_DESCRIPTION] = description
+    _sync_editor_widget_inputs(name, description)
+    st.session_state[K_EDITOR_OPS] = copy.deepcopy(draft.get("operations") or [])
+    st.session_state[K_EDITOR_BODY] = ""
+    st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
+    _clear_marcedit_import_result()
+    _reset_operation_dialog_state()
+
+
+def _draft_result_entry(
+    draft: external_task_migration.MigrationDraft,
+    *,
+    entry_name: str,
+) -> dict:
+    return {
+        "entry_name": entry_name,
+        "status": draft.status,
+        "task_name": draft.task_name,
+        "message": (
+            "editable draft is ready"
+            if draft.status == "draft_ready"
+            else "editable draft contains instructions needing review"
+        ),
+        "draft": draft.to_session_dict(),
+    }
+
+
 def _render_marcedit_import_result() -> None:
     raw = _normalize_marcedit_import_result(
         st.session_state.get(K_MARCEDIT_IMPORT_RESULT)
@@ -371,10 +485,17 @@ def _render_marcedit_import_result() -> None:
         else:
             st.success(f"Import from `{filename}` completed with no saved tasks.")
     elif status == "partial":
-        st.warning(
-            f"Import completed with warnings from `{filename}`. "
-            f"{len(imported_task_names)} task(s) imported."
-        )
+        if category == "unresolved-instructions":
+            st.warning(
+                "Not imported: this task contains unresolved external "
+                "instructions. Recreate each listed instruction with explicit "
+                "structured controls."
+            )
+        else:
+            st.warning(
+                f"Import completed with warnings from `{filename}`. "
+                f"{len(imported_task_names)} task(s) imported."
+            )
         for task_name in imported_task_names:
             st.success(f"- `{task_name}`")
     else:
@@ -391,7 +512,33 @@ def _render_marcedit_import_result() -> None:
         else:
             st.error(f"Import from `{filename}` failed.")
 
-    for entry in entries:
+    draft_entries = [
+        (index, entry)
+        for index, entry in enumerate(entries)
+        if isinstance(entry.get("draft"), dict)
+    ]
+    if len(draft_entries) > 1:
+        labels = [
+            "{0}. {1} — {2}".format(
+                index + 1,
+                entry.get("task_name") or "Untitled task",
+                entry.get("entry_name") or filename,
+            )
+            for index, entry in draft_entries
+        ]
+        selected = st.selectbox(
+            "Choose an imported task draft",
+            labels,
+            key="tasks_import_draft_choice",
+        )
+        selected_offset = labels.index(selected)
+        selected_entry = draft_entries[selected_offset][1]
+        if st.button("Open selected draft", key="tasks_import_open_selected"):
+            _adopt_migration_draft(selected_entry["draft"])
+            st.rerun()
+            return
+
+    for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
         entry_name = entry.get("entry_name") or filename
@@ -404,6 +551,23 @@ def _render_marcedit_import_result() -> None:
                 st.success(f"{entry_name} → `{task_name}`")
             else:
                 st.success(f"Imported from `{entry_name}`.")
+            continue
+
+        if entry_status in {"draft_ready", "needs_review"}:
+            if entry_status == "draft_ready":
+                st.success(f"{entry_name}: editable draft ready.")
+            else:
+                st.warning(
+                    f"{entry_name}: editable draft needs migration review."
+                )
+            if len(draft_entries) == 1 and isinstance(entry.get("draft"), dict):
+                if st.button(
+                    "Open migration draft",
+                    key=f"tasks_import_open_draft_{index}",
+                ):
+                    _adopt_migration_draft(entry["draft"])
+                    st.rerun()
+                    return
             continue
 
         if entry_status == "unresolved":
@@ -792,13 +956,7 @@ def _convert_uploaded_archive(
 
 
 def _do_marcedit_import(upl, tasks_dir: Path) -> None:
-    """Import a MarcEdit `.tasksfile` or `.task` archive into SQL.
-
-    Imported tasks land as private rows owned by the current user.
-    Operators can re-share via the visibility toggle. ``tasks_dir`` is
-    used as a scratch path for archive extraction; the persistent
-    storage is the SQLite ``tasks`` table.
-    """
+    """Parse a MarcEdit upload into session-scoped editable drafts."""
     _clear_marcedit_import_result()
     user = session.current_user_id()
     try:
@@ -881,48 +1039,14 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                     detail=archive.archive_errors[:3],
                 )
                 return
-            imported = 0
-            imported_task_names: list[str] = []
             entries: list[dict] = []
             for er in archive.entries:
-                if er.success and er.conversion is not None:
-                    conv = er.conversion
-                    try:
-                        imported_this_entry = _save_exact_conversion(user, conv)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.exception(
-                            "Archive entry save failed for %s", er.entry_name
-                        )
-                        entries.append({
-                            "entry_name": er.entry_name,
-                            "status": "failed",
-                            "message": str(exc),
-                        })
-                        continue
-                    if imported_this_entry:
-                        imported += 1
-                        imported_task_names.append(conv.name)
-                        entries.append({
-                            "entry_name": er.entry_name,
-                            "status": "imported",
-                            "task_name": conv.name,
-                        })
-                    else:
-                        entries.append({
-                            "entry_name": er.entry_name,
-                            "status": "unresolved",
-                            "task_name": conv.name,
-                            "message": (
-                                "this task contains unresolved external "
-                                "instructions"
-                            ),
-                            "unresolved_lines": conv.unsupported[:20],
-                            "omitted_unresolved": max(
-                                0,
-                                len(conv.unsupported) - 20,
-                            ),
-                            "migration_items": _migration_items_for(conv),
-                        })
+                draft = getattr(er, "draft", None)
+                if er.success and draft is not None:
+                    entries.append(_draft_result_entry(
+                        draft,
+                        entry_name=er.entry_name,
+                    ))
                 elif er.error:
                     entries.append({
                         "entry_name": er.entry_name,
@@ -935,43 +1059,48 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                         "status": "failed",
                         "message": "inner archive entry conversion failed",
                     })
-            status = "success" if imported else ("partial" if entries else "rejected")
-            if imported and any(
-                entry["status"] != "imported" for entry in entries
+
+            drafts = [
+                entry for entry in entries
+                if entry["status"] in {"draft_ready", "needs_review"}
+            ]
+            if (
+                len(entries) == 1
+                and len(drafts) == 1
+                and drafts[0]["status"] == "draft_ready"
             ):
+                _adopt_migration_draft(drafts[0]["draft"])
+                audit_event(
+                    "archive-draft-opened",
+                    user=user,
+                    filename=upl.name,
+                    size=len(raw),
+                    entries=1,
+                )
+                return
+
+            if not drafts:
+                status = "rejected"
+            elif any(entry["status"] != "draft_ready" for entry in entries):
                 status = "partial"
-            elif imported == 0 and any(
-                entry["status"] == "failed" for entry in entries
-            ):
-                status = "rejected"
-            elif imported == 0 and any(
-                entry["status"] == "unresolved" for entry in entries
-            ):
-                status = "rejected"
-            category = None
-            if status == "rejected":
-                if any(
-                    entry["status"] == "unresolved"
-                    for entry in entries
-                ):
-                    category = "unresolved-instructions"
-                elif any(entry["status"] == "failed" for entry in entries):
-                    category = "unexpected"
+            else:
+                status = "success"
+            category = "unexpected" if status == "rejected" else None
             _set_marcedit_import_result({
                 "status": status,
                 "uploaded_filename": upl.name,
-                "imported_task_names": imported_task_names,
+                "imported_task_names": [],
                 "entries": entries,
                 "rejection_category": category,
             })
             audit_event(
-                "archive-imported"
+                "archive-drafts-ready"
                 if status != "rejected"
                 else "archive-rejected",
                 user=user,
                 filename=upl.name,
                 size=len(raw),
-                imported=imported,
+                drafts=len(drafts),
                 entries=len(archive.entries),
             )
             return
@@ -981,55 +1110,37 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                 raw.decode("utf-8"),
                 name=name,
                 description_fallback=f"Imported from {upl.name}",
+                source_entry=upl.name,
             )
-            if not _save_exact_conversion(user, conv):
+            if conv.draft is None:
+                raise ValueError("task conversion did not produce an editable draft")
+            if conv.draft.status == "needs_review":
                 _set_marcedit_import_result({
-                    "status": "rejected",
+                    "status": "partial",
                     "uploaded_filename": upl.name,
                     "imported_task_names": [],
-                    "entries": [{
-                        "entry_name": upl.name,
-                        "status": "unresolved",
-                        "task_name": conv.name,
-                        "message": (
-                            "this task contains unresolved external "
-                            "instructions"
-                        ),
-                        "unresolved_lines": conv.unsupported[:20],
-                        "omitted_unresolved": max(
-                            0,
-                            len(conv.unsupported) - 20,
-                        ),
-                        "migration_items": _migration_items_for(conv),
-                    }],
+                    "entries": [_draft_result_entry(
+                        conv.draft,
+                        entry_name=upl.name,
+                    )],
                     "rejection_category": "unresolved-instructions",
                 })
                 audit_event(
-                    "tasksfile-rejected",
+                    "tasksfile-draft-needs-review",
                     user=user,
                     filename=upl.name,
                     size=len(raw),
-                    reason="unresolved-instructions",
+                    blocking=conv.draft.summary.blocking,
                 )
                 return
-            _set_marcedit_import_result({
-                "status": "success",
-                "uploaded_filename": upl.name,
-                "imported_task_names": [conv.name],
-                "entries": [{
-                    "entry_name": upl.name,
-                    "status": "imported",
-                    "task_name": conv.name,
-                }],
-                "rejection_category": None,
-            })
+            _adopt_migration_draft(conv.draft.to_session_dict())
             audit_event(
-                "tasksfile-imported",
+                "tasksfile-draft-opened",
                 user=user,
                 filename=upl.name,
                 size=len(raw),
                 task_name=conv.name,
-                unsupported_lines=len(conv.unsupported),
+                converted=conv.draft.summary.converted,
             )
     except Exception as exc:  # noqa: BLE001
         logger.exception("MarcEdit import failed")
@@ -1052,41 +1163,6 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
             reason="exception",
             detail=f"{type(exc).__name__}: {exc}",
         )
-
-
-def _save_exact_conversion(
-    user: str,
-    conv: marcedit_import.ConversionResult,
-) -> bool:
-    if conv.unsupported:
-        return False
-    task_db.save_task(
-        owner=user,
-        name=conv.name,
-        description=conv.description or "",
-        body=conv.body,
-        extra_imports=conv.imports,
-        visibility="private",
-    )
-    return True
-
-
-def _migration_items_for(conv: marcedit_import.ConversionResult) -> list[dict]:
-    """Serialize bounded migration review evidence for durable diagnostics."""
-    review = conv.migration_review
-    if review is None:
-        return []
-    return [
-        {
-            "status": item.status,
-            "source_line": item.source_line,
-            "reason": item.reason,
-            "choices": list(item.choices),
-            "instruction_sha256": item.instruction_sha256,
-            "operation": copy.deepcopy(item.operation),
-        }
-        for item in review.items[:20]
-    ]
 
 
 # ---------------------------------------------------------------------------
