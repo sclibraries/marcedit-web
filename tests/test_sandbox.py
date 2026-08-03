@@ -160,6 +160,29 @@ def test_direct_sandbox_rejects_malformed_marker_before_child_execution(
     assert child_calls == []
 
 
+def test_direct_sandbox_rejects_unknown_structured_marker_before_child(
+    one_record_bytes, monkeypatch
+):
+    body = (
+        '# OP: migration-blocker-v2 {"intent":"unknown version"}\n'
+        "record['001'].data = 'MUTATED'"
+    )
+    child_calls = []
+    monkeypatch.setattr(
+        sandbox.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: child_calls.append(True),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported operation marker kind"):
+        run_tasks_subprocess(
+            [TaskSpec(name="unknown", body=body)],
+            one_record_bytes,
+        )
+
+    assert child_calls == []
+
+
 def test_trusted_task_result_can_be_captured_for_preview(one_record_bytes):
     spec = sandbox.TaskSpec(
         name="capture",

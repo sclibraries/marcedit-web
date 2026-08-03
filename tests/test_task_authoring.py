@@ -8,7 +8,13 @@ from types import SimpleNamespace
 import pytest
 from pymarc import Field, MARCReader, Record, Subfield
 
-from marcedit_web.lib import sandbox, task_authoring, task_builder, transforms
+from marcedit_web.lib import (
+    sandbox,
+    task_authoring,
+    task_builder,
+    task_preflight,
+    transforms,
+)
 from marcedit_web.lib.task_builder import Operation
 from marcedit_web.render import task_authoring as task_authoring_render
 
@@ -141,6 +147,52 @@ def test_handwritten_body_without_operation_markers_remains_runnable():
     )
 
 
+def test_inline_comment_operation_marker_is_parsed():
+    body = 'pass; # OP: delete-tag {"tag":"029"}'
+
+    parsed = task_builder.parse_ops_from_source(body)
+
+    assert parsed["form_editable"] is True
+    assert [operation.to_dict() for operation in parsed["ops"]] == [
+        {"kind": "delete-tag", "params": {"tag": "029"}}
+    ]
+
+
+def test_operation_marker_text_inside_strings_is_not_metadata():
+    body = "\n".join([
+        'single = \'# OP: migration-blocker {"intent":"not metadata"}\'',
+        'triple = \"\"\"# OP: migration-blocker {',
+        '  "intent": "still not metadata"',
+        '}\"\"\"',
+    ])
+
+    task_authoring.assert_runnable_task_body(body)
+    assert task_preflight.operation_markers(body) == ()
+
+
+def test_unrelated_op_explanation_comment_remains_inert():
+    body = "# OP: explain this task\npass"
+
+    task_authoring.assert_runnable_task_body(body)
+    assert task_preflight.operation_markers(body) == ()
+
+
+def test_tokenize_error_fails_closed_only_after_structured_marker():
+    with pytest.raises(ValueError, match="tokenize operation markers"):
+        task_authoring.assert_runnable_task_body(
+            '# OP: delete-tag {"tag":"029"}\nvalue = """unterminated'
+        )
+
+    task_authoring.assert_runnable_task_body('value = """unterminated')
+
+
+def test_operation_marker_allowlist_stays_synchronized_with_palette():
+    assert task_preflight.ALLOWED_OPERATION_MARKER_KINDS == frozenset(
+        {entry["kind"] for entry in task_builder.OPERATIONS_PALETTE}
+        | {"migration-blocker"}
+    )
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -266,17 +318,23 @@ def test_guided_operation_editor_normalization_is_lossless():
 def test_raw_operation_validation_does_not_compile_in_parent(
     monkeypatch,
 ):
+    raw_pattern = r"^(TFeba)(\d+)$"
     operation = _guided_operation(
         match_mode="raw_regex",
-        find=r"^(TFeba)(\d+)$",
+        find=raw_pattern,
         replacement=r"(SCTFEBA)\2",
     )
+    original_compile = task_authoring.guided_replace.re.compile
+
+    def reject_user_pattern(pattern, *args, **kwargs):
+        if pattern == raw_pattern:
+            raise AssertionError("raw syntax belongs in the sandbox")
+        return original_compile(pattern, *args, **kwargs)
+
     monkeypatch.setattr(
         task_authoring.guided_replace.re,
         "compile",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("raw syntax belongs in the sandbox")
-        ),
+        reject_user_pattern,
     )
 
     assert task_authoring.validate_operation(operation) == ()

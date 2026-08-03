@@ -3,15 +3,49 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import math
 import re
+import tokenize
 from typing import Any, Mapping, Sequence
 
 
-_OP_MARKER_CANDIDATE_RE = re.compile(r"^\s*#\s*OP:")
-_OP_MARKER_RE = re.compile(
-    r"^\s*#\s*OP:\s*(?P<kind>[a-z0-9-]+)\s*(?P<json>\{.*\})?\s*$"
+ALLOWED_OPERATION_MARKER_KINDS = frozenset({
+    "delete-tag",
+    "delete-by-subfield",
+    "delete-856-url-contains",
+    "delete-856-url-regex",
+    "add-field",
+    "build-field",
+    "subfield-replace",
+    "guided-find-replace",
+    "empty-find-subfield-policy",
+    "copy-field",
+    "move-field",
+    "add-subfield",
+    "delete-subfield",
+    "delete-subfield-if-value",
+    "copy-subfield",
+    "edit-indicators",
+    "replace-field-data-by-regex",
+    "replace-field-subfield-and-indicators",
+    "sort-fields",
+    "set-008-form",
+    "rda-classify-material",
+    "rda-mark-rda",
+    "rda-remove-gmd",
+    "rda-expand-abbreviations",
+    "rda-normalize-relators",
+    "rda-promote-260",
+    "set-control-field",
+    "structural-find-replace",
+    "custom",
+    "migration-blocker",
+})
+_OP_COMMENT_RE = re.compile(r"^#\s*OP:\s*(?P<body>.*)$")
+_OP_BODY_RE = re.compile(
+    r"^(?P<kind>[a-z0-9]+(?:-[a-z0-9]+)*)(?P<rest>.*)$"
 )
 _OPERATION_KIND_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
@@ -25,16 +59,39 @@ _SUGGESTION_PARAMS = {"operation_kind", "prefilled_params"}
 
 
 def operation_markers(source: str) -> tuple[dict[str, Any], ...]:
-    """Parse every present ``# OP:`` marker or fail closed."""
+    """Parse structured ``# OP:`` comment tokens or fail closed."""
+
+    comments = []
+    tokenize_failed = False
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for token in tokens:
+            if token.type == tokenize.COMMENT:
+                comments.append((token.start[0], token.string))
+    except (IndentationError, tokenize.TokenError):
+        tokenize_failed = True
+
+    candidates = []
+    for line_number, comment in comments:
+        match = _OP_COMMENT_RE.match(comment)
+        if match is None:
+            continue
+        body = match.group("body").strip()
+        if not _is_structured_marker_candidate(body):
+            continue
+        candidates.append((line_number, body))
+
+    if tokenize_failed and candidates:
+        raise ValueError("Could not tokenize operation markers.")
 
     operations = []
-    for line_number, line in enumerate(source.splitlines(), start=1):
-        if not _OP_MARKER_CANDIDATE_RE.match(line):
-            continue
-        match = _OP_MARKER_RE.match(line)
+    for line_number, body in candidates:
+        match = _OP_BODY_RE.match(body)
         if match is None:
             raise ValueError(_malformed_marker_message(line_number))
-        raw_params = match.group("json") or "{}"
+        raw_params = match.group("rest").strip() or "{}"
+        if not raw_params.startswith("{"):
+            raise ValueError(_malformed_marker_message(line_number))
         try:
             params = json.loads(
                 raw_params,
@@ -45,13 +102,35 @@ def operation_markers(source: str) -> tuple[dict[str, Any], ...]:
             raise ValueError(_malformed_marker_message(line_number)) from None
         if not isinstance(params, Mapping):
             raise ValueError(_malformed_marker_message(line_number))
+        kind = match.group("kind")
+        if kind not in ALLOWED_OPERATION_MARKER_KINDS:
+            raise ValueError(
+                "Unsupported operation marker kind on line {0}.".format(
+                    line_number
+                )
+            )
         operations.append(
             {
-                "kind": match.group("kind"),
+                "kind": kind,
                 "params": dict(params),
             }
         )
     return tuple(operations)
+
+
+def _is_structured_marker_candidate(body: str) -> bool:
+    if not body:
+        return True
+    match = _OP_BODY_RE.match(body)
+    if match is None:
+        return True
+    kind = match.group("kind")
+    rest = match.group("rest").strip()
+    return (
+        kind in ALLOWED_OPERATION_MARKER_KINDS
+        or not rest
+        or rest.startswith("{")
+    )
 
 
 def migration_blockers(

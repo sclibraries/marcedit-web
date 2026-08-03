@@ -47,6 +47,89 @@ def _task(name: str = "first") -> sandbox.TaskSpec:
     )
 
 
+def _blocked_task_body() -> str:
+    return (
+        '# OP: migration-blocker {"instruction_sha256":"' + "a" * 64
+        + '","intent":"Edit control field 001",'
+        '"reason":"Exact external mode is unproven",'
+        '"suggestion":{"operation_kind":"set-control-field",'
+        '"prefilled_params":{"tag":"001"}}}\npass'
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _blocked_task_body(),
+        "# OP: delete-tag {not-json}\npass",
+        '# OP: migration-blocker-v2 {"intent":"unknown version"}\npass',
+    ],
+)
+def test_quick_load_api_preflights_before_copy_or_queue_side_effect(
+    tmp_path, monkeypatch, body
+):
+    source = tmp_path / "vendor.mrc"
+    source.write_bytes(sample_mrc_bytes())
+    monkeypatch.setattr(
+        operation_submission.shutil,
+        "copyfile",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("source copy must not start")
+        ),
+    )
+    monkeypatch.setattr(
+        operation_submission.db,
+        "init_schema",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("queue schema must not initialize")
+        ),
+    )
+
+    with pytest.raises(operations.OperationError):
+        operation_submission.submit_quick_load_task_run(
+            user_email="owner@smith.edu",
+            source_path=source,
+            filename="vendor.mrc",
+            record_count=2,
+            task_specs=[sandbox.TaskSpec(name="blocked", body=body)],
+        )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _blocked_task_body(),
+        "# OP: delete-tag {not-json}\npass",
+        '# OP: migration-blocker-v2 {"intent":"unknown version"}\npass',
+    ],
+)
+def test_job_api_preflights_before_source_or_queue_database_access(
+    monkeypatch, body
+):
+    monkeypatch.setattr(
+        operation_submission.job_files,
+        "get_file",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("source database read must not start")
+        ),
+    )
+    monkeypatch.setattr(
+        operation_submission.db,
+        "init_schema",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("queue schema must not initialize")
+        ),
+    )
+
+    with pytest.raises(operations.OperationError):
+        operation_submission.submit_job_task_run(
+            user_email="owner@smith.edu",
+            file_id=1,
+            source_version_id=1,
+            task_specs=[sandbox.TaskSpec(name="blocked", body=body)],
+        )
+
+
 def _attached_file(tmp_path: Path, *, owner: str = "owner@smith.edu"):
     source = tmp_path / "job-source.mrc"
     source.write_bytes(sample_mrc_bytes())

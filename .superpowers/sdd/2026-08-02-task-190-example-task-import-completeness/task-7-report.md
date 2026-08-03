@@ -210,3 +210,83 @@ Disclosed skips remain:
 - No Critical or Important Task 7 review finding remains. The unrelated
   generated operation-reference failure still prevents a globally green
   repository suite and remains owned by the operation-reference plan task.
+
+## Fix round 2 — durable submission and token-aware markers
+
+Commit: `fix: close migration submission and marker gaps` (this commit)
+
+### Review findings fixed
+
+- Added preflight to the direct durable submission payload boundary. Both
+  `submit_job_task_run` and `submit_quick_load_task_run` now reject blockers,
+  malformed markers, and unknown structured marker kinds before source access
+  or copy, schema initialization, transaction creation, operation insertion,
+  or queue side effects. Preflight failures retain the public
+  `OperationError` contract.
+- Replaced physical-line marker detection with Python `tokenize` COMMENT
+  tokens. Standalone and inline markers are authoritative, while marker-like
+  text inside ordinary or triple-quoted strings is ignored.
+- Preserved ordinary explanatory comments such as `# OP: explain this task`
+  as inert handwritten source. Once a comment claims a known marker shape, or
+  supplies an object for a syntactically valid kind, malformed payloads fail
+  closed. Tokenizer errors fail closed only when a structured marker candidate
+  was already present, so unrelated malformed handwritten code remains outside
+  the metadata gate.
+- Added a dependency-light leaf allowlist containing every current palette
+  kind plus `migration-blocker`. Unknown structured kinds such as
+  `migration-blocker-v2` now fail closed at sandbox and durable submission
+  boundaries. An explicit equality test keeps the leaf allowlist synchronized
+  with `OPERATIONS_PALETTE` without introducing a heavy preflight import.
+- Narrowed an existing raw-regex test monkeypatch to the user-supplied pattern.
+  Python 3.9's tokenizer legitimately compiles its own grammar through the
+  shared `re` module; the revised test continues to prove that the raw user
+  expression is not compiled in the parent.
+
+### RED evidence
+
+Host diagnostic command before production changes:
+
+`python3 -m pytest -q tests/test_task_authoring.py tests/test_sandbox.py tests/test_operation_submission.py`
+
+The 11 new contract cases failed: four parser/allowlist cases, one direct
+sandbox unknown-kind case, and six direct durable API cases. The same host run
+also had 35 unrelated sandbox-process failures because the local Python 3.14
+runner cannot apply the repository's `preexec_fn` resource limits. Container
+verification below is authoritative.
+
+### GREEN evidence
+
+Focused parser, direct sandbox, and durable submission suite:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_task_authoring.py tests/test_sandbox.py tests/test_operation_submission.py -q`
+
+Exact result: `178 passed in 10.97s`; zero skipped and zero failed.
+
+Expanded task-builder, caller, native, storage, queue, sandbox, guided replace,
+batch replace, and codegen suite:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_task_builder.py tests/test_task_authoring.py tests/test_native_tasks.py tests/test_native_task_contract.py tests/test_native_task_storage.py tests/test_task_db.py tests/test_tasks_workspace_modes.py tests/test_tasks_export.py tests/test_operation_runner.py tests/test_operation_submission.py tests/test_operation_queue_integration.py tests/test_sandbox.py tests/test_guided_replace_preview.py tests/test_guided_replace_validation.py tests/test_batch_replace.py tests/test_codegen_safety.py -q`
+
+Exact result: `510 passed in 35.50s`; zero skipped and zero failed.
+
+Explicit native compiler contract freshness:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest tests/test_native_task_contract.py::test_checked_in_contract_matches_every_golden_definition -q`
+
+Exact result: `1 passed in 0.14s`; zero skipped and zero failed. The compiler
+contract manifest has no diff, and `git diff --check` exited 0.
+
+Full mounted-source suite:
+
+`docker compose run --rm -v "$PWD:/app" marcedit-web pytest -q`
+
+Exact result: `1 failed, 2378 passed, 5 skipped in 64.35s`. The sole failure
+remains the pre-existing generated operation-reference freshness drift already
+disclosed above. The five skips have the same Docker-CLI and unavailable
+private-corpus reasons disclosed in the original report.
+
+### Remaining concern
+
+- No fix-round-2 Task 7 failure remains. The unrelated generated
+  operation-reference drift still prevents a globally green repository suite
+  and remains outside this surgical remediation.

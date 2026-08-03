@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Sequence
 
-from . import db, job_files, jobs, operations, sandbox
+from . import db, job_files, jobs, operations, sandbox, task_preflight
 from .record_store import RecordStore
 
 
@@ -21,6 +21,11 @@ def _request_payload(
 ) -> dict[str, Any]:
     if not task_specs:
         raise operations.OperationError("select at least one task")
+    for spec in task_specs:
+        try:
+            task_preflight.assert_runnable_task_body(spec.body)
+        except ValueError as exc:
+            raise operations.OperationError(str(exc)) from exc
     return {
         "version": 1,
         "submission_token": submission_token,
