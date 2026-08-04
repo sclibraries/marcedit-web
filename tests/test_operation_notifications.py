@@ -348,7 +348,7 @@ def test_public_mode_guards_header_return_notice_and_sidebar_without_db(
     assert fake_st.page_links == []
 
 
-def test_app_header_only_adds_bell_for_private_approved_users(monkeypatch):
+def test_app_header_suppresses_durable_bell_during_hotfix(monkeypatch):
     monkeypatch.setenv("MARCEDIT_WEB_MODE", "private")
     import marcedit_web.App as app
 
@@ -363,9 +363,9 @@ def test_app_header_only_adds_bell_for_private_approved_users(monkeypatch):
         app.authz, "get_user", lambda _email: {"status": "approved"}
     )
 
-    assert app._should_render_notification_bell("owner@smith.edu") is True
+    assert app._should_render_notification_bell("owner@smith.edu") is False
     app._render_notification_bell("owner@smith.edu")
-    assert calls == ["owner@smith.edu"]
+    assert calls == []
 
     monkeypatch.setattr(app.authz, "get_user", lambda _email: {"status": "pending"})
     assert app._should_render_notification_bell("owner@smith.edu") is False

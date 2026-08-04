@@ -54,6 +54,32 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Related:** none
 
+## Apply institution mapping profile
+
+**Operation kind:** `institution-profile`
+
+**Purpose:** Create editable institution-specific fields from selected source fields.
+
+**When to use:** Use apply institution mapping profile when that specific MARC change is required.
+
+**Inputs:** `source_tag`, `rows`, `occurrence`, `max_fields_per_record`, `max_fields_per_batch`
+
+**Behavior:** Create editable institution-specific fields from selected source fields.
+
+**Preserves:** Unrelated fields and values remain unchanged.
+
+**Skip behavior:** Records that do not match the operation are unchanged.
+
+**Error behavior:** Invalid inputs are reported before the task is saved or run.
+
+**Before:** `MARC field before operation`
+
+**After:** `MARC field after operation`
+
+**Stored representation:** Structured `institution-profile` parameters validated by the task form.
+
+**Related:** none
+
 ## Build field from template
 
 **Operation kind:** `build-field`
@@ -80,6 +106,32 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Related:** `add-field`
 
+## Build fields from matching source fields
+
+**Operation kind:** `build-fields-from-source`
+
+**Purpose:** Create destination fields from explicit source-field templates.
+
+**When to use:** Use build fields from matching source fields when that specific MARC change is required.
+
+**Inputs:** `source_tag`, `destination_tag`, `indicators`, `subfield_templates`, `occurrence`, `missing_source_action`, `existing_field_action`, `predicate`, `max_fields_per_record`, `max_fields_per_batch`
+
+**Behavior:** Create destination fields from explicit source-field templates.
+
+**Preserves:** Unrelated fields and values remain unchanged.
+
+**Skip behavior:** Records that do not match the operation are unchanged.
+
+**Error behavior:** Invalid inputs are reported before the task is saved or run.
+
+**Before:** `MARC field before operation`
+
+**After:** `MARC field after operation`
+
+**Stored representation:** Structured `build-fields-from-source` parameters validated by the task form.
+
+**Related:** none
+
 ## Copy field
 
 **Operation kind:** `copy-field`
@@ -104,6 +156,32 @@ This guide is generated from the checked-in deterministic operation registry.
 246 $a Title`
 
 **Stored representation:** Structured `copy-field` parameters validated by the task form.
+
+**Related:** none
+
+## Copy fields with occurrence policy
+
+**Operation kind:** `copy-fields-with-policy`
+
+**Purpose:** Copy selected source fields while choosing first, last, or all occurrences and an explicit destination collision policy.
+
+**When to use:** Use copy fields with occurrence policy when that specific MARC change is required.
+
+**Inputs:** `source_tag`, `destination_tag`, `occurrence`, `existing_field_action`, `predicate`, `max_fields_per_record`, `max_fields_per_batch`
+
+**Behavior:** Copy selected source fields while choosing first, last, or all occurrences and an explicit destination collision policy.
+
+**Preserves:** Unrelated fields and values remain unchanged.
+
+**Skip behavior:** Records that do not match the operation are unchanged.
+
+**Error behavior:** Invalid inputs are reported before the task is saved or run.
+
+**Before:** `MARC field before operation`
+
+**After:** `MARC field after operation`
+
+**Stored representation:** Structured `copy-fields-with-policy` parameters validated by the task form.
 
 **Related:** none
 
@@ -747,10 +825,6 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Behavior:** Conditionally replace complete fields, retag fields, set indicators, or operate over a validated tag range.
 
-When the action is **retag**, the field keeps its current position in the
-record. Use **Sort fields by tag** afterward when canonical MARC tag order is
-required; retagging alone does not move the field.
-
 **Preserves:** Unrelated fields and values remain unchanged.
 
 **Skip behavior:** Records that do not match the operation are unchanged.
@@ -764,3 +838,4 @@ required; retagging alone does not move the field.
 **Stored representation:** Structured `structural-find-replace` parameters validated by the task form.
 
 **Related:** none
+
