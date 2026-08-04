@@ -8,6 +8,12 @@ libtools2.smith.edu (RHEL 8.10). No containers are involved.
 We need four one-time root operations from you, then day-to-day
 deploys are self-service from the dev team.
 
+> **TASK-194 hotfix note:** the task-library hotfix does not require these
+> durable-worker or Operations setup steps. It uses the already installed
+> application service and synchronous sandbox execution. Treat the worker
+> material below as preparation for a separate future infrastructure release;
+> do not install or restart it for the hotfix.
+
 The current state of libtools2 already provides almost everything:
 Python 3.9 is installed, Apache 2.4 + mod_shib are serving other
 apps, the TLS cert is valid, and there's a registered Shibboleth

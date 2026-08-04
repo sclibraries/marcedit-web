@@ -7,6 +7,11 @@ Container runtimes (Docker, Podman) are not used; see
 `docs/superpowers/specs/2026-06-01-cicd-native-deploy-design.md`
 for the rationale.
 
+> **TASK-194 hotfix boundary:** this release runs saved tasks synchronously
+> in the sandbox. It does not install, start, or require the durable worker or
+> the Operations page. The worker/Operations instructions later in this file
+> apply only to the separate infrastructure release.
+
 ## Quick start (existing host)
 
 After ITS has done the four one-time root operations (see
