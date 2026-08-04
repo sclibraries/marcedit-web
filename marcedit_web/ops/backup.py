@@ -31,7 +31,6 @@ class RestoreResult:
 
 def create_backup(target_dir: Path) -> BackupResult:
     """Create a backup directory containing SQLite DB + audit JSONL files."""
-    db.init_schema()
     target_dir.mkdir(parents=True, exist_ok=True)
     db_backup_path = target_dir / "marcedit.db"
     audit_backup_dir = target_dir / "audit"

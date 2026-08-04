@@ -69,6 +69,31 @@ def test_verify_sqlite_backup_rejects_schema_or_row_count_drift(
         )
 
 
+def test_create_backup_does_not_migrate_or_mutate_source_database(tmp_path, monkeypatch):
+    """The pre-migration backup must snapshot the live schema as-is."""
+    live_db = tmp_path / "legacy.db"
+    monkeypatch.setenv("MARCEDIT_WEB_DB_PATH", str(live_db))
+    monkeypatch.setenv("MARCEDIT_WEB_AUDIT_DIR", str(tmp_path / "audit"))
+    with sqlite3.connect(live_db) as conn:
+        conn.execute("CREATE TABLE legacy_marker(value TEXT)")
+        conn.execute("INSERT INTO legacy_marker(value) VALUES ('before')")
+
+    backup.create_backup(tmp_path / "backup")
+
+    with sqlite3.connect(live_db) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        value = conn.execute(
+            "SELECT value FROM legacy_marker"
+        ).fetchone()[0]
+    assert tables == {"legacy_marker"}
+    assert value == "before"
+
+
 def test_restore_backup_replaces_db_and_audit_jsonl(tmp_path, monkeypatch):
     """Restoring a backup should yield a working DB with backed-up rows."""
     live_db = tmp_path / "live.db"
