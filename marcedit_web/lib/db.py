@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -157,6 +157,8 @@ def init_schema() -> None:
                 _migrate_to_v14(conn)
             if current_version < 15:
                 _migrate_to_v15(conn)
+            if current_version < 16:
+                _migrate_to_v16(conn)
             from . import job_files
 
             job_files._migrate_uploads_to_job_files(conn)  # noqa: SLF001
@@ -651,6 +653,39 @@ def _migrate_to_v15(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_tasks_shared_name"
         " ON tasks(name) WHERE visibility = 'shared'"
+    )
+
+
+def _migrate_to_v16(conn: sqlite3.Connection) -> None:
+    """Enforce case-insensitive sibling folder names (TASK-193)."""
+    conflicts = list(
+        conn.execute(
+            "SELECT scope, owner_email, parent_id, lower(name) AS folded_name,"
+            " COUNT(*) AS n FROM task_folders"
+            " GROUP BY scope, owner_email, parent_id, lower(name)"
+            " HAVING COUNT(*) > 1"
+        )
+    )
+    if conflicts:
+        details = ", ".join(
+            "{0}/{1}/{2}".format(
+                row["scope"], row["parent_id"] or "root", row["folded_name"]
+            )
+            for row in conflicts
+        )
+        raise RuntimeError(
+            "duplicate folder names must be resolved before folder uniqueness "
+            "migration: " + details
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_task_folders_shared_name"
+        " ON task_folders(parent_id, name COLLATE NOCASE)"
+        " WHERE scope='shared'"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_task_folders_personal_name"
+        " ON task_folders(owner_email, parent_id, name COLLATE NOCASE)"
+        " WHERE scope='personal'"
     )
 
 

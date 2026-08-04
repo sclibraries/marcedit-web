@@ -8,9 +8,20 @@ from typing import Any, Mapping
 from . import native_tasks, task_preflight
 
 
+_TECHNICAL_KEYS = {
+    "instruction_sha256",
+    "fingerprint",
+    "source_line",
+    "source_format",
+    "provenance",
+}
+
+
 def _walk_values(value: Any):
     if isinstance(value, Mapping):
         for key, nested in value.items():
+            if str(key) in _TECHNICAL_KEYS:
+                continue
             yield str(key)
             yield from _walk_values(nested)
     elif isinstance(value, (list, tuple)):
@@ -20,15 +31,31 @@ def _walk_values(value: Any):
         yield str(value)
 
 
+def _collect_tags(value: Any) -> set[str]:
+    tags: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if "tag" in str(key).lower() and isinstance(nested, str):
+                tags.add(nested)
+            tags.update(_collect_tags(nested))
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            tags.update(_collect_tags(nested))
+    return tags
+
+
 def _operation_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
     operations: list[dict[str, Any]] = []
+    native_definition = False
+    parse_failed = False
     definition_json = row.get("definition_json")
     if definition_json:
         try:
             definition = native_tasks.load_definition_json(definition_json)
+            native_definition = True
             operations = list(definition.get("steps", []))
         except (TypeError, ValueError, native_tasks.CompilerContractError):
-            operations = []
+            parse_failed = True
     else:
         try:
             operations = [
@@ -37,21 +64,27 @@ def _operation_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
             ]
         except ValueError:
             operations = []
-    kinds = [str(op.get("kind", "")) for op in operations if op.get("kind")]
+    kinds = [
+        str(op.get("kind") or op.get("action") or "")
+        for op in operations
+        if op.get("kind") or op.get("action")
+    ]
     tags: set[str] = set()
     terms: list[str] = []
     for operation in operations:
-        params = operation.get("params", {})
+        params = operation.get("params", operation)
         if isinstance(params, Mapping):
-            for key, value in params.items():
-                if "tag" in str(key).lower() and isinstance(value, str):
-                    tags.add(value)
+            tags.update(_collect_tags(params))
             terms.extend(_walk_values(params))
     return {
         "operation_kinds": sorted(set(kinds)),
         "marc_tags": sorted(tags),
         "operation_terms": terms,
-        "validation_state": "valid" if operations or definition_json else "legacy",
+        "validation_state": (
+            "invalid" if parse_failed
+            else "valid" if native_definition
+            else "legacy"
+        ),
     }
 
 
@@ -107,4 +140,3 @@ def search_visible_tasks(
         clean = {key: value for key, value in document.items() if key != "_searchable"}
         out.append(clean)
     return sorted(out, key=lambda row: (row["name"], row["id"]))
-

@@ -83,6 +83,143 @@ def test_shared_folder_creation_rejects_personal_parent_and_is_audited():
         )
 
 
+def test_shared_folder_names_are_case_insensitive_within_a_parent():
+    db.init_schema()
+    task_library.create_folder(
+        "alice@example.edu",
+        scope="shared",
+        parent_id=None,
+        name="Imports",
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        task_library.create_folder(
+            "bob@example.edu",
+            scope="shared",
+            parent_id=None,
+            name="imports",
+        )
+
+
+def test_visibility_change_assigns_a_compatible_folder():
+    db.init_schema()
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="visibility-demo",
+        description="",
+        body="pass\n",
+    )
+
+    task_db.set_visibility("alice@example.edu", "visibility-demo", "shared")
+
+    row = task_db.get_task("alice@example.edu", "visibility-demo")
+    with db.connect() as conn:
+        folder = conn.execute(
+            "SELECT scope, owner_email FROM task_folders WHERE id=?",
+            (row["folder_id"],),
+        ).fetchone()
+    assert row["folder_id"] is not None
+    assert tuple(folder) == ("shared", None)
+
+
+def test_native_task_creation_assigns_a_personal_folder():
+    import json
+    from pathlib import Path
+
+    db.init_schema()
+    definition = json.loads(
+        Path("tests/fixtures/native_tasks/delete-and-sort.json").read_text()
+    )
+    definition["name"] = "native-folder-demo"
+
+    row = task_db.save_native_task(
+        owner="alice@example.edu",
+        definition=definition,
+    )
+
+    assert row["folder_id"] is not None
+
+
+def test_folder_rename_and_move_preserve_revision_and_reject_cycles():
+    db.init_schema()
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="folder-fixture",
+        description="",
+        body="pass\n",
+    )
+    root = next(
+        folder for folder in task_library.list_folder_tree("alice@example.edu")
+        if folder["scope"] == "personal"
+    )
+    first = task_library.create_folder(
+        "alice@example.edu", scope="personal", parent_id=root["id"], name="One"
+    )
+    second = task_library.create_folder(
+        "alice@example.edu", scope="personal", parent_id=root["id"], name="Two"
+    )
+
+    renamed = task_library.rename_folder(
+        "alice@example.edu",
+        folder_id=first["id"],
+        new_name="Renamed",
+        expected_revision=first["revision"],
+    )
+    assert renamed["name"] == "Renamed"
+    assert renamed["revision"] == first["revision"] + 1
+
+    with pytest.raises(ValueError, match="cycle"):
+        task_library.move_folder(
+            "alice@example.edu",
+            folder_id=second["id"],
+            parent_id=second["id"],
+            expected_revision=second["revision"],
+        )
+
+
+def test_nonempty_folder_cannot_be_deleted_and_share_requires_compatible_folder():
+    db.init_schema()
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="shared-candidate",
+        description="",
+        body="pass\n",
+    )
+    root = next(
+        folder for folder in task_library.list_folder_tree("alice@example.edu")
+        if folder["scope"] == "personal"
+    )
+    child = task_library.create_folder(
+        "alice@example.edu", scope="personal", parent_id=root["id"], name="Work"
+    )
+    task = task_db.get_task("alice@example.edu", "shared-candidate")
+    task_library.move_task(
+        "alice@example.edu",
+        task_id=task["id"],
+        folder_id=child["id"],
+        expected_revision=task["revision"],
+    )
+    with pytest.raises(ValueError, match="nonempty"):
+        task_library.delete_folder(
+            "alice@example.edu",
+            folder_id=child["id"],
+            expected_revision=child["revision"],
+        )
+
+    shared_root = next(
+        folder for folder in task_library.list_folder_tree("alice@example.edu")
+        if folder["scope"] == "shared"
+    )
+    shared = task_library.share_task(
+        "alice@example.edu",
+        task_id=task["id"],
+        folder_id=shared_root["id"],
+        expected_revision=task["revision"] + 1,
+    )
+    assert shared["visibility"] == "shared"
+    assert shared["folder_id"] == shared_root["id"]
+
+
 def test_task_move_and_rename_preserve_id_folder_and_increment_revision():
     db.init_schema()
     task_db.save_task(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, TypeVar
@@ -12,6 +13,7 @@ from marcedit_web.lib import (
     field_predicates,
     guided_replace,
     guided_replace_validation,
+    partner_operations,
     task_builder,
     task_preflight,
     structural_replace,
@@ -59,6 +61,11 @@ _GUIDED_REPLACE_DEFAULTS = {
     "occurrences": "all",
     "value_scope": "all",
     "condition": "always",
+}
+_PARTNER_OPERATION_KINDS = {
+    "copy-fields-with-policy",
+    "build-fields-from-source",
+    "institution-profile",
 }
 
 
@@ -306,6 +313,146 @@ def _validate_migration_blocker(
     return task_preflight.migration_blocker_errors(op)
 
 
+def _validate_partner_operation(
+    kind: str,
+    params: Mapping[str, Any],
+    entry: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """Validate the structured partner-operation shapes before compilation."""
+    errors: list[str] = []
+    allowed = {parameter["name"] for parameter in entry["params"]}
+    unexpected = sorted(set(params) - allowed)
+    if unexpected:
+        errors.append(
+            "operation parameters contain unexpected keys: {0}".format(
+                ", ".join(unexpected)
+            )
+        )
+    for parameter in entry["params"]:
+        value = params.get(parameter["name"])
+        if parameter.get("required") and value in (None, "", []):
+            errors.append("{0} is required".format(parameter["label"]))
+        if (
+            parameter.get("type") == "select"
+            and parameter["name"] in params
+            and value not in {option["value"] for option in parameter.get("options", [])}
+        ):
+            errors.append("{0} is not supported".format(parameter["label"]))
+
+    def valid_tag(value: Any, label: str) -> bool:
+        if not isinstance(value, str) or not _TAG_RE.fullmatch(value):
+            errors.append("{0} must be a three-character MARC tag".format(label))
+            return False
+        return True
+
+    source_tag = params.get("source_tag")
+    source_valid = valid_tag(source_tag, "Source tag")
+    if kind in {"copy-fields-with-policy", "build-fields-from-source"}:
+        destination_tag = params.get("destination_tag")
+        destination_valid = valid_tag(destination_tag, "Destination tag")
+        if (
+            source_valid
+            and destination_valid
+            and is_control_tag(source_tag) != is_control_tag(destination_tag)
+        ):
+            errors.append(
+                "source and destination must both be control fields or both be data fields"
+            )
+        if params.get("occurrence", "all") not in {"first", "last", "all"}:
+            errors.append("occurrence must be first, last, or all")
+        if params.get("existing_field_action", "append") not in {"append", "replace", "skip"}:
+            errors.append("existing field action is not supported")
+        try:
+            if int(params.get("max_fields_per_record", 100)) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append("maximum fields per record must be a positive integer")
+        predicate = params.get("predicate")
+        if predicate not in (None, {}):
+            errors.extend(field_predicates.validate_field_predicate(predicate))
+            if source_valid and is_control_tag(source_tag):
+                errors.append("control fields cannot use indicator or subfield predicates")
+        if kind == "copy-fields-with-policy":
+            return tuple(errors)
+        indicators = params.get("indicators")
+        if (
+            not isinstance(indicators, list)
+            or len(indicators) != 2
+            or any(not isinstance(value, str) or len(value) != 1 for value in indicators)
+        ):
+            errors.append("destination indicators must contain two one-character values")
+        templates = params.get("subfield_templates")
+        if not isinstance(templates, list) or not templates:
+            errors.append("subfield templates must be a nonempty list")
+        else:
+            for index, template in enumerate(templates, start=1):
+                if not isinstance(template, Mapping):
+                    errors.append("subfield template {0} must be an object".format(index))
+                    continue
+                code = template.get("code")
+                if not isinstance(code, str) or len(code) != 1:
+                    errors.append("subfield template {0} code must be one character".format(index))
+                parts = template.get("parts")
+                if not isinstance(parts, list) or not parts:
+                    errors.append("subfield template {0} parts must be a nonempty list".format(index))
+                    continue
+                for part_index, part in enumerate(parts, start=1):
+                    if not isinstance(part, Mapping):
+                        errors.append("template part {0}.{1} must be an object".format(index, part_index))
+                        continue
+                    part_type = part.get("type")
+                    if part_type == "text":
+                        if not isinstance(part.get("value"), str):
+                            errors.append("template part {0}.{1} text value is required".format(index, part_index))
+                    elif part_type == "source_subfield":
+                        if not isinstance(part.get("code"), str) or len(part["code"]) != 1:
+                            errors.append("template part {0}.{1} subfield code is invalid".format(index, part_index))
+                    elif part_type == "source_indicator":
+                        if part.get("index") not in (1, 2):
+                            errors.append("template part {0}.{1} indicator index must be 1 or 2".format(index, part_index))
+                    elif part_type == "source_control_field":
+                        valid_tag(part.get("tag"), "Template control-field tag")
+                    else:
+                        errors.append("template part {0}.{1} type is not supported".format(index, part_index))
+        return tuple(errors)
+
+    rows = params.get("rows")
+    if not isinstance(rows, list) or not rows:
+        errors.append("institution mapping rows must be a nonempty list")
+    else:
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, Mapping):
+                errors.append("institution mapping row {0} must be an object".format(index))
+                continue
+            valid_tag(row.get("destination_tag"), "Row {0} destination tag".format(index))
+            indicators = row.get("indicators", [" ", " "])
+            if (
+                not isinstance(indicators, list)
+                or len(indicators) != 2
+                or any(not isinstance(value, str) or len(value) != 1 for value in indicators)
+            ):
+                errors.append("row {0} indicators must contain two one-character values".format(index))
+            subfields = row.get("subfields")
+            if not isinstance(subfields, list) or not subfields:
+                errors.append("row {0} subfields must be a nonempty list".format(index))
+            else:
+                for subfield in subfields:
+                    if (
+                        not isinstance(subfield, list)
+                        or len(subfield) != 2
+                        or not isinstance(subfield[0], str)
+                        or len(subfield[0]) != 1
+                        or not isinstance(subfield[1], str)
+                    ):
+                        errors.append("row {0} contains an invalid subfield".format(index))
+        try:
+            if int(params.get("max_fields_per_record", 100)) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append("maximum fields per record must be a positive integer")
+    return tuple(errors)
+
+
 def validate_operation(
     op: Mapping[str, Any],
     *,
@@ -331,51 +478,8 @@ def validate_operation(
     )
     if entry is None:
         return ("operation kind is not supported: {0}".format(kind),)
-    if kind == "copy-fields-with-policy":
-        params = op.get("params") or {}
-        errors = []
-        source_tag = params.get("source_tag")
-        destination_tag = params.get("destination_tag")
-        if not isinstance(source_tag, str) or not _TAG_RE.fullmatch(source_tag):
-            errors.append("Source tag must be a three-character MARC tag")
-        if not isinstance(destination_tag, str) or not _TAG_RE.fullmatch(destination_tag):
-            errors.append("Destination tag must be a three-character MARC tag")
-        if (
-            isinstance(source_tag, str)
-            and isinstance(destination_tag, str)
-            and _TAG_RE.fullmatch(source_tag)
-            and _TAG_RE.fullmatch(destination_tag)
-            and is_control_tag(source_tag) != is_control_tag(destination_tag)
-        ):
-            errors.append(
-                "source and destination must both be control fields or both be data fields"
-            )
-        if params.get("occurrence", "all") not in {"first", "last", "all"}:
-            errors.append("occurrence must be first, last, or all")
-        if params.get("existing_field_action", "append") not in {"append", "replace", "skip"}:
-            errors.append("existing field action is not supported")
-        try:
-            bound = int(params.get("max_fields_per_record", 100))
-            if bound <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            errors.append("maximum fields per record must be a positive integer")
-        if params.get("predicate") not in (None, {}):
-            errors.extend(field_predicates.validate_field_predicate(params["predicate"]))
-            if is_control_tag(str(source_tag or "")):
-                errors.append("control fields cannot use indicator or subfield predicates")
-        allowed = {parameter["name"] for parameter in entry["params"]}
-        unexpected = sorted(set(params) - allowed)
-        if unexpected:
-            errors.append(
-                "operation parameters contain unexpected keys: {0}".format(
-                    ", ".join(unexpected)
-                )
-            )
-        for parameter in entry["params"]:
-            if parameter.get("required") and params.get(parameter["name"]) in (None, "", []):
-                errors.append("{0} is required".format(parameter["label"]))
-        return tuple(errors)
+    if kind in _PARTNER_OPERATION_KINDS:
+        return _validate_partner_operation(kind, op.get("params") or {}, entry)
     if kind in {"copy-field", "delete-by-subfield"}:
         params = op.get("params") or {}
         errors = []
@@ -878,6 +982,52 @@ def _legacy_mnemonic(op: Mapping[str, Any]) -> str:
     )
 
 
+def _describe_partner_operation(op: Mapping[str, Any]) -> str:
+    kind = str(op.get("kind") or "")
+    params = op.get("params") or {}
+    if not isinstance(params, Mapping):
+        return "Partner operation needs an object of parameters."
+    if kind == "copy-fields-with-policy":
+        return (
+            "Copy {occurrence} {source} field(s) to {destination}; "
+            "when the destination exists, {action}."
+        ).format(
+            occurrence=params.get("occurrence", "all"),
+            source=params.get("source_tag", "?"),
+            destination=params.get("destination_tag", "?"),
+            action=params.get("existing_field_action", "append"),
+        )
+    if kind == "build-fields-from-source":
+        return (
+            "Build {destination} field(s) from {occurrence} matching "
+            "{source} field(s); missing sources {missing}."
+        ).format(
+            destination=params.get("destination_tag", "?"),
+            occurrence=params.get("occurrence", "all"),
+            source=params.get("source_tag", "?"),
+            missing=params.get("missing_source_action", "skip_field"),
+        )
+    return (
+        "Apply the institution mapping profile to {occurrence} matching "
+        "{source} field(s)."
+    ).format(
+        occurrence=params.get("occurrence", "all"),
+        source=params.get("source_tag", "?"),
+    )
+
+
+def _apply_partner_operation(record: Record, op: Mapping[str, Any]) -> dict[str, int]:
+    kind = str(op.get("kind") or "")
+    params = dict(op.get("params") or {})
+    if kind == "copy-fields-with-policy":
+        return partner_operations.copy_fields_with_policy(record, **params)
+    if kind == "build-fields-from-source":
+        return partner_operations.build_fields_for_matches(record, **params)
+    if kind == "institution-profile":
+        return partner_operations.apply_institution_profile(record, **params)
+    raise ValueError("unsupported partner operation")
+
+
 def describe_operation(op: Mapping[str, Any]) -> str:
     """Describe one Add/Build operation in cataloger-facing language."""
 
@@ -924,6 +1074,8 @@ def describe_operation(op: Mapping[str, Any]) -> str:
         else:
             summary = "Delete selected {0} fields".format(params.get("tag", ""))
         return summary + (" only when " + condition if condition else "") + "."
+    if kind in _PARTNER_OPERATION_KINDS:
+        return _describe_partner_operation(op)
 
     try:
         normalized = normalize_operation(op)
@@ -1007,6 +1159,11 @@ def render_mnemonic(
 
     if op.get("kind") in {"copy-field", "delete-by-subfield"}:
         return describe_operation(op)
+    if op.get("kind") in _PARTNER_OPERATION_KINDS:
+        return "{0}: {1}".format(
+            op.get("kind"),
+            json.dumps(op.get("params") or {}, ensure_ascii=False, sort_keys=True),
+        )
 
     try:
         normalized = normalize_operation(op)
@@ -1040,6 +1197,11 @@ def token_annotations(op: Mapping[str, Any]) -> tuple[str, ...]:
 
     if op.get("kind") in {"copy-field", "delete-by-subfield"}:
         return (describe_operation(op),)
+    if op.get("kind") in _PARTNER_OPERATION_KINDS:
+        return (
+            "{0}: deterministic pymarc operation.".format(op.get("kind")),
+            "Parameters are validated before saving and execution.",
+        )
 
     try:
         normalized = normalize_operation(op)
@@ -1107,6 +1269,20 @@ def preview_operation(
             "no-file",
             unresolved,
             "Load a MARC file to resolve source values.",
+        )
+    if normalized["kind"] in _PARTNER_OPERATION_KINDS:
+        candidate = copy.deepcopy(record)
+        try:
+            result = _apply_partner_operation(candidate, normalized)
+        except (TypeError, ValueError) as exc:
+            return AuthoringPreview("error", unresolved, str(exc))
+        return AuthoringPreview(
+            "ready",
+            unresolved,
+            "Preview created {0} destination field(s); matched {1} source field(s).".format(
+                result.get("destination_fields_created", 0),
+                result.get("source_fields_matched", 0),
+            ),
         )
     candidate = copy.deepcopy(record)
     params = normalized["params"]

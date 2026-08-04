@@ -63,6 +63,20 @@ def _utc_now() -> str:
     return dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
+def _folder_is_compatible(conn, folder_id: int | None, owner: str, visibility: str) -> bool:
+    if folder_id is None:
+        return False
+    row = conn.execute(
+        "SELECT scope, owner_email FROM task_folders WHERE id=?",
+        (folder_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    if visibility == "shared":
+        return row["scope"] == "shared" and row["owner_email"] is None
+    return row["scope"] == "personal" and row["owner_email"] == owner
+
+
 def save_task(
     *,
     owner: str,
@@ -90,15 +104,15 @@ def save_task(
     with db.connect() as conn:
         from . import task_library
 
-        folder_id = task_library.ensure_task_folder(
-            conn, owner=owner, visibility=visibility
-        )
         existing = conn.execute(
             "SELECT created_at, definition_json, folder_id FROM tasks"
             " WHERE owner_email = ? AND name = ?",
             (owner, name),
         ).fetchone()
         if existing is None:
+            folder_id = task_library.ensure_task_folder(
+                conn, owner=owner, visibility=visibility
+            )
             conn.execute(
                 "INSERT INTO tasks"
                 "(owner_email, name, description, body, extra_imports,"
@@ -111,9 +125,14 @@ def save_task(
                 raise NativeTaskStorageError(
                     "native tasks must be saved through the native task API"
                 )
+            folder_id = existing["folder_id"]
+            if not _folder_is_compatible(conn, folder_id, owner, visibility):
+                folder_id = task_library.ensure_task_folder(
+                    conn, owner=owner, visibility=visibility
+                )
             cursor = conn.execute(
                 "UPDATE tasks SET description = ?, body = ?,"
-                " extra_imports = ?, visibility = ?, folder_id = COALESCE(folder_id, ?),"
+                " extra_imports = ?, visibility = ?, folder_id = ?,"
                 " revision = revision + 1,"
                 " updated_at = ?"
                 " WHERE owner_email = ? AND name = ?"
@@ -147,8 +166,11 @@ def save_native_task(
     now = _utc_now()
 
     with db.connect() as conn:
+        from . import task_library
+
         existing = conn.execute(
-            "SELECT revision FROM tasks WHERE owner_email = ? AND name = ?",
+            "SELECT revision, folder_id, visibility FROM tasks"
+            " WHERE owner_email = ? AND name = ?",
             (owner, name),
         ).fetchone()
         if existing is None:
@@ -157,12 +179,15 @@ def save_native_task(
                     f"expected revision {expected_revision} for missing task"
                 )
             try:
+                folder_id = task_library.ensure_task_folder(
+                    conn, owner=owner, visibility=visibility
+                )
                 conn.execute(
                     "INSERT INTO tasks"
                     "(owner_email, name, description, body, extra_imports,"
-                    " definition_json, compiler_fingerprint, visibility,"
+                    " definition_json, compiler_fingerprint, visibility, folder_id,"
                     " created_at, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         owner,
                         name,
@@ -172,6 +197,7 @@ def save_native_task(
                         definition_json,
                         compiler_fingerprint,
                         visibility,
+                        folder_id,
                         now,
                         now,
                     ),
@@ -193,6 +219,7 @@ def save_native_task(
                 " definition_json = ?,"
                 " compiler_fingerprint = ?,"
                 " visibility = ?,"
+                " folder_id = ?,"
                 " revision = revision + 1,"
                 " updated_at = ?"
                 " WHERE owner_email = ? AND name = ? AND revision = ?",
@@ -203,6 +230,13 @@ def save_native_task(
                     definition_json,
                     compiler_fingerprint,
                     visibility,
+                    (
+                        existing["folder_id"]
+                        if _folder_is_compatible(conn, existing["folder_id"], owner, visibility)
+                        else task_library.ensure_task_folder(
+                            conn, owner=owner, visibility=visibility
+                        )
+                    ),
                     now,
                     owner,
                     name,
@@ -321,11 +355,24 @@ def set_visibility(owner: str, name: str, visibility: str) -> None:
         raise ValueError(f"invalid visibility {visibility!r}")
     now = _utc_now()
     with db.connect() as conn:
+        from . import task_library
+
+        row = conn.execute(
+            "SELECT id, folder_id FROM tasks WHERE owner_email=? AND name=?",
+            (owner, name),
+        ).fetchone()
+        if row is None:
+            return
+        folder_id = row["folder_id"]
+        if not _folder_is_compatible(conn, folder_id, owner, visibility):
+            folder_id = task_library.ensure_task_folder(
+                conn, owner=owner, visibility=visibility
+            )
         conn.execute(
-            "UPDATE tasks SET visibility = ?, revision = revision + 1,"
+            "UPDATE tasks SET visibility = ?, folder_id = ?, revision = revision + 1,"
             " updated_at = ?"
             " WHERE owner_email = ? AND name = ?",
-            (visibility, now, owner, name),
+            (visibility, folder_id, now, owner, name),
         )
 
 

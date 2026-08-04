@@ -144,6 +144,32 @@ def test_build_fields_for_matches_uses_each_source_and_skips_missing_values():
     ]
 
 
+def test_build_fields_for_matches_resolves_record_control_fields():
+    record = _record_with_sources()
+    record.add_field(pymarc.Field(tag="003", data="NhCcYBP"))
+
+    result = partner_operations.build_fields_for_matches(
+        record,
+        source_tag="856",
+        destination_tag="945",
+        indicators=[" ", " "],
+        subfield_templates=[
+            {
+                "code": "a",
+                "parts": [
+                    {"type": "source_control_field", "tag": "003"}
+                ],
+            }
+        ],
+    )
+
+    assert result["destination_fields_created"] == 2
+    assert [field.get_subfields("a") for field in record.get_fields("945")] == [
+        ["NhCcYBP"],
+        ["NhCcYBP"],
+    ]
+
+
 def test_institution_profile_adds_one_row_per_selected_source():
     record = _record_with_sources()
 

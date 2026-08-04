@@ -1435,3 +1435,59 @@ def test_partner_copy_with_policy_rejects_unknown_policy_and_cross_shape_tags():
 
     assert any("existing field action" in error for error in errors)
     assert any("both be control fields or both be data fields" in error for error in errors)
+
+
+def test_partner_operation_authoring_explanation_and_preview_are_supported():
+    operation = {
+        "kind": "build-fields-from-source",
+        "params": {
+            "source_tag": "856",
+            "destination_tag": "945",
+            "indicators": [" ", " "],
+            "subfield_templates": [
+                {
+                    "code": "u",
+                    "parts": [
+                        {"type": "source_subfield", "code": "u"}
+                    ],
+                }
+            ],
+            "occurrence": "all",
+            "missing_source_action": "skip_field",
+            "existing_field_action": "append",
+            "max_fields_per_record": 10,
+        },
+    }
+
+    description = task_authoring.describe_operation(operation)
+    mnemonic = task_authoring.render_mnemonic(operation)
+    annotations = task_authoring.token_annotations(operation)
+    preview = task_authoring.preview_operation(operation, _source_record())
+
+    assert "856" in description and "945" in description
+    assert "build-fields-from-source" in mnemonic
+    assert annotations
+    assert preview.status == "ready"
+
+
+def test_partner_build_validation_rejects_malformed_structured_parameters():
+    operation = {
+        "kind": "build-fields-from-source",
+        "params": {
+            "source_tag": "856",
+            "destination_tag": "bad",
+            "indicators": ["x"],
+            "subfield_templates": "not-a-list",
+            "occurrence": "all",
+            "missing_source_action": "skip_field",
+            "existing_field_action": "append",
+            "max_fields_per_record": 10,
+        },
+    }
+
+    errors = task_authoring.validate_operation(operation)
+
+    assert errors
+    assert any("destination" in error.lower() for error in errors)
+    assert any("indicator" in error.lower() for error in errors)
+    assert any("template" in error.lower() for error in errors)

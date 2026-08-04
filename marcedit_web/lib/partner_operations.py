@@ -108,7 +108,11 @@ def copy_fields_with_policy(
     return result
 
 
-def _resolve_part(field: Field, part: dict[str, Any]) -> str | None:
+def _resolve_part(
+    field: Field,
+    part: dict[str, Any],
+    record: Record | None = None,
+) -> str | None:
     kind = part.get("type")
     if kind == "text":
         return str(part.get("value", ""))
@@ -121,12 +125,18 @@ def _resolve_part(field: Field, part: dict[str, Any]) -> str | None:
             return None
         return field.indicators[index]
     if kind == "source_control_field":
-        values = field.get_subfields(str(part.get("tag", "")))
-        return values[0] if values else None
+        if record is None:
+            return None
+        source = record.get(str(part.get("tag", "")))
+        return None if source is None else str(source.data)
     raise ValueError(f"unsupported partner template part {kind!r}")
 
 
-def _render_template(field: Field, templates: list[dict[str, Any]]) -> list[Field] | None:
+def _render_template(
+    field: Field,
+    templates: list[dict[str, Any]],
+    record: Record | None = None,
+) -> list[Subfield] | None:
     rendered: list[Field] = []
     for template in templates:
         code = str(template.get("code", "")).strip()
@@ -137,7 +147,7 @@ def _render_template(field: Field, templates: list[dict[str, Any]]) -> list[Fiel
         for part in parts:
             if not isinstance(part, dict):
                 raise ValueError("partner template part must be an object")
-            value = _resolve_part(field, part)
+            value = _resolve_part(field, part, record)
             if value is None:
                 return None
             values.append(value)
@@ -171,7 +181,7 @@ def build_fields_for_matches(
     result["source_fields_matched"] = len(selected)
     candidates: list[Field] = []
     for source in selected:
-        subfields = _render_template(source, subfield_templates)
+        subfields = _render_template(source, subfield_templates, record)
         if subfields is None:
             if missing_source_action == "fail":
                 raise ValueError("source value is missing for partner field template")

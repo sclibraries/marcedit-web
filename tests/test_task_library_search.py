@@ -1,5 +1,7 @@
 """TDD coverage for TASK-193 safe task-library search."""
 
+import json
+
 from marcedit_web.lib import db, task_db, task_library_search
 
 
@@ -54,3 +56,40 @@ def test_malformed_task_remains_searchable_by_safe_name_and_description():
     )
 
     assert [row["name"] for row in results] == ["legacy-import"]
+
+
+def test_native_definition_steps_are_searchable_by_action_and_tag():
+    from pathlib import Path
+
+    definition = json.loads(
+        Path("tests/fixtures/native_tasks/build-field.json").read_text()
+    )
+    metadata = task_library_search._operation_metadata({
+        "definition_json": json.dumps(definition),
+        "body": "",
+    })
+
+    assert metadata["operation_kinds"] == ["build_field"]
+    assert metadata["marc_tags"] == ["001", "003", "876"]
+
+
+def test_search_does_not_index_instruction_fingerprints():
+    db.init_schema()
+    fingerprint = "a" * 64
+    task_db.save_task(
+        owner="carol@example.edu",
+        name="shared-migration",
+        description="Shared migration task",
+        body=(
+            '# OP: migration-blocker '
+            + json.dumps({"instruction_sha256": fingerprint})
+            + "\npass\n"
+        ),
+        visibility="shared",
+    )
+
+    results = task_library_search.search_visible_tasks(
+        "alice@example.edu", fingerprint
+    )
+
+    assert results == []
