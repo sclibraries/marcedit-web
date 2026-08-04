@@ -5,7 +5,8 @@ Date: 2026-08-04
 ## Current candidate
 
 The reviewed implementation is on branch `task-192-194-design` at commit
-`67cfb48`. The branch is clean. Its synchronous-only boundary is verified by
+`cd84ff3` (with the sync-only boundary introduced in `67cfb48`). The branch is
+clean. Its synchronous-only boundary is verified by
 the private-navigation, sidebar, direct Operations-page guard, and saved-task
 runner tests.
 
@@ -47,4 +48,3 @@ modules are retained as inert code or removed from the release diff.
 3. Run Docker and authenticated browser verification under the captured
    Python, SQLite, and Streamlit contract.
 4. Obtain release and rollback SHA approval before push or deployment.
-
