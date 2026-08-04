@@ -49,5 +49,9 @@ Implementation checkpoint:
   a worker or invents a unit.
 - Release assembly and any non-dry deployment remain blocked until Gate 0
   identifies the live unit, paths, dependency versions, and database.
+- The current review worktree still contains Operations-era navigation and
+  queue submission inherited from main; the production release branch must be
+  assembled from the captured production SHA and remove that topology before
+  it can satisfy the synchronous-only boundary.
 
 Status: In-Progress
