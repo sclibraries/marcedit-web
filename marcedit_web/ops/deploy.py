@@ -35,7 +35,8 @@ class CommandResult:
 
 
 _UNIT_NAME = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
-_VERSION = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?")
+_BRANCH_NAME = re.compile(r"^[A-Za-z0-9._/-]+$")
+_VERSION = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 
 
 def _result_stdout(value: Any) -> str:
@@ -72,6 +73,8 @@ def _runtime_python(exec_start: str) -> Path:
     if not match:
         raise DeploymentError("captured unit has no executable path")
     executable = Path(match.group(1))
+    if not executable.is_absolute():
+        raise DeploymentError("captured runtime executable must be absolute")
     if executable.name == "streamlit":
         return executable.with_name("python")
     if executable.name == "python" or executable.name.startswith("python3"):
@@ -90,6 +93,8 @@ def _database_from_capture(lineage: Mapping[str, Any], unit_output: str) -> Path
     path = details.get("path")
     if not isinstance(path, str) or not path:
         raise DeploymentError("database lineage capture has no path")
+    if not Path(path).is_absolute() or details.get("exists") is not True:
+        raise DeploymentError("captured database path must be an existing absolute path")
     configured = _environment_value(unit_output, "MARCEDIT_WEB_DB_PATH")
     if configured and Path(configured) != Path(path):
         raise DeploymentError("database path disagrees with captured unit environment")
@@ -110,8 +115,13 @@ def validate_lineage(
             "runtime-lineage capture is incomplete"
             + (f": {errors}" if errors else "")
         )
-    if not isinstance(approved_branch, str) or not approved_branch.strip():
-        raise DeploymentError("an approved branch is required")
+    if (
+        not isinstance(approved_branch, str)
+        or not approved_branch.strip()
+        or _BRANCH_NAME.fullmatch(approved_branch) is None
+        or approved_branch.startswith("-")
+    ):
+        raise DeploymentError("approved branch must be a safe branch name")
 
     root = Path(str(lineage.get("root", ""))).resolve()
     repository = lineage.get("repository")
@@ -154,19 +164,29 @@ def validate_lineage(
     )
 
     dependencies = lineage.get("dependencies")
+    python_result = dependencies.get("python") if isinstance(dependencies, Mapping) else None
+    if not _result_ok(python_result) or _version(_result_stdout(python_result))[:2] != (3, 9):
+        raise DeploymentError("production Python 3.9 was not captured")
     streamlit = dependencies.get("streamlit") if isinstance(dependencies, Mapping) else None
     if not _result_ok(streamlit):
         raise DeploymentError("Streamlit dependency capture is incomplete")
     streamlit_version = _version(_result_stdout(streamlit))
     if not ((1, 50, 0) <= streamlit_version < (2, 0, 0)):
         raise DeploymentError("captured Streamlit version is outside >=1.50,<2")
+    sqlite = lineage.get("sqlite")
+    sqlite_result = sqlite.get("python_sqlite") if isinstance(sqlite, Mapping) else None
+    if not _result_ok(sqlite_result) or _version(_result_stdout(sqlite_result)) < (3, 8, 0):
+        raise DeploymentError("production SQLite lacks partial indexes")
     dialog = lineage.get("dialog")
     if not _result_ok(dialog) or "dismissible" not in _result_stdout(dialog):
         raise DeploymentError("captured Streamlit dialog contract lacks dismissible")
 
     sudo = lineage.get("sudo")
-    if not _result_ok(sudo) or f"/bin/systemctl restart {unit}" not in _result_stdout(sudo):
-        raise DeploymentError("service user cannot restart the captured unit")
+    if (
+        not _result_ok(sudo)
+        or f"NOPASSWD: /bin/systemctl restart {unit}" not in _result_stdout(sudo)
+    ):
+        raise DeploymentError("service user lacks a NOPASSWD rule for the captured unit")
     return DeploymentConfig(
         root=root,
         python=python,

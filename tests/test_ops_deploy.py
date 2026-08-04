@@ -50,6 +50,9 @@ def _lineage(tmp_path: Path) -> dict:
             "streamlit": {"status": "ok", "stdout": "1.50.0\n"},
             "pymarc": {"status": "ok", "stdout": "5.2.3\n"},
         },
+        "sqlite": {
+            "python_sqlite": {"status": "ok", "stdout": "3.40.1\n"},
+        },
         "dialog": {
             "status": "ok",
             "stdout": "(title, *, width='small', dismissible=True, on_dismiss='ignore')\n",
@@ -74,6 +77,30 @@ def test_validate_lineage_checks_streamlit_dialog_and_sudo_contract(tmp_path):
     lineage["dialog"]["stdout"] = "(title, *, width='small')\n"
 
     with pytest.raises(deploy.DeploymentError, match="dismissible"):
+        deploy.validate_lineage(lineage, approved_branch="release-hotfix")
+
+
+@pytest.mark.parametrize("branch", ["--danger", "release hotfix"])
+def test_validate_lineage_rejects_unsafe_branch_names(tmp_path, branch):
+    with pytest.raises(deploy.DeploymentError, match="branch"):
+        deploy.validate_lineage(_lineage(tmp_path), approved_branch=branch)
+
+
+def test_validate_lineage_requires_python39_sqlite_partial_index_and_nopasswd(tmp_path):
+    lineage = _lineage(tmp_path)
+    lineage["dependencies"]["python"]["stdout"] = "Python 3.10.1\n"
+
+    with pytest.raises(deploy.DeploymentError, match="Python 3.9"):
+        deploy.validate_lineage(lineage, approved_branch="release-hotfix")
+
+    lineage = _lineage(tmp_path)
+    lineage["sqlite"] = {"python_sqlite": {"status": "ok", "stdout": "3.7.0\n"}}
+    with pytest.raises(deploy.DeploymentError, match="partial indexes"):
+        deploy.validate_lineage(lineage, approved_branch="release-hotfix")
+
+    lineage = _lineage(tmp_path)
+    lineage["sudo"]["stdout"] = "(root) /bin/systemctl restart catalog.service\n"
+    with pytest.raises(deploy.DeploymentError, match="NOPASSWD"):
         deploy.validate_lineage(lineage, approved_branch="release-hotfix")
 
 
