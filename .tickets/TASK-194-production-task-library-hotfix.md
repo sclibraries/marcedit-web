@@ -53,5 +53,11 @@ Implementation checkpoint:
   queue submission inherited from main; the production release branch must be
   assembled from the captured production SHA and remove that topology before
   it can satisfy the synchronous-only boundary.
+- The review worktree now routes saved-task execution through a synchronous
+  sandbox runner, hides the Operations page and notification bell, and guards
+  the Operations script itself. Focused sync-only, navigation, partner, folder,
+  runtime, deployment, backup, and migration tests pass. This is still not a
+  production release: Gate 0 capture, exact-lineage assembly, Docker, and
+  authenticated browser verification remain outstanding.
 
 Status: In-Progress

@@ -15,7 +15,7 @@ APP_PATH = Path(__file__).parent.parent / "marcedit_web" / "App.py"
 
 PUBLIC_ALLOWED = {"Home", "View", "Validate", "Report", "MarcTools"}
 PRIVATE_ONLY = {
-    "Workspace", "Jobs", "History", "Operations", "Find", "MarcEditor",
+    "Workspace", "Jobs", "History", "Find", "MarcEditor",
     "Tasks", "Diff", "Dedupe", "Admin",
 }
 SANDBOX = "Tasks"
@@ -74,14 +74,9 @@ def test_public_mode_does_not_register_jobs_page(monkeypatch):
     assert "Jobs" not in paths
 
 
-def test_private_mode_registers_operations_with_material_icon(monkeypatch):
+def test_private_mode_hides_durable_operations_during_hotfix(monkeypatch):
     app = _load_app(monkeypatch, "private")
-    pages = app.build_pages(public=False)
-    operation_page = next(
-        page for page in pages["Start"] if page.url_path == "Operations"
-    )
-    assert operation_page.script == "views/D_Operations.py"
-    assert operation_page.icon == ":material/pending_actions:"
+    assert "Operations" not in _url_paths(app.build_pages(public=False))
 
 
 def test_public_mode_never_registers_operations(monkeypatch):
@@ -127,7 +122,7 @@ def _insert_user(email: str, status: str) -> None:
         )
 
 
-def test_real_streamlit_registers_operations_before_notification_links(
+def test_real_streamlit_hides_durable_operations_notifications(
     monkeypatch,
 ):
     email = "owner@smith.edu"
@@ -137,40 +132,10 @@ def test_real_streamlit_registers_operations_before_notification_links(
 
     assert list(app_test.exception) == []
     assert [block.proto.popover.label for block in app_test.get("popover")] == [
-        "Notifications (2)",
         "Account",
     ]
-    assert [element.proto.label for element in app_test.get("page_link")] == [
-        "View operation 2",
-        "View operation 1",
-        "View operation 2",
-    ]
-    assert [button.label for button in app_test.button] == [
-        "Mark read",
-        "Mark read",
-        "Mark all read",
-        "Sign out",
-    ]
-
-    app_test = next(
-        button for button in app_test.button if button.label == "Mark read"
-    ).click().run()
-    with db.connect() as conn:
-        acknowledged = conn.execute(
-            "SELECT COUNT(*) FROM operations"
-            " WHERE notification_ack_at IS NOT NULL"
-        ).fetchone()[0]
-    assert acknowledged == 1
-
-    app_test = next(
-        button for button in app_test.button if button.label == "Mark all read"
-    ).click().run()
-    with db.connect() as conn:
-        acknowledged = conn.execute(
-            "SELECT COUNT(*) FROM operations"
-            " WHERE notification_ack_at IS NOT NULL"
-        ).fetchone()[0]
-    assert acknowledged == 2
+    assert list(app_test.get("page_link")) == []
+    assert [button.label for button in app_test.button] == ["Sign out"]
 
 
 @pytest.mark.parametrize(

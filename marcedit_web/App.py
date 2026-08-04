@@ -95,9 +95,6 @@ def build_pages(public: bool) -> dict[str, list[PageSpec]]:
                      script="views/B_Jobs.py", icon=":material/folder_shared:"),
             PageSpec(url_path="History", title="History",
                      script="views/C_History.py", icon=":material/history:"),
-            PageSpec(url_path="Operations", title="Operations",
-                     script="views/D_Operations.py",
-                     icon=":material/pending_actions:"),
             PageSpec(url_path="Workspace", title="Workspace",
                      script="views/0_Workspace.py", icon=":material/dashboard:"),
         ],
@@ -222,7 +219,7 @@ def _render_account_menu(email: str) -> None:
 
 
 def _should_render_notification_bell(email: str) -> bool:
-    if not runmode.is_private():
+    if not runmode.is_private() or not runmode.durable_operations_enabled():
         return False
     try:
         user = authz.get_user(email)
@@ -240,7 +237,7 @@ def _render_notification_bell(email: str) -> None:
 
 
 def _render_first_return_notification() -> None:
-    if not runmode.is_private():
+    if not runmode.is_private() or not runmode.durable_operations_enabled():
         return
     try:
         operation_notifications.render_first_return_notice(

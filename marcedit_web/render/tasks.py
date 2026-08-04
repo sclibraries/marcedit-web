@@ -3,9 +3,9 @@
 v3 changes:
 * Default users see only the **form builder**. The Code view is gated
   to admins via :func:`task_admin.is_admin` (env: ``MARCEDIT_WEB_ADMINS``).
-* Saved-task runs are submitted to the durable operation queue. A separate
-  worker executes their immutable snapshots through the subprocess sandbox;
-  the Streamlit process never executes saved-task code directly.
+* Saved-task runs execute synchronously through the subprocess sandbox. The
+  production hotfix deliberately leaves durable Operations and its worker
+  out of the user-facing run path.
 * Task files keep round-tripping through the existing
   ``editor.parse_user_task_file`` / ``task_builder.parse_ops_from_source``
   / ``task_builder.render_ops_to_python`` plumbing. Form-built tasks
@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pymarc
 import streamlit as st
 from streamlit_ace import st_ace
 
@@ -53,6 +54,7 @@ from marcedit_web.lib import (
     quick_batch,
     rda_operations,
     sandbox,
+    synchronous_task_runner,
     session,
     snapshot_actions,
     task_admin,
@@ -166,6 +168,7 @@ K_OPERATION_DIALOG_STATE = "tasks_operation_dialog_state"
 K_OPERATION_DIALOG_NONCE = "tasks_operation_dialog_nonce"
 K_OPERATION_REFERENCE_REQUESTED = "tasks_operation_reference_requested"
 K_OPERATION_CARDS_PENDING_REMOVE = "task_operation_cards_pending_remove"
+K_SYNC_RUN_RESULT = "tasks_sync_run_result"
 
 # Retained draft bounds follow the existing archive envelope: ZIP entry names
 # are at most 65,535 bytes and an archive may expand to 50 MiB. The shortest
@@ -256,6 +259,7 @@ def render() -> None:
     st.session_state.setdefault(K_OPERATION_REFERENCE_REQUESTED, False)
     st.session_state.setdefault(K_MARCEDIT_IMPORT_RESULT, None)
     st.session_state.setdefault(K_MARCEDIT_IMPORT_ADOPTED_ENTRY, None)
+    st.session_state.setdefault(K_SYNC_RUN_RESULT, None)
 
     # Load the materialized dir so the importer sees the user's tasks.
     tasks.load_user_tasks(tasks_dir, force_reload=False)
@@ -937,6 +941,7 @@ def _render_run_mode(registered, tasks_dir: Path) -> None:
         )
     else:
         _render_run_panel(registered, tasks_dir)
+        _render_sync_run_result()
 
 
 def _render_quick_ops_mode() -> None:
@@ -2639,13 +2644,14 @@ def _render_run_panel(registered, tasks_dir: Path) -> None:
         help=(
             "Each task gets the same record one at a time; tasks later "
             "in the list see the output of earlier tasks. Execution "
-            "is processed in order by the durable operation queue."
+            "happens in order in a bounded sandbox subprocess. Keep this "
+            "tab open until the result is ready."
         ),
         key="tasks_run_selection",
     )
     st.caption(
-        "Saved-task runs are queued for background processing. You can leave "
-        "this page and follow progress, completion, or errors in Operations."
+        "Saved-task runs execute synchronously in a bounded sandbox. "
+        "The result stays here for review before you download or apply it."
     )
     if st.button(
         "Run selected tasks",
@@ -2653,7 +2659,259 @@ def _render_run_panel(registered, tasks_dir: Path) -> None:
         disabled=not selection,
         key="tasks_run_btn",
     ):
-        _submit_queued_run(selection, tasks_dir)
+        _execute_synchronous_run(selection, tasks_dir)
+
+
+def _execute_synchronous_run(selection: list[str], tasks_dir: Path) -> None:
+    """Run selected saved tasks without creating a durable operation row."""
+    store = session.current_store()
+    if store is None:
+        st.error("No loaded batch — upload one on Home first.")
+        return
+
+    specs: list[sandbox.TaskSpec] = []
+    raw_guided_operations: list[dict] = []
+    for name in selection:
+        try:
+            parsed = editor.parse_user_task_file(
+                editor.task_file_path(tasks_dir, name)
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            st.error(f"Could not load task `{name}`: {exc}")
+            return
+        preflight_issues = task_authoring.submission_preflight_issues(
+            parsed["body"]
+        )
+        if preflight_issues:
+            st.error(
+                f"Task `{name}` cannot run until this saved instruction is "
+                f"resolved: {preflight_issues[0]}"
+            )
+            return
+        parsed_ops = task_builder.parse_ops_from_source(parsed["body"])
+        if parsed_ops["form_editable"]:
+            raw_guided_operations.extend(
+                op.to_dict()
+                for op in parsed_ops["ops"]
+                if (
+                    op.kind == "guided-find-replace"
+                    and op.params.get("match_mode") == "raw_regex"
+                )
+            )
+        specs.append(sandbox.TaskSpec(name=name, body=parsed["body"], imports=[]))
+
+    if raw_guided_operations:
+        previews = st.session_state.get(K_GUIDED_REPLACE_PREVIEWS, {})
+        for operation in raw_guided_operations:
+            try:
+                cache_key = guided_replace_preview.preview_cache_key(operation)
+            except (TypeError, ValueError) as exc:
+                st.error(str(exc))
+                return
+            preview = previews.get(cache_key)
+            if (
+                preview is None
+                or not guided_replace_preview.is_current(
+                    preview, store, operation
+                )
+            ):
+                st.error(
+                    "Preview this raw regular expression successfully "
+                    "against the current loaded file before running it."
+                )
+                return
+
+    workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-sync-"))
+    input_path = workdir / "input.mrc"
+    with st.status("Running tasks…", expanded=True) as status:
+        st.write(f"Reading **{store.count():,}** records from upload")
+        store.write_mrc_to(input_path)
+        st.write(
+            f"Running {len(specs)} task(s) in the sandbox: "
+            + ", ".join(f"`{spec.name}`" for spec in specs)
+        )
+        try:
+            with _batch_operation("saved-task", phase="sandbox", store=store) as measurement:
+                sync_run = synchronous_task_runner.run_tasks(
+                    input_path, specs, tmp_dir=workdir
+                )
+                result = sync_run.result
+                if result.timed_out:
+                    measurement.mark_error("SandboxTimeout")
+                elif result.returncode != 0:
+                    measurement.mark_error("SandboxNonzeroExit")
+        except Exception as exc:  # noqa: BLE001 - show bounded user action
+            logger.exception("synchronous saved-task run failed")
+            status.update(label="Task run failed", state="error", expanded=False)
+            st.error(f"Task run failed before producing an output: {exc}")
+            shutil.rmtree(workdir, ignore_errors=True)
+            return
+        if result.timed_out:
+            status.update(label="Sandbox timed out", state="error", expanded=False)
+        elif result.returncode != 0:
+            status.update(
+                label=f"Sandbox exited with code {result.returncode}",
+                state="error",
+                expanded=False,
+            )
+        else:
+            status.update(
+                label="Done — review the result below",
+                state="complete",
+                expanded=False,
+            )
+
+    try:
+        with result.output_path.open("rb") as output_fh:
+            output_count = sum(
+                record is not None
+                for record in pymarc.MARCReader(
+                    output_fh, to_unicode=True, permissive=True
+                )
+            )
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Could not parse sandbox output: {exc}")
+        output_count = 0
+
+    diff_summary = None
+    if result.returncode == 0 and not result.timed_out:
+        try:
+            diff_summary = task_diff.compute_task_diff(
+                input_path, result.output_path
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not build task diff summary: %s", exc)
+
+    user = session.current_user_id()
+    summary = {
+        "task_names": list(selection),
+        "input_record_count": store.count(),
+        "output_record_count": output_count,
+        "changed_count": diff_summary.changed_count if diff_summary else 0,
+        "error_count": result.error_count,
+        "timed_out": bool(result.timed_out),
+        "sandbox_returncode": int(result.returncode or 0),
+    }
+    snapshot = None
+    if not result.timed_out and not _uses_job_file_versions():
+        snapshot = snapshot_actions.record_job_snapshot(
+            job_id=st.session_state.get("current_job_id"),
+            user_email=user,
+            kind="task-run",
+            label=", ".join(selection) or "Task run",
+            before_path=input_path,
+            after_path=result.output_path,
+            summary=summary,
+        )
+    if snapshot is not None:
+        audit_event(
+            "job-snapshot-created",
+            user=user,
+            snapshot_id=snapshot["id"],
+            job_id=snapshot["job_id"],
+            snapshot_kind=snapshot["kind"],
+        )
+    audit_event(
+        "task-run-completed",
+        user=user,
+        tasks=list(selection),
+        input_records=store.count(),
+        output_records=output_count,
+        changed_count=summary["changed_count"],
+        error_count=result.error_count,
+        timed_out=bool(result.timed_out),
+        returncode=int(result.returncode or 0),
+    )
+    st.session_state[K_SYNC_RUN_RESULT] = {
+        "task_names": list(selection),
+        "input_count": store.count(),
+        "output_count": output_count,
+        "error_count": result.error_count,
+        "errors": list(result.errors),
+        "timed_out": bool(result.timed_out),
+        "returncode": int(result.returncode or 0),
+        "stderr": result.stderr,
+        "input_path": str(input_path),
+        "output_path": str(result.output_path),
+        "workdir": str(workdir),
+        "diff_summary": diff_summary,
+        "snapshot_id": snapshot["id"] if snapshot is not None else None,
+        "filename": _export_filename(session.current_filename(), "tasks"),
+        "preview_version_id": (
+            st.session_state.get("job_file_version_id")
+            if _uses_job_file_versions() else None
+        ),
+        "summary": summary,
+    }
+
+
+def _render_sync_run_result() -> None:
+    """Review and export/apply the last synchronous sandbox result."""
+    result = st.session_state.get(K_SYNC_RUN_RESULT)
+    if not result:
+        return
+    st.divider()
+    st.markdown("**Task run result**")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Records in", result["input_count"])
+    c2.metric("Records out", result["output_count"])
+    c3.metric("Errors", result["error_count"])
+    st.caption("Tasks applied: " + ", ".join(f"`{n}`" for n in result["task_names"]))
+    if result["timed_out"]:
+        st.error("The sandbox time limit was reached. No output was applied.")
+    elif result["returncode"] != 0:
+        st.warning(
+            f"Sandbox exited with code {result['returncode']}. Review the "
+            "diagnostics before retrying."
+        )
+    if result["stderr"]:
+        with st.expander("Technical diagnostics", expanded=False):
+            st.code(result["stderr"][:sandbox.MAX_STDERR_BYTES], language="text")
+    if result["errors"]:
+        with st.expander(f"Record errors ({result['error_count']:,})", expanded=False):
+            st.dataframe(pd.DataFrame(result["errors"]), hide_index=True, use_container_width=True)
+    diff_summary = result.get("diff_summary")
+    if diff_summary is not None:
+        st.metric("Changed records", diff_summary.changed_count)
+        _render_per_tag_summary_table(diff_summary)
+        if diff_summary.per_record_diffs:
+            with st.expander("Show representative record changes", expanded=False):
+                _render_per_record_diffs(diff_summary)
+    if result["timed_out"] or result["returncode"] != 0:
+        return
+    if _uses_job_file_versions():
+        if st.button("Apply as new version", type="primary", key="tasks_sync_apply"):
+            if result.get("preview_version_id") != st.session_state.get("job_file_version_id"):
+                st.error("File changed since this result was created. Run the task again.")
+            else:
+                try:
+                    with _owned_candidate(Path(result["output_path"]), prefix="marcedit-web-task-apply-") as candidate:
+                        version = session.adopt_current_candidate(
+                            candidate_path=candidate,
+                            source_kind="task",
+                            label=", ".join(result["task_names"]),
+                            summary=result["summary"],
+                            validation={"error_count": result["error_count"]},
+                        )
+                except (
+                    job_files.JobFileError,
+                    collaboration.CollaborationError,
+                    OSError,
+                ) as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(f"Applied as version {version['version_number']}.")
+                    shutil.rmtree(result["workdir"], ignore_errors=True)
+                    st.session_state[K_SYNC_RUN_RESULT] = None
+                    return
+    st.caption("The updated MARC is ready as a separate download.")
+    _offer_history_download(
+        st,
+        result["output_path"],
+        f"Download {result['filename']}",
+        result["filename"],
+        key="tasks_sync_download",
+    )
 
 
 def _submit_queued_run(selection: list[str], tasks_dir: Path) -> None:

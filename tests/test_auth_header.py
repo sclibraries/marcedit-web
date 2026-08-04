@@ -107,7 +107,7 @@ def test_signed_out_header_uses_same_guard(monkeypatch):
     assert [b["label"] for b in fake_st.buttons] == ["Sign in with Google"]
 
 
-def test_approved_header_aligns_material_bell_immediately_before_account(
+def test_approved_header_keeps_account_without_durable_operations_bell(
     monkeypatch,
 ):
     fake_st = _FakeStreamlit()
@@ -115,11 +115,6 @@ def test_approved_header_aligns_material_bell_immediately_before_account(
     order = []
     monkeypatch.setattr(
         app.authz, "get_user", lambda _email: {"status": "approved"}
-    )
-    monkeypatch.setattr(
-        app.operation_notifications,
-        "render_header_bell",
-        lambda _email: order.append("notifications"),
     )
     original_popover = fake_st.popover
 
@@ -133,10 +128,8 @@ def test_approved_header_aligns_material_bell_immediately_before_account(
 
     app._render_auth_header()
 
-    assert order == ["notifications", "Account"]
-    assert fake_st.column_calls == [{
-        "spec": 2, "gap": "small", "vertical_alignment": "center",
-    }]
+    assert order == ["Account"]
+    assert fake_st.column_calls == []
     assert fake_st.popovers == [{
         "label": "Account", "icon": ":material/account_circle:",
     }]
