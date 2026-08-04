@@ -61,6 +61,7 @@ def test_capture_lineage_uses_the_discovered_unit_and_runtime_python(tmp_path):
                     "ActiveState=active\n"
                     "ExecStart={ path=/opt/marcedit/.venv/bin/streamlit ; argv[]=/opt/marcedit/.venv/bin/streamlit }\n"
                     "WorkingDirectory=/opt/marcedit\n"
+                    "Environment=MARCEDIT_WEB_DB_PATH=/opt/marcedit/data/production.db\n"
                     "EnvironmentFile=/opt/marcedit/.env\n"
                 ),
                 "stderr": "",
@@ -79,7 +80,41 @@ def test_capture_lineage_uses_the_discovered_unit_and_runtime_python(tmp_path):
         command[0] == "/opt/marcedit/.venv/bin/python"
         for command in commands
     )
+    database_commands = [
+        command for command in commands
+        if command[:2] == ("/opt/marcedit/.venv/bin/python", "-c")
+        and "production.db" in command[2]
+    ]
+    assert database_commands
     assert result["units"]["selected_unit"] == "marcedit-web-private.service"
+
+
+def test_capture_lineage_refuses_to_choose_between_multiple_active_units(tmp_path):
+    def runner(command):
+        if list(command[:3]) == [
+            "systemctl", "list-unit-files", "marcedit-web*.service"
+        ]:
+            return {
+                "returncode": 0,
+                "stdout": (
+                    "marcedit-web-private.service enabled\n"
+                    "marcedit-web-public.service enabled\n"
+                ),
+                "stderr": "",
+            }
+        if list(command[:2]) == ["systemctl", "show"]:
+            return {
+                "returncode": 0,
+                "stdout": "ActiveState=active\n",
+                "stderr": "",
+            }
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    result = task_194_runtime.capture_lineage(tmp_path, runner=runner)
+
+    assert result["units"]["selected_unit"] is None
+    assert "active_unit_ambiguous" in result["capture_errors"]
+    assert result["complete"] is False
 
 
 def test_capture_lineage_reports_incomplete_evidence(tmp_path):

@@ -51,7 +51,9 @@ def set_008_form_of_item(
 
     For record types {a,c,d,i,j,m,o,p,r,t} with bib levels {c,m,s,i} the
     target is 008 byte 23. For record types {e,f,g,k} (maps, visual materials)
-    the target is 008 byte 29.
+    the target is 008 byte 29. A proven external instruction may pass
+    ``position=23`` or ``position=29`` to preserve its fixed-byte semantics;
+    otherwise the leader-derived position is used.
     """
     field_008 = record.get("008")
     if field_008 is None:

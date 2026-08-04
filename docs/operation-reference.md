@@ -747,6 +747,10 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Behavior:** Conditionally replace complete fields, retag fields, set indicators, or operate over a validated tag range.
 
+When the action is **retag**, the field keeps its current position in the
+record. Use **Sort fields by tag** afterward when canonical MARC tag order is
+required; retagging alone does not move the field.
+
 **Preserves:** Unrelated fields and values remain unchanged.
 
 **Skip behavior:** Records that do not match the operation are unchanged.
@@ -760,4 +764,3 @@ This guide is generated from the checked-in deterministic operation registry.
 **Stored representation:** Structured `structural-find-replace` parameters validated by the task form.
 
 **Related:** none
-

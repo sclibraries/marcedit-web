@@ -37,8 +37,9 @@ Success Criteria:
 Planning Gate: Blocked pending current production runtime-lineage capture
 
 Implementation checkpoint:
-- Read-only runtime-lineage capture is available, but no fresh production
-  capture has been approved.
+- Read-only runtime-lineage capture is available and refuses to select a unit
+  when more than one matching service is active; no fresh production capture
+  has been approved.
 - SQLite backup verification now records integrity, schema, user_version,
   row counts, and source/backup hashes.
 - Deploy-script rewrite and release assembly remain blocked until Gate 0

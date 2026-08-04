@@ -37,6 +37,17 @@ def _capture(command: Sequence[str], runner: Runner) -> dict[str, Any]:
     }
 
 
+def _failed_capture(message: str) -> dict[str, Any]:
+    """Represent a fact that could not be discovered without running a guess."""
+    return {
+        "command": [],
+        "status": "failed",
+        "returncode": 1,
+        "stdout": "",
+        "stderr": message,
+    }
+
+
 def _unit_names(stdout: str) -> list[str]:
     return sorted({
         line.split()[0]
@@ -65,7 +76,11 @@ def _runtime_python(exec_start: str, root: Path) -> str:
 
 
 def _database_path(unit_output: str, root: Path) -> str:
-    match = re.search(r"(?:^|;)MARCEDIT_WEB_DB_PATH=([^;\n]+)", unit_output)
+    environment = _property(unit_output, "Environment")
+    match = re.search(
+        r"(?:^|[\s;])MARCEDIT_WEB_DB_PATH=([^;\s\n]+)",
+        environment,
+    )
     if match:
         return match.group(1).strip().strip('"')
     working_directory = _property(unit_output, "WorkingDirectory")
@@ -105,16 +120,20 @@ def capture_lineage(root: Path, *, runner: Runner = _run) -> dict[str, Any]:
             ],
             runner,
         )
-    selected_unit = next(
-        (
-            name for name in names
-            if _property(unit_details[name]["stdout"], "ActiveState") == "active"
-        ),
-        None,
-    )
+    active_units = [
+        name for name in names
+        if _property(unit_details[name]["stdout"], "ActiveState") == "active"
+    ]
+    # Choosing the first active unit is unsafe on hosts that expose both the
+    # public and private tiers.  Gate 0 must identify one exact unit from
+    # operator evidence before a deployment plan can target it.
+    selected_unit = active_units[0] if len(active_units) == 1 else None
     selected_output = unit_details[selected_unit]["stdout"] if selected_unit else ""
-    python = _runtime_python(_property(selected_output, "ExecStart"), root)
-    database = _database_path(selected_output, root)
+    python = (
+        _runtime_python(_property(selected_output, "ExecStart"), root)
+        if selected_unit else None
+    )
+    database = _database_path(selected_output, root) if selected_unit else None
     dependency_commands: dict[str, Sequence[str]] = {
         "python": [python, "--version"],
         "streamlit": [python, "-c", "import streamlit; print(streamlit.__version__)"],
@@ -136,14 +155,22 @@ def capture_lineage(root: Path, *, runner: Runner = _run) -> dict[str, Any]:
             ),
         ],
     }
-    for name, command in dependency_commands.items():
-        captured[name] = _capture(command, runner)
+    if python is None:
+        for name in dependency_commands:
+            captured[name] = _failed_capture(
+                "runtime unit is not uniquely identified"
+            )
+    else:
+        for name, command in dependency_commands.items():
+            captured[name] = _capture(command, runner)
     capture_errors = [
         name for name, value in captured.items()
         if value["status"] != "ok"
     ]
     if not selected_unit:
-        capture_errors.append("active_unit")
+        capture_errors.append(
+            "active_unit_ambiguous" if len(active_units) > 1 else "active_unit"
+        )
     return {
         "format": "task-194-runtime-lineage-v1",
         "root": str(root),
@@ -155,6 +182,7 @@ def capture_lineage(root: Path, *, runner: Runner = _run) -> dict[str, Any]:
         },
         "units": {
             "list": captured["units"],
+            "active_units": active_units,
             "selected_unit": selected_unit,
             "properties": unit_details,
         },
