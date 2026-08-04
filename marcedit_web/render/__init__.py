@@ -17,7 +17,7 @@ from pathlib import Path
 import streamlit as st
 
 from marcedit_web.lib import rules as rules_mod
-from marcedit_web.lib import session
+from marcedit_web.lib import runmode, session
 from marcedit_web.lib.product_identity import PRODUCT_NAME
 from marcedit_web.render.batch_status import loaded_batch_status
 from marcedit_web.render import operation_notifications
@@ -65,4 +65,5 @@ def sidebar_status() -> None:
             st.caption(f"{session.record_count()} records")
         else:
             st.caption("No file loaded yet.")
-    operation_notifications.render_sidebar_summary(user)
+    if runmode.durable_operations_enabled():
+        operation_notifications.render_sidebar_summary(user)

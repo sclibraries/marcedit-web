@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from marcedit_web.lib import sandbox, synchronous_task_runner
+from marcedit_web.lib import runmode
 
 
 def test_run_tasks_uses_sandbox_without_operation_submission(tmp_path, monkeypatch):
@@ -52,3 +53,7 @@ def test_tasks_run_panel_is_sync_only():
     source = source[start:end]
     assert "_execute_synchronous_run" in source
     assert "_submit_queued_run" not in source
+
+
+def test_hotfix_disables_durable_operations_fail_closed():
+    assert runmode.durable_operations_enabled() is False
