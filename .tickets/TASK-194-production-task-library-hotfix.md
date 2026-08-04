@@ -14,7 +14,7 @@ Scope:
 - Exclude durable Operations, background workers, new systemd units, and all
   ITS-managed configuration.
 - Provide tested upgrade, backup, deployment, and rollback procedures for the
-  existing `marcedit-web.service` host.
+  existing service unit identified by Gate 0.
 
 Success Criteria:
 - The branch lineage and included ticket ranges are recorded from the exact
