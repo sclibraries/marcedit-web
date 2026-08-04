@@ -52,6 +52,18 @@ def test_deployment_docs_gate_swap_limit_on_cgroup_v2():
     assert "MARCEDIT_WEB_MAX_CONCURRENT_BATCHES" in docs
 
 
+def test_hotfix_deployment_docs_require_lineage_and_dry_run():
+    """TASK-194 must not document the Operations worker lifecycle."""
+    docs = _repo_file("docs/deployment.md")
+    its_docs = _repo_file("docs/its-setup.md")
+
+    for text in (docs, its_docs):
+        assert "capture_task_194_runtime_lineage.py" in text
+        assert "--lineage" in text
+        assert "--dry-run" in text
+        assert "does not" in text and "durable worker" in text
+
+
 def test_job_file_backup_docs_load_production_env_before_resolving_root(tmp_path):
     """Database rows and immutable artifacts need one configurable snapshot."""
     docs = _repo_file("docs/deployment.md")
@@ -129,25 +141,17 @@ def test_worker_systemd_unit_is_hardened_and_uses_private_data():
     assert not any("--server.port" in line for line in active)
 
 
-def test_deploy_quiesces_worker_until_app_and_schema_are_ready():
-    """Old worker code must not write while new code migrates the database."""
+def test_deploy_requires_lineage_and_has_no_operations_worker_lifecycle():
+    """TASK-194 deploy must target only the captured legacy service."""
     script = _repo_file("scripts/deploy.sh")
 
-    # The failure trap also stops the worker; rindex selects the actual
-    # pre-update quiesce command from the rollout body.
-    stop_worker = script.rindex("systemctl stop marcedit-web-worker")
-    pull_code = script.index("git pull origin main")
-    restart_app = script.index("systemctl restart marcedit-web-private")
-    app_health = script.index("/_stcore/health")
-    schema_health = script.index("-m marcedit_web.ops.health")
-    start_worker = script.index("systemctl start marcedit-web-worker")
-    stale_heartbeat = script.index("-m marcedit_web.ops.worker --check")
-    worker_health = script.rindex("-m marcedit_web.ops.worker --check")
-
-    assert script.count("-m marcedit_web.ops.worker --check") == 2
-    assert stop_worker < stale_heartbeat < pull_code < restart_app
-    assert restart_app < app_health < schema_health < start_worker < worker_health
-    assert "journalctl -u marcedit-web-private -u marcedit-web-worker" in script
+    assert "--lineage" in script
+    assert "--branch" in script
+    assert "--backup-dir" in script
+    assert "marcedit_web.ops.deploy" in script
+    assert "marcedit-web-worker" not in script
+    assert "marcedit-web-private" not in script
+    assert "git pull origin main" not in script
 
 
 def test_install_and_sudoers_cover_worker_lifecycle_with_exact_commands():

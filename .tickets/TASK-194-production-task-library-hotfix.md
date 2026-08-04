@@ -42,7 +42,10 @@ Implementation checkpoint:
   has been approved.
 - SQLite backup verification now records integrity, schema, user_version,
   row counts, and source/backup hashes.
-- Deploy-script rewrite and release assembly remain blocked until Gate 0
+- The deploy entry point is now lineage-driven, preserves dependency and
+  dialog-contract checks, and supports a no-mutation dry run. It refuses dirty
+  or branch-drifted checkouts and never starts a worker or invents a unit.
+- Release assembly and any non-dry deployment remain blocked until Gate 0
   identifies the live unit, paths, dependency versions, and database.
 
 Status: In-Progress

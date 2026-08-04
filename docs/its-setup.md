@@ -156,19 +156,26 @@ your eppn (not "anonymous").
 
 ## Part 3 — Day-to-day ops
 
-After install, all deploys are self-service from the dev team:
+After install, the task-library hotfix deploy is self-service from the dev
+team, but it must be driven by a fresh read-only runtime capture:
 
 ```bash
 sudo -iu marcedit
 cd /var/www/html/marcedit-web
-bash scripts/deploy.sh
+bash scripts/capture_task_194_runtime_lineage.py \
+  --output /tmp/marcedit-task-194-runtime-lineage.json
+bash scripts/deploy.sh \
+  --lineage /tmp/marcedit-task-194-runtime-lineage.json \
+  --branch release-hotfix \
+  --backup-dir /var/backups/marcedit-web/$(date -u +%F) \
+  --dry-run
 ```
 
-The deploy script stops the worker before changing code, waits for its previous
-heartbeat to expire, pulls main, refreshes the venv, restarts the private app,
-and verifies HTTP plus database readiness. Only then does it start the worker
-and require a fresh heartbeat. If any step fails, it leaves the worker stopped
-so queued work remains durable and recoverable.
+Review the printed commands, then repeat without `--dry-run`. The script
+updates only the captured checkout and service, refreshes the existing venv,
+verifies the Streamlit dialog contract, creates and independently verifies the
+SQLite backup, runs schema readiness, and checks the existing HTTP endpoint.
+It does not install, start, stop, or manage a durable worker.
 
 An interrupted running operation is recovered from its immutable input after
 its lease expires; partial attempt output is not published. A cancellation

@@ -10,15 +10,26 @@ for the rationale.
 ## Quick start (existing host)
 
 After ITS has done the four one-time root operations (see
-`docs/its-setup.md`), day-to-day deploys are:
+`docs/its-setup.md`), capture the live runtime lineage and inspect a dry run
+before deploying the hotfix. The capture is read-only and must be taken on the
+same host and checkout that will be updated:
 
 ```bash
 sudo -iu marcedit
 cd /var/www/html/marcedit-web
-bash scripts/deploy.sh
+bash scripts/capture_task_194_runtime_lineage.py \
+  --output /tmp/marcedit-task-194-runtime-lineage.json
+bash scripts/deploy.sh \
+  --lineage /tmp/marcedit-task-194-runtime-lineage.json \
+  --branch release-hotfix \
+  --backup-dir /var/backups/marcedit-web/$(date -u +%F) \
+  --dry-run
 ```
 
-That's the entire operator contract.
+Review the printed commands, then repeat without `--dry-run`. The script
+refuses incomplete or ambiguous lineage, a dirty or branch-drifted checkout,
+and any sudo rule that cannot restart the one captured unit. It never starts a
+durable worker or selects a unit from checked-in deployment files.
 
 ### Published-image Compose deployments
 
