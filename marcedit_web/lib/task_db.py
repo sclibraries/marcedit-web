@@ -85,6 +85,8 @@ def save_task(
     body: str,
     extra_imports: Iterable[str] | None = None,
     visibility: str = "private",
+    task_id: int | None = None,
+    expected_revision: int | None = None,
 ) -> None:
     """Upsert a task row by (owner, name).
 
@@ -99,10 +101,54 @@ def save_task(
         )
     if visibility not in {"private", "shared"}:
         raise ValueError(f"invalid visibility {visibility!r}")
+    if task_id is not None and expected_revision is None:
+        raise ValueError("expected_revision is required when task_id is supplied")
     extras = "\n".join(extra_imports or [])
     now = _utc_now()
     with db.connect() as conn:
         from . import task_library
+
+        if task_id is not None:
+            existing = conn.execute(
+                "SELECT * FROM tasks WHERE id = ? AND owner_email = ?",
+                (task_id, owner),
+            ).fetchone()
+            if existing is None:
+                raise ValueError("task not found or not owned by this user")
+            if existing["definition_json"] is not None:
+                raise NativeTaskStorageError(
+                    "native tasks must be saved through the native task API"
+                )
+            folder_id = existing["folder_id"]
+            if not _folder_is_compatible(conn, folder_id, owner, visibility):
+                folder_id = task_library.ensure_task_folder(
+                    conn, owner=owner, visibility=visibility
+                )
+            try:
+                cursor = conn.execute(
+                    "UPDATE tasks SET name = ?, description = ?, body = ?,"
+                    " extra_imports = ?, visibility = ?, folder_id = ?,"
+                    " revision = revision + 1, updated_at = ?"
+                    " WHERE id = ? AND owner_email = ? AND revision = ?"
+                    " AND definition_json IS NULL",
+                    (
+                        name,
+                        description,
+                        body,
+                        extras,
+                        visibility,
+                        folder_id,
+                        now,
+                        task_id,
+                        owner,
+                        expected_revision,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("a task with that name already exists") from exc
+            if cursor.rowcount != 1:
+                raise ValueError("task changed; refresh before saving it")
+            return
 
         existing = conn.execute(
             "SELECT created_at, definition_json, folder_id FROM tasks"

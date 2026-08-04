@@ -59,6 +59,28 @@ def test_save_updates_existing_row():
     assert after["revision"] == before["revision"] + 1
 
 
+def test_save_task_renames_in_place_when_given_task_identity():
+    _save("cataloger@example.edu", "old-name", description="before")
+    original = task_db.get_task("cataloger@example.edu", "old-name")
+
+    task_db.save_task(
+        owner="cataloger@example.edu",
+        name="new-name",
+        description="after",
+        body="pass\n# changed\n",
+        task_id=original["id"],
+        expected_revision=original["revision"],
+    )
+
+    assert task_db.get_task("cataloger@example.edu", "old-name") is None
+    renamed = task_db.get_task("cataloger@example.edu", "new-name")
+    assert renamed["id"] == original["id"]
+    assert renamed["folder_id"] == original["folder_id"]
+    assert renamed["revision"] == original["revision"] + 1
+    assert renamed["description"] == "after"
+    assert renamed["body"] == "pass\n# changed\n"
+
+
 def test_delete_returns_true_when_found():
     _save("alice@example.edu", "t1")
     assert task_db.delete_task("alice@example.edu", "t1") is True

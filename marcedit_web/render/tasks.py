@@ -2005,6 +2005,16 @@ def _save_callback(tasks_dir: Path) -> None:
         )
         return
 
+    original_row = None
+    if original:
+        original_row = task_db.get_task(user, original)
+        if original_row is None:
+            st.session_state[K_SAVE_ERROR] = (
+                "This task changed or was removed. Refresh the task list and "
+                "reopen it before saving."
+            )
+            return
+
     try:
         if mode == "form":
             raw_ops = st.session_state.get(K_EDITOR_OPS, [])
@@ -2043,11 +2053,6 @@ def _save_callback(tasks_dir: Path) -> None:
         return
 
     try:
-        # Rename support: if the user changed the name, delete the
-        # old row before inserting the new one. Visibility carries
-        # forward unless the editor changed it.
-        if original and original != name:
-            task_db.delete_task(user, original)
         task_db.save_task(
             owner=user,
             name=name,
@@ -2055,6 +2060,10 @@ def _save_callback(tasks_dir: Path) -> None:
             body=body,
             extra_imports=extra_imports,
             visibility=visibility,
+            task_id=original_row["id"] if original_row else None,
+            expected_revision=(
+                original_row["revision"] if original_row else None
+            ),
         )
     except ValueError as exc:
         st.session_state[K_SAVE_ERROR] = str(exc)
