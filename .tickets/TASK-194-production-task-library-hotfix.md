@@ -44,7 +44,9 @@ Implementation checkpoint:
   row counts, and source/backup hashes.
 - The deploy entry point is now lineage-driven, preserves dependency and
   dialog-contract checks, and supports a no-mutation dry run. It refuses dirty
-  or branch-drifted checkouts and never starts a worker or invents a unit.
+  or branch-drifted checkouts, unsafe release inputs, incompatible Python or
+  SQLite versions, and missing noninteractive sudo capability. It never starts
+  a worker or invents a unit.
 - Release assembly and any non-dry deployment remain blocked until Gate 0
   identifies the live unit, paths, dependency versions, and database.
 
