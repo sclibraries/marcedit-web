@@ -6,13 +6,13 @@ import logging
 import os
 import shutil
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pymarc
 
-from . import operations, sandbox, task_diff, task_preflight
+from . import operations, partner_operations, sandbox, task_diff, task_preflight
 from .record_store import RecordStore
 
 logger = logging.getLogger("marcedit_web.operation_runner")
@@ -42,6 +42,7 @@ class RunOutcome:
     error_count: int
     errors: tuple[dict[str, Any], ...]
     summary: dict[str, Any]
+    partner_totals: dict[str, int] = field(default_factory=dict)
 
 
 class _LeaseHeartbeat:
@@ -167,6 +168,7 @@ def run_saved_task_operation(
     completed = 0
     error_count = 0
     retained_errors: list[dict[str, Any]] = []
+    partner_totals: dict[str, int] = {}
     last_progress = -1
     heartbeat = _LeaseHeartbeat(lease)
     cleanup_owned = False
@@ -290,6 +292,16 @@ def run_saved_task_operation(
                             translated.get("index", 0)
                         )
                         retained_errors.append(translated)
+                    for key, value in result.partner_totals.items():
+                        partner_totals[key] = partner_totals.get(key, 0) + value
+                    _enforce_partner_batch_totals(
+                        partner_totals,
+                        {
+                            f"{task_index}:{operation_index}": limit
+                            for task_index, task in enumerate(tasks)
+                            for operation_index, limit in task.partner_batch_limits.items()
+                        },
+                    )
                     _append_chunk_output(result.output_path, candidate)
                     completed += chunk_records
                     renew(processed=completed)
@@ -342,6 +354,7 @@ def run_saved_task_operation(
             error_count=error_count,
             errors=tuple(retained_errors),
             summary=asdict(diff),
+            partner_totals=partner_totals,
         )
         heartbeat.stop_and_check(final_renew=True)
         return outcome
@@ -430,10 +443,56 @@ def _parse_tasks(request: dict[str, Any]) -> tuple[sandbox.TaskSpec, ...]:
             raise OperationRunError(
                 "migration-review-required", str(exc)
             ) from exc
+        partner_limits: dict[str, int] = {}
+        for operation_index, marker in enumerate(task_preflight.operation_markers(body)):
+            if marker["kind"] not in {
+                "copy-fields-with-policy",
+                "build-fields-from-source",
+                "institution-profile",
+            }:
+                continue
+            params = marker.get("params") or {}
+            try:
+                limit = int(
+                    params.get(
+                        "max_fields_per_batch",
+                        partner_operations.DEFAULT_MAX_FIELDS_PER_BATCH,
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                raise OperationRunError(
+                    "invalid-request",
+                    "Partner task expansion limit is invalid.",
+                ) from exc
+            if limit <= 0:
+                raise OperationRunError(
+                    "invalid-request",
+                    "Partner task expansion limit must be positive.",
+                )
+            partner_limits[str(operation_index)] = limit
         parsed.append(
-            sandbox.TaskSpec(name=name, body=body, imports=list(imports))
+            sandbox.TaskSpec(
+                name=name,
+                body=body,
+                imports=list(imports),
+                partner_batch_limits=partner_limits,
+            )
         )
     return tuple(parsed)
+
+
+def _enforce_partner_batch_totals(
+    totals: dict[str, int], limits: dict[str, int]
+) -> None:
+    """Reject a candidate before append when a task-wide bound is exceeded."""
+    for key, total in totals.items():
+        limit = limits.get(key)
+        if limit is not None and total > limit:
+            raise OperationRunError(
+                "partner-batch-bound",
+                "Partner operation batch expansion bound exceeded for "
+                f"{key}: {total} fields > {limit}.",
+            )
 
 
 def _write_chunk(reader, path: Path, limit: int) -> int:

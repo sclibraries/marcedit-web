@@ -30,6 +30,7 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -59,6 +60,8 @@ from marcedit_web.lib import (
     task_builder,
     task_db,
     task_diff,
+    task_library,
+    task_library_search,
     tasks,
 )
 from marcedit_web.lib.audit import audit_event
@@ -135,6 +138,19 @@ K_EDITOR_IMPORT_SUMMARY = "tasks_editor_import_summary"
 K_EDITOR_IMPORT_PROVENANCE = "tasks_editor_import_provenance"
 K_EDITOR_IMPORT_DISCLOSURES = "tasks_editor_import_disclosures"
 K_EDITOR_IMPORT_SOURCE = "tasks_editor_import_source"
+K_LIBRARY_FOLDER_ID = "tasks_library_folder_id"
+K_LIBRARY_SCOPE = "tasks_library_scope"
+K_LIBRARY_QUERY = "tasks_library_query"
+K_LIBRARY_VISIBILITY = "tasks_library_visibility"
+K_LIBRARY_OWNER = "tasks_library_owner"
+K_LIBRARY_KIND = "tasks_library_kind"
+K_LIBRARY_TAG = "tasks_library_tag"
+K_LIBRARY_SUBFIELD = "tasks_library_subfield"
+K_LIBRARY_VALIDATION = "tasks_library_validation"
+K_LIBRARY_RECENT = "tasks_library_recent"
+K_LIBRARY_DIALOG = "tasks_library_dialog"
+K_LIBRARY_DIALOG_FOLDER = "tasks_library_dialog_folder"
+K_LIBRARY_DIALOG_TASK = "tasks_library_dialog_task"
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
 K_MATERIALIZED_DIR = "tasks_materialized_dir"
@@ -222,6 +238,17 @@ def render() -> None:
     st.session_state.setdefault(K_EDITOR_OPS, [])  # list[dict] — Operation.to_dict()
     st.session_state.setdefault(K_EDITOR_ORIGINAL_NAME, None)
     st.session_state.setdefault(K_EDITOR_VISIBILITY, "private")
+    st.session_state.setdefault(K_LIBRARY_FOLDER_ID, None)
+    st.session_state.setdefault(K_LIBRARY_SCOPE, "all")
+    st.session_state.setdefault(K_LIBRARY_QUERY, "")
+    st.session_state.setdefault(K_LIBRARY_VISIBILITY, "all")
+    st.session_state.setdefault(K_LIBRARY_OWNER, "")
+    st.session_state.setdefault(K_LIBRARY_KIND, "all")
+    st.session_state.setdefault(K_LIBRARY_TAG, "")
+    st.session_state.setdefault(K_LIBRARY_SUBFIELD, "")
+    st.session_state.setdefault(K_LIBRARY_VALIDATION, "all")
+    st.session_state.setdefault(K_LIBRARY_RECENT, "any")
+    st.session_state.setdefault(K_LIBRARY_DIALOG, None)
     st.session_state.setdefault(K_EDITOR_FROM_AI_DRAFT, False)
     st.session_state.setdefault(K_EDITOR_AI_DRAFT_REVIEW, None)
     st.session_state.setdefault(K_OPERATION_DIALOG_STATE, None)
@@ -924,6 +951,532 @@ def _render_quick_ops_mode() -> None:
     _render_quick_batch_operations()
 
 
+def _folder_children(
+    folders: list[dict[str, Any]],
+    *,
+    scope: str,
+    parent_id: int | None,
+) -> list[dict[str, Any]]:
+    return sorted(
+        [
+            folder
+            for folder in folders
+            if folder["scope"] == scope
+            and folder.get("parent_id") == parent_id
+        ],
+        key=lambda folder: str(folder["name"]).casefold(),
+    )
+
+
+def _folder_descendants(
+    folders: list[dict[str, Any]], folder_id: int,
+) -> set[int]:
+    children: dict[int | None, list[int]] = {}
+    for folder in folders:
+        parent = folder.get("parent_id")
+        children.setdefault(parent, []).append(int(folder["id"]))
+    found: set[int] = set()
+    pending = list(children.get(folder_id, []))
+    while pending:
+        child = pending.pop()
+        if child in found:
+            continue
+        found.add(child)
+        pending.extend(children.get(child, []))
+    return found
+
+
+def _folder_path_map(
+    folders: list[dict[str, Any]],
+) -> dict[int, str]:
+    by_id = {int(folder["id"]): folder for folder in folders}
+    paths: dict[int, str] = {}
+    for folder_id, folder in by_id.items():
+        names: list[str] = []
+        current = folder_id
+        seen: set[int] = set()
+        while current in by_id and current not in seen:
+            seen.add(current)
+            current_folder = by_id[current]
+            names.append(str(current_folder["name"]))
+            parent = current_folder.get("parent_id")
+            current = int(parent) if parent is not None else -1
+        scope_label = "Shared Tasks" if folder["scope"] == "shared" else "My Tasks"
+        paths[folder_id] = " / ".join([scope_label, *reversed(names)])
+    return paths
+
+
+def _render_folder_node(
+    folders: list[dict[str, Any]],
+    *,
+    scope: str,
+    parent_id: int | None,
+    depth: int = 0,
+) -> None:
+    for folder in _folder_children(
+        folders, scope=scope, parent_id=parent_id
+    ):
+        folder_id = int(folder["id"])
+        count = len(folder.get("task_ids") or [])
+        prefix = "　" * depth
+        if st.button(
+            f"{prefix}📁 {folder['name']} ({count})",
+            key=f"tasks_library_folder_{folder_id}",
+            use_container_width=True,
+            type=(
+                "primary"
+                if st.session_state.get(K_LIBRARY_FOLDER_ID) == folder_id
+                else "secondary"
+            ),
+        ):
+            st.session_state[K_LIBRARY_FOLDER_ID] = folder_id
+            st.session_state[K_LIBRARY_SCOPE] = scope
+            st.rerun()
+        _render_folder_node(
+            folders,
+            scope=scope,
+            parent_id=folder_id,
+            depth=depth + 1,
+        )
+
+
+def _render_library_dialog() -> None:
+    """Render the one non-nested folder/task organization dialog."""
+    mode = st.session_state.get(K_LIBRARY_DIALOG)
+    actor = session.current_user_id()
+    folders = task_library.list_folder_tree(actor)
+    paths = _folder_path_map(folders)
+    error_key = "tasks_library_dialog_error"
+    if mode == "folder-create":
+        scope = st.session_state.get(K_LIBRARY_SCOPE, "personal")
+        st.markdown(
+            "Create a folder under the selected compatible parent. "
+            "Folder depth is limited to three levels."
+        )
+        name = st.text_input("Folder name", key="tasks_library_dialog_name")
+        options = [
+            folder for folder in folders if folder["scope"] == scope
+        ]
+        option_ids = [None] + [int(folder["id"]) for folder in options]
+        selected = st.selectbox(
+            "Parent folder",
+            option_ids,
+            format_func=lambda value: (
+                f"{paths[int(value)]}"
+                if value is not None else "Root"
+            ),
+            key="tasks_library_dialog_parent",
+            index=(
+                option_ids.index(st.session_state.get(K_LIBRARY_DIALOG_FOLDER))
+                if st.session_state.get(K_LIBRARY_DIALOG_FOLDER) in option_ids
+                else 0
+            ),
+        )
+        if st.button("Create folder", type="primary", key="tasks_library_dialog_save"):
+            try:
+                task_library.create_folder(
+                    actor,
+                    scope=scope,
+                    parent_id=selected,
+                    name=name,
+                )
+            except ValueError as exc:
+                st.session_state[error_key] = str(exc)
+            else:
+                st.session_state[K_LIBRARY_DIALOG] = None
+                st.session_state.pop(error_key, None)
+                st.rerun()
+    elif mode in {"folder-rename", "folder-move", "folder-delete"}:
+        folder_id = st.session_state.get(K_LIBRARY_DIALOG_FOLDER)
+        folder = next(
+            (item for item in folders if int(item["id"]) == folder_id),
+            None,
+        )
+        if folder is None:
+            st.error("That folder is no longer available. Refresh the library.")
+            return
+        st.markdown(f"**{paths[folder_id]}**")
+        if mode == "folder-rename":
+            name = st.text_input(
+                "New folder name",
+                value=str(folder["name"]),
+                key="tasks_library_dialog_name",
+            )
+            if st.button("Rename folder", type="primary", key="tasks_library_dialog_save"):
+                try:
+                    task_library.rename_folder(
+                        actor,
+                        folder_id=folder_id,
+                        new_name=name,
+                        expected_revision=folder["revision"],
+                    )
+                except ValueError as exc:
+                    st.session_state[error_key] = str(exc)
+                else:
+                    st.session_state[K_LIBRARY_DIALOG] = None
+                    st.session_state.pop(error_key, None)
+                    st.rerun()
+        elif mode == "folder-move":
+            excluded = {folder_id} | _folder_descendants(folders, folder_id)
+            options = [
+                item for item in folders
+                if item["scope"] == folder["scope"]
+                and int(item["id"]) not in excluded
+            ]
+            root_options = [
+                int(item["id"]) for item in options if item["parent_id"] is None
+            ]
+            parent_ids = [None] + [
+                int(item["id"])
+                for item in options
+                if item["parent_id"] is not None
+            ]
+            selected = st.selectbox(
+                "New parent folder",
+                parent_ids,
+                format_func=lambda value: (
+                    "Root"
+                    if value is None
+                    else paths[int(value)]
+                ),
+                key="tasks_library_dialog_parent",
+            )
+            # The service accepts only a real folder ID. A root folder is the
+            # actual destination for a conceptual root move.
+            if selected is None:
+                selected = root_options[0] if root_options else None
+            if st.button("Move folder", type="primary", key="tasks_library_dialog_save"):
+                try:
+                    if selected is None:
+                        raise ValueError("a compatible parent folder is required")
+                    task_library.move_folder(
+                        actor,
+                        folder_id=folder_id,
+                        parent_id=selected,
+                        expected_revision=folder["revision"],
+                    )
+                except ValueError as exc:
+                    st.session_state[error_key] = str(exc)
+                else:
+                    st.session_state[K_LIBRARY_DIALOG] = None
+                    st.session_state.pop(error_key, None)
+                    st.rerun()
+        else:
+            st.warning("Folders must be empty before they can be deleted.")
+            if st.button("Delete folder", type="primary", key="tasks_library_dialog_save"):
+                try:
+                    task_library.delete_folder(
+                        actor,
+                        folder_id=folder_id,
+                        expected_revision=folder["revision"],
+                    )
+                except ValueError as exc:
+                    st.session_state[error_key] = str(exc)
+                else:
+                    st.session_state[K_LIBRARY_DIALOG] = None
+                    st.session_state[K_LIBRARY_FOLDER_ID] = None
+                    st.session_state.pop(error_key, None)
+                    st.rerun()
+    elif mode in {"task-move", "task-share", "task-unshare"}:
+        task_id = st.session_state.get(K_LIBRARY_DIALOG_TASK)
+        task = task_library.get_task_for_actor(actor, int(task_id))
+        if task is None:
+            st.error("That task is no longer available. Refresh the library.")
+            return
+        if mode == "task-share":
+            options = [item for item in folders if item["scope"] == "shared"]
+            label = "Shared destination"
+        elif mode == "task-unshare":
+            options = [
+                item for item in folders
+                if item["scope"] == "personal"
+                and item["owner_email"] == actor
+            ]
+            label = "Personal destination"
+        else:
+            options = [
+                item for item in folders
+                if (
+                    item["scope"] == (
+                        "shared" if task["visibility"] == "shared" else "personal"
+                    )
+                    and (
+                        task["visibility"] == "shared"
+                        or item["owner_email"] == actor
+                    )
+                )
+            ]
+            label = "Destination folder"
+        if not options:
+            st.error("No compatible destination folders are available.")
+            return
+        option_ids = [int(item["id"]) for item in options]
+        selected = st.selectbox(
+            label,
+            option_ids,
+            format_func=lambda value: paths[int(value)],
+            key="tasks_library_dialog_destination",
+        )
+        action_label = {
+            "task-share": "Share task",
+            "task-unshare": "Move to personal tasks",
+            "task-move": "Move task",
+        }[mode]
+        if st.button(action_label, type="primary", key="tasks_library_dialog_save"):
+            try:
+                if mode == "task-share":
+                    task_library.share_task(
+                        actor,
+                        task_id=task_id,
+                        folder_id=selected,
+                        expected_revision=task["revision"],
+                    )
+                elif mode == "task-unshare":
+                    task_library.unshare_task(
+                        actor,
+                        task_id=task_id,
+                        folder_id=selected,
+                        expected_revision=task["revision"],
+                    )
+                else:
+                    task_library.move_task(
+                        actor,
+                        task_id=task_id,
+                        folder_id=selected,
+                        expected_revision=task["revision"],
+                    )
+            except ValueError as exc:
+                st.session_state[error_key] = str(exc)
+            else:
+                st.session_state[K_LIBRARY_DIALOG] = None
+                st.session_state.pop(error_key, None)
+                st.rerun()
+    if st.session_state.get(error_key):
+        st.error(st.session_state[error_key])
+
+
+def _show_library_dialog() -> None:
+    wrapper = st.dialog(
+        "Task library organization",
+        width="small",
+        dismissible=False,
+    )(_render_library_dialog)
+    wrapper()
+
+
+def _open_library_dialog(mode: str, *, folder_id: int | None = None, task_id: int | None = None) -> None:
+    st.session_state[K_LIBRARY_DIALOG] = mode
+    st.session_state[K_LIBRARY_DIALOG_FOLDER] = folder_id
+    st.session_state[K_LIBRARY_DIALOG_TASK] = task_id
+    _show_library_dialog()
+
+
+def _render_task_library(
+    *,
+    current_user_id: str,
+    is_admin: bool,
+) -> None:
+    """Render the persistent folder explorer and authorized task results."""
+    folders = task_library.list_folder_tree(current_user_id)
+    by_id = {int(folder["id"]): folder for folder in folders}
+    selected_folder_id = st.session_state.get(K_LIBRARY_FOLDER_ID)
+    if selected_folder_id is not None and selected_folder_id not in by_id:
+        st.session_state[K_LIBRARY_FOLDER_ID] = None
+        selected_folder_id = None
+
+    left, right = st.columns([1, 3])
+    with left:
+        st.markdown("**Task folders**")
+        if st.button("+ Personal folder", key="tasks_library_new_personal"):
+            st.session_state[K_LIBRARY_SCOPE] = "personal"
+            _open_library_dialog("folder-create")
+        if st.button("+ Shared folder", key="tasks_library_new_shared"):
+            st.session_state[K_LIBRARY_SCOPE] = "shared"
+            _open_library_dialog("folder-create")
+        for scope, label in (("personal", "My Tasks"), ("shared", "Shared Tasks")):
+            if st.button(
+                label,
+                key=f"tasks_library_scope_{scope}",
+                use_container_width=True,
+                type=(
+                    "primary"
+                    if st.session_state.get(K_LIBRARY_SCOPE) == scope
+                    and selected_folder_id is None
+                    else "secondary"
+                ),
+            ):
+                st.session_state[K_LIBRARY_SCOPE] = scope
+                st.session_state[K_LIBRARY_FOLDER_ID] = None
+                st.rerun()
+            _render_folder_node(
+                folders,
+                scope=scope,
+                parent_id=None,
+            )
+
+    with right:
+        selected_folder = by_id.get(selected_folder_id)
+        if selected_folder is not None:
+            st.caption(
+                _folder_path_map(folders).get(
+                    selected_folder_id, selected_folder["name"]
+                )
+            )
+            action_cols = st.columns(4)
+            if action_cols[0].button(
+                "New subfolder", key="tasks_library_new_child"
+            ):
+                st.session_state[K_LIBRARY_SCOPE] = selected_folder["scope"]
+                _open_library_dialog(
+                    "folder-create", folder_id=selected_folder_id
+                )
+            if action_cols[1].button(
+                "Rename", key="tasks_library_rename_folder"
+            ):
+                _open_library_dialog("folder-rename", folder_id=selected_folder_id)
+            if action_cols[2].button(
+                "Move", key="tasks_library_move_folder"
+            ) and selected_folder["parent_id"] is not None:
+                _open_library_dialog("folder-move", folder_id=selected_folder_id)
+            if action_cols[3].button(
+                "Delete", key="tasks_library_delete_folder"
+            ):
+                _open_library_dialog("folder-delete", folder_id=selected_folder_id)
+
+        st.markdown("**Search tasks**")
+        st.text_input(
+            "Search name, description, operation, tag, literal, or source",
+            key=K_LIBRARY_QUERY,
+        )
+        filter_cols = st.columns(3)
+        filter_cols[0].selectbox(
+            "Visibility",
+            ["all", "private", "shared"],
+            format_func=lambda value: {
+                "all": "All visible",
+                "private": "My tasks",
+                "shared": "Shared tasks",
+            }[value],
+            key=K_LIBRARY_VISIBILITY,
+        )
+        filter_cols[1].selectbox(
+            "Validation",
+            ["all", "valid", "legacy", "invalid"],
+            key=K_LIBRARY_VALIDATION,
+        )
+        filter_cols[2].selectbox(
+            "Updated",
+            ["any", "7", "30"],
+            format_func=lambda value: {
+                "any": "Any time",
+                "7": "Last 7 days",
+                "30": "Last 30 days",
+            }[value],
+            key=K_LIBRARY_RECENT,
+        )
+        detail_cols = st.columns(4)
+        detail_cols[0].text_input("Owner", key=K_LIBRARY_OWNER)
+        detail_cols[1].text_input("MARC tag", key=K_LIBRARY_TAG)
+        detail_cols[2].text_input("Subfield", max_chars=1, key=K_LIBRARY_SUBFIELD)
+        kind_options = ["all"] + [
+            entry["kind"]
+            for entry in sorted(
+                OPERATIONS_PALETTE,
+                key=lambda entry: str(entry["label"]).casefold(),
+            )
+        ]
+        detail_cols[3].selectbox(
+            "Operation",
+            kind_options,
+            format_func=lambda value: (
+                "All operations"
+                if value == "all"
+                else next(
+                    entry["label"]
+                    for entry in OPERATIONS_PALETTE
+                    if entry["kind"] == value
+                )
+            ),
+            key=K_LIBRARY_KIND,
+        )
+        visibility = st.session_state[K_LIBRARY_VISIBILITY]
+        folder_scope = st.session_state.get(K_LIBRARY_SCOPE, "all")
+        if visibility == "all" and selected_folder_id is None:
+            visibility = {
+                "personal": "private",
+                "shared": "shared",
+            }.get(folder_scope)
+        try:
+            results = task_library_search.search_visible_tasks(
+                current_user_id,
+                st.session_state.get(K_LIBRARY_QUERY, ""),
+                operation_kind=(
+                    None if st.session_state[K_LIBRARY_KIND] == "all"
+                    else st.session_state[K_LIBRARY_KIND]
+                ),
+                marc_tag=st.session_state.get(K_LIBRARY_TAG, "").strip() or None,
+                visibility=visibility,
+                folder_id=selected_folder_id,
+                owner=st.session_state.get(K_LIBRARY_OWNER, "").strip() or None,
+                subfield_code=st.session_state.get(K_LIBRARY_SUBFIELD, "").strip() or None,
+                validation_state=(
+                    None if st.session_state[K_LIBRARY_VALIDATION] == "all"
+                    else st.session_state[K_LIBRARY_VALIDATION]
+                ),
+                recent_days=(
+                    None if st.session_state[K_LIBRARY_RECENT] == "any"
+                    else int(st.session_state[K_LIBRARY_RECENT])
+                ),
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            results = []
+        st.caption(f"{len(results)} task(s)")
+        if not results:
+            st.info("No visible tasks match these filters.")
+        for result in results:
+            row = task_db.get_task(result["owner_email"], result["name"])
+            if row is None:
+                continue
+            owned = result["owner_email"] == current_user_id
+            result_cols = st.columns([3, 3, 2, 1, 1, 1, 1])
+            result_cols[0].markdown(
+                f"**`{result['name']}`**" +
+                ("  :material/share: shared" if result["visibility"] == "shared" else "")
+            )
+            result_cols[1].caption(result["description"] or "(no description)")
+            result_cols[2].caption(
+                f"{result['folder_path'] or 'Unfiled'} · {result['operation_count']} operation(s)"
+            )
+            if owned:
+                if result_cols[3].button("Edit", key=f"tasks_library_edit_{result['id']}"):
+                    _open_editor_for_existing_row(row, is_admin)
+                    st.rerun()
+                if result_cols[4].button(
+                    "Share" if result["visibility"] == "private" else "Unshare",
+                    key=f"tasks_library_share_{result['id']}",
+                ):
+                    _open_library_dialog(
+                        "task-share" if result["visibility"] == "private" else "task-unshare",
+                        task_id=int(result["id"]),
+                    )
+            else:
+                result_cols[3].caption("read-only")
+            if result_cols[5].button("Move", key=f"tasks_library_move_{result['id']}"):
+                _open_library_dialog("task-move", task_id=int(result["id"]))
+            if owned and result_cols[6].button(
+                "Delete", key=f"tasks_library_delete_{result['id']}"
+            ):
+                task_db.delete_task(current_user_id, result["name"])
+                tasks.TASK_REGISTRY.pop(result["name"], None)
+                audit_event(
+                    "task-deleted",
+                    user=current_user_id,
+                    task_name=result["name"],
+                )
+                st.rerun()
+
+
 def _render_build_mode(
     tasks_dir: Path, is_admin: bool, current_user_id: str, registered
 ) -> None:
@@ -955,57 +1508,13 @@ def _render_build_mode(
             "`MARCEDIT_WEB_ADMINS`)."
         )
 
-    # --- Existing tasks list ----------------------------------------------
+    # --- Existing tasks explorer ------------------------------------------
 
-    st.subheader("Existing tasks")
-    visible = task_db.list_visible_tasks(current_user_id)
-    if not visible:
-        st.info(
-            "No tasks defined yet. Use **+ New task** below or **Import "
-            "from MarcEdit** to convert an existing `.tasksfile`."
-        )
-    else:
-        for row in visible:
-            owned = row["owner_email"] == current_user_id
-            cols = st.columns([3, 4, 1, 1, 1])
-            label = f"**`{row['name']}`**"
-            if row["visibility"] == "shared":
-                label += " &nbsp; :material/share: shared"
-            if not owned:
-                label += f" &nbsp; _by {row['owner_email']}_"
-            cols[0].markdown(label, unsafe_allow_html=False)
-            cols[1].caption(row["description"] or "_(no description)_")
-            if owned:
-                if cols[2].button("Edit", key=f"edit_{row['name']}"):
-                    _open_editor_for_existing_row(row, is_admin)
-                    st.rerun()
-                # Toggle visibility in-place.
-                new_vis = "shared" if row["visibility"] == "private" else "private"
-                vis_label = "Share" if new_vis == "shared" else "Unshare"
-                if cols[3].button(vis_label, key=f"vis_{row['name']}"):
-                    task_db.set_visibility(current_user_id, row["name"], new_vis)
-                    audit_event(
-                        "task-visibility-changed",
-                        user=current_user_id,
-                        task_name=row["name"],
-                        from_visibility=row["visibility"],
-                        to_visibility=new_vis,
-                    )
-                    st.rerun()
-                if cols[4].button("Delete", key=f"del_{row['name']}"):
-                    task_db.delete_task(current_user_id, row["name"])
-                    tasks.TASK_REGISTRY.pop(row["name"], None)
-                    audit_event(
-                        "task-deleted",
-                        user=current_user_id,
-                        task_name=row["name"],
-                    )
-                    st.rerun()
-            else:
-                # Shared task by someone else — runnable, not editable.
-                cols[2].caption("_read-only_")
-                cols[3].empty()
-                cols[4].empty()
+    st.subheader("Task library")
+    _render_task_library(
+        current_user_id=current_user_id,
+        is_admin=is_admin,
+    )
 
     # --- New / import controls --------------------------------------------
 

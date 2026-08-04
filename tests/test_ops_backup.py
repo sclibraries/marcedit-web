@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import json
+import pytest
 
 from marcedit_web.lib import db
 from marcedit_web.ops import backup
@@ -35,6 +37,36 @@ def test_create_backup_copies_db_and_audit_jsonl(tmp_path, monkeypatch):
     with sqlite3.connect(result.db_backup_path) as conn:
         row = conn.execute("SELECT kind FROM audit_events").fetchone()
     assert row[0] == "upload-accepted"
+    manifest = json.loads(
+        (result.backup_dir / "MANIFEST.json").read_text(encoding="utf-8")
+    )
+    assert manifest["verification"]["integrity_check"] == "ok"
+    assert manifest["verification"]["schema"]
+    assert manifest["verification"]["row_counts"]["audit_events"] == 1
+
+
+def test_verify_sqlite_backup_rejects_schema_or_row_count_drift(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MARCEDIT_WEB_DB_PATH", str(tmp_path / "live.db"))
+    monkeypatch.setenv("MARCEDIT_WEB_AUDIT_DIR", str(tmp_path / "audit"))
+    db.reset_for_tests()
+    db.init_schema()
+    result = backup.create_backup(tmp_path / "backup")
+
+    verified = backup.verify_sqlite_backup(
+        result.db_backup_path,
+        expected=result.verification,
+    )
+    assert verified["integrity_check"] == "ok"
+
+    with sqlite3.connect(result.db_backup_path) as conn:
+        conn.execute("CREATE TABLE drift(id INTEGER)")
+    with pytest.raises(ValueError, match="schema or row-count"):
+        backup.verify_sqlite_backup(
+            result.db_backup_path,
+            expected=result.verification,
+        )
 
 
 def test_restore_backup_replaces_db_and_audit_jsonl(tmp_path, monkeypatch):

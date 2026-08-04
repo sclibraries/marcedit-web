@@ -88,6 +88,20 @@ def list_folder_tree(user: str) -> list[dict[str, Any]]:
     ]
 
 
+def get_task_for_actor(actor: str, task_id: int) -> dict[str, Any] | None:
+    """Return a visible task by stable ID, enforcing library visibility."""
+    db.init_schema()
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id=?", (task_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    if row["owner_email"] != actor and row["visibility"] != "shared":
+        return None
+    return _folder_dict(row)
+
+
 def create_folder(
     actor: str,
     *,

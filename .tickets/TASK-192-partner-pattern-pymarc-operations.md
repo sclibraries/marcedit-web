@@ -31,4 +31,13 @@ Success Criteria:
 - Supported Python 3.9 Docker tests and independent review pass with no
   unreported skips or unresolved Critical/Important findings.
 
-Status: Todo
+Implementation checkpoint:
+- Partner operations now report preview counts and enforce per-record limits.
+- Task-wide expansion totals are aggregated across sandbox chunks before a
+  candidate chunk is appended.
+- The partner corpus report is checked in at
+  `docs/partner-task-corpus-report.md` and has a freshness test.
+- Focused Python tests pass; Docker sandbox execution remains unverified in
+  this environment because the Docker daemon is unavailable.
+
+Status: In-Progress

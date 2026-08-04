@@ -16,6 +16,46 @@ def is_control_tag(tag: str) -> bool:
 
 _OCCURRENCES = {"first", "last", "all"}
 _EXISTING_ACTIONS = {"append", "replace", "skip"}
+DEFAULT_MAX_FIELDS_PER_BATCH = 10_000
+_BATCH_TOTALS: dict[str, int] = {}
+_BATCH_CONTEXT = ""
+
+
+def reset_partner_batch_totals() -> None:
+    """Reset accounting for one sandbox invocation."""
+    _BATCH_TOTALS.clear()
+
+
+def set_partner_batch_context(context: str) -> None:
+    """Set the task index used to keep same-position operations distinct."""
+    global _BATCH_CONTEXT
+    _BATCH_CONTEXT = str(context)
+
+
+def record_partner_result(operation_key: str, result: dict[str, Any]) -> None:
+    """Record fields created by one partner operation invocation."""
+    if not isinstance(result, dict):
+        raise ValueError("partner operation result must be an object")
+    try:
+        created = int(result.get("destination_fields_created", 0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("partner operation created count is invalid") from exc
+    if isinstance(result.get("destination_fields_created", 0), bool) or created < 0:
+        raise ValueError("partner operation created count is invalid")
+    key = (
+        f"{_BATCH_CONTEXT}:{operation_key}"
+        if _BATCH_CONTEXT
+        else str(operation_key)
+    )
+    total = _BATCH_TOTALS.get(key, 0) + created
+    if total > 2_147_483_647:
+        raise ValueError("partner operation batch count exceeds supported limit")
+    _BATCH_TOTALS[key] = total
+
+
+def get_partner_batch_totals() -> dict[str, int]:
+    """Return bounded accounting totals for the current sandbox process."""
+    return dict(_BATCH_TOTALS)
 
 
 def _clone_field(field: Field, tag: str) -> Field:

@@ -198,3 +198,19 @@ def test_partner_operations_are_reexported_through_transforms():
     assert transforms.copy_fields_with_policy is partner_operations.copy_fields_with_policy
     assert transforms.build_fields_for_matches is partner_operations.build_fields_for_matches
     assert transforms.apply_institution_profile is partner_operations.apply_institution_profile
+
+
+def test_partner_batch_accounting_accumulates_by_operation_key():
+    partner_operations.reset_partner_batch_totals()
+
+    partner_operations.record_partner_result(
+        "0", {"destination_fields_created": 3}
+    )
+    partner_operations.record_partner_result(
+        "0", {"destination_fields_created": 2}
+    )
+    partner_operations.record_partner_result(
+        "1", {"destination_fields_created": 4}
+    )
+
+    assert partner_operations.get_partner_batch_totals() == {"0": 5, "1": 4}

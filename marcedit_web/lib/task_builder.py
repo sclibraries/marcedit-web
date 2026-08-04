@@ -380,6 +380,7 @@ OPERATIONS_PALETTE: list[dict] = [
             },
             {"name": "predicate", "label": "Limit source fields", "type": "json", "default": {}},
             {"name": "max_fields_per_record", "label": "Maximum fields per record", "type": "text", "default": "100"},
+            {"name": "max_fields_per_batch", "label": "Maximum fields per task", "type": "text", "default": "10000"},
         ],
     },
     {
@@ -419,6 +420,7 @@ OPERATIONS_PALETTE: list[dict] = [
             },
             {"name": "predicate", "label": "Limit source fields", "type": "json", "default": {}},
             {"name": "max_fields_per_record", "label": "Maximum fields per record", "type": "text", "default": "100"},
+            {"name": "max_fields_per_batch", "label": "Maximum fields per task", "type": "text", "default": "10000"},
         ],
     },
     {
@@ -438,6 +440,7 @@ OPERATIONS_PALETTE: list[dict] = [
                 "default": "all",
             },
             {"name": "max_fields_per_record", "label": "Maximum fields per record", "type": "text", "default": "100"},
+            {"name": "max_fields_per_batch", "label": "Maximum fields per task", "type": "text", "default": "10000"},
         ],
     },
     {
@@ -936,7 +939,24 @@ def _build_source_token(segment: dict) -> str:
     return _source_token(_segment_source(segment))
 
 
-def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
+def _partner_result_lines(
+    call: str,
+    *,
+    operation_key: str | None,
+) -> tuple[list[str], set[str]]:
+    if operation_key is None:
+        return [call], set()
+    return [
+        f"_partner_result = {call}",
+        f"record_partner_result({lit(operation_key)}, _partner_result)",
+    ], {"record_partner_result"}
+
+
+def _render_one(
+    op: Operation,
+    *,
+    partner_operation_key: str | None = None,
+) -> tuple[list[str], set[str], bool]:
     """Render a single operation.
 
     Returns `(code_lines, imports_needed, needs_subfield_import)`.
@@ -1307,17 +1327,21 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
             if predicate not in (None, {})
             else ""
         )
+        call = (
+            "copy_fields_with_policy("
+            f"record, source_tag={lit(source_tag)}, "
+            f"destination_tag={lit(destination_tag)}, "
+            f"occurrence={lit(occurrence)}, "
+            f"existing_field_action={lit(existing_action)}, "
+            f"max_fields_per_record={lit(max_fields)}"
+            f"{predicate_arg})"
+        )
+        lines, accounting_imports = _partner_result_lines(
+            call, operation_key=partner_operation_key
+        )
         return (
-            [
-                "copy_fields_with_policy("
-                f"record, source_tag={lit(source_tag)}, "
-                f"destination_tag={lit(destination_tag)}, "
-                f"occurrence={lit(occurrence)}, "
-                f"existing_field_action={lit(existing_action)}, "
-                f"max_fields_per_record={lit(max_fields)}"
-                f"{predicate_arg})"
-            ],
-            {"copy_fields_with_policy"},
+            lines,
+            {"copy_fields_with_policy"} | accounting_imports,
             False,
         )
 
@@ -1325,38 +1349,46 @@ def _render_one(op: Operation) -> tuple[list[str], set[str], bool]:
         indicators = p.get("indicators", [" ", " "])
         templates = p.get("subfield_templates", [])
         max_fields = int(p.get("max_fields_per_record", 100))
+        call = (
+            "build_fields_for_matches("
+            f"record, source_tag={lit(str(p.get('source_tag', '')))}, "
+            f"destination_tag={lit(str(p.get('destination_tag', '')))}, "
+            f"indicators={data_lit(indicators)}, "
+            f"subfield_templates={data_lit(templates)}, "
+            f"occurrence={lit(str(p.get('occurrence', 'all')))}, "
+            f"missing_source_action={lit(str(p.get('missing_source_action', 'skip_field')))}, "
+            f"existing_field_action={lit(str(p.get('existing_field_action', 'append')))}, "
+            f"max_fields_per_record={lit(max_fields)}"
+            + (
+                f", predicate={data_lit(p['predicate'])}"
+                if p.get("predicate") not in (None, {})
+                else ""
+            )
+            + ")"
+        )
+        lines, accounting_imports = _partner_result_lines(
+            call, operation_key=partner_operation_key
+        )
         return (
-            [
-                "build_fields_for_matches("
-                f"record, source_tag={lit(str(p.get('source_tag', '')))}, "
-                f"destination_tag={lit(str(p.get('destination_tag', '')))}, "
-                f"indicators={data_lit(indicators)}, "
-                f"subfield_templates={data_lit(templates)}, "
-                f"occurrence={lit(str(p.get('occurrence', 'all')))}, "
-                f"missing_source_action={lit(str(p.get('missing_source_action', 'skip_field')))}, "
-                f"existing_field_action={lit(str(p.get('existing_field_action', 'append')))}, "
-                f"max_fields_per_record={lit(max_fields)}"
-                + (
-                    f", predicate={data_lit(p['predicate'])}"
-                    if p.get("predicate") not in (None, {})
-                    else ""
-                )
-                + ")"
-            ],
-            {"build_fields_for_matches"},
+            lines,
+            {"build_fields_for_matches"} | accounting_imports,
             False,
         )
 
     if op.kind == "institution-profile":
+        call = (
+            "apply_institution_profile("
+            f"record, source_tag={lit(str(p.get('source_tag', '')))}, "
+            f"rows={data_lit(p.get('rows', []))}, "
+            f"occurrence={lit(str(p.get('occurrence', 'all')))}, "
+            f"max_fields_per_record={lit(int(p.get('max_fields_per_record', 100)))})"
+        )
+        lines, accounting_imports = _partner_result_lines(
+            call, operation_key=partner_operation_key
+        )
         return (
-            [
-                "apply_institution_profile("
-                f"record, source_tag={lit(str(p.get('source_tag', '')))}, "
-                f"rows={data_lit(p.get('rows', []))}, "
-                f"occurrence={lit(str(p.get('occurrence', 'all')))}, "
-                f"max_fields_per_record={lit(int(p.get('max_fields_per_record', 100)))})"
-            ],
-            {"apply_institution_profile"},
+            lines,
+            {"apply_institution_profile"} | accounting_imports,
             False,
         )
 
@@ -1606,10 +1638,20 @@ def render_ops_to_python(ops: list[Operation]) -> dict:
     needs_subfield_import = False
     needs_re_import = False
     needs_first_subfield_value_import = False
-    for op in ops:
+    partner_kinds = {
+        "copy-fields-with-policy",
+        "build-fields-from-source",
+        "institution-profile",
+    }
+    for op_index, op in enumerate(ops):
         marker = f"{_OP_MARKER_PREFIX} {op.kind} {json.dumps(op.params, sort_keys=True)}"
         body_lines.append(marker)
-        lines, needed, needs_sf = _render_one(op)
+        lines, needed, needs_sf = _render_one(
+            op,
+            partner_operation_key=(
+                str(op_index) if op.kind in partner_kinds else None
+            ),
+        )
         body_lines.extend(lines)
         body_lines.append("")  # blank separator between ops
         # ``_re_import`` is a special marker (not a transforms name)

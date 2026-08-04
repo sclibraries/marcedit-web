@@ -166,6 +166,15 @@ def test_chunks_preserve_task_order_and_apply_each_task_once(lease, monkeypatch)
     ] == ["input"]
 
 
+def test_partner_batch_totals_fail_before_candidate_append():
+    with pytest.raises(
+        operation_runner.OperationRunError, match="batch expansion bound"
+    ):
+        operation_runner._enforce_partner_batch_totals(
+            {"0:0": 11}, {"0:0": 10}
+        )
+
+
 def test_every_chunk_gets_its_own_five_minute_limit(lease, monkeypatch):
     calls = []
     monkeypatch.setattr(

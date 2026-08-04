@@ -72,6 +72,32 @@ def test_new_private_task_is_assigned_to_owner_unfiled_folder():
     assert tree[0]["task_ids"] == [row["id"]]
 
 
+def test_get_task_for_actor_enforces_private_and_shared_visibility():
+    db.init_schema()
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="private-task",
+        description="",
+        body="pass\n",
+    )
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="shared-task",
+        description="",
+        body="pass\n",
+        visibility="shared",
+    )
+    private = task_db.get_task("alice@example.edu", "private-task")
+    shared = task_db.get_task("alice@example.edu", "shared-task")
+
+    assert task_library.get_task_for_actor(
+        "bob@example.edu", private["id"]
+    ) is None
+    assert task_library.get_task_for_actor(
+        "bob@example.edu", shared["id"]
+    )["name"] == "shared-task"
+
+
 def test_shared_folder_creation_rejects_personal_parent_and_is_audited():
     db.init_schema()
     with pytest.raises(ValueError, match="shared folder"):

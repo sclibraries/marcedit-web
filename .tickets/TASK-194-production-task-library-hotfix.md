@@ -36,4 +36,12 @@ Success Criteria:
 
 Planning Gate: Blocked pending current production runtime-lineage capture
 
-Status: Todo
+Implementation checkpoint:
+- Read-only runtime-lineage capture is available, but no fresh production
+  capture has been approved.
+- SQLite backup verification now records integrity, schema, user_version,
+  row counts, and source/backup hashes.
+- Deploy-script rewrite and release assembly remain blocked until Gate 0
+  identifies the live unit, paths, dependency versions, and database.
+
+Status: In-Progress

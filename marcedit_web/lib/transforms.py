@@ -806,4 +806,8 @@ from marcedit_web.lib.partner_operations import (  # noqa: E402,F401
     apply_institution_profile,
     build_fields_for_matches,
     copy_fields_with_policy,
+    get_partner_batch_totals,
+    record_partner_result,
+    reset_partner_batch_totals,
+    set_partner_batch_context,
 )

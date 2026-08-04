@@ -83,3 +83,17 @@ def test_partner_corpus_matches_pinned_manifest_and_remains_actionable():
     assert len(report.items) == 1239
     assert report.unclassified == ()
     assert report.items_without_next_action == ()
+
+
+def test_checked_in_partner_report_matches_corpus_totals():
+    report = audit_corpus(PARTNER_CORPUS)
+    text = (
+        PARTNER_CORPUS.parents[2] / "docs" / "partner-task-corpus-report.md"
+    ).read_text(encoding="utf-8")
+
+    assert f"- Documents: {len(report.documents):,}" in text
+    assert f"- Instructions: {len(report.items):,}" in text
+    assert f"- Converted by proven adapters: {report.converted:,}" in text
+    assert f"- Actionable blockers: {report.blockers:,}" in text
+    assert "- Unclassified instructions: 0" in text
+    assert "- Blockers without a cataloger next action: 0" in text

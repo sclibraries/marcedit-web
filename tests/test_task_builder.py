@@ -379,10 +379,12 @@ def test_partner_copy_with_policy_has_structured_palette_and_safe_codegen():
                 "existing_field_action": "replace",
                 "predicate": {"ind1": "4"},
                 "max_fields_per_record": 10,
+                "max_fields_per_batch": 20,
             },
         )
     ])
     assert "copy_fields_with_policy(record" in rendered["body"]
+    assert "record_partner_result('0', _partner_result)" in rendered["body"]
     assert "repr(dict" not in rendered["body"]
     assert task_builder.parse_ops_from_source(rendered["body"])["form_editable"]
 

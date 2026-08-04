@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -19,6 +20,7 @@ class BackupResult:
     backup_dir: Path
     db_backup_path: Path
     audit_backup_dir: Path
+    verification: dict
 
 
 @dataclass(frozen=True)
@@ -34,13 +36,26 @@ def create_backup(target_dir: Path) -> BackupResult:
     db_backup_path = target_dir / "marcedit.db"
     audit_backup_dir = target_dir / "audit"
 
+    source_verification = _sqlite_metadata(db.db_path())
     _backup_sqlite(db.db_path(), db_backup_path)
+    verification = verify_sqlite_backup(
+        db_backup_path,
+        expected=source_verification,
+    )
+    verification["source_sha256"] = _sha256(db.db_path())
+    verification["backup_sha256"] = _sha256(db_backup_path)
     _copy_tree(_audit_dir(), audit_backup_dir)
-    _write_manifest(target_dir, db_backup_path, audit_backup_dir)
+    _write_manifest(
+        target_dir,
+        db_backup_path,
+        audit_backup_dir,
+        verification=verification,
+    )
     return BackupResult(
         backup_dir=target_dir,
         db_backup_path=db_backup_path,
         audit_backup_dir=audit_backup_dir,
+        verification=verification,
     )
 
 
@@ -108,6 +123,74 @@ def _backup_sqlite(source: Path, target: Path) -> None:
         src.backup(dst)
 
 
+def verify_sqlite_backup(
+    path: Path,
+    *,
+    expected: dict | None = None,
+) -> dict:
+    """Verify a backup independently and optionally against live metadata."""
+    actual = _sqlite_metadata(path)
+    if actual["integrity_check"] != "ok":
+        raise ValueError("SQLite integrity_check did not return ok")
+    if expected is not None:
+        for key in ("schema", "user_version", "row_counts"):
+            if actual[key] != expected.get(key):
+                raise ValueError(
+                    "SQLite backup schema or row-count verification failed"
+                )
+    return actual
+
+
+def _sqlite_metadata(path: Path) -> dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"SQLite database not found: {path}")
+    with sqlite3.connect(path) as conn:
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        schema = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+            )
+        ]
+        table_names = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        row_counts = {
+            name: int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM {_quote_identifier(name)}"
+                ).fetchone()[0]
+            )
+            for name in table_names
+        }
+        user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    return {
+        "integrity_check": str(integrity),
+        "schema": schema,
+        "user_version": user_version,
+        "row_counts": row_counts,
+        "size": path.stat().st_size,
+        "sha256": _sha256(path),
+    }
+
+
+def _quote_identifier(value: str) -> str:
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _copy_tree(source: Path, target: Path) -> None:
     if target.exists():
         shutil.rmtree(target)
@@ -117,12 +200,19 @@ def _copy_tree(source: Path, target: Path) -> None:
         target.mkdir(parents=True, exist_ok=True)
 
 
-def _write_manifest(target_dir: Path, db_backup_path: Path, audit_backup_dir: Path) -> None:
+def _write_manifest(
+    target_dir: Path,
+    db_backup_path: Path,
+    audit_backup_dir: Path,
+    *,
+    verification: dict,
+) -> None:
     manifest = {
         "format": 1,
         "db": db_backup_path.name,
         "audit_dir": audit_backup_dir.name,
         "note": "SQLite backup uses sqlite3.Connection.backup; WAL/SHM are folded into marcedit.db.",
+        "verification": verification,
     }
     (target_dir / "MANIFEST.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",

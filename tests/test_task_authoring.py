@@ -1468,6 +1468,7 @@ def test_partner_operation_authoring_explanation_and_preview_are_supported():
     assert "build-fields-from-source" in mnemonic
     assert annotations
     assert preview.status == "ready"
+    assert "would create 0, replace 0, and skip 0" in preview.message
 
 
 def test_partner_build_validation_rejects_malformed_structured_parameters():

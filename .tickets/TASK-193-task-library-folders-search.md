@@ -32,4 +32,12 @@ Success Criteria:
 - Authorization, migration, search, concurrency, and authenticated browser
   tests pass under the production Python/SQLite contract.
 
-Status: Todo
+Implementation checkpoint:
+- Folder APIs, stable in-place rename, visibility authorization, cataloger
+  search filters, and the split task-library explorer are implemented.
+- Shared/private organization actions remain audited and task deletion is
+  preserved in the explorer.
+- Focused Python tests pass; authenticated browser and Docker verification
+  remain outstanding.
+
+Status: In-Progress

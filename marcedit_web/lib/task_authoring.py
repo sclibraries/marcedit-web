@@ -367,6 +367,16 @@ def _validate_partner_operation(
                 raise ValueError
         except (TypeError, ValueError):
             errors.append("maximum fields per record must be a positive integer")
+        try:
+            if int(
+                params.get(
+                    "max_fields_per_batch",
+                    partner_operations.DEFAULT_MAX_FIELDS_PER_BATCH,
+                )
+            ) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            errors.append("maximum fields per task must be a positive integer")
         predicate = params.get("predicate")
         if predicate not in (None, {}):
             errors.extend(field_predicates.validate_field_predicate(predicate))
@@ -1019,6 +1029,9 @@ def _describe_partner_operation(op: Mapping[str, Any]) -> str:
 def _apply_partner_operation(record: Record, op: Mapping[str, Any]) -> dict[str, int]:
     kind = str(op.get("kind") or "")
     params = dict(op.get("params") or {})
+    # The parent runner enforces this control-plane limit across sandbox
+    # chunks; it is not a per-record transform argument.
+    params.pop("max_fields_per_batch", None)
     if kind == "copy-fields-with-policy":
         return partner_operations.copy_fields_with_policy(record, **params)
     if kind == "build-fields-from-source":
@@ -1279,9 +1292,15 @@ def preview_operation(
         return AuthoringPreview(
             "ready",
             unresolved,
-            "Preview created {0} destination field(s); matched {1} source field(s).".format(
-                result.get("destination_fields_created", 0),
-                result.get("source_fields_matched", 0),
+            (
+                "Preview matched {matched} source field(s); would create "
+                "{created}, replace {replaced}, and skip {skipped} "
+                "record(s)."
+            ).format(
+                matched=result.get("source_fields_matched", 0),
+                created=result.get("destination_fields_created", 0),
+                replaced=result.get("existing_fields_replaced", 0),
+                skipped=result.get("records_skipped", 0),
             ),
         )
     candidate = copy.deepcopy(record)

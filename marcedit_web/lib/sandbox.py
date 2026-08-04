@@ -88,6 +88,7 @@ class TaskSpec:
     body: str
     imports: list[str] = field(default_factory=list)
     capture_result: Optional[str] = None
+    partner_batch_limits: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -112,6 +113,7 @@ class SandboxResult:
     timed_out: bool = False
     cancelled: bool = False
     captured_results: list[dict] = field(default_factory=list)
+    partner_totals: dict[str, int] = field(default_factory=dict)
 
 
 # Inlined driver script — passed via -c to the child. Kept here so the
@@ -212,6 +214,8 @@ def main():
     errors = []
     error_count = 0
     captured_results = []
+    partner_totals = {}
+    transforms.reset_partner_batch_totals()
     with open(args.input, "rb") as fin:
         reader = pymarc.MARCReader(fin, to_unicode=True, permissive=True)
         with open(args.output, "wb") as fout:
@@ -230,8 +234,9 @@ def main():
                     continue
                 failed_task = None
                 try:
-                    for task in tasks:
+                    for task_index, task in enumerate(tasks):
                         # Fresh namespace per task so symbols don't leak.
+                        transforms.set_partner_batch_context(str(task_index))
                         ns = {
                             "record": record,
                             "pymarc": pymarc,
@@ -301,6 +306,7 @@ def main():
             "error_count": error_count,
             "errors": errors,
             "captured_results": captured_results,
+            "partner_totals": transforms.get_partner_batch_totals(),
         }, f)
 
 
@@ -370,6 +376,7 @@ def run_tasks_subprocess(
             "body": t.body,
             "imports": list(t.imports),
             "capture_result": t.capture_result,
+            "partner_batch_limits": dict(t.partner_batch_limits),
         }
         for t in tasks
     ]
@@ -548,6 +555,17 @@ def run_tasks_subprocess(
             )
             if isinstance(captured, dict)
         ]
+        raw_totals = error_payload.get("partner_totals") or {}
+        if not isinstance(raw_totals, dict):
+            raw_totals = {}
+        partner_totals = {
+            str(key): int(value)
+            for key, value in raw_totals.items()
+            if isinstance(key, str)
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= 2_147_483_647
+        }
     else:
         errors = [
             bound_error(error)
@@ -556,6 +574,7 @@ def run_tasks_subprocess(
         ]
         error_count = len(errors)
         captured_results = []
+        partner_totals = {}
 
     if timed_out:
         error_count += 1
@@ -588,6 +607,7 @@ def run_tasks_subprocess(
         timed_out=timed_out,
         cancelled=cancelled,
         captured_results=captured_results,
+        partner_totals=partner_totals,
     )
 
 
