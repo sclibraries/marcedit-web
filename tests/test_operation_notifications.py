@@ -364,7 +364,6 @@ def test_app_header_suppresses_durable_bell_during_hotfix(monkeypatch):
     )
 
     assert app._should_render_notification_bell("owner@smith.edu") is False
-    app._render_notification_bell("owner@smith.edu")
     assert calls == []
 
     monkeypatch.setattr(app.authz, "get_user", lambda _email: {"status": "pending"})

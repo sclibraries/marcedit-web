@@ -242,4 +242,4 @@ def render_markdown() -> str:
             f"**Related:** {', '.join(f'`{item}`' for item in entry['related']) or 'none'}",
             "",
         ])
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines).rstrip("\n") + "\n"
