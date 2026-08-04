@@ -3,6 +3,7 @@ Title: Assemble the task-library production hotfix without durable Operations
 Depends On: TASK-190, TASK-191, TASK-192, TASK-193
 
 Design: [Production task-library hotfix](../docs/superpowers/specs/2026-08-03-task-194-production-task-library-hotfix-design.md)
+Evidence: [Release assembly checkpoint](../docs/superpowers/evidence/task-194-release-assembly.md)
 
 Scope:
 - Build a production release branch from the exact deployed commit.
