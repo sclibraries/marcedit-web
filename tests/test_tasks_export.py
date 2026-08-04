@@ -439,8 +439,8 @@ def test_batch_operation_uses_shared_gate_and_telemetry(monkeypatch, tmp_path):
     ]
 
 
-def test_run_panel_explains_durable_background_processing(monkeypatch):
-    """Catalogers know queued work survives leaving the Tasks page."""
+def test_run_panel_explains_synchronous_processing(monkeypatch):
+    """Catalogers know to keep the page open for the synchronous hotfix."""
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render()
     monkeypatch.setattr(tasks_render, "st", fake_st)
@@ -448,8 +448,8 @@ def test_run_panel_explains_durable_background_processing(monkeypatch):
     tasks_render._render_run_panel([], Path("/unused"))
 
     rendered = " ".join(fake_st.captions)
-    assert "queued" in rendered.lower()
-    assert "leave this tab open" not in rendered.lower()
+    assert "synchronously" in rendered.lower()
+    assert "review" in rendered.lower()
 
 
 def test_saved_task_submission_preserves_order_and_exact_job_version(
@@ -913,24 +913,24 @@ def test_unrelated_historical_todo_does_not_trigger_add_build_gate(
     assert len(submitted) == 1
 
 
-def test_saved_task_run_panel_queues_without_keep_tab_open_warning(
+def test_saved_task_run_panel_runs_synchronously_with_keep_tab_open_warning(
     monkeypatch, tmp_path,
 ):
     fake_st = _FakeStreamlit()
     fake_st.clicked_keys.add("tasks_run_btn")
     tasks_render = _tasks_render()
     monkeypatch.setattr(tasks_render, "st", fake_st)
-    queued = []
+    ran = []
     monkeypatch.setattr(
         tasks_render,
-        "_submit_queued_run",
-        lambda selection, tasks_dir: queued.append((selection, tasks_dir)),
+        "_execute_synchronous_run",
+        lambda selection, tasks_dir: ran.append((selection, tasks_dir)),
     )
     registered = [SimpleNamespace(name="cleanup")]
 
     tasks_render._render_run_panel(registered, tmp_path)
 
-    assert queued == [(["cleanup"], tmp_path)]
+    assert ran == [(["cleanup"], tmp_path)]
     copy = " ".join(fake_st.captions)
-    assert "leave this tab open" not in copy.lower()
-    assert "queue" in copy.lower()
+    assert "keep this tab open" in copy.lower()
+    assert "synchronously" in copy.lower()

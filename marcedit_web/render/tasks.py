@@ -2651,7 +2651,8 @@ def _render_run_panel(registered, tasks_dir: Path) -> None:
     )
     st.caption(
         "Saved-task runs execute synchronously in a bounded sandbox. "
-        "The result stays here for review before you download or apply it."
+        "Keep this tab open while it runs; the result stays here for review "
+        "before you download or apply it."
     )
     if st.button(
         "Run selected tasks",
