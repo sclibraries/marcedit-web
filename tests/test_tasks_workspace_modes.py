@@ -417,6 +417,65 @@ def test_external_url_restores_filter_draft(monkeypatch):
     assert fake_st.session_state[tasks_render.K_LIBRARY_QUERY] == "EBA"
 
 
+def test_back_closes_dialog_but_retains_working_copy(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    draft = {"name": "In progress"}
+    fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] = "folder-create"
+    fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_DRAFT] = draft
+
+    tasks_render._restore_dialog_from_location(
+        tasks_render.WorkspaceLocation(view="library"), set(), set()
+    )
+
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] is None
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_DRAFT] == draft
+
+
+def test_forward_reopens_only_valid_authorized_dialog(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    location = tasks_render.WorkspaceLocation(
+        view="library", dialog="folder-rename", dialog_folder_id=31
+    )
+
+    tasks_render._restore_dialog_from_location(location, set(), {31})
+
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] == "folder-rename"
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_FOLDER] == 31
+
+
+def test_forward_rejects_invalid_dialog_target_without_reopening(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] = "folder-rename"
+    location = tasks_render.WorkspaceLocation(
+        view="library", dialog="folder-rename", dialog_folder_id=31
+    )
+
+    tasks_render._restore_dialog_from_location(location, set(), set())
+
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] is None
+
+
+def test_explicit_cancel_discards_dialog_working_copy(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_WORKSPACE_LOCATION] = (
+        tasks_render.WorkspaceLocation(
+            view="library", dialog="folder-create", dialog_folder_id=None
+        )
+    )
+    fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] = "folder-create"
+    fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_DRAFT] = {"name": "discard"}
+
+    tasks_render._close_library_dialog(discard=True)
+
+    assert tasks_render.K_LIBRARY_DIALOG_DRAFT not in fake_st.session_state
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] is None
+    assert "dialog" not in fake_st.query_params
+
+
 def test_folder_click_commits_staged_filters_in_one_write(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)

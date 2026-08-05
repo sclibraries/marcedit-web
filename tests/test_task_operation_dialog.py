@@ -11,7 +11,11 @@ from marcedit_web.lib import (
     task_authoring,
     task_builder,
 )
-from marcedit_web.render import task_operation_cards, task_operation_dialog
+from marcedit_web.render import (
+    task_operation_cards,
+    task_operation_dialog,
+    task_operation_reference,
+)
 
 
 class _Context:
@@ -1130,6 +1134,27 @@ def test_confirmed_discard_closes_and_clean_cancel_closes(monkeypatch):
 
         assert closed == [True]
         assert fake.reruns == [{}]
+        assert "Cancel" in [widget[1] for widget in fake.widgets]
+
+
+def test_operation_reference_dialog_has_explicit_close(monkeypatch):
+    fake = FakeStreamlit(pressed={"Close"})
+    closed = []
+    monkeypatch.setattr(task_operation_reference, "st", fake)
+    monkeypatch.setattr(
+        task_operation_reference,
+        "render_reference_browser",
+        lambda **kwargs: None,
+    )
+
+    task_operation_reference.open_reference_dialog(
+        include_custom=False,
+        on_close=lambda: closed.append(True),
+    )
+
+    assert "Close" in [widget[1] for widget in fake.widgets]
+    assert closed == [True]
+    assert fake.reruns == [{}]
 
 
 def test_keep_editing_clears_discard_state_and_reruns_fragment(monkeypatch):

@@ -168,6 +168,16 @@ K_LIBRARY_DIALOG = "tasks_library_dialog"
 K_LIBRARY_DIALOG_FOLDER = "tasks_library_dialog_folder"
 K_LIBRARY_DIALOG_TASK = "tasks_library_dialog_task"
 K_LIBRARY_DIALOG_DRAFT = "tasks_library_dialog_draft"
+# Every keyed control rendered inside the Library organization modal.  These
+# controls must be cleared when a modal exits so a later URL-forward restore
+# hydrates them from the retained working copy instead of stale Streamlit
+# widget state.
+LIBRARY_DIALOG_WIDGET_KEYS = (
+    "tasks_library_dialog_name",
+    "tasks_library_dialog_scope",
+    "tasks_library_dialog_parent",
+    "tasks_library_dialog_destination",
+)
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
 K_MATERIALIZED_DIR = "tasks_materialized_dir"
@@ -319,7 +329,73 @@ def _authorized_workspace_location(
     return location
 
 
-def _apply_workspace_location(location: WorkspaceLocation) -> None:
+def _restore_dialog_from_location(
+    location: WorkspaceLocation,
+    visible_task_ids: set[int],
+    visible_folder_ids: set[int],
+) -> None:
+    """Project URL dialog state while retaining drafts across Back/Forward."""
+    dialog = location.dialog
+    valid_modes = {
+        "folder-create", "folder-rename", "folder-move", "folder-delete",
+        "task-move", "task-share", "task-unshare",
+    }
+    target_visible = True
+    if dialog in {"folder-rename", "folder-move", "folder-delete"}:
+        target_visible = (
+            location.dialog_folder_id is not None
+            and location.dialog_folder_id in visible_folder_ids
+        )
+    elif dialog in {"task-move", "task-share", "task-unshare"}:
+        target_visible = (
+            location.dialog_task_id is not None
+            and location.dialog_task_id in visible_task_ids
+        )
+    elif dialog == "folder-create":
+        target_visible = (
+            location.dialog_folder_id is None
+            or location.dialog_folder_id in visible_folder_ids
+        )
+    valid = dialog in valid_modes and target_visible
+    st.session_state[K_LIBRARY_DIALOG] = dialog if valid else None
+    st.session_state[K_LIBRARY_DIALOG_TASK] = (
+        location.dialog_task_id if valid else None
+    )
+    st.session_state[K_LIBRARY_DIALOG_FOLDER] = (
+        location.dialog_folder_id if valid else None
+    )
+    # URL navigation is authoritative for which modal is visible, but not for
+    # its in-progress widget values.  Clear widget state on every transition;
+    # only a valid Forward target is allowed to hydrate it from the draft.
+    for key in LIBRARY_DIALOG_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+    if valid:
+        draft = st.session_state.get(K_LIBRARY_DIALOG_DRAFT)
+        if isinstance(draft, dict):
+            widget_values = {
+                "name": "tasks_library_dialog_name",
+                "scope": "tasks_library_dialog_scope",
+                "parent_id": "tasks_library_dialog_parent",
+                "destination": "tasks_library_dialog_destination",
+            }
+            for field, key in widget_values.items():
+                if field in draft:
+                    st.session_state[key] = draft[field]
+        st.session_state.pop("tasks_library_dialog_error", None)
+    elif dialog is not None:
+        st.session_state[
+            "tasks_library_dialog_error"
+        ] = "That dialog target is no longer available. Close this message."
+    else:
+        st.session_state.pop("tasks_library_dialog_error", None)
+
+
+def _apply_workspace_location(
+    location: WorkspaceLocation,
+    *,
+    visible_task_ids: set[int] | None = None,
+    visible_folder_ids: set[int] | None = None,
+) -> None:
     st.session_state[K_WORKSPACE_LOCATION] = location
     # These selectors are widgets, but their values are URL projections. An
     # external query-only rerun must discard the previous widget value before
@@ -348,9 +424,11 @@ def _apply_workspace_location(location: WorkspaceLocation) -> None:
     st.session_state[K_LIBRARY_KIND] = filters.operation
     st.session_state[K_LIBRARY_VALIDATION] = filters.validation
     st.session_state[K_LIBRARY_RECENT] = filters.updated
-    st.session_state[K_LIBRARY_DIALOG] = location.dialog
-    st.session_state[K_LIBRARY_DIALOG_TASK] = location.dialog_task_id
-    st.session_state[K_LIBRARY_DIALOG_FOLDER] = location.dialog_folder_id
+    _restore_dialog_from_location(
+        location,
+        visible_task_ids or set(),
+        visible_folder_ids or set(),
+    )
 
 
 _LIBRARY_FILTER_DEFAULTS = {
@@ -480,9 +558,25 @@ def _sync_workspace_from_url(
         K_WORKSPACE_LOCATION in st.session_state
         and canonical_tasks_query(st.session_state[K_WORKSPACE_LOCATION])
         == canonical_tasks_query(resolved)
+        and st.session_state.get(K_LIBRARY_DIALOG) == resolved.dialog
+        and st.session_state.get(K_LIBRARY_DIALOG_TASK)
+        == resolved.dialog_task_id
+        and st.session_state.get(K_LIBRARY_DIALOG_FOLDER)
+        == resolved.dialog_folder_id
     ):
         return resolved
-    _apply_workspace_location(resolved)
+    _apply_workspace_location(
+        resolved,
+        visible_task_ids=visible_task_ids,
+        visible_folder_ids=visible_folder_ids,
+    )
+    # The authorization pass intentionally strips inaccessible URL targets.
+    # Keep a bounded, dismissible diagnostic so an external Back/Forward does
+    # not silently leave the cataloger in a stale modal.
+    if location.dialog is not None and resolved.dialog is None:
+        st.session_state[
+            "tasks_library_dialog_error"
+        ] = "That dialog target is no longer available. Close this message."
     return resolved
 
 
@@ -585,6 +679,11 @@ def render() -> None:
             _render_saved_tasks(registered, tasks_dir)
     elif location.view == "library":
         _render_task_library(current_user_id=current_user_id, is_admin=is_admin)
+        if (
+            st.session_state.get(K_LIBRARY_DIALOG)
+            or st.session_state.get("tasks_library_dialog_error")
+        ):
+            _show_library_dialog()
     elif location.view == "create":
         _render_create_workspace(tasks_dir, is_admin)
     else:
@@ -1430,13 +1529,45 @@ def _open_create_folder(scope: str, parent_id: int | None) -> None:
     _open_library_dialog("folder-create", folder_id=parent_id)
 
 
+def _close_library_dialog(*, discard: bool) -> None:
+    """Close the Library modal and optionally discard its working copy."""
+    st.session_state[K_LIBRARY_DIALOG] = None
+    st.session_state[K_LIBRARY_DIALOG_FOLDER] = None
+    st.session_state[K_LIBRARY_DIALOG_TASK] = None
+    st.session_state.pop("tasks_library_dialog_error", None)
+    for key in LIBRARY_DIALOG_WIDGET_KEYS:
+        st.session_state.pop(key, None)
+    if discard:
+        st.session_state.pop(K_LIBRARY_DIALOG_DRAFT, None)
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    _write_workspace_location(
+        dataclasses.replace(
+            current,
+            dialog=None,
+            dialog_task_id=None,
+            dialog_folder_id=None,
+        )
+    )
+    st.rerun()
+
+
 def _render_library_dialog_cancel(error_key: str) -> None:
     """Keep a visible escape action available on stale/error dialog states."""
-    if st.button("Cancel", key="tasks_library_dialog_cancel"):
-        st.session_state[K_LIBRARY_DIALOG] = None
-        st.session_state[K_LIBRARY_DIALOG_DRAFT] = {}
-        st.session_state.pop(error_key, None)
-        st.rerun()
+    labels = ["Cancel"]
+    if st.session_state.get(error_key):
+        # Keep the ordinary Cancel affordance for active dialogs while also
+        # making stale/error-only branches explicitly dismissible as Close.
+        labels.insert(0, "Close")
+    for label in labels:
+        if st.button(
+            label,
+            key=(
+                "tasks_library_dialog_close"
+                if label == "Close"
+                else "tasks_library_dialog_cancel"
+            ),
+        ):
+            _close_library_dialog(discard=True)
 
 
 def _render_library_dialog() -> None:
@@ -1485,6 +1616,7 @@ def _render_library_dialog() -> None:
         st.session_state[K_LIBRARY_DIALOG_DRAFT] = {
             "scope": scope,
             "parent_id": selected,
+            "name": name,
         }
         if st.button("Create folder", type="primary", key="tasks_library_dialog_save"):
             try:
@@ -1497,10 +1629,7 @@ def _render_library_dialog() -> None:
             except ValueError as exc:
                 st.session_state[error_key] = str(exc)
             else:
-                st.session_state[K_LIBRARY_DIALOG] = None
-                st.session_state[K_LIBRARY_DIALOG_DRAFT] = {}
-                st.session_state.pop(error_key, None)
-                st.rerun()
+                _close_library_dialog(discard=True)
     elif mode in {"folder-rename", "folder-move", "folder-delete"}:
         folder_id = st.session_state.get(K_LIBRARY_DIALOG_FOLDER)
         folder = next(
@@ -1518,6 +1647,7 @@ def _render_library_dialog() -> None:
                 value=str(folder["name"]),
                 key="tasks_library_dialog_name",
             )
+            st.session_state[K_LIBRARY_DIALOG_DRAFT] = {"name": name}
             if st.button("Rename folder", type="primary", key="tasks_library_dialog_save"):
                 try:
                     task_library.rename_folder(
@@ -1529,9 +1659,7 @@ def _render_library_dialog() -> None:
                 except ValueError as exc:
                     st.session_state[error_key] = str(exc)
                 else:
-                    st.session_state[K_LIBRARY_DIALOG] = None
-                    st.session_state.pop(error_key, None)
-                    st.rerun()
+                    _close_library_dialog(discard=True)
         elif mode == "folder-move":
             excluded = {folder_id} | _folder_descendants(folders, folder_id)
             options = [
@@ -1561,6 +1689,7 @@ def _render_library_dialog() -> None:
             # actual destination for a conceptual root move.
             if selected is None:
                 selected = root_options[0] if root_options else None
+            st.session_state[K_LIBRARY_DIALOG_DRAFT] = {"parent_id": selected}
             if st.button("Move folder", type="primary", key="tasks_library_dialog_save"):
                 try:
                     if selected is None:
@@ -1574,9 +1703,7 @@ def _render_library_dialog() -> None:
                 except ValueError as exc:
                     st.session_state[error_key] = str(exc)
                 else:
-                    st.session_state[K_LIBRARY_DIALOG] = None
-                    st.session_state.pop(error_key, None)
-                    st.rerun()
+                    _close_library_dialog(discard=True)
         else:
             st.warning("Folders must be empty before they can be deleted.")
             if st.button("Delete folder", type="primary", key="tasks_library_dialog_save"):
@@ -1595,6 +1722,10 @@ def _render_library_dialog() -> None:
                     st.rerun()
     elif mode in {"task-move", "task-share", "task-unshare"}:
         task_id = st.session_state.get(K_LIBRARY_DIALOG_TASK)
+        if task_id is None:
+            st.error("That task is no longer available. Refresh the library.")
+            _render_library_dialog_cancel(error_key)
+            return
         task = task_library.get_task_for_actor(actor, int(task_id))
         if task is None:
             st.error("That task is no longer available. Refresh the library.")
@@ -1635,6 +1766,7 @@ def _render_library_dialog() -> None:
             format_func=lambda value: paths[int(value)],
             key="tasks_library_dialog_destination",
         )
+        st.session_state[K_LIBRARY_DIALOG_DRAFT] = {"destination": selected}
         action_label = {
             "task-share": "Share task",
             "task-unshare": "Move to personal tasks",
@@ -1666,10 +1798,8 @@ def _render_library_dialog() -> None:
             except ValueError as exc:
                 st.session_state[error_key] = str(exc)
             else:
-                st.session_state[K_LIBRARY_DIALOG] = None
-                st.session_state.pop(error_key, None)
-                st.rerun()
-    if mode:
+                _close_library_dialog(discard=True)
+    if mode or st.session_state.get(error_key):
         _render_library_dialog_cancel(error_key)
     if st.session_state.get(error_key):
         st.error(st.session_state[error_key])
@@ -1692,6 +1822,16 @@ def _open_library_dialog(mode: str, *, folder_id: int | None = None, task_id: in
     st.session_state[K_LIBRARY_DIALOG_TASK] = task_id
     if mode != "folder-create":
         st.session_state[K_LIBRARY_DIALOG_DRAFT] = {}
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    _write_workspace_location(
+        dataclasses.replace(
+            current,
+            view="library",
+            dialog=mode,
+            dialog_task_id=task_id,
+            dialog_folder_id=folder_id,
+        )
+    )
     _show_library_dialog()
 
 
