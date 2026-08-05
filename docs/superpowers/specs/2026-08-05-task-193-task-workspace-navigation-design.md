@@ -90,16 +90,49 @@ parameters are supported:
 
 On initial load and browser Back or Forward, valid URL state restores the
 selected view, Run mode, Library scope, folder, filters, task editor, dialog,
-and authorized dialog target. A widget change writes one canonical
-query-parameter set. A
-synchronization guard distinguishes an external URL change from the
-application's own write so Streamlit reruns cannot create a loop.
+and authorized dialog target. A synchronization guard distinguishes an
+external URL change from the application's own write so Streamlit reruns
+cannot create a loop.
 
-Unknown parameter names are preserved only when owned by another application
-surface. Unknown values, malformed IDs, stale IDs, and inaccessible task or
-folder IDs are removed from the Tasks-owned parameter set and fall back to the
-nearest valid view. They never bypass authorization or raise an unbounded
-exception.
+Streamlit 1.50 calls its page-change path for query-only browser history
+changes, even when the pathname and page script remain the same. Create and
+Import working copies therefore live in explicitly managed, non-widget session
+keys. They are not allowed to depend only on widget keys, which Streamlit may
+remove when their owning workflow is not rendered. Unsaved Create and Import
+draft survival across Back and Forward is a required failing regression test
+before the navigation implementation begins.
+
+History entries are divided by interaction cost:
+
+- Primary view, Run mode, scope, folder, task, and dialog changes write the URL
+  immediately and create one browser-history entry. That write also commits
+  any staged Library filters atomically so navigation never discards filter
+  work or creates a second entry.
+- Library search text and the visibility, owner, tag, subfield, operation,
+  validation, and updated filters are staged in a form. **Apply filters**
+  writes all staged values to the URL once. **Clear filters** writes one reset
+  state. Typing and intermediate filter selection never write the URL.
+- Until Apply or structural navigation, staged values remain visible with a
+  **Filters not applied** indication while results continue to reflect the
+  applied URL state.
+- A committed filter URL restores both the applied search and its widget
+  values on Back, Forward, refresh, or a shared link.
+
+This avoids a separate history entry for every intermediate search string or
+filter selection while preserving the complete applied Library view.
+
+Tasks owns only the parameters enumerated in the table above. A canonical
+write starts from the current query mapping, replaces or removes only those
+Tasks-owned keys, and writes the merged mapping atomically. It never clears the
+complete query mapping. In particular, it preserves `job_file`, which is read
+and written by `lib/session.py`, and `start`, which is read and written by
+`views/00_Home.py`. Other non-Tasks keys are also preserved so a future
+application surface cannot be silently erased by Tasks navigation.
+
+Unknown values within Tasks-owned keys, malformed IDs, stale IDs, and
+inaccessible task or folder IDs are removed from the Tasks-owned parameter set
+and fall back to the nearest valid view. They never bypass authorization or
+raise an unbounded exception.
 
 Search text and cataloger-facing filter values may appear in browser history.
 Task definitions, imported instruction bodies, MARC record data, OAuth data,
@@ -130,9 +163,18 @@ working copy.
 
 Library dialogs remain non-dismissible outside this explicit path so a click
 outside the modal cannot silently discard input. Browser Back clears the
-`dialog` parameter and closes the modal while retaining its recoverable
-session working copy; Forward may reopen it if its authorized target remains
-available.
+`dialog`, `dialog_task`, and `dialog_folder` parameters and closes the modal
+while retaining its recoverable session working copy. Forward may reopen it if
+its authorized target remains available.
+
+The URL is authoritative for whether a dialog is open; a retained working copy
+is never sufficient to reopen one. Dialog input is copied into an explicitly
+managed, non-widget session value keyed by dialog kind and target. When an
+external history change has no valid dialog parameters, synchronization clears
+the open-dialog state before rendering but retains that value. Forward
+rehydrates dialog widgets from it only after validating the URL target. An
+explicit Cancel or successful primary action closes the dialog and deletes its
+retained working copy.
 
 One shared library-dialog close routine clears the dialog kind, target IDs,
 dialog error, and dialog-only widget state before rerunning. Error branches
@@ -153,15 +195,18 @@ renderers remain authoritative for their business behavior.
 
 The synchronization flow is:
 
-1. Parse the URL into a bounded navigation value.
+1. Read the complete query mapping and parse only Tasks-owned keys into a
+   bounded navigation value.
 2. Validate enum values and numeric syntax deterministically.
 3. Resolve visible task and folder IDs through existing authorization-aware
    library APIs.
-4. Apply external URL state to navigation and filter session keys without
-   changing unsaved draft keys.
+4. Apply external URL state to navigation and applied-filter session keys
+   without changing explicitly managed Create, Import, or dialog working-copy
+   keys.
 5. Render the selected workflow.
-6. On a navigation or filter interaction, serialize the new canonical state
-   to the URL once.
+6. On a structural navigation interaction or Apply/Clear filters, merge the
+   new canonical Tasks state with all non-Tasks query parameters and perform
+   one atomic URL write.
 
 Folder creation, moves, task saves, imports, and execution continue through
 their existing service APIs. Navigation never becomes a second persistence
@@ -179,6 +224,9 @@ path.
   other valid URL state.
 - URL/session synchronization detects its own canonical write and does not
   rerun indefinitely.
+- Intermediate search typing and filter changes do not create browser-history
+  entries before Apply filters.
+- A query write preserves `job_file`, `start`, and every other non-Tasks key.
 - No navigation failure changes database state or discards an unsaved draft.
 
 ## Verification
@@ -190,11 +238,20 @@ Automated tests must cover:
 - authorization boundaries for task and folder IDs;
 - primary and secondary tab selection;
 - restoration of every Library filter and selected folder;
-- preservation and explicit discard of Create and Import working copies;
+- a RED-to-GREEN regression proving unsaved Create and Import working copies
+  survive query-only Back and Forward page re-initialization;
+- preservation and explicit discard of Create and Import working copies when
+  their widgets are not rendered;
+- one history write for Apply filters and no writes for intermediate search or
+  filter changes;
+- merged query writes that preserve `job_file`, `start`, and unknown non-Tasks
+  parameters;
 - navigation from Library edit and Import adoption into Create;
 - explicit Cancel or Close in every library-dialog mode;
 - closure from validation-error, stale-target, inaccessible-target, and
   no-destination branches;
+- browser Back closing an open dialog despite a retained working copy, and
+  Forward reopening it only from valid URL dialog state;
 - Personal, Shared, root, and selected-parent folder creation;
 - the existing task execution, quick-change, importer, authorization, search,
   task-library, and operation-dialog suites; and
