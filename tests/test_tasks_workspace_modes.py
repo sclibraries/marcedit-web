@@ -573,6 +573,48 @@ def test_empty_task_destination_dialog_keeps_cancel_visible(monkeypatch):
     assert fake_st.errors
 
 
+def test_folder_delete_success_uses_shared_dialog_close(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.task_library,
+        "list_folder_tree",
+        lambda actor: [{
+            "id": 31,
+            "name": "Archive",
+            "scope": "personal",
+            "parent_id": 1,
+            "revision": 2,
+        }],
+    )
+    deleted = []
+    monkeypatch.setattr(
+        tasks_render.task_library,
+        "delete_folder",
+        lambda *args, **kwargs: deleted.append((args, kwargs)),
+    )
+    fake_st.session_state.update({
+        tasks_render.K_WORKSPACE_LOCATION: tasks_render.WorkspaceLocation(
+            view="library", dialog="folder-delete", dialog_folder_id=31
+        ),
+        tasks_render.K_LIBRARY_DIALOG: "folder-delete",
+        tasks_render.K_LIBRARY_DIALOG_FOLDER: 31,
+        tasks_render.K_LIBRARY_DIALOG_DRAFT: {"name": "Archive"},
+    })
+    fake_st.clicked_labels.add("Delete folder")
+
+    tasks_render._render_library_dialog()
+
+    assert deleted
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] is None
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_FOLDER] is None
+    assert tasks_render.K_LIBRARY_DIALOG_DRAFT not in fake_st.session_state
+    assert "dialog" not in fake_st.query_params
+
+
 def test_external_url_cannot_open_inaccessible_task_or_folder(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)

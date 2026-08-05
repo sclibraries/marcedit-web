@@ -1716,10 +1716,8 @@ def _render_library_dialog() -> None:
                 except ValueError as exc:
                     st.session_state[error_key] = str(exc)
                 else:
-                    st.session_state[K_LIBRARY_DIALOG] = None
                     st.session_state[K_LIBRARY_FOLDER_ID] = None
-                    st.session_state.pop(error_key, None)
-                    st.rerun()
+                    _close_library_dialog(discard=True)
     elif mode in {"task-move", "task-share", "task-unshare"}:
         task_id = st.session_state.get(K_LIBRARY_DIALOG_TASK)
         if task_id is None:
