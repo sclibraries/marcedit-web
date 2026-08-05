@@ -1838,7 +1838,7 @@ def _reset_operation_dialog_state() -> None:
     st.session_state.pop(K_OPERATION_CARDS_PENDING_REMOVE, None)
 
 
-def _discard_create_draft() -> None:
+def _discard_create_draft(*, select_view: str | None = "create") -> None:
     """Clear the explicit Create working copy without touching Import state."""
 
     for key, value in (
@@ -1867,11 +1867,13 @@ def _discard_create_draft() -> None:
         st.session_state.pop(key, None)
     _reset_operation_dialog_state()
 
-    # A discarded edit must not leave a stale task target in the Create URL.
-    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
-    _write_workspace_location(
-        dataclasses.replace(current, view="library", task_id=None)
-    )
+    if select_view is not None:
+        # A discarded edit must not leave a stale task target in the Create
+        # URL; the empty Create workflow remains available for the next draft.
+        current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+        _write_workspace_location(
+            dataclasses.replace(current, view=select_view, task_id=None)
+        )
 
 
 def _open_editor_for_new() -> None:
@@ -2982,7 +2984,7 @@ def _save_callback(tasks_dir: Path) -> None:
     tasks.load_user_tasks(tasks_dir, force_reload=True)
     st.session_state[K_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
-    _discard_create_draft()
+    _discard_create_draft(select_view=None)
     current_location = st.session_state.get(
         K_WORKSPACE_LOCATION, WorkspaceLocation()
     )
