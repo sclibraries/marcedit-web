@@ -598,7 +598,10 @@ def test_folder_delete_success_uses_shared_dialog_close(monkeypatch):
     )
     fake_st.session_state.update({
         tasks_render.K_WORKSPACE_LOCATION: tasks_render.WorkspaceLocation(
-            view="library", dialog="folder-delete", dialog_folder_id=31
+            view="library",
+            folder_id=31,
+            dialog="folder-delete",
+            dialog_folder_id=31,
         ),
         tasks_render.K_LIBRARY_DIALOG: "folder-delete",
         tasks_render.K_LIBRARY_DIALOG_FOLDER: 31,
@@ -613,6 +616,7 @@ def test_folder_delete_success_uses_shared_dialog_close(monkeypatch):
     assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_FOLDER] is None
     assert tasks_render.K_LIBRARY_DIALOG_DRAFT not in fake_st.session_state
     assert "dialog" not in fake_st.query_params
+    assert "folder" not in fake_st.query_params
 
 
 def test_external_url_cannot_open_inaccessible_task_or_folder(monkeypatch):

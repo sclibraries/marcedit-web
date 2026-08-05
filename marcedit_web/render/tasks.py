@@ -1717,6 +1717,12 @@ def _render_library_dialog() -> None:
                     st.session_state[error_key] = str(exc)
                 else:
                     st.session_state[K_LIBRARY_FOLDER_ID] = None
+                    current = st.session_state.get(
+                        K_WORKSPACE_LOCATION, WorkspaceLocation()
+                    )
+                    st.session_state[K_WORKSPACE_LOCATION] = dataclasses.replace(
+                        current, folder_id=None
+                    )
                     _close_library_dialog(discard=True)
     elif mode in {"task-move", "task-share", "task-unshare"}:
         task_id = st.session_state.get(K_LIBRARY_DIALOG_TASK)
