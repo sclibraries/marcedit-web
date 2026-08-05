@@ -1777,8 +1777,7 @@ def _render_build_mode(
             except Exception as exc:  # noqa: BLE001
                 logger.exception("delete_task failed for %s", t["name"])
                 st.warning(f"Could not delete {t['name']}: {exc}")
-        st.session_state[K_EDITOR_OPEN] = False
-        _reset_operation_dialog_state()
+        _discard_create_draft()
         st.rerun()
 
     if not is_admin:
@@ -2433,10 +2432,7 @@ def _clear_ai_draft_review() -> None:
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
     st.session_state[K_AI_DRAFT_ERROR] = None
     if st.session_state.get(K_EDITOR_FROM_AI_DRAFT, False):
-        st.session_state[K_EDITOR_OPEN] = False
-        st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
-        st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
-        _reset_operation_dialog_state()
+        _discard_create_draft()
 
 
 def _render_import_summary() -> None:
