@@ -209,7 +209,7 @@ def canonical_tasks_query(location: WorkspaceLocation) -> dict[str, str]:
     result: dict[str, str] = {}
     if location.view != "run":
         result["view"] = location.view
-    if location.mode != "saved":
+    if location.view == "run" and location.mode != "saved":
         result["mode"] = location.mode
     if location.scope != "personal":
         result["scope"] = location.scope

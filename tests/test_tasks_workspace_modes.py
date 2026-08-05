@@ -183,6 +183,85 @@ def test_render_routes_exactly_one_primary_workspace(monkeypatch, view, expected
     assert calls == [expected]
 
 
+def test_open_library_action_invokes_dialog_wrapper_once(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    calls = []
+    _wire(monkeypatch, tasks_render, calls)
+    wrappers = []
+    monkeypatch.setattr(
+        tasks_render,
+        "_show_library_dialog",
+        lambda: wrappers.append(True),
+    )
+    monkeypatch.setattr(
+        tasks_render,
+        "_render_task_library",
+        lambda **kwargs: tasks_render._open_library_dialog(
+            "folder-delete", folder_id=31
+        ),
+    )
+    fake_st.query_params.from_dict({"view": "library"})
+
+    tasks_render.render()
+
+    assert wrappers == [True]
+
+
+@pytest.mark.parametrize(
+    ("original_name", "expected_label"),
+    [(None, "Discard draft"), ("saved-task", "Cancel")],
+)
+def test_editor_exit_label_distinguishes_new_draft_from_saved_edit(
+    monkeypatch, original_name, expected_label
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(tasks_render.task_admin, "is_admin", lambda user: False)
+    monkeypatch.setattr(tasks_render, "_render_import_summary", lambda: None)
+    monkeypatch.setattr(tasks_render, "_render_form_editor", lambda: None)
+    monkeypatch.setattr(
+        tasks_render, "_ai_draft_save_blocked_for_new_task", lambda: False
+    )
+    fake_st.session_state.update({
+        tasks_render.K_EDITOR_ORIGINAL_NAME: original_name,
+        tasks_render.K_EDITOR_MODE: "form",
+        tasks_render.K_EDITOR_NAME: "",
+        tasks_render.K_EDITOR_DESCRIPTION: "",
+        tasks_render.K_EDITOR_BODY: "",
+        tasks_render.K_EDITOR_OPS: [],
+    })
+
+    tasks_render._render_editor(Path("/tmp/tasks"), is_admin=False)
+
+    assert expected_label in fake_st.button_labels
+
+
+def test_selecting_another_workspace_clears_dialog_url_but_keeps_draft(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update({
+        tasks_render.K_WORKSPACE_LOCATION: tasks_render.WorkspaceLocation(
+            view="library",
+            dialog="folder-rename",
+            dialog_folder_id=31,
+        ),
+        tasks_render.K_LIBRARY_DIALOG_DRAFT: {"name": "in progress"},
+    })
+
+    tasks_render._select_workspace("create")
+
+    location = fake_st.session_state[tasks_render.K_WORKSPACE_LOCATION]
+    assert location.view == "create"
+    assert location.dialog is None
+    assert location.dialog_folder_id is None
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_DRAFT] == {
+        "name": "in progress"
+    }
+    assert "dialog" not in fake_st.query_params
+    assert "dialog_folder" not in fake_st.query_params
+
+
 @pytest.mark.parametrize(("mode", "expected"), [("saved", "run"), ("quick", "quick")])
 def test_run_mode_routes_exactly_one_workflow(monkeypatch, mode, expected):
     fake_st = _FakeStreamlit()

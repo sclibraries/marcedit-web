@@ -298,6 +298,15 @@ def _write_workspace_location(location: WorkspaceLocation) -> None:
 
 def _select_workspace(view: str, **changes: object) -> None:
     current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    if view != current.view:
+        # Workspace switches are structural navigation.  Clear URL-owned
+        # dialog targets while leaving the retained draft available for an
+        # explicit, authorized Forward restore.
+        changes.update(
+            dialog=None,
+            dialog_task_id=None,
+            dialog_folder_id=None,
+        )
     _write_workspace_location(dataclasses.replace(current, view=view, **changes))
     st.rerun()
 
@@ -1836,7 +1845,6 @@ def _open_library_dialog(mode: str, *, folder_id: int | None = None, task_id: in
             dialog_folder_id=folder_id,
         )
     )
-    _show_library_dialog()
 
 
 def _library_filter_form():
@@ -2974,7 +2982,7 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         disabled=save_disabled,
     )
     cancel_col.button(
-        "Cancel",
+        "Cancel" if is_edit else "Discard draft",
         key="tasks_cancel",
         on_click=_cancel_callback,
     )

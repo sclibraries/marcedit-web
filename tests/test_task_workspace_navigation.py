@@ -71,6 +71,12 @@ def test_merge_preserves_non_tasks_and_repeated_values():
     }
 
 
+def test_run_mode_is_omitted_outside_run_view():
+    location = WorkspaceLocation(view="library", mode="quick")
+
+    assert canonical_tasks_query(location) == {"view": "library"}
+
+
 @pytest.mark.parametrize("key", sorted(TASK_QUERY_KEYS))
 def test_every_tasks_key_is_owned_and_canonicalized(key):
     assert key in TASK_QUERY_KEYS
