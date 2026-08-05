@@ -118,6 +118,10 @@ class _FakeStreamlit:
 
 
 class _FakeQueryParams(dict):
+    def __init__(self):
+        super().__init__()
+        self.write_count = 0
+
     def get_all(self, key):
         value = self.get(key)
         if value is None:
@@ -125,6 +129,7 @@ class _FakeQueryParams(dict):
         return list(value) if isinstance(value, list) else [value]
 
     def from_dict(self, values):
+        self.write_count += 1
         self.clear()
         self.update(values)
 
@@ -250,6 +255,111 @@ def test_workspace_write_preserves_job_file_start_and_unknown_values(monkeypatch
     assert fake_st.query_params.get_all("future") == ["x", "y"]
     assert fake_st.query_params["job_file"] == "22"
     assert fake_st.query_params["start"] == "jobs"
+
+
+def test_filter_typing_does_not_write_query_params(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT] = {
+        "query": "856", "visibility": "all", "owner": "", "tag": "",
+        "subfield": "", "operation": "all", "validation": "all",
+        "updated": "any",
+    }
+    fake_st.query_params.write_count = 0
+
+    tasks_render._render_library_filters()
+
+    assert fake_st.query_params.write_count == 0
+    assert "Filters not applied" in fake_st.captions
+
+
+def test_apply_filters_writes_once_and_updates_applied_location(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT] = {
+        "query": "EBA", "visibility": "shared", "owner": "", "tag": "035",
+        "subfield": "a", "operation": "all", "validation": "valid",
+        "updated": "30",
+    }
+    fake_st.query_params.write_count = 0
+
+    tasks_render._apply_library_filters()
+
+    assert fake_st.query_params.write_count == 1
+    assert fake_st.query_params["q"] == "EBA"
+    assert fake_st.query_params["tag"] == "035"
+    assert fake_st.session_state[tasks_render.K_WORKSPACE_LOCATION].filters.tag == "035"
+
+
+def test_clear_filters_writes_once(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT] = {
+        "query": "EBA", "visibility": "shared", "owner": "", "tag": "035",
+        "subfield": "a", "operation": "all", "validation": "valid",
+        "updated": "30",
+    }
+    fake_st.query_params.write_count = 0
+
+    tasks_render._clear_library_filters()
+
+    assert fake_st.query_params.write_count == 1
+    assert "q" not in fake_st.query_params
+    assert fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT]["query"] == ""
+
+
+def test_external_url_restores_filter_draft(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    location = tasks_render.WorkspaceLocation(
+        view="library",
+        filters=tasks_render.LibraryFilters(
+            query="EBA", visibility="shared", tag="035"
+        ),
+    )
+
+    tasks_render._sync_workspace_from_url(location, set(), set())
+
+    assert fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT]["query"] == "EBA"
+    assert fake_st.session_state[tasks_render.K_LIBRARY_QUERY] == "EBA"
+
+
+def test_folder_click_commits_staged_filters_in_one_write(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT] = {
+        "query": "856", "visibility": "all", "owner": "", "tag": "",
+        "subfield": "", "operation": "all", "validation": "all",
+        "updated": "any",
+    }
+    fake_st.clicked_labels.add("📁 Records (1)")
+    fake_st.query_params.write_count = 0
+
+    tasks_render._render_folder_node(
+        [{"id": 11, "name": "Records", "scope": "personal", "parent_id": None,
+          "task_ids": [3]}],
+        scope="personal",
+        parent_id=None,
+    )
+
+    assert fake_st.query_params.write_count == 1
+    assert fake_st.query_params["q"] == "856"
+    assert fake_st.query_params["folder"] == "11"
+
+
+@pytest.mark.parametrize(
+    ("scope", "parent_id"),
+    [("personal", None), ("shared", None), ("personal", 11), ("shared", 21)],
+)
+def test_create_folder_dialog_preserves_explicit_location(monkeypatch, scope, parent_id):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+
+    tasks_render._open_create_folder(scope=scope, parent_id=parent_id)
+
+    draft = fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_DRAFT]
+    assert draft["scope"] == scope
+    assert draft["parent_id"] == parent_id
 
 
 def test_external_url_cannot_open_inaccessible_task_or_folder(monkeypatch):

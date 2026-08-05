@@ -75,6 +75,7 @@ from marcedit_web.lib.quick_batch import QuickBatchRequest
 from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
 from marcedit_web.lib.task_workspace_navigation import (
+    LibraryFilters,
     WorkspaceLocation,
     canonical_tasks_query,
     merge_tasks_query,
@@ -161,9 +162,11 @@ K_LIBRARY_TAG = "tasks_library_tag"
 K_LIBRARY_SUBFIELD = "tasks_library_subfield"
 K_LIBRARY_VALIDATION = "tasks_library_validation"
 K_LIBRARY_RECENT = "tasks_library_recent"
+K_LIBRARY_FILTER_DRAFT = "tasks_library_filter_draft"
 K_LIBRARY_DIALOG = "tasks_library_dialog"
 K_LIBRARY_DIALOG_FOLDER = "tasks_library_dialog_folder"
 K_LIBRARY_DIALOG_TASK = "tasks_library_dialog_task"
+K_LIBRARY_DIALOG_DRAFT = "tasks_library_dialog_draft"
 K_SAVE_ERROR = "tasks_save_error"
 K_SAVE_SUCCESS = "tasks_save_success"
 K_MATERIALIZED_DIR = "tasks_materialized_dir"
@@ -326,6 +329,16 @@ def _apply_workspace_location(location: WorkspaceLocation) -> None:
     st.session_state[K_LIBRARY_SCOPE] = location.scope
     st.session_state[K_LIBRARY_FOLDER_ID] = location.folder_id
     filters = location.filters
+    st.session_state[K_LIBRARY_FILTER_DRAFT] = {
+        "query": filters.query,
+        "visibility": filters.visibility,
+        "owner": filters.owner,
+        "tag": filters.tag,
+        "subfield": filters.subfield,
+        "operation": filters.operation,
+        "validation": filters.validation,
+        "updated": filters.updated,
+    }
     st.session_state[K_LIBRARY_QUERY] = filters.query
     st.session_state[K_LIBRARY_VISIBILITY] = filters.visibility
     st.session_state[K_LIBRARY_OWNER] = filters.owner
@@ -337,6 +350,88 @@ def _apply_workspace_location(location: WorkspaceLocation) -> None:
     st.session_state[K_LIBRARY_DIALOG] = location.dialog
     st.session_state[K_LIBRARY_DIALOG_TASK] = location.dialog_task_id
     st.session_state[K_LIBRARY_DIALOG_FOLDER] = location.dialog_folder_id
+
+
+_LIBRARY_FILTER_DEFAULTS = {
+    "query": "",
+    "visibility": "all",
+    "owner": "",
+    "tag": "",
+    "subfield": "",
+    "operation": "all",
+    "validation": "all",
+    "updated": "any",
+}
+
+
+def _library_filter_draft() -> dict[str, str]:
+    """Return the editable Library filter draft, normalized to known keys."""
+    raw = st.session_state.get(K_LIBRARY_FILTER_DRAFT)
+    if not isinstance(raw, dict):
+        raw = {}
+    draft = {
+        key: str(raw.get(key, default) or default)
+        for key, default in _LIBRARY_FILTER_DEFAULTS.items()
+    }
+    st.session_state[K_LIBRARY_FILTER_DRAFT] = draft
+    return draft
+
+
+def _library_filters_from_draft(draft: dict[str, str]) -> LibraryFilters:
+    """Build the bounded navigation value used for an applied search."""
+    return LibraryFilters(
+        query=draft["query"].strip(),
+        visibility=draft["visibility"],
+        owner=draft["owner"].strip(),
+        tag=draft["tag"].strip(),
+        subfield=draft["subfield"].strip(),
+        operation=draft["operation"],
+        validation=draft["validation"],
+        updated=draft["updated"],
+    )
+
+
+def _library_filters_are_dirty() -> bool:
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    return _library_filters_from_draft(_library_filter_draft()) != current.filters
+
+
+def _apply_library_filters() -> None:
+    """Commit the staged Library filters as one URL/history write."""
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    applied = _library_filters_from_draft(_library_filter_draft())
+    location = dataclasses.replace(current, filters=applied)
+    _write_workspace_location(location)
+    st.session_state[K_LIBRARY_FILTER_DRAFT] = {
+        key: getattr(applied, key) for key in _LIBRARY_FILTER_DEFAULTS
+    }
+
+
+def _clear_library_filters() -> None:
+    """Clear staged Library filters and commit the empty filter set once."""
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    location = dataclasses.replace(current, filters=LibraryFilters())
+    _write_workspace_location(location)
+    st.session_state[K_LIBRARY_FILTER_DRAFT] = dict(_LIBRARY_FILTER_DEFAULTS)
+
+
+def _commit_library_navigation(*, scope: str, folder_id: int | None) -> None:
+    """Commit a folder selection and any staged filters in one URL write."""
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    applied = _library_filters_from_draft(_library_filter_draft())
+    location = dataclasses.replace(
+        current,
+        view="library",
+        scope=scope,
+        folder_id=folder_id,
+        filters=applied,
+    )
+    _write_workspace_location(location)
+    st.session_state[K_LIBRARY_SCOPE] = scope
+    st.session_state[K_LIBRARY_FOLDER_ID] = folder_id
+    st.session_state[K_LIBRARY_FILTER_DRAFT] = {
+        key: getattr(applied, key) for key in _LIBRARY_FILTER_DEFAULTS
+    }
 
 
 def _sync_workspace_from_url(
@@ -392,7 +487,11 @@ def render() -> None:
     st.session_state.setdefault(K_LIBRARY_SUBFIELD, "")
     st.session_state.setdefault(K_LIBRARY_VALIDATION, "all")
     st.session_state.setdefault(K_LIBRARY_RECENT, "any")
+    st.session_state.setdefault(
+        K_LIBRARY_FILTER_DRAFT, dict(_LIBRARY_FILTER_DEFAULTS)
+    )
     st.session_state.setdefault(K_LIBRARY_DIALOG, None)
+    st.session_state.setdefault(K_LIBRARY_DIALOG_DRAFT, {})
     st.session_state.setdefault(K_EDITOR_FROM_AI_DRAFT, False)
     st.session_state.setdefault(K_EDITOR_AI_DRAFT_REVIEW, None)
     st.session_state.setdefault(K_OPERATION_DIALOG_STATE, None)
@@ -1276,8 +1375,7 @@ def _render_folder_node(
                 else "secondary"
             ),
         ):
-            st.session_state[K_LIBRARY_FOLDER_ID] = folder_id
-            st.session_state[K_LIBRARY_SCOPE] = scope
+            _commit_library_navigation(scope=scope, folder_id=folder_id)
             st.rerun()
         _render_folder_node(
             folders,
@@ -1285,6 +1383,19 @@ def _render_folder_node(
             parent_id=folder_id,
             depth=depth + 1,
         )
+
+
+def _open_create_folder(scope: str, parent_id: int | None) -> None:
+    """Open folder creation with an explicit location and parent draft."""
+    if scope not in {"personal", "shared"}:
+        scope = "personal"
+    st.session_state[K_LIBRARY_SCOPE] = scope
+    st.session_state[K_LIBRARY_DIALOG_FOLDER] = parent_id
+    st.session_state[K_LIBRARY_DIALOG_DRAFT] = {
+        "scope": scope,
+        "parent_id": parent_id,
+    }
+    _open_library_dialog("folder-create", folder_id=parent_id)
 
 
 def _render_library_dialog() -> None:
@@ -1295,10 +1406,24 @@ def _render_library_dialog() -> None:
     paths = _folder_path_map(folders)
     error_key = "tasks_library_dialog_error"
     if mode == "folder-create":
-        scope = st.session_state.get(K_LIBRARY_SCOPE, "personal")
+        dialog_draft = st.session_state.get(K_LIBRARY_DIALOG_DRAFT)
+        if not isinstance(dialog_draft, dict):
+            dialog_draft = {}
+        scope = dialog_draft.get(
+            "scope", st.session_state.get(K_LIBRARY_SCOPE, "personal")
+        )
         st.markdown(
-            "Create a folder under the selected compatible parent. "
+            "Create a Personal or Shared folder under the selected compatible parent. "
             "Folder depth is limited to three levels."
+        )
+        scope = st.selectbox(
+            "Location",
+            ["personal", "shared"],
+            format_func=lambda value: (
+                "Personal tasks" if value == "personal" else "Shared tasks"
+            ),
+            index=0 if scope == "personal" else 1,
+            key="tasks_library_dialog_scope",
         )
         name = st.text_input("Folder name", key="tasks_library_dialog_name")
         options = [
@@ -1313,12 +1438,13 @@ def _render_library_dialog() -> None:
                 if value is not None else "Root"
             ),
             key="tasks_library_dialog_parent",
-            index=(
-                option_ids.index(st.session_state.get(K_LIBRARY_DIALOG_FOLDER))
-                if st.session_state.get(K_LIBRARY_DIALOG_FOLDER) in option_ids
-                else 0
-            ),
+            index=(option_ids.index(dialog_draft.get("parent_id"))
+                   if dialog_draft.get("parent_id") in option_ids else 0),
         )
+        st.session_state[K_LIBRARY_DIALOG_DRAFT] = {
+            "scope": scope,
+            "parent_id": selected,
+        }
         if st.button("Create folder", type="primary", key="tasks_library_dialog_save"):
             try:
                 task_library.create_folder(
@@ -1331,6 +1457,7 @@ def _render_library_dialog() -> None:
                 st.session_state[error_key] = str(exc)
             else:
                 st.session_state[K_LIBRARY_DIALOG] = None
+                st.session_state[K_LIBRARY_DIALOG_DRAFT] = {}
                 st.session_state.pop(error_key, None)
                 st.rerun()
     elif mode in {"folder-rename", "folder-move", "folder-delete"}:
@@ -1498,11 +1625,18 @@ def _render_library_dialog() -> None:
                 st.session_state[K_LIBRARY_DIALOG] = None
                 st.session_state.pop(error_key, None)
                 st.rerun()
+    if mode and st.button("Cancel", key="tasks_library_dialog_cancel"):
+        st.session_state[K_LIBRARY_DIALOG] = None
+        st.session_state[K_LIBRARY_DIALOG_DRAFT] = {}
+        st.session_state.pop(error_key, None)
+        st.rerun()
     if st.session_state.get(error_key):
         st.error(st.session_state[error_key])
 
 
 def _show_library_dialog() -> None:
+    if not hasattr(st, "dialog"):
+        return
     wrapper = st.dialog(
         "Task library organization",
         width="small",
@@ -1515,7 +1649,124 @@ def _open_library_dialog(mode: str, *, folder_id: int | None = None, task_id: in
     st.session_state[K_LIBRARY_DIALOG] = mode
     st.session_state[K_LIBRARY_DIALOG_FOLDER] = folder_id
     st.session_state[K_LIBRARY_DIALOG_TASK] = task_id
+    if mode != "folder-create":
+        st.session_state[K_LIBRARY_DIALOG_DRAFT] = {}
     _show_library_dialog()
+
+
+def _library_filter_form():
+    form_factory = getattr(st, "form", None)
+    if form_factory is None:
+        return st
+    return form_factory("tasks_library_filters")
+
+
+def _library_form_submit(label: str, **kwargs: object) -> bool:
+    submit = getattr(st, "form_submit_button", None)
+    if submit is not None:
+        return bool(submit(label, **kwargs))
+    return bool(st.button(label, **kwargs))
+
+
+def _render_library_filters() -> None:
+    """Render staged Library filters and explicit Apply/Clear actions."""
+    draft = _library_filter_draft()
+    widget_keys = {
+        "query": K_LIBRARY_QUERY,
+        "visibility": K_LIBRARY_VISIBILITY,
+        "owner": K_LIBRARY_OWNER,
+        "tag": K_LIBRARY_TAG,
+        "subfield": K_LIBRARY_SUBFIELD,
+        "operation": K_LIBRARY_KIND,
+        "validation": K_LIBRARY_VALIDATION,
+        "updated": K_LIBRARY_RECENT,
+    }
+    for field, key in widget_keys.items():
+        st.session_state[key] = draft[field]
+
+    with _library_filter_form():
+        st.text_input(
+            "Search name, description, operation, tag, literal, or source",
+            key=K_LIBRARY_QUERY,
+        )
+        filter_cols = st.columns(3)
+        filter_cols[0].selectbox(
+            "Visibility",
+            ["all", "private", "shared"],
+            format_func=lambda value: {
+                "all": "All visible",
+                "private": "My tasks",
+                "shared": "Shared tasks",
+            }[value],
+            key=K_LIBRARY_VISIBILITY,
+        )
+        filter_cols[1].selectbox(
+            "Validation",
+            ["all", "valid", "legacy", "invalid"],
+            key=K_LIBRARY_VALIDATION,
+        )
+        filter_cols[2].selectbox(
+            "Updated",
+            ["any", "7", "30"],
+            format_func=lambda value: {
+                "any": "Any time",
+                "7": "Last 7 days",
+                "30": "Last 30 days",
+            }[value],
+            key=K_LIBRARY_RECENT,
+        )
+        detail_cols = st.columns(4)
+        detail_cols[0].text_input("Owner", key=K_LIBRARY_OWNER)
+        detail_cols[1].text_input("MARC tag", key=K_LIBRARY_TAG)
+        detail_cols[2].text_input(
+            "Subfield", max_chars=1, key=K_LIBRARY_SUBFIELD
+        )
+        kind_options = ["all"] + [
+            entry["kind"]
+            for entry in sorted(
+                OPERATIONS_PALETTE,
+                key=lambda entry: str(entry["label"]).casefold(),
+            )
+        ]
+        detail_cols[3].selectbox(
+            "Operation",
+            kind_options,
+            format_func=lambda value: (
+                "All operations"
+                if value == "all"
+                else next(
+                    entry["label"]
+                    for entry in OPERATIONS_PALETTE
+                    if entry["kind"] == value
+                )
+            ),
+            key=K_LIBRARY_KIND,
+        )
+        applied = _library_form_submit("Apply filters", type="primary")
+        cleared = _library_form_submit("Clear filters")
+
+    # Read widget state only after the form closes; typing therefore changes
+    # the session-scoped draft and never touches URL history.
+    st.session_state[K_LIBRARY_FILTER_DRAFT] = {
+        "query": str(st.session_state.get(K_LIBRARY_QUERY, "") or ""),
+        "visibility": str(
+            st.session_state.get(K_LIBRARY_VISIBILITY, "all") or "all"
+        ),
+        "owner": str(st.session_state.get(K_LIBRARY_OWNER, "") or ""),
+        "tag": str(st.session_state.get(K_LIBRARY_TAG, "") or ""),
+        "subfield": str(st.session_state.get(K_LIBRARY_SUBFIELD, "") or ""),
+        "operation": str(st.session_state.get(K_LIBRARY_KIND, "all") or "all"),
+        "validation": str(
+            st.session_state.get(K_LIBRARY_VALIDATION, "all") or "all"
+        ),
+        "updated": str(st.session_state.get(K_LIBRARY_RECENT, "any") or "any"),
+    }
+    if applied:
+        _apply_library_filters()
+    elif cleared:
+        _clear_library_filters()
+    if _library_filters_are_dirty():
+        st.caption("Filters not applied")
 
 
 def _render_task_library(
@@ -1534,12 +1785,13 @@ def _render_task_library(
     left, right = st.columns([1, 3])
     with left:
         st.markdown("**Task folders**")
-        if st.button("+ Personal folder", key="tasks_library_new_personal"):
-            st.session_state[K_LIBRARY_SCOPE] = "personal"
-            _open_library_dialog("folder-create")
-        if st.button("+ Shared folder", key="tasks_library_new_shared"):
-            st.session_state[K_LIBRARY_SCOPE] = "shared"
-            _open_library_dialog("folder-create")
+        if st.button(
+            ":material/create_new_folder: Create new folder",
+            type="primary",
+            use_container_width=True,
+            key="tasks_library_create_folder",
+        ):
+            _open_create_folder(scope="personal", parent_id=None)
         for scope, label in (("personal", "My Tasks"), ("shared", "Shared Tasks")):
             if st.button(
                 label,
@@ -1552,8 +1804,7 @@ def _render_task_library(
                     else "secondary"
                 ),
             ):
-                st.session_state[K_LIBRARY_SCOPE] = scope
-                st.session_state[K_LIBRARY_FOLDER_ID] = None
+                _commit_library_navigation(scope=scope, folder_id=None)
                 st.rerun()
             _render_folder_node(
                 folders,
@@ -1571,11 +1822,11 @@ def _render_task_library(
             )
             action_cols = st.columns(4)
             if action_cols[0].button(
-                "New subfolder", key="tasks_library_new_child"
+                "Create subfolder here", key="tasks_library_new_child"
             ):
-                st.session_state[K_LIBRARY_SCOPE] = selected_folder["scope"]
-                _open_library_dialog(
-                    "folder-create", folder_id=selected_folder_id
+                _open_create_folder(
+                    scope=selected_folder["scope"],
+                    parent_id=selected_folder_id,
                 )
             if action_cols[1].button(
                 "Rename",
@@ -1612,63 +1863,13 @@ def _render_task_library(
                 _open_library_dialog("folder-delete", folder_id=selected_folder_id)
 
         st.markdown("**Search tasks**")
-        st.text_input(
-            "Search name, description, operation, tag, literal, or source",
-            key=K_LIBRARY_QUERY,
+        _render_library_filters()
+        applied_location = st.session_state.get(
+            K_WORKSPACE_LOCATION, WorkspaceLocation()
         )
-        filter_cols = st.columns(3)
-        filter_cols[0].selectbox(
-            "Visibility",
-            ["all", "private", "shared"],
-            format_func=lambda value: {
-                "all": "All visible",
-                "private": "My tasks",
-                "shared": "Shared tasks",
-            }[value],
-            key=K_LIBRARY_VISIBILITY,
-        )
-        filter_cols[1].selectbox(
-            "Validation",
-            ["all", "valid", "legacy", "invalid"],
-            key=K_LIBRARY_VALIDATION,
-        )
-        filter_cols[2].selectbox(
-            "Updated",
-            ["any", "7", "30"],
-            format_func=lambda value: {
-                "any": "Any time",
-                "7": "Last 7 days",
-                "30": "Last 30 days",
-            }[value],
-            key=K_LIBRARY_RECENT,
-        )
-        detail_cols = st.columns(4)
-        detail_cols[0].text_input("Owner", key=K_LIBRARY_OWNER)
-        detail_cols[1].text_input("MARC tag", key=K_LIBRARY_TAG)
-        detail_cols[2].text_input("Subfield", max_chars=1, key=K_LIBRARY_SUBFIELD)
-        kind_options = ["all"] + [
-            entry["kind"]
-            for entry in sorted(
-                OPERATIONS_PALETTE,
-                key=lambda entry: str(entry["label"]).casefold(),
-            )
-        ]
-        detail_cols[3].selectbox(
-            "Operation",
-            kind_options,
-            format_func=lambda value: (
-                "All operations"
-                if value == "all"
-                else next(
-                    entry["label"]
-                    for entry in OPERATIONS_PALETTE
-                    if entry["kind"] == value
-                )
-            ),
-            key=K_LIBRARY_KIND,
-        )
-        visibility = st.session_state[K_LIBRARY_VISIBILITY]
-        folder_scope = st.session_state.get(K_LIBRARY_SCOPE, "all")
+        applied_filters = applied_location.filters
+        visibility = applied_filters.visibility
+        folder_scope = applied_location.scope
         if visibility == "all":
             visibility = None
         if visibility is None and selected_folder_id is None:
@@ -1679,23 +1880,23 @@ def _render_task_library(
         try:
             results = task_library_search.search_visible_tasks(
                 current_user_id,
-                st.session_state.get(K_LIBRARY_QUERY, ""),
+                applied_filters.query,
                 operation_kind=(
-                    None if st.session_state[K_LIBRARY_KIND] == "all"
-                    else st.session_state[K_LIBRARY_KIND]
+                    None if applied_filters.operation == "all"
+                    else applied_filters.operation
                 ),
-                marc_tag=st.session_state.get(K_LIBRARY_TAG, "").strip() or None,
+                marc_tag=applied_filters.tag.strip() or None,
                 visibility=visibility,
                 folder_id=selected_folder_id,
-                owner=st.session_state.get(K_LIBRARY_OWNER, "").strip() or None,
-                subfield_code=st.session_state.get(K_LIBRARY_SUBFIELD, "").strip() or None,
+                owner=applied_filters.owner.strip() or None,
+                subfield_code=applied_filters.subfield.strip() or None,
                 validation_state=(
-                    None if st.session_state[K_LIBRARY_VALIDATION] == "all"
-                    else st.session_state[K_LIBRARY_VALIDATION]
+                    None if applied_filters.validation == "all"
+                    else applied_filters.validation
                 ),
                 recent_days=(
-                    None if st.session_state[K_LIBRARY_RECENT] == "any"
-                    else int(st.session_state[K_LIBRARY_RECENT])
+                    None if applied_filters.updated == "any"
+                    else int(applied_filters.updated)
                 ),
             )
         except ValueError as exc:
