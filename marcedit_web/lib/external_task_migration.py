@@ -599,16 +599,32 @@ def adapt_copy(source_line: str) -> MigrationItem:
                 "ignore_case": False,
             }]}
     if reason:
+        recommended_operation = "copy-field"
+        suggestion_params = params
+        cataloger_action = (
+            "Open Copy Field and confirm the external filter and options "
+            "before saving."
+        )
+        if reason == "unfiltered COPY has no registered equivalence evidence":
+            recommended_operation = "copy-fields-with-policy"
+            suggestion_params = {
+                "source_tag": src.strip(),
+                "destination_tag": dst.strip(),
+                "occurrence": "all",
+                "existing_field_action": "append",
+            }
+            cataloger_action = (
+                "Open Controlled Copy Fields, confirm which source occurrences "
+                "should be copied, and choose what to do when the destination "
+                "already exists."
+            )
         return _suggestion(
             source_line,
             intent="Copy selected MARC fields while preserving the source",
             reason=reason,
-            recommended_operation="copy-field",
-            prefilled_params=params,
-            cataloger_action=(
-                "Open Copy Field and confirm the external filter and options "
-                "before saving."
-            ),
+            recommended_operation=recommended_operation,
+            prefilled_params=suggestion_params,
+            cataloger_action=cataloger_action,
         )
     return _item(
         source_line,
@@ -1478,6 +1494,34 @@ def validate_compatibility_manifest(
 
 def adapt_instruction(source_line: str) -> MigrationItem:
     verb = source_line.split("\t", 1)[0].strip()
+    if verb == "TASK_LIST":
+        parts = source_line.rstrip("\r\n").split("\t")
+        task_name = parts[1].strip() if len(parts) > 1 else ""
+        task_entry = parts[2].strip() if len(parts) > 2 else ""
+        prefilled = {
+            key: value
+            for key, value in (
+                ("task_name", task_name),
+                ("task_entry", task_entry),
+            )
+            if value
+        }
+        return _suggestion(
+            source_line,
+            intent="Use a referenced task as an explicit dependency",
+            reason=(
+                "TASK_LIST composition is not executed automatically; the "
+                "referenced task identity must be available and verified"
+            ),
+            recommended_operation="choose-operation",
+            prefilled_params=prefilled,
+            cataloger_action=(
+                "Import the referenced task file or select an already imported "
+                "task with the matching identity, then recreate or confirm "
+                "its operations explicitly. The importer will not infer a "
+                "dependency from its display name."
+            ),
+        )
     adapter = ADAPTER_REGISTRY.get(verb)
     if adapter is not None:
         return adapter(source_line)
@@ -1555,6 +1599,10 @@ def build_migration_draft(
                 "params": {
                     "intent": item.intent or "Review an external instruction",
                     "reason": item.reason or "Exact external behavior is unproven",
+                    "cataloger_action": (
+                        item.cataloger_action
+                        or "Choose the closest structured operation and confirm its parameters."
+                    ),
                     "suggestion": {
                         "operation_kind": (
                             item.recommended_operation or "choose-operation"

@@ -24,6 +24,11 @@ mnemonic signature becomes a structured delete operation. `COPY` becomes
 in the record. `SUBFIELD_REMOVE` with the reviewed `107|0` option becomes
 **Delete subfield when value matches**.
 
+An unfiltered `COPY` whose equivalence has not been proven opens **Controlled
+Copy Fields** with source and destination tags prefilled. Confirm which source
+occurrences to copy and what to do when the destination already exists; the
+importer does not silently choose a collision policy.
+
 The reviewed `RDAHELPER` Smith signature becomes the visible Smith RDA material
 classification profile. This is an open deterministic equivalent for the
 documented Smith workflow, not a claim that proprietary MarcEdit code is being
@@ -49,6 +54,11 @@ remains blocked.
 
 ## Unresolved
 
+TASK_LIST references remain dependency cards rather than executable
+composition. Import the referenced task file or select an already imported
+task with the matching identity, then recreate or confirm its operations. The
+importer never infers a dependency from its display name.
+
 Unreviewed caret syntax, arbitrary regex over MarcEdit's `.mrk` text,
 undocumented numeric flags, unknown `RDAHELPER` switches, uncharacterized
 `EDITFIELD` modes, and unknown verbs remain visible and blocking. The importer
@@ -58,7 +68,8 @@ never claims compatibility with undocumented external behavior.
 
 Every blocking card is retained in source order and includes the apparent
 cataloging intent, the reason automatic conversion is unsafe, and the closest
-structured operation. When its parameters are safe to infer, **Open suggested
+structured operation. The cataloger’s next action is retained in the draft and
+shown on the import review, card, and dialog. When its parameters are safe to infer, **Open suggested
 operation** opens a prefilled editor. Review the values, keep the replacement,
 or cancel to retain the blocker. A task containing unresolved cards may be
 saved as a draft, but preview, execution, export, and background submission

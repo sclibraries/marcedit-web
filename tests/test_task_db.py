@@ -81,6 +81,67 @@ def test_save_task_renames_in_place_when_given_task_identity():
     assert renamed["body"] == "pass\n# changed\n"
 
 
+def test_shared_task_edit_preserves_owner_and_visibility_for_other_actor():
+    _save("owner@example.edu", "shared-task", visibility="shared")
+    original = task_db.get_task("owner@example.edu", "shared-task")
+
+    task_db.save_task(
+        owner="owner@example.edu",
+        actor="editor@example.edu",
+        name="shared-task",
+        description="edited by collaborator",
+        body="pass\n# collaborator\n",
+        visibility="shared",
+        task_id=original["id"],
+        expected_revision=original["revision"],
+    )
+
+    updated = task_db.get_task("owner@example.edu", "shared-task")
+    assert updated["owner_email"] == "owner@example.edu"
+    assert updated["visibility"] == "shared"
+    assert updated["folder_id"] == original["folder_id"]
+    assert updated["revision"] == original["revision"] + 1
+    assert updated["description"] == "edited by collaborator"
+
+
+def test_shared_task_rename_is_owner_only():
+    _save("owner@example.edu", "shared-task", visibility="shared")
+    original = task_db.get_task("owner@example.edu", "shared-task")
+
+    with pytest.raises(ValueError, match="rename"):
+        task_db.save_task(
+            owner="owner@example.edu",
+            actor="editor@example.edu",
+            name="renamed-by-collaborator",
+            description="edited by collaborator",
+            body="pass\n",
+            visibility="shared",
+            task_id=original["id"],
+            expected_revision=original["revision"],
+        )
+
+    unchanged = task_db.get_task("owner@example.edu", "shared-task")
+    assert unchanged["id"] == original["id"]
+    assert unchanged["revision"] == original["revision"]
+    assert task_db.get_task("owner@example.edu", "renamed-by-collaborator") is None
+
+
+def test_private_task_edit_rejects_non_owner_actor():
+    _save("owner@example.edu", "private-task")
+    original = task_db.get_task("owner@example.edu", "private-task")
+
+    with pytest.raises(ValueError, match="not authorized"):
+        task_db.save_task(
+            owner="owner@example.edu",
+            actor="editor@example.edu",
+            name="private-task",
+            description="must not change",
+            body="pass\n# denied\n",
+            task_id=original["id"],
+            expected_revision=original["revision"],
+        )
+
+
 def test_delete_returns_true_when_found():
     _save("alice@example.edu", "t1")
     assert task_db.delete_task("alice@example.edu", "t1") is True
@@ -99,6 +160,26 @@ def test_invalid_name_rejected():
 def test_invalid_visibility_rejected():
     with pytest.raises(ValueError, match="invalid visibility"):
         _save("alice@example.edu", "t1", visibility="public")
+
+
+def test_duplicate_shared_task_creation_is_cataloger_facing():
+    _save("alice@example.edu", "shared-name", visibility="shared")
+
+    with pytest.raises(ValueError, match="already exists"):
+        _save("bob@example.edu", "shared-name", visibility="shared")
+
+
+def test_set_visibility_conflict_is_cataloger_facing_and_atomic():
+    _save("alice@example.edu", "already-shared", visibility="shared")
+    _save("bob@example.edu", "already-shared", visibility="private")
+    before = task_db.get_task("bob@example.edu", "already-shared")
+
+    with pytest.raises(ValueError, match="already exists"):
+        task_db.set_visibility("bob@example.edu", "already-shared", "shared")
+
+    after = task_db.get_task("bob@example.edu", "already-shared")
+    assert after["visibility"] == "private"
+    assert after["revision"] == before["revision"]
 
 
 def test_set_visibility_toggle():

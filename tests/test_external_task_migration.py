@@ -216,7 +216,13 @@ def test_unfiltered_same_shape_copy_blocks_without_registered_evidence():
 
     assert item.status == "unresolved"
     assert item.operations == ()
-    assert item.recommended_operation == "copy-field"
+    assert item.recommended_operation == "copy-fields-with-policy"
+    assert item.prefilled_params == {
+        "source_tag": "650",
+        "destination_tag": "651",
+        "occurrence": "all",
+        "existing_field_action": "append",
+    }
     assert "unfiltered" in item.reason
     assert item.cataloger_action
 
@@ -231,6 +237,23 @@ def test_data_to_control_copy_gives_manual_non_executable_next_step():
     assert item.recommended_operation == "choose-operation"
     assert item.prefilled_params == {}
     assert "cannot" in item.cataloger_action
+
+
+def test_task_list_dependency_stays_blocked_with_import_or_select_guidance():
+    item = migration.adapt_instruction(
+        "TASK_LIST\tFOLIO|FOLIO All FC CORE\t"
+        "tasksfile-1a705cbaa3d242eca9bbd78f44eb4bbf.txt"
+    )
+
+    assert item.status == "unresolved"
+    assert item.operations == ()
+    assert item.recommended_operation == "choose-operation"
+    assert item.prefilled_params == {
+        "task_name": "FOLIO|FOLIO All FC CORE",
+        "task_entry": "tasksfile-1a705cbaa3d242eca9bbd78f44eb4bbf.txt",
+    }
+    assert "import" in item.cataloger_action.lower()
+    assert "select" in item.cataloger_action.lower()
 
 
 def test_plain_matched_delete_preserves_any_subfield_scope():

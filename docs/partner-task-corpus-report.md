@@ -26,8 +26,8 @@ PYTHONPATH=. python3 scripts/audit_external_task_corpus.py \
 | ---: | --- | --- |
 | 179 | `SUBFIELD_EDIT` option `102` | Imported Empty-Find Subfield Policy |
 | 78 | Unproven `REPLACE` signature | Structural Find and Replace |
-| 54 | `TASK_LIST` dependency | Choose operation and confirm parameters |
-| 42 | Unfiltered `COPY` | Copy Field and confirm the filter |
+| 54 | `TASK_LIST` dependency | Import or select the referenced task, then confirm operations |
+| 42 | Unfiltered `COPY` | Controlled Copy Fields: confirm occurrences and destination policy |
 | 39 | Unsupported Leader condition | Add Field with a reviewed condition |
 | 32 | `SUBFIELD_REMOVE` option `9` | Delete Subfield When Value Matches |
 | 21 | Unproven field-filter match | Delete Fields Matching a Field Filter |

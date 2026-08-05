@@ -819,22 +819,22 @@ This guide is generated from the checked-in deterministic operation registry.
 
 **Purpose:** Conditionally replace complete fields, retag fields, set indicators, or operate over a validated tag range.
 
-**When to use:** Use structural find and replace when that specific MARC change is required.
+**When to use:** Use structural find and replace when a whole-field or structural tag/indicator change is required.
 
 **Inputs:** `target_kind`, `tag`, `start_tag`, `end_tag`, `subfield`, `match_mode`, `find`, `pattern_pieces`, `action`, `replacement`, `replacement_pieces`, `replacement_ind1`, `replacement_ind2`, `replacement_subfields`, `match_ind1`, `match_ind2`, `match_subfields`, `destination_tag`, `new_ind1`, `new_ind2`, `occurrences`, `ignore_case`, `predicate`
 
-**Behavior:** Conditionally replace complete fields, retag fields, set indicators, or operate over a validated tag range.
+**Behavior:** Matched fields are changed in their existing source position. Retagging changes the tag but does not sort the record; add the explicit Sort Fields operation afterward when canonical tag order is required.
 
-**Preserves:** Unrelated fields and values remain unchanged.
+**Preserves:** Unrelated fields and values remain unchanged; retagging preserves the field's source position until an explicit sort.
 
-**Skip behavior:** Records that do not match the operation are unchanged.
+**Skip behavior:** Records and fields that do not match are unchanged.
 
-**Error behavior:** Invalid inputs are reported before the task is saved or run.
+**Error behavior:** Invalid targets, ranges, patterns, replacement pieces, or incompatible actions block saving or execution.
 
-**Before:** `245 10 $a Old title`
+**Before:** `956 40 $u https://example.org`
 
-**After:** `245 10 $a New title (or another explicitly selected structural change)`
+**After:** `856 40 $u https://example.org (same source position until sorted)`
 
-**Stored representation:** Structured `structural-find-replace` parameters validated by the task form.
+**Stored representation:** Structured target, match, action, occurrence, and replacement parameters validated by the task form.
 
-**Related:** none
+**Related:** `sort-fields`

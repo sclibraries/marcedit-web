@@ -1,0 +1,24 @@
+# Synchronous TASK-194 development/verification topology.
+#
+# The durable worker remains available in docker-compose.yml for its separate
+# infrastructure release. This file intentionally exposes only the web app so
+# local hotfix verification cannot accidentally start a queue worker.
+services:
+  marcedit-web:
+    extends:
+      file: docker-compose.yml
+      service: marcedit-web
+    volumes:
+      # Review-only source mounts keep the image free of institutional and
+      # repository metadata while allowing the mounted Python 3.9 suite to
+      # verify the exact hotfix source tree.
+      - ./docs:/app/docs:ro
+      - ./third_party:/app/third_party:ro
+      - ./.tickets:/app/.tickets:ro
+      - ./deploy:/app/deploy:ro
+      - ./scripts/capture_task_194_runtime_lineage.py:/app/scripts/capture_task_194_runtime_lineage.py:ro
+      - ./README.md:/app/README.md:ro
+      - ./Dockerfile:/app/Dockerfile:ro
+      - ./.dockerignore:/app/.dockerignore:ro
+      - ./docker-compose.hotfix.yml:/app/docker-compose.hotfix.yml:ro
+      - ./docker-compose.pull.yml:/app/docker-compose.pull.yml:ro

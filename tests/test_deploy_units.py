@@ -62,6 +62,8 @@ def test_hotfix_deployment_docs_require_lineage_and_dry_run():
         assert "--lineage" in text
         assert "--dry-run" in text
         assert "does not" in text and "durable worker" in text
+        assert "bash scripts/capture_task_194_runtime_lineage.py" not in text
+        assert "python scripts/capture_task_194_runtime_lineage.py" in text
 
 
 def test_job_file_backup_docs_load_production_env_before_resolving_root(tmp_path):
@@ -147,8 +149,10 @@ def test_deploy_requires_lineage_and_has_no_operations_worker_lifecycle():
 
     assert "--lineage" in script
     assert "--branch" in script
+    assert "--release-sha" in script
     assert "--backup-dir" in script
     assert "marcedit_web.ops.deploy" in script
+    assert 'pwd -P' in script
     assert "marcedit-web-worker" not in script
     assert "marcedit-web-private" not in script
     assert "git pull origin main" not in script

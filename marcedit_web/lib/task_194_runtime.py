@@ -64,7 +64,7 @@ def _property(stdout: str, name: str) -> str:
     return ""
 
 
-def _runtime_python(exec_start: str, root: Path) -> str:
+def _runtime_python(exec_start: str) -> str | None:
     match = re.search(r"(?:path|argv\[\])=([^ ;}]+)", exec_start)
     if match:
         executable = Path(match.group(1))
@@ -72,7 +72,7 @@ def _runtime_python(exec_start: str, root: Path) -> str:
             return str(executable.with_name("python"))
         if executable.name == "python" or executable.name.startswith("python3"):
             return str(executable)
-    return str(root / ".venv" / "bin" / "python")
+    return None
 
 
 def _database_path(unit_output: str, root: Path) -> str:
@@ -130,8 +130,8 @@ def capture_lineage(root: Path, *, runner: Runner = _run) -> dict[str, Any]:
     selected_unit = active_units[0] if len(active_units) == 1 else None
     selected_output = unit_details[selected_unit]["stdout"] if selected_unit else ""
     python = (
-        _runtime_python(_property(selected_output, "ExecStart"), root)
-        if selected_unit else None
+        _runtime_python(_property(selected_output, "ExecStart"))
+        if selected_unit and unit_details[selected_unit]["status"] == "ok" else None
     )
     database = _database_path(selected_output, root) if selected_unit else None
     dependency_commands: dict[str, Sequence[str]] = {
@@ -167,6 +167,11 @@ def capture_lineage(root: Path, *, runner: Runner = _run) -> dict[str, Any]:
         name for name, value in captured.items()
         if value["status"] != "ok"
     ]
+    capture_errors.extend(
+        f"unit:{name}"
+        for name, value in unit_details.items()
+        if value["status"] != "ok"
+    )
     if not selected_unit:
         capture_errors.append(
             "active_unit_ambiguous" if len(active_units) > 1 else "active_unit"

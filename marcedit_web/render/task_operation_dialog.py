@@ -418,7 +418,12 @@ def render_selected_operation(
                     params.get("reason") or "exact external behavior is unproven"
                 )
             )
-        suggested = suggested_operation_for_blocker(operation)
+            action = " ".join(
+                str(params.get("cataloger_action") or "").split()
+            )
+            if action:
+                st.info("Next: " + action)
+            suggested = suggested_operation_for_blocker(operation)
         if suggested is not None and st.button(
             "Open suggested operation",
             key=_key(state, "open_suggestion"),

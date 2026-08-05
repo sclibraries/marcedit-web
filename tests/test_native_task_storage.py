@@ -64,6 +64,176 @@ def test_native_update_requires_expected_revision():
     assert updated["description"] == "Changed"
 
 
+def test_shared_native_task_edit_preserves_owner_for_other_actor():
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="owner@example.edu",
+        definition={**definition, "name": "shared-native"},
+        visibility="shared",
+    )
+
+    updated = task_db.save_native_task(
+        owner="owner@example.edu",
+        actor="editor@example.edu",
+        definition={
+            **definition,
+            "name": "shared-native",
+            "description": "edited by collaborator",
+        },
+        visibility="shared",
+        expected_revision=created["revision"],
+    )
+
+    assert updated["owner_email"] == "owner@example.edu"
+    assert updated["visibility"] == "shared"
+    assert updated["revision"] == created["revision"] + 1
+    assert updated["description"] == "edited by collaborator"
+
+
+def test_shared_native_task_rename_is_owner_only():
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="owner@example.edu",
+        definition={**definition, "name": "shared-native"},
+        visibility="shared",
+    )
+
+    with pytest.raises(task_db.NativeTaskConflict, match="rename"):
+        task_db.save_native_task(
+            owner="owner@example.edu",
+            actor="editor@example.edu",
+            task_id=created["id"],
+            definition={**definition, "name": "renamed-by-collaborator"},
+            visibility="shared",
+            expected_revision=created["revision"],
+        )
+
+    unchanged = task_db.get_task("owner@example.edu", "shared-native")
+    assert unchanged["id"] == created["id"]
+    assert unchanged["revision"] == created["revision"]
+    assert task_db.get_task("owner@example.edu", "renamed-by-collaborator") is None
+
+
+def test_editor_operations_can_round_trip_to_native_definition():
+    definition = _definition("build-field.json")
+    operations = [
+        {
+            "kind": "build-field",
+            "params": {
+                "tag": "876",
+                "ind1": " ",
+                "ind2": " ",
+                "condition": "always",
+                "existing_field_action": "skip_if_identical",
+                "missing_control_action": "skip_field",
+                "structured_subfields": [
+                    [
+                        "a",
+                        [
+                            {"type": "text", "value": "B("},
+                            {"type": "control_field", "tag": "003"},
+                            {"type": "text", "value": ")"},
+                        ],
+                    ]
+                ],
+            },
+        }
+    ]
+
+    updated = native_tasks.definition_from_editor_operations(
+        definition,
+        name="rebuilt-native",
+        description="Edited native definition",
+        operations=operations,
+    )
+
+    assert updated["schema_version"] == 1
+    assert updated["name"] == "rebuilt-native"
+    assert updated["description"] == "Edited native definition"
+    assert updated["steps"] == [{
+        "id": "build-876",
+        "action": "build_field",
+        "target": {"tag": "876", "indicators": [" ", " "]},
+        "subfields": [{
+            "code": "a",
+            "segments": [
+                {"type": "text", "value": "B("},
+                {"type": "control_field", "tag": "003"},
+                {"type": "text", "value": ")"},
+            ],
+        }],
+        "missing_source": "skip_and_report",
+        "existing_target": "skip",
+    }]
+
+
+def test_editor_operations_reject_native_unsupported_policy():
+    definition = _definition("delete-and-sort.json")
+    with pytest.raises(native_tasks.NativeDefinitionError, match="native"):
+        native_tasks.definition_from_editor_operations(
+            definition,
+            name="unsupported-native",
+            description="",
+            operations=[{
+                "kind": "add-field",
+                "params": {
+                    "tag": "506",
+                    "ind1": "1",
+                    "ind2": " ",
+                    "subfields": [["a", "Access"]],
+                    "existing_field_action": "append",
+                },
+            }],
+        )
+
+
+def test_native_rename_uses_stable_task_id_and_revision():
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="owner@example.edu",
+        definition={**definition, "name": "native-before"},
+        visibility="shared",
+    )
+
+    renamed = task_db.save_native_task(
+        owner="owner@example.edu",
+        task_id=created["id"],
+        definition={**definition, "name": "native-after"},
+        visibility="shared",
+        expected_revision=created["revision"],
+    )
+
+    assert renamed["id"] == created["id"]
+    assert renamed["name"] == "native-after"
+    assert renamed["folder_id"] == created["folder_id"]
+    assert renamed["revision"] == created["revision"] + 1
+
+
+def test_native_rename_conflict_is_cataloger_facing_and_atomic():
+    definition = _definition("delete-and-sort.json")
+    first = task_db.save_native_task(
+        owner="owner@example.edu",
+        definition={**definition, "name": "native-first"},
+    )
+    second = task_db.save_native_task(
+        owner="owner@example.edu",
+        definition={**definition, "name": "native-second"},
+    )
+
+    with pytest.raises(task_db.NativeTaskConflict, match="already exists"):
+        task_db.save_native_task(
+            owner="owner@example.edu",
+            task_id=second["id"],
+            definition={**definition, "name": "native-first"},
+            expected_revision=second["revision"],
+        )
+
+    unchanged = task_db.get_task("owner@example.edu", "native-second")
+    assert unchanged["id"] == second["id"]
+    assert unchanged["revision"] == second["revision"]
+    assert task_db.get_task("owner@example.edu", "native-first")["id"] == first["id"]
+
+
 def test_native_update_rejects_stale_revision_without_mutation():
     definition = _definition("delete-and-sort.json")
     created = task_db.save_native_task(

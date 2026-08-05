@@ -20,16 +20,25 @@ Scope:
 Success Criteria:
 - The branch lineage and included ticket ranges are recorded from the exact
   production SHA; no durable queue or infrastructure commit enters the diff.
+- Deployment refuses a dirty captured checkout, branch drift, or commit drift
+  before pulling the approved release branch, then verifies the approved
+  release SHA immediately after the pull before any dependency or database
+  operation.
 - The production runtime-lineage capture resolves the exact unit and capability
   contract; checked-in future-topology assets are not treated as evidence of
   the installed host.
 - Saved tasks execute synchronously and no UI path can queue an operation.
+- The local hotfix Compose file starts only the web service; the durable worker
+  remains confined to the separate infrastructure Compose topology.
 - Production-schema upgrade, full Docker, authenticated browser, and rollback
   tests pass with every skip and known limitation reported.
 - The existing service and sudo capability are sufficient; no ITS action is
   required for this release.
 - The rewritten deploy script retains dependency installation and verifies the
   required Streamlit dialog contract before restarting the captured unit.
+- Gate-0 may record an upgradeable `>=1.37,<2` Streamlit install when it
+  exposes a recognizable `st.dialog` signature, but restart is forbidden
+  until the install reaches `>=1.50,<2` with `dismissible`.
 - A restorable SQLite backup passes integrity, schema, and table-row-count
   verification before migration begins.
 - The final branch, database backup procedure, release SHA, and rollback SHA
@@ -48,6 +57,16 @@ Implementation checkpoint:
   or branch-drifted checkouts, unsafe release inputs, incompatible Python or
   SQLite versions, and missing noninteractive sudo capability. It never starts
   a worker or invents a unit.
+- Gate 0 now fails closed when the selected unit does not report the captured
+  repository as its working directory.
+- Gate 0 now fails closed when `ExecStart` cannot identify the runtime Python;
+  it never probes a guessed repository venv. It also rejects malformed dialog
+  signature captures while allowing the documented pre-upgrade path.
+- The deploy sequence verifies the approved release SHA immediately after the
+  pull, and schema-v17 reports duplicate root folders before creating indexes.
+- The synchronous sandbox now treats unsupported host rlimits and relative
+  source-checkout `PYTHONPATH` entries as portability conditions rather than
+  launcher failures; Linux limits remain enforced where supported.
 - Release assembly and any non-dry deployment remain blocked until Gate 0
   identifies the live unit, paths, dependency versions, and database.
 - The current review worktree still contains Operations-era navigation and
@@ -57,8 +76,10 @@ Implementation checkpoint:
 - The review worktree now routes saved-task execution through a synchronous
   sandbox runner, hides the Operations page and notification bell, and guards
   the Operations script itself. Focused sync-only, navigation, partner, folder,
-  runtime, deployment, backup, and migration tests pass. This is still not a
-  production release: Gate 0 capture, exact-lineage assembly, Docker, and
-  authenticated browser verification remain outstanding.
+  runtime, deployment, backup, and migration tests pass. The authoritative
+  Python 3.9 hotfix Compose run now passes with 2,515 tests passed and 18
+  explicit environment/corpus skips. This is still not a production release:
+  Gate 0 capture, exact-lineage assembly, and authenticated browser
+  verification remain outstanding.
 
 Status: In-Progress

@@ -4,9 +4,10 @@ Date: 2026-08-04
 
 ## Current candidate
 
-The reviewed implementation is on branch `task-192-194-design` at commit
-`cd84ff3` (with the sync-only boundary introduced in `67cfb48`). The branch is
-clean. Its synchronous-only boundary is verified by
+The reviewed implementation is on branch `task-192-194-design`. The current
+working tree contains uncommitted remediation changes in this environment, so
+it is not a production release candidate yet. The sync-only boundary was
+introduced in `67cfb48` and is verified by
 the private-navigation, sidebar, direct Operations-page guard, and saved-task
 runner tests.
 
@@ -23,9 +24,13 @@ The current candidate contains the reviewed implementation and tests for:
 - TASK-191: partner corpus fixtures, provenance checks, and the checked-in
   corpus report.
 - TASK-192: bounded pymarc partner operations, explicit policies, batch
-  accounting, and fail-closed adapter dispatch.
+  accounting, fail-closed adapter dispatch, and guided blockers for the
+  remaining unproven partner ranges. Contiguous 856/945–949 adapters are not
+  yet accepted because their looping dependency is absent from the corpus.
 - TASK-193: additive folder schema, stable task rename/move, shared/private
-  authorization, search, and audited organization actions.
+  authorization, collaborative shared-task edits, fail-closed preservation of
+  shared hand-written bodies, search, audited organization actions, and a
+  fail-closed native-definition form round-trip for the supported v1 subset.
 - TASK-194: read-only lineage capture, verified backup, lineage-driven deploy
   preflight, and the synchronous hotfix boundary.
 
@@ -45,6 +50,8 @@ modules are retained as inert code or removed from the release diff.
 
 1. Capture and approve the live Gate-0 runtime lineage on the production host.
 2. Assemble and review the release branch from that exact SHA.
-3. Run Docker and authenticated browser verification under the captured
-   Python, SQLite, and Streamlit contract.
+3. Run authenticated browser verification under the captured Python, SQLite,
+   and Streamlit contract. The local Python 3.9 hotfix Compose suite is
+  complete: 2,515 passed, 18 explicit skips, 0 failed; production runtime
+   capture remains open.
 4. Obtain release and rollback SHA approval before push or deployment.

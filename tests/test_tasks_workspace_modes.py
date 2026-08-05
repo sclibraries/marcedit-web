@@ -21,6 +21,7 @@ import pytest
 class _FakeStreamlit:
     def __init__(self):
         self.session_state = {}
+        self.query_params = _FakeQueryParams()
         self.button_labels = []
         self.clicked_labels = set()
         self.radios: list[dict] = []
@@ -30,8 +31,15 @@ class _FakeStreamlit:
         self.successes = []
         self.code_blocks = []
         self.captions = []
+        self.markdowns = []
+        self.infos = []
         self.text_inputs = []
         self.rerun_called = False
+
+    def segmented_control(self, label, options, default=None, key=None, **kwargs):
+        value = self.session_state.get(key, default or options[0])
+        self.session_state[key] = value
+        return value
 
     def radio(self, label, options, horizontal=False, key=None,
               label_visibility=None, **kwargs):
@@ -72,7 +80,10 @@ class _FakeStreamlit:
         self.warnings.append(str(value))
 
     def markdown(self, value):
-        return None
+        self.markdowns.append(str(value))
+
+    def info(self, value):
+        self.infos.append(str(value))
 
     def error(self, value):
         self.errors.append(str(value))
@@ -106,6 +117,18 @@ class _FakeStreamlit:
         self.rerun_called = True
 
 
+class _FakeQueryParams(dict):
+    def get_all(self, key):
+        value = self.get(key)
+        if value is None:
+            return []
+        return list(value) if isinstance(value, list) else [value]
+
+    def from_dict(self, values):
+        self.clear()
+        self.update(values)
+
+
 def _tasks_render(monkeypatch, fake_st):
     sys.modules.setdefault(
         "streamlit_ace",
@@ -134,78 +157,116 @@ def _wire(monkeypatch, tasks_render, calls):
     )
     monkeypatch.setattr(tasks_render.tasks, "all_tasks", lambda: {})
     monkeypatch.setattr(tasks_render, "loaded_batch_status", lambda: None)
-    monkeypatch.setattr(
-        tasks_render, "_render_run_mode",
-        lambda registered, tasks_dir: calls.append("run"),
-    )
-    monkeypatch.setattr(
-        tasks_render, "_render_quick_ops_mode",
-        lambda: calls.append("quick"),
-    )
-    monkeypatch.setattr(
-        tasks_render, "_render_build_mode",
-        lambda *args: calls.append("build"),
-    )
+    monkeypatch.setattr(tasks_render, "_render_saved_tasks", lambda *a: calls.append("run"))
+    monkeypatch.setattr(tasks_render, "_render_quick_ops_mode", lambda: calls.append("quick"))
+    monkeypatch.setattr(tasks_render, "_render_task_library", lambda **k: calls.append("library"))
+    monkeypatch.setattr(tasks_render, "_render_create_workspace", lambda *a: calls.append("create"))
+    monkeypatch.setattr(tasks_render, "_render_import_workspace", lambda *a: calls.append("import"))
 
 
-def test_default_mode_is_run_and_only_run(monkeypatch):
+@pytest.mark.parametrize(
+    ("view", "expected"),
+    [("run", "run"), ("library", "library"), ("create", "create"), ("import", "import")],
+)
+def test_render_routes_exactly_one_primary_workspace(monkeypatch, view, expected):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
     calls: list[str] = []
     _wire(monkeypatch, tasks_render, calls)
-
+    fake_st.query_params.from_dict({"view": view})
     tasks_render.render()
-
-    assert calls == ["run"]
-    assert fake_st.session_state[tasks_render.K_MODE_WIDGET] == (
-        tasks_render.MODE_RUN
-    )
+    assert calls == [expected]
 
 
-def test_mode_selection_survives_rerun(monkeypatch):
+@pytest.mark.parametrize(("mode", "expected"), [("saved", "run"), ("quick", "quick")])
+def test_run_mode_routes_exactly_one_workflow(monkeypatch, mode, expected):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
     calls: list[str] = []
     _wire(monkeypatch, tasks_render, calls)
-    fake_st.session_state[tasks_render.K_MODE_WIDGET] = (
-        tasks_render.MODE_QUICK
-    )
-
+    fake_st.query_params.from_dict({"mode": mode})
     tasks_render.render()
+    assert calls == [expected]
 
-    assert calls == ["quick"]
 
-
-def test_force_mode_overrides_and_clears(monkeypatch):
+def test_external_query_reinitialization_preserves_create_and_import_drafts(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
-    calls: list[str] = []
-    _wire(monkeypatch, tasks_render, calls)
-    fake_st.session_state[tasks_render.K_MODE_WIDGET] = (
-        tasks_render.MODE_RUN
+    operations = [{"kind": "delete-tag", "params": {"tag": "029"}}]
+    import_result = {
+        "status": "partial",
+        "uploaded_filename": "partner.task",
+        "imported_task_names": [],
+        "entries": [],
+    }
+    fake_st.session_state[tasks_render.K_EDITOR_NAME] = "working"
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = copy.deepcopy(operations)
+    fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] = copy.deepcopy(import_result)
+    fake_st.session_state.pop(tasks_render.K_EDITOR_NAME_INPUT, None)
+    fake_st.session_state.pop(tasks_render.K_EDITOR_DESCRIPTION_INPUT, None)
+    fake_st.session_state.pop("tasks_import_uploader", None)
+
+    tasks_render._sync_workspace_from_url(
+        tasks_render.WorkspaceLocation(view="library"), set(), set()
     )
-    fake_st.session_state[tasks_render.K_FORCE_MODE] = (
-        tasks_render.MODE_BUILD
+    tasks_render._sync_workspace_from_url(
+        tasks_render.WorkspaceLocation(view="create"), set(), set()
     )
 
-    tasks_render.render()
-
-    assert calls == ["build"]
-    assert tasks_render.K_FORCE_MODE not in fake_st.session_state
-    assert fake_st.session_state[tasks_render.K_MODE_WIDGET] == (
-        tasks_render.MODE_BUILD
-    )
+    assert fake_st.session_state[tasks_render.K_EDITOR_NAME] == "working"
+    assert fake_st.session_state[tasks_render.K_EDITOR_OPS] == operations
+    assert fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] == import_result
 
 
-def test_open_editor_for_new_forces_build_mode(monkeypatch):
+def test_workspace_write_preserves_job_file_start_and_unknown_values(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.query_params.from_dict({"job_file": "22", "start": "jobs", "future": ["x", "y"]})
+    tasks_render._write_workspace_location(tasks_render.WorkspaceLocation(view="library"))
+    assert fake_st.query_params.get_all("future") == ["x", "y"]
+    assert fake_st.query_params["job_file"] == "22"
+    assert fake_st.query_params["start"] == "jobs"
 
-    tasks_render._open_editor_for_new()
 
-    assert fake_st.session_state[tasks_render.K_FORCE_MODE] == (
-        tasks_render.MODE_BUILD
+def test_external_url_cannot_open_inaccessible_task_or_folder(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    requested = tasks_render.WorkspaceLocation(
+        view="create", task_id=90, scope="shared", folder_id=80,
+        dialog="task-move", dialog_task_id=90,
     )
+    resolved = tasks_render._sync_workspace_from_url(requested, {12}, {21})
+    assert resolved.view == "library"
+    assert resolved.task_id is None
+    assert resolved.folder_id is None
+    assert resolved.dialog is None
+
+
+def test_open_shared_editor_retains_original_owner_for_collaborative_save(
+    monkeypatch,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "editor@smith.edu"
+    )
+
+    tasks_render._open_editor_for_existing_row(
+        {
+            "owner_email": "owner@smith.edu",
+            "name": "shared-task",
+            "description": "",
+            "body": "pass\n",
+            "visibility": "shared",
+        },
+        is_admin=False,
+    )
+
+    assert fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_OWNER] == (
+        "owner@smith.edu"
+    )
+    assert fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY] == "shared"
+    assert fake_st.session_state[tasks_render.K_EDITOR_PRESERVE_BODY] is True
 
 
 def test_editor_uses_keyed_widget_state_without_duplicate_defaults(
@@ -235,6 +296,71 @@ def test_editor_uses_keyed_widget_state_without_duplicate_defaults(
     assert fake_st.session_state[tasks_render.K_EDITOR_DESCRIPTION] == (
         "Imported Smith CORE Instance task"
     )
+
+
+def test_shared_collaborator_cannot_edit_task_name(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    tasks_render._open_editor_for_existing_row(
+        {
+            "owner_email": "owner@smith.edu",
+            "name": "shared-task",
+            "description": "",
+            "body": "pass\n",
+            "visibility": "shared",
+        },
+        is_admin=False,
+    )
+    monkeypatch.setattr(tasks_render, "_render_form_editor", lambda: None)
+
+    tasks_render._render_editor(Path("/unused"), is_admin=False)
+
+    assert fake_st.text_inputs[0]["key"] == tasks_render.K_EDITOR_NAME_INPUT
+    assert fake_st.text_inputs[0]["kwargs"]["disabled"] is True
+
+
+def test_selected_folder_keeps_all_visible_as_no_visibility_filter(monkeypatch):
+    """Selecting Unfiled must show its tasks when Visibility is All visible."""
+
+    from marcedit_web.lib import db, task_db, task_library
+
+    db.init_schema()
+    actor = "cat@smith.edu"
+    task_db.save_task(
+        owner=actor,
+        name="folder-task",
+        description="Task stored in Unfiled",
+        body="pass\n",
+    )
+    folder = next(
+        item
+        for item in task_library.list_folder_tree(actor)
+        if item["scope"] == "personal"
+    )
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state.update(
+        {
+            tasks_render.K_LIBRARY_FOLDER_ID: folder["id"],
+            tasks_render.K_LIBRARY_SCOPE: "personal",
+            tasks_render.K_LIBRARY_QUERY: "",
+            tasks_render.K_LIBRARY_VISIBILITY: "all",
+            tasks_render.K_LIBRARY_OWNER: "",
+            tasks_render.K_LIBRARY_KIND: "all",
+            tasks_render.K_LIBRARY_TAG: "",
+            tasks_render.K_LIBRARY_SUBFIELD: "",
+            tasks_render.K_LIBRARY_VALIDATION: "all",
+            tasks_render.K_LIBRARY_RECENT: "any",
+        }
+    )
+
+    tasks_render._render_task_library(
+        current_user_id=actor,
+        is_admin=False,
+    )
+
+    assert "1 task(s)" in fake_st.captions
+    assert any("folder-task" in value for value in fake_st.markdowns)
 
 
 def test_general_editor_navigation_preserves_pending_import_result(monkeypatch):
@@ -727,6 +853,192 @@ def _form_save_state(tasks_render, operations):
         tasks_render.K_EDITOR_VISIBILITY: "private",
         tasks_render.K_EDITOR_OPS: operations,
     }
+
+
+def test_shared_editor_save_passes_owner_and_collaborator_actor(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "editor@smith.edu"
+    )
+    original = {
+        "id": 7,
+        "owner_email": "owner@smith.edu",
+        "name": "shared-task",
+        "description": "",
+        "body": "pass\n",
+        "visibility": "shared",
+        "revision": 3,
+    }
+    monkeypatch.setattr(
+        tasks_render.task_db, "get_task",
+        lambda owner, name: original if (
+            owner == "owner@smith.edu" and name == "shared-task"
+        ) else None,
+    )
+    fake_st.session_state.update(_form_save_state(tasks_render, []))
+    fake_st.session_state[tasks_render.K_EDITOR_NAME_INPUT] = "shared-task"
+    fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_NAME] = "shared-task"
+    fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_OWNER] = (
+        "owner@smith.edu"
+    )
+    fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY] = "shared"
+
+    tasks_render._save_callback(tmp_path)
+
+    assert len(saved) == 1
+    assert saved[0]["owner"] == "owner@smith.edu"
+    assert saved[0]["actor"] == "editor@smith.edu"
+    assert saved[0]["task_id"] == 7
+    assert saved[0]["expected_revision"] == 3
+
+
+def test_non_admin_handwritten_shared_edit_preserves_body_and_imports(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "editor@smith.edu"
+    )
+    original = {
+        "id": 8,
+        "owner_email": "owner@smith.edu",
+        "name": "shared-handwritten",
+        "description": "legacy task",
+        "body": "def run(record):\n    record.leader = 'x'\n",
+        "extra_imports": "from pathlib import Path\n",
+        "visibility": "shared",
+        "revision": 2,
+    }
+    monkeypatch.setattr(
+        tasks_render.task_db, "get_task",
+        lambda owner, name: original if (
+            owner == "owner@smith.edu" and name == "shared-handwritten"
+        ) else None,
+    )
+    fake_st.session_state.update(_form_save_state(tasks_render, []))
+    fake_st.session_state[tasks_render.K_EDITOR_NAME_INPUT] = "shared-handwritten"
+    fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_NAME] = "shared-handwritten"
+    fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_OWNER] = (
+        "owner@smith.edu"
+    )
+    fake_st.session_state[tasks_render.K_EDITOR_PRESERVE_BODY] = True
+    fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY] = "shared"
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved[0]["body"] == original["body"]
+    assert saved[0]["extra_imports"] == ["from pathlib import Path"]
+
+
+def test_non_admin_handwritten_shared_edit_rejects_added_typed_operation(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    saved = []
+    _wire_successful_save(monkeypatch, tasks_render, saved)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "editor@smith.edu"
+    )
+    original = {
+        "id": 9,
+        "owner_email": "owner@smith.edu",
+        "name": "shared-handwritten",
+        "description": "legacy task",
+        "body": "def run(record):\n    record.leader = 'x'\n",
+        "extra_imports": "",
+        "visibility": "shared",
+        "revision": 2,
+    }
+    monkeypatch.setattr(
+        tasks_render.task_db, "get_task",
+        lambda owner, name: original if (
+            owner == "owner@smith.edu" and name == "shared-handwritten"
+        ) else None,
+    )
+    fake_st.session_state.update(_form_save_state(tasks_render, [{
+        "kind": "delete-tag",
+        "params": {"tag": "029"},
+    }]))
+    fake_st.session_state[tasks_render.K_EDITOR_NAME_INPUT] = "shared-handwritten"
+    fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_NAME] = "shared-handwritten"
+    fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_OWNER] = (
+        "owner@smith.edu"
+    )
+    fake_st.session_state[tasks_render.K_EDITOR_PRESERVE_BODY] = True
+    fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY] = "shared"
+
+    tasks_render._save_callback(tmp_path)
+
+    assert saved == []
+    assert "cannot combine typed operations" in fake_st.session_state[
+        tasks_render.K_SAVE_ERROR
+    ]
+
+
+def test_shared_native_editor_save_uses_native_storage_api(
+    monkeypatch, tmp_path
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    _wire_successful_save(monkeypatch, tasks_render, [])
+    native_saved = []
+    monkeypatch.setattr(
+        tasks_render.task_db,
+        "save_native_task",
+        lambda **kwargs: native_saved.append(kwargs),
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "editor@smith.edu"
+    )
+    original = {
+        "id": 10,
+        "owner_email": "owner@smith.edu",
+        "name": "shared-native",
+        "description": "native task",
+        "body": "# OP: delete-tag {\"tag\": \"029\"}\n",
+        "extra_imports": "",
+        "definition_json": (
+            '{"description":"native task","name":"shared-native",'
+            '"schema_version":1,"steps":[{"action":"delete_tag",'
+            '"id":"delete-029","target":{"tag":"029"}}]}'
+        ),
+        "visibility": "shared",
+        "revision": 4,
+    }
+    monkeypatch.setattr(
+        tasks_render.task_db, "get_task",
+        lambda owner, name: original if (
+            owner == "owner@smith.edu" and name == "shared-native"
+        ) else None,
+    )
+    fake_st.session_state.update(_form_save_state(tasks_render, [{
+        "kind": "delete-tag",
+        "params": {"tag": "029"},
+    }]))
+    fake_st.session_state[tasks_render.K_EDITOR_NAME_INPUT] = "shared-native"
+    fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_NAME] = "shared-native"
+    fake_st.session_state[tasks_render.K_EDITOR_ORIGINAL_OWNER] = (
+        "owner@smith.edu"
+    )
+    fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY] = "shared"
+
+    tasks_render._save_callback(tmp_path)
+
+    assert len(native_saved) == 1
+    assert native_saved[0]["owner"] == "owner@smith.edu"
+    assert native_saved[0]["actor"] == "editor@smith.edu"
+    assert native_saved[0]["task_id"] == 10
+    assert native_saved[0]["expected_revision"] == 4
+    assert native_saved[0]["definition"]["steps"][0]["action"] == "delete_tag"
 
 
 def _migration_blocker():
@@ -1658,6 +1970,31 @@ def test_retained_converted_draft_accepts_normalized_add_field_defaults(
         operation["params"]["missing_control_action"] == "skip_field"
         for operation in add_operations
     )
+
+
+def test_retained_migration_blocker_keeps_cataloger_action(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    conversion = tasks_render.marcedit_import.convert_tasksfile_text(
+        "UNKNOWN\texternal intent\n",
+        name="actionable",
+        description_fallback="",
+        source_entry="actionable.tasksfile",
+    )
+    entry = tasks_render._draft_result_entry(
+        conversion.draft,
+        entry_name="actionable.tasksfile",
+    )
+    normalized = tasks_render._normalize_marcedit_import_result({
+        "status": "partial",
+        "uploaded_filename": "actionable.tasksfile",
+        "imported_task_names": [],
+        "entries": [entry],
+        "rejection_category": "unresolved-instructions",
+    })
+
+    blocker = normalized["entries"][0]["draft"]["operations"][0]
+    assert blocker["params"]["cataloger_action"]
 
 
 @pytest.mark.parametrize(

@@ -221,6 +221,8 @@ def rename_folder(
             "SELECT * FROM task_folders WHERE id=?", (folder_id,)
         ).fetchone()
         _actor_can_manage_folder(folder, actor)
+        if folder["parent_id"] is None:
+            raise ValueError("root folders cannot be renamed")
         if int(folder["revision"]) != int(expected_revision):
             raise ValueError("folder changed; refresh before renaming it")
         try:
@@ -261,6 +263,8 @@ def move_folder(
             "SELECT * FROM task_folders WHERE id=?", (folder_id,)
         ).fetchone()
         _actor_can_manage_folder(folder, actor)
+        if folder["parent_id"] is None:
+            raise ValueError("root folders cannot be moved")
         parent = conn.execute(
             "SELECT * FROM task_folders WHERE id=?", (parent_id,)
         ).fetchone()

@@ -9,9 +9,9 @@ Visibility rules:
 
 * **private** — only the owner sees the task in their list and can
   edit / delete it.
-* **shared** — every user sees the task; only the owner can edit or
-  delete it. Other users see it as a read-only registered task they
-  can run against their batches.
+* **shared** — every user sees the task and may edit its content; only the
+  owner can share, unshare, or delete it. Other users retain the owner and
+  shared folder while their edits use optimistic revision checks.
 
 The Python task loader (``lib/tasks.load_user_tasks``) still needs
 ``.py`` files on disk because Python's importlib wants a file path.
@@ -80,6 +80,7 @@ def _folder_is_compatible(conn, folder_id: int | None, owner: str, visibility: s
 def save_task(
     *,
     owner: str,
+    actor: str | None = None,
     name: str,
     description: str,
     body: str,
@@ -92,8 +93,12 @@ def save_task(
 
     ``visibility`` must be ``'private'`` or ``'shared'`` (the DB
     constraint enforces this; callers should validate via the UI).
+    ``actor`` identifies the signed-in cataloger making an edit. A non-owner
+    actor may update only an existing shared task, may not rename it, and may
+    not change it back to private.
     ``extra_imports`` lines are joined by newline for storage.
     """
+    actor = owner if actor is None else actor
     if not editor.is_valid_slug(name):
         raise ValueError(
             f"invalid task name {name!r}: use lowercase letters, "
@@ -115,6 +120,12 @@ def save_task(
             ).fetchone()
             if existing is None:
                 raise ValueError("task not found or not owned by this user")
+            if actor != owner and (
+                existing["visibility"] != "shared" or visibility != "shared"
+            ):
+                raise ValueError("actor is not authorized to edit this task")
+            if actor != owner and name != existing["name"]:
+                raise ValueError("only the task owner can rename a shared task")
             if existing["definition_json"] is not None:
                 raise NativeTaskStorageError(
                     "native tasks must be saved through the native task API"
@@ -150,6 +161,9 @@ def save_task(
                 raise ValueError("task changed; refresh before saving it")
             return
 
+        if actor != owner:
+            raise ValueError("actor is not authorized to create or edit this task")
+
         existing = conn.execute(
             "SELECT created_at, definition_json, folder_id FROM tasks"
             " WHERE owner_email = ? AND name = ?",
@@ -159,13 +173,16 @@ def save_task(
             folder_id = task_library.ensure_task_folder(
                 conn, owner=owner, visibility=visibility
             )
-            conn.execute(
-                "INSERT INTO tasks"
-                "(owner_email, name, description, body, extra_imports,"
-                " visibility, folder_id, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (owner, name, description, body, extras, visibility, folder_id, now, now),
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO tasks"
+                    "(owner_email, name, description, body, extra_imports,"
+                    " visibility, folder_id, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (owner, name, description, body, extras, visibility, folder_id, now, now),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("a task with that name already exists") from exc
         else:
             if existing["definition_json"] is not None:
                 raise NativeTaskStorageError(
@@ -194,13 +211,24 @@ def save_task(
 def save_native_task(
     *,
     owner: str,
+    actor: str | None = None,
     definition: Mapping[str, Any],
     visibility: str = "private",
+    task_id: int | None = None,
     expected_revision: int | None = None,
 ) -> dict[str, Any]:
-    """Atomically store a validated native definition and compiled snapshots."""
+    """Atomically store a native definition and compiled snapshots.
+
+    A non-owner actor may update only an existing shared task, cannot rename
+    it, and cannot change its visibility to private.
+    """
+    actor = owner if actor is None else actor
     if visibility not in {"private", "shared"}:
         raise ValueError(f"invalid visibility {visibility!r}")
+    if task_id is not None and expected_revision is None:
+        raise NativeTaskConflict(
+            "expected revision is required when task_id is supplied"
+        )
 
     valid = native_tasks.validate_definition(definition)
     definition_json = native_tasks.canonical_definition_json(valid)
@@ -214,12 +242,25 @@ def save_native_task(
     with db.connect() as conn:
         from . import task_library
 
-        existing = conn.execute(
-            "SELECT revision, folder_id, visibility FROM tasks"
-            " WHERE owner_email = ? AND name = ?",
-            (owner, name),
-        ).fetchone()
+        if task_id is None:
+            existing = conn.execute(
+                "SELECT name, revision, folder_id, visibility, definition_json, id"
+                " FROM tasks WHERE owner_email = ? AND name = ?",
+                (owner, name),
+            ).fetchone()
+        else:
+            existing = conn.execute(
+                "SELECT name, revision, folder_id, visibility, definition_json, id"
+                " FROM tasks WHERE id = ? AND owner_email = ?",
+                (task_id, owner),
+            ).fetchone()
         if existing is None:
+            if actor != owner:
+                raise NativeTaskConflict(
+                    "actor is not authorized to create this task"
+                )
+            if task_id is not None:
+                raise NativeTaskConflict("task not found or not owned by this user")
             if expected_revision is not None:
                 raise NativeTaskConflict(
                     f"expected revision {expected_revision} for missing task"
@@ -253,50 +294,81 @@ def save_native_task(
                     "task changed before the expected revision could be saved"
                 ) from exc
         else:
+            if actor != owner and (
+                existing["visibility"] != "shared" or visibility != "shared"
+            ):
+                raise NativeTaskConflict(
+                    "actor is not authorized to edit this task"
+                )
+            if actor != owner and name != existing["name"]:
+                raise NativeTaskConflict(
+                    "only the task owner can rename a shared task"
+                )
             if expected_revision is None:
                 raise NativeTaskConflict(
                     "expected revision is required to update an existing task"
                 )
-            cursor = conn.execute(
-                "UPDATE tasks"
-                " SET description = ?,"
-                " body = ?,"
-                " extra_imports = ?,"
-                " definition_json = ?,"
-                " compiler_fingerprint = ?,"
-                " visibility = ?,"
-                " folder_id = ?,"
-                " revision = revision + 1,"
-                " updated_at = ?"
-                " WHERE owner_email = ? AND name = ? AND revision = ?",
-                (
-                    description,
-                    compiled.body,
-                    extra_imports,
-                    definition_json,
-                    compiler_fingerprint,
-                    visibility,
-                    (
-                        existing["folder_id"]
-                        if _folder_is_compatible(conn, existing["folder_id"], owner, visibility)
-                        else task_library.ensure_task_folder(
-                            conn, owner=owner, visibility=visibility
-                        )
-                    ),
-                    now,
-                    owner,
-                    name,
-                    expected_revision,
-                ),
+            update_where = (
+                " WHERE id = ? AND owner_email = ? AND revision = ?"
+                if task_id is not None
+                else " WHERE owner_email = ? AND name = ? AND revision = ?"
             )
+            identity = (
+                (existing["id"], owner, expected_revision)
+                if task_id is not None
+                else (owner, name, expected_revision)
+            )
+            try:
+                cursor = conn.execute(
+                    "UPDATE tasks"
+                    " SET name = ?, description = ?,"
+                    " body = ?,"
+                    " extra_imports = ?,"
+                    " definition_json = ?,"
+                    " compiler_fingerprint = ?,"
+                    " visibility = ?,"
+                    " folder_id = ?,"
+                    " revision = revision + 1,"
+                    " updated_at = ?"
+                    + update_where,
+                    (
+                        name,
+                        description,
+                        compiled.body,
+                        extra_imports,
+                        definition_json,
+                        compiler_fingerprint,
+                        visibility,
+                        (
+                            existing["folder_id"]
+                            if _folder_is_compatible(
+                                conn, existing["folder_id"], owner, visibility
+                            )
+                            else task_library.ensure_task_folder(
+                                conn, owner=owner, visibility=visibility
+                            )
+                        ),
+                        now,
+                        *identity,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise NativeTaskConflict(
+                    "a task with that name already exists"
+                ) from exc
             if cursor.rowcount != 1:
                 raise NativeTaskConflict(
                     f"task no longer has expected revision {expected_revision}"
                 )
-        row = conn.execute(
-            "SELECT * FROM tasks WHERE owner_email = ? AND name = ?",
-            (owner, name),
-        ).fetchone()
+        if task_id is None:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE owner_email = ? AND name = ?",
+                (owner, name),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE id = ?", (existing["id"],)
+            ).fetchone()
     return _row_to_dict(row)
 
 
@@ -414,12 +486,15 @@ def set_visibility(owner: str, name: str, visibility: str) -> None:
             folder_id = task_library.ensure_task_folder(
                 conn, owner=owner, visibility=visibility
             )
-        conn.execute(
-            "UPDATE tasks SET visibility = ?, folder_id = ?, revision = revision + 1,"
-            " updated_at = ?"
-            " WHERE owner_email = ? AND name = ?",
-            (visibility, folder_id, now, owner, name),
-        )
+        try:
+            conn.execute(
+                "UPDATE tasks SET visibility = ?, folder_id = ?, revision = revision + 1,"
+                " updated_at = ?"
+                " WHERE owner_email = ? AND name = ?",
+                (visibility, folder_id, now, owner, name),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("a shared task with that name already exists") from exc
 
 
 def list_visible_tasks(user: str) -> list[dict[str, Any]]:

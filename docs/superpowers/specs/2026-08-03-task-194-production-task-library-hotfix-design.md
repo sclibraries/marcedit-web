@@ -25,13 +25,16 @@ Gate 0 recaptures, without mutation:
 - venv Python, Streamlit, pymarc, and installed-package versions;
 - Python `sqlite3.sqlite_version` and any installed SQLite CLI version;
 - effective database path, file identity, permissions, size, and free space;
-- the runtime `st.dialog` signature, including `dismissible`.
+- the runtime `st.dialog` signature. Gate 0 requires a recognizable callable
+  signature; the post-upgrade deploy preflight separately requires
+  `dismissible` after Streamlit reaches `>=1.50,<2`.
 
 The captured active unit, working tree, venv, and database then become explicit
 constants in the reviewed implementation plan. If they differ from the prior
 evidence, the design is amended before planning. The release branch starts from
-the captured exact commit. Each ported ticket records its source commit range
-and conflict resolution.
+the captured exact commit, and deployment refuses a clean branch checkout whose
+`HEAD` no longer matches that captured SHA before it pulls the approved release.
+Each ported ticket records its source commit range and conflict resolution.
 
 TASK-190 through TASK-193 are necessary inputs, together with their already
 reviewed task-authoring dependencies. Completion on another branch is not
@@ -56,19 +59,30 @@ TASK-194 replaces its lifecycle explicitly. The production-hotfix script:
 
 1. validates service user, approved branch, clean tree, venv, and captured unit;
 2. pulls only that currently checked-out branch with `--ff-only`;
-3. records the pre-upgrade dependency inventory;
-4. upgrades pip and installs `requirements.txt` into the existing venv;
-5. verifies Streamlit is `>=1.50,<2` and `st.dialog` exposes `dismissible`;
-6. creates and verifies the SQLite backup;
-7. runs the application-schema migration/readiness preflight;
-8. restarts only the Gate-0 unit and waits for the existing HTTP healthcheck.
+3. verifies `HEAD` equals the explicitly approved release SHA;
+4. records the pre-upgrade dependency inventory;
+5. upgrades pip and installs `requirements.txt` into the existing venv;
+6. verifies Streamlit is `>=1.50,<2` and `st.dialog` exposes `dismissible`;
+7. creates and verifies the SQLite backup;
+8. runs the application-schema migration/readiness preflight;
+9. restarts only the Gate-0 unit and waits for the existing HTTP healthcheck.
 
 It removes worker stop/start, heartbeat expiry/readiness loops,
-`marcedit_web.ops.worker --check`, durable `marcedit_web.ops.health`, private
-unit assumptions, and `git pull origin main`. It never switches branches,
+`marcedit_web.ops.worker --check`, and private-unit assumptions. It retains one
+rollbacked SQLite readiness check (`marcedit_web.ops.health`) because that
+probe performs the additive application-schema initialization; it does not
+check or start a durable worker. It also removes `git pull origin main`. It
+never switches branches,
 detects a replacement unit, or manages an unavailable service. The one-time
 checkout of the approved release branch is a documented user-run Git action,
 not an ITS service change.
+
+Gate 0 may capture an older but upgradeable Streamlit version
+(`>=1.37,<2`). That capture is recorded as pre-upgrade evidence; the deploy
+script must finish the dependency install and pass the
+`>=1.50,<2`/`dismissible` preflight before it restarts the service. A missing
+or malformed `st.dialog` signature still blocks the capture. Gate 0 never
+guesses a runtime executable when `ExecStart` cannot be parsed.
 
 ## Database upgrade and rollback
 

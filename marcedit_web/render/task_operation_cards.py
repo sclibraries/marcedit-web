@@ -47,6 +47,7 @@ def _operation_summary(
         if not isinstance(params, Mapping):
             return "Imported instruction needs review."
         intent = str(params.get("intent") or "Review imported instruction")
+        action = " ".join(str(params.get("cataloger_action") or "").split())
         suggestion = params.get("suggestion")
         suggested_kind = (
             suggestion.get("operation_kind")
@@ -55,13 +56,17 @@ def _operation_summary(
         )
         suggested_entry = _palette_entry(str(suggested_kind or ""))
         if suggested_entry is not None:
-            return "{0}. Suggested operation: {1}.".format(
+            summary = "{0}. Suggested operation: {1}.".format(
                 intent,
                 suggested_entry["label"],
             )
-        return "{0}. Choose a structured operation to continue.".format(
-            intent
-        )
+        else:
+            summary = "{0}. Choose a structured operation to continue.".format(
+                intent
+            )
+        if action:
+            summary += " Next: " + action
+        return summary
     if entry is None:
         return "Unsupported operation; technical values are preserved."
     kind = str(operation.get("kind") or "")

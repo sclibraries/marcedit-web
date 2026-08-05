@@ -17,8 +17,10 @@ Scope:
   structured operation kinds outside both AI-draft schemas.
 
 Success Criteria:
-- Reviewed repeated 856 and 945-949 workflows convert to concise editable
-  operations with equivalent golden-record output.
+- Reviewed repeated 856 and 945-949 primitives with proven source evidence
+  convert to concise editable operations with equivalent golden-record output;
+  contiguous workflows whose TASK_LIST looping dependency is absent remain
+  explicit actionable blockers rather than accepted adapters.
 - Every newly accepted external signature has before/after evidence and a
   characterization test; repetition alone is never treated as proof.
 - Preview reports matched, created, replaced, and skipped counts and enforces a
@@ -35,9 +37,14 @@ Implementation checkpoint:
 - Partner operations now report preview counts and enforce per-record limits.
 - Task-wide expansion totals are aggregated across sandbox chunks before a
   candidate chunk is appended.
+- Unfiltered COPY and TASK_LIST blockers now prefill the closest controlled
+  operation or dependency identity and state the cataloger’s next action.
+- Every unresolved migration blocker now retains that next action in the
+  editable draft and displays it on the task card, dialog, and import review.
 - The partner corpus report is checked in at
   `docs/partner-task-corpus-report.md` and has a freshness test.
-- Focused Python tests pass; Docker sandbox execution remains unverified in
-  this environment because the Docker daemon is unavailable.
+- Focused Python tests pass. The Python 3.9 hotfix Compose suite passes with
+  2,515 tests passed and 18 explicit environment/corpus skips; no failures
+  were hidden by the review topology.
 
 Status: In-Progress

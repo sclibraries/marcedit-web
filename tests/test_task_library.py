@@ -1,5 +1,7 @@
 """TDD coverage for TASK-193 task-library persistence."""
 
+import sqlite3
+
 import pytest
 
 from marcedit_web.lib import db, task_db, task_library
@@ -51,6 +53,73 @@ def test_shared_task_name_index_is_partial_and_case_sensitive_to_visibility():
         sql[name] and "WHERE visibility = 'shared'" in sql[name]
         for name in matching
     )
+
+
+def test_unfiled_root_indexes_reject_duplicate_shared_and_personal_roots():
+    db.init_schema()
+    task_db.save_task(
+        owner="alice@example.edu",
+        name="root-index-check",
+        description="",
+        body="pass\n",
+    )
+
+    with db.connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO task_folders"
+                "(scope, owner_email, parent_id, name, created_by, created_at, updated_at)"
+                " VALUES ('shared', NULL, NULL, 'Unfiled', 'test', 'now', 'now')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO task_folders"
+                "(scope, owner_email, parent_id, name, created_by, created_at, updated_at)"
+                " VALUES ('personal', 'alice@example.edu', NULL, 'Unfiled', 'test', 'now', 'now')"
+            )
+
+
+def test_schema_v16_database_receives_root_indexes_on_upgrade():
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute("DROP INDEX ux_task_folders_shared_root_name")
+        conn.execute("DROP INDEX ux_task_folders_personal_root_name")
+        conn.execute("UPDATE _schema_version SET version = 16")
+
+    db.reset_for_tests()
+    db.init_schema()
+
+    with db.connect() as conn:
+        indexes = {
+            row["name"]
+            for row in conn.execute("PRAGMA index_list(task_folders)")
+        }
+    assert {
+        "ux_task_folders_shared_root_name",
+        "ux_task_folders_personal_root_name",
+    } <= indexes
+
+
+def test_schema_v17_reports_duplicate_roots_before_creating_indexes():
+    db.init_schema()
+    with db.connect() as conn:
+        conn.execute("DROP INDEX ux_task_folders_shared_root_name")
+        conn.execute("DROP INDEX ux_task_folders_personal_root_name")
+        conn.execute(
+            "INSERT INTO task_folders"
+            "(scope, owner_email, parent_id, name, created_by, created_at, updated_at)"
+            " VALUES ('shared', NULL, NULL, 'Unfiled', 'review', 'now', 'now')"
+        )
+        conn.execute("UPDATE _schema_version SET version = 16")
+
+    db.reset_for_tests()
+    with pytest.raises(RuntimeError, match="duplicate root folders"):
+        db.init_schema()
+
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT version FROM _schema_version"
+        ).fetchone()["version"] == 16
 
 
 def test_new_private_task_is_assigned_to_owner_unfiled_folder():
@@ -201,6 +270,51 @@ def test_folder_rename_and_move_preserve_revision_and_reject_cycles():
             parent_id=second["id"],
             expected_revision=second["revision"],
         )
+
+
+def test_root_folders_are_immutable_and_tasks_keep_one_unfiled_root():
+    db.init_schema()
+    actor = "alice@example.edu"
+    task_db.save_task(
+        owner=actor,
+        name="root-folder-seed",
+        description="",
+        body="pass\n",
+    )
+    root = next(
+        folder for folder in task_library.list_folder_tree(actor)
+        if folder["scope"] == "personal" and folder["parent_id"] is None
+    )
+
+    with pytest.raises(ValueError, match="root folders cannot be renamed"):
+        task_library.rename_folder(
+            actor,
+            folder_id=root["id"],
+            new_name="Archive",
+            expected_revision=root["revision"],
+        )
+    with pytest.raises(ValueError, match="root folders cannot be moved"):
+        task_library.move_folder(
+            actor,
+            folder_id=root["id"],
+            parent_id=root["id"],
+            expected_revision=root["revision"],
+        )
+
+    task_db.save_task(
+        owner=actor,
+        name="root-folder-followup",
+        description="",
+        body="pass\n",
+    )
+    rows = task_library.list_folder_tree(actor)
+    personal_roots = [
+        row for row in rows
+        if row["scope"] == "personal" and row["parent_id"] is None
+    ]
+    assert [(row["name"], row["id"]) for row in personal_roots] == [
+        ("Unfiled", root["id"])
+    ]
 
 
 def test_nonempty_folder_cannot_be_deleted_and_share_requires_compatible_folder():

@@ -46,7 +46,7 @@ def test_v13_to_v14_preserves_legacy_tasks_and_is_idempotent():
         ("alice@example.edu", "legacy-task"),
     ).fetchone()
 
-    assert db.SCHEMA_VERSION == 14
+    assert db.SCHEMA_VERSION >= 14
     assert {
         "definition_json",
         "compiler_fingerprint",

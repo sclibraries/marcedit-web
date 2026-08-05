@@ -165,14 +165,21 @@ your eppn (not "anonymous").
 After install, the task-library hotfix deploy is self-service from the dev
 team, but it must be driven by a fresh read-only runtime capture:
 
+The approved release branch must already be checked out at the captured
+production SHA before this capture. The `--branch` argument below is not a
+request to switch branches: it must equal the branch recorded by Gate 0. If
+the checkout is on another branch, complete the separately approved checkout
+first and recapture the lineage. The deploy script refuses branch drift.
+
 ```bash
 sudo -iu marcedit
 cd /var/www/html/marcedit-web
-bash scripts/capture_task_194_runtime_lineage.py \
+./.venv/bin/python scripts/capture_task_194_runtime_lineage.py \
   --output /tmp/marcedit-task-194-runtime-lineage.json
 bash scripts/deploy.sh \
   --lineage /tmp/marcedit-task-194-runtime-lineage.json \
   --branch release-hotfix \
+  --release-sha APPROVED_RELEASE_SHA \
   --backup-dir /var/backups/marcedit-web/$(date -u +%F) \
   --dry-run
 ```

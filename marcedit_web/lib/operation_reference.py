@@ -121,6 +121,17 @@ _SPECIAL: dict[str, dict[str, Any]] = {
         "stored_representation": "The operation kind encodes the safe promotion rule.",
         "related": ["rda-classify-material"],
     },
+    "structural-find-replace": {
+        "purpose": "Conditionally replace complete fields, retag fields, set indicators, or operate over a validated tag range.",
+        "when_to_use": "Use structural find and replace when a whole-field or structural tag/indicator change is required.",
+        "behavior": "Matched fields are changed in their existing source position. Retagging changes the tag but does not sort the record; add the explicit Sort Fields operation afterward when canonical tag order is required.",
+        "preserves": "Unrelated fields and values remain unchanged; retagging preserves the field's source position until an explicit sort.",
+        "skip_behavior": "Records and fields that do not match are unchanged.",
+        "error_behavior": "Invalid targets, ranges, patterns, replacement pieces, or incompatible actions block saving or execution.",
+        "example": {"before": "956 40 $u https://example.org", "after": "856 40 $u https://example.org (same source position until sorted)"},
+        "stored_representation": "Structured target, match, action, occurrence, and replacement parameters validated by the task form.",
+        "related": ["sort-fields"],
+    },
 }
 
 # Keep examples concrete even for older palette operations.  These are

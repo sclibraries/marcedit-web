@@ -55,6 +55,7 @@ _DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _BLOCKER_PARAMS = {
     "intent",
     "reason",
+    "cataloger_action",
     "suggestion",
     "instruction_sha256",
 }
@@ -175,6 +176,13 @@ def migration_blocker_errors(op: Mapping[str, Any]) -> tuple[str, ...]:
             errors.append("{0} must be text".format(name))
         elif not " ".join(value.split()):
             errors.append("{0} is required".format(name))
+
+    cataloger_action = params.get("cataloger_action")
+    if cataloger_action is not None:
+        if not isinstance(cataloger_action, str):
+            errors.append("cataloger_action must be text")
+        elif not " ".join(cataloger_action.split()):
+            errors.append("cataloger_action is required when present")
 
     suggestion = params.get("suggestion")
     if not isinstance(suggestion, Mapping):

@@ -38,7 +38,7 @@ from typing import Iterator
 
 logger = logging.getLogger("marcedit_web.db")
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 SHARED_OWNER_SENTINEL = "__shared__"
 
@@ -159,6 +159,8 @@ def init_schema() -> None:
                 _migrate_to_v15(conn)
             if current_version < 16:
                 _migrate_to_v16(conn)
+            if current_version < 17:
+                _migrate_to_v17(conn)
             from . import job_files
 
             job_files._migrate_uploads_to_job_files(conn)  # noqa: SLF001
@@ -610,16 +612,24 @@ def _migrate_to_v15(conn: sqlite3.Connection) -> None:
         )
 
     now = _utc_now_iso()
-    conn.execute(
-        "INSERT OR IGNORE INTO task_folders"
-        "(scope, owner_email, parent_id, name, created_by, created_at, updated_at)"
-        " VALUES ('shared', NULL, NULL, 'Unfiled', '__migration__', ?, ?)",
-        (now, now),
-    )
-    shared_root = conn.execute(
+    shared_root_row = conn.execute(
         "SELECT id FROM task_folders"
-        " WHERE scope='shared' AND parent_id IS NULL AND name='Unfiled'"
-    ).fetchone()["id"]
+        " WHERE scope='shared' AND owner_email IS NULL"
+        " AND parent_id IS NULL AND name='Unfiled'"
+    ).fetchone()
+    if shared_root_row is None:
+        conn.execute(
+            "INSERT INTO task_folders"
+            "(scope, owner_email, parent_id, name, created_by, created_at, updated_at)"
+            " VALUES ('shared', NULL, NULL, 'Unfiled', '__migration__', ?, ?)",
+            (now, now),
+        )
+        shared_root_row = conn.execute(
+            "SELECT id FROM task_folders"
+            " WHERE scope='shared' AND owner_email IS NULL"
+            " AND parent_id IS NULL AND name='Unfiled'"
+        ).fetchone()
+    shared_root = shared_root_row["id"]
 
     owners = [
         row["owner_email"]
@@ -686,6 +696,40 @@ def _migrate_to_v16(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_task_folders_personal_name"
         " ON task_folders(owner_email, parent_id, name COLLATE NOCASE)"
         " WHERE scope='personal'"
+    )
+
+
+def _migrate_to_v17(conn: sqlite3.Connection) -> None:
+    """Add root-folder uniqueness for databases already at schema v16."""
+    conflicts = list(
+        conn.execute(
+            "SELECT scope, owner_email, lower(name) AS folded_name,"
+            " COUNT(*) AS n FROM task_folders"
+            " WHERE parent_id IS NULL"
+            " GROUP BY scope, owner_email, lower(name)"
+            " HAVING COUNT(*) > 1"
+        )
+    )
+    if conflicts:
+        details = ", ".join(
+            "{0}/{1}/{2}".format(
+                row["scope"], row["owner_email"] or "shared", row["folded_name"]
+            )
+            for row in conflicts
+        )
+        raise RuntimeError(
+            "duplicate root folders must be resolved before root uniqueness "
+            "migration: " + details
+        )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_task_folders_shared_root_name"
+        " ON task_folders(name COLLATE NOCASE)"
+        " WHERE scope='shared' AND parent_id IS NULL"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_task_folders_personal_root_name"
+        " ON task_folders(owner_email, name COLLATE NOCASE)"
+        " WHERE scope='personal' AND parent_id IS NULL"
     )
 
 

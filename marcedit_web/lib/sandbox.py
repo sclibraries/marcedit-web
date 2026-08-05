@@ -321,14 +321,39 @@ def _cpu_limit_seconds(timeout: float) -> int:
 
 
 def _preexec_set_limits(cpu_seconds: int) -> None:
-    """Apply resource limits in the child between fork and exec."""
-    resource.setrlimit(
-        resource.RLIMIT_CPU,
-        (cpu_seconds, cpu_seconds + 1),
+    """Apply supported resource limits between fork and exec.
+
+    Some POSIX hosts expose a limit constant but reject setting it (macOS,
+    for example, may reject the address-space ceiling). A single unsupported
+    limit must not abort ``Popen``'s ``preexec_fn`` and hide the useful
+    limits that follow it; the child driver applies the same best-effort
+    policy after exec.
+    """
+    limits = (
+        (resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1)),
+        (resource.RLIMIT_AS, (_AS_BYTES, _AS_BYTES)),
+        (resource.RLIMIT_FSIZE, (_FSIZE_BYTES, _FSIZE_BYTES)),
+        (resource.RLIMIT_NPROC, (_NPROC, _NPROC)),
     )
-    resource.setrlimit(resource.RLIMIT_AS, (_AS_BYTES, _AS_BYTES))
-    resource.setrlimit(resource.RLIMIT_FSIZE, (_FSIZE_BYTES, _FSIZE_BYTES))
-    resource.setrlimit(resource.RLIMIT_NPROC, (_NPROC, _NPROC))
+    for resource_id, value in limits:
+        try:
+            resource.setrlimit(resource_id, value)
+        except (ValueError, resource.error):
+            continue
+
+
+def _resolved_pythonpath(value: str) -> str:
+    """Make parent-relative import paths survive the child cwd change."""
+    if not value:
+        return ""
+    base = Path.cwd()
+    entries = []
+    for entry in value.split(os.pathsep):
+        path = Path(entry or ".")
+        entries.append(
+            str(path if path.is_absolute() else (base / path).resolve())
+        )
+    return os.pathsep.join(entries)
 
 
 def run_tasks_subprocess(
@@ -434,7 +459,7 @@ def run_tasks_subprocess(
     # PATH (for the python invocation), HOME (some libraries demand
     # one). Nothing else.
     env = {
-        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
+        "PYTHONPATH": _resolved_pythonpath(os.environ.get("PYTHONPATH", "")),
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": str(workdir),
         "PYTHONDONTWRITEBYTECODE": "1",

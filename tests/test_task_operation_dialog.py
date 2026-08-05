@@ -181,6 +181,9 @@ def test_blocker_suggestion_is_prefilled_and_replaces_only_source_index():
 
 def test_blocker_card_summary_explains_intent_and_suggestion():
     blocker = _migration_blocker_with_add_suggestion()
+    blocker["params"]["cataloger_action"] = (
+        "Review the suggested values before keeping this operation."
+    )
     view = task_operation_cards.operation_card_view(
         blocker,
         position=1,
@@ -190,6 +193,7 @@ def test_blocker_card_summary_explains_intent_and_suggestion():
 
     assert "Add a MARC field" in view.summary
     assert "Add field" in view.summary
+    assert "Next: Review the suggested values" in view.summary
     assert view.validation_status == "Needs attention"
 
 

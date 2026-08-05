@@ -21,11 +21,13 @@ on every render. Save / delete / visibility writes go to SQL.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 import logging
 import re
 import shutil
+import sqlite3
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -48,6 +50,7 @@ from marcedit_web.lib import (
     guided_replace_preview,
     job_files,
     marcedit_import,
+    native_tasks,
     note_task_draft,
     operation_submission,
     quotas,
@@ -71,6 +74,12 @@ from marcedit_web.lib.batch_replace import BatchReplaceRequest
 from marcedit_web.lib.quick_batch import QuickBatchRequest
 from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.lib.task_builder import OPERATIONS_PALETTE, Operation
+from marcedit_web.lib.task_workspace_navigation import (
+    WorkspaceLocation,
+    canonical_tasks_query,
+    merge_tasks_query,
+    parse_tasks_query,
+)
 from marcedit_web.render.batch_status import loaded_batch_status
 from marcedit_web.render import task_authoring as task_authoring_render
 from marcedit_web.render import (
@@ -131,6 +140,8 @@ K_EDITOR_DESCRIPTION = "tasks_editor_description"
 K_EDITOR_BODY = "tasks_editor_body"
 K_EDITOR_OPS = "tasks_editor_ops"
 K_EDITOR_ORIGINAL_NAME = "tasks_editor_original_name"
+K_EDITOR_ORIGINAL_OWNER = "tasks_editor_original_owner"
+K_EDITOR_PRESERVE_BODY = "tasks_editor_preserve_body"
 K_EDITOR_VISIBILITY = "tasks_editor_visibility"
 K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
 K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
@@ -181,17 +192,18 @@ MAX_DRAFT_DISCLOSURES = len(external_task_migration.ADAPTER_REGISTRY)
 MAX_DRAFT_DISCLOSURE_CHARS = 1_024
 MAX_DRAFT_TASK_NAME_CHARS = 255
 
-# TASK-143: workspace mode switcher.
-MODE_RUN = "Run"
-MODE_QUICK = "Quick operations"
-MODE_BUILD = "Build & import"
-_MODES = (MODE_RUN, MODE_QUICK, MODE_BUILD)
-K_MODE_WIDGET = "tasks_workspace_mode"
-# Editor-open callbacks run after the radio has been instantiated, and
-# Streamlit forbids assigning a widget's own key mid-run. They write the
-# force key instead; the next run pops it into the widget key before the
-# radio renders.
-K_FORCE_MODE = "tasks_workspace_mode_force"
+# TASK-193: URL-owned workspace navigation. Draft and import values remain
+# non-widget session state so Streamlit may safely clean up disappearing
+# widgets during a query-only page transition.
+WORKSPACE_VIEWS = {
+    "run": "Run",
+    "library": "Library",
+    "create": "Create",
+    "import": "Import",
+}
+RUN_MODES = {"saved": "Saved tasks", "quick": "Quick changes"}
+K_WORKSPACE_LOCATION = "tasks_workspace_location"
+K_WORKSPACE_OWN_WRITE = "tasks_workspace_own_write"
 
 
 def _materialized_dir(user: str) -> Path:
@@ -226,6 +238,125 @@ def _refresh_tasks_for(user: str) -> Path:
     return target
 
 
+def _workspace_operation_kinds() -> set[str]:
+    return {
+        str(entry["kind"])
+        for entry in OPERATIONS_PALETTE
+        if isinstance(entry, dict) and entry.get("kind")
+    }
+
+
+def _complete_query_mapping() -> dict[str, object]:
+    """Return query parameters, retaining repeated non-Tasks values."""
+    if not hasattr(st, "query_params"):
+        return {}
+    query = st.query_params
+    keys = list(query.keys()) if hasattr(query, "keys") else []
+    result: dict[str, object] = {}
+    for key in keys:
+        if hasattr(query, "get_all"):
+            values = list(query.get_all(key))
+            if len(values) > 1:
+                result[key] = values
+            elif values:
+                result[key] = values[0]
+        else:
+            result[key] = query[key]
+    return result
+
+
+def _read_workspace_location() -> WorkspaceLocation:
+    return parse_tasks_query(
+        _complete_query_mapping(),
+        operation_kinds=_workspace_operation_kinds(),
+    )
+
+
+def _write_workspace_location(location: WorkspaceLocation) -> None:
+    merged = merge_tasks_query(_complete_query_mapping(), location)
+    st.session_state[K_WORKSPACE_LOCATION] = location
+    st.session_state[K_WORKSPACE_OWN_WRITE] = canonical_tasks_query(location)
+    if hasattr(st, "query_params"):
+        st.query_params.from_dict(merged)
+
+
+def _select_workspace(view: str, **changes: object) -> None:
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    _write_workspace_location(dataclasses.replace(current, view=view, **changes))
+    st.rerun()
+
+
+def _authorized_workspace_location(
+    location: WorkspaceLocation,
+    *,
+    visible_task_ids: set[int],
+    visible_folder_ids: set[int],
+) -> WorkspaceLocation:
+    target_ids = (location.task_id, location.folder_id)
+    dialog_target_ids = (location.dialog_task_id, location.dialog_folder_id)
+    if any(
+        target is not None and target not in visible
+        for target, visible in zip(
+            target_ids + dialog_target_ids,
+            (visible_task_ids, visible_folder_ids) * 2,
+        )
+    ):
+        return dataclasses.replace(
+            location,
+            view="library",
+            task_id=None,
+            folder_id=None,
+            dialog=None,
+            dialog_task_id=None,
+            dialog_folder_id=None,
+        )
+    return location
+
+
+def _apply_workspace_location(location: WorkspaceLocation) -> None:
+    st.session_state[K_WORKSPACE_LOCATION] = location
+    st.session_state[K_LIBRARY_SCOPE] = location.scope
+    st.session_state[K_LIBRARY_FOLDER_ID] = location.folder_id
+    filters = location.filters
+    st.session_state[K_LIBRARY_QUERY] = filters.query
+    st.session_state[K_LIBRARY_VISIBILITY] = filters.visibility
+    st.session_state[K_LIBRARY_OWNER] = filters.owner
+    st.session_state[K_LIBRARY_TAG] = filters.tag
+    st.session_state[K_LIBRARY_SUBFIELD] = filters.subfield
+    st.session_state[K_LIBRARY_KIND] = filters.operation
+    st.session_state[K_LIBRARY_VALIDATION] = filters.validation
+    st.session_state[K_LIBRARY_RECENT] = filters.updated
+    st.session_state[K_LIBRARY_DIALOG] = location.dialog
+    st.session_state[K_LIBRARY_DIALOG_TASK] = location.dialog_task_id
+    st.session_state[K_LIBRARY_DIALOG_FOLDER] = location.dialog_folder_id
+
+
+def _sync_workspace_from_url(
+    location: WorkspaceLocation,
+    visible_task_ids: set[int],
+    visible_folder_ids: set[int],
+) -> WorkspaceLocation:
+    """Apply URL navigation while retaining non-widget drafts."""
+    resolved = _authorized_workspace_location(
+        location,
+        visible_task_ids=visible_task_ids,
+        visible_folder_ids=visible_folder_ids,
+    )
+    own_write = st.session_state.get(K_WORKSPACE_OWN_WRITE)
+    if own_write == canonical_tasks_query(location):
+        st.session_state.pop(K_WORKSPACE_OWN_WRITE, None)
+        if own_write == canonical_tasks_query(resolved):
+            return resolved
+    elif (
+        K_WORKSPACE_LOCATION in st.session_state
+        and canonical_tasks_query(st.session_state[K_WORKSPACE_LOCATION])
+        == canonical_tasks_query(resolved)
+    ):
+        return resolved
+    _apply_workspace_location(resolved)
+    return resolved
+
+
 def render() -> None:
     """Render the Tasks tab into the current Streamlit container."""
     current_user_id = session.current_user_id()
@@ -240,6 +371,8 @@ def render() -> None:
     st.session_state.setdefault(K_EDITOR_BODY, "")
     st.session_state.setdefault(K_EDITOR_OPS, [])  # list[dict] — Operation.to_dict()
     st.session_state.setdefault(K_EDITOR_ORIGINAL_NAME, None)
+    st.session_state.setdefault(K_EDITOR_ORIGINAL_OWNER, None)
+    st.session_state.setdefault(K_EDITOR_PRESERVE_BODY, False)
     st.session_state.setdefault(K_EDITOR_VISIBILITY, "private")
     st.session_state.setdefault(K_LIBRARY_FOLDER_ID, None)
     st.session_state.setdefault(K_LIBRARY_SCOPE, "all")
@@ -260,6 +393,7 @@ def render() -> None:
     st.session_state.setdefault(K_MARCEDIT_IMPORT_RESULT, None)
     st.session_state.setdefault(K_MARCEDIT_IMPORT_ADOPTED_ENTRY, None)
     st.session_state.setdefault(K_SYNC_RUN_RESULT, None)
+    st.session_state.setdefault(K_WORKSPACE_LOCATION, WorkspaceLocation())
 
     # Load the materialized dir so the importer sees the user's tasks.
     tasks.load_user_tasks(tasks_dir, force_reload=False)
@@ -267,24 +401,60 @@ def render() -> None:
 
     loaded_batch_status()
 
-    forced = st.session_state.pop(K_FORCE_MODE, None)
-    if forced in _MODES:
-        st.session_state[K_MODE_WIDGET] = forced
-    mode = st.radio(
-        "Tasks workspace mode",
-        _MODES,
-        horizontal=True,
-        key=K_MODE_WIDGET,
+    try:
+        visible_tasks = task_db.list_visible_tasks(current_user_id)
+        visible_task_ids = {int(row["id"]) for row in visible_tasks}
+    except (KeyError, TypeError, ValueError, sqlite3.OperationalError):
+        visible_task_ids = set()
+    try:
+        visible_folders = task_library.list_folder_tree(current_user_id)
+        visible_folder_ids = {int(folder["id"]) for folder in visible_folders}
+    except (KeyError, TypeError, ValueError, sqlite3.OperationalError):
+        visible_folder_ids = set()
+    location = _sync_workspace_from_url(
+        _read_workspace_location(), visible_task_ids, visible_folder_ids
+    )
+    view_label = st.segmented_control(
+        "Tasks workspace",
+        options=list(WORKSPACE_VIEWS.values()),
+        default=WORKSPACE_VIEWS[location.view],
+        key="tasks_workspace_view",
         label_visibility="collapsed",
     )
+    selected_view = next(
+        (value for value, label in WORKSPACE_VIEWS.items() if label == view_label),
+        location.view,
+    )
+    if selected_view != location.view:
+        _select_workspace(selected_view)
+        return
     st.divider()
 
-    if mode == MODE_QUICK:
-        _render_quick_ops_mode()
-    elif mode == MODE_BUILD:
-        _render_build_mode(tasks_dir, is_admin, current_user_id, registered)
+    if location.view == "run":
+        mode_label = st.segmented_control(
+            "Run mode",
+            options=list(RUN_MODES.values()),
+            default=RUN_MODES[location.mode],
+            key="tasks_run_mode",
+            label_visibility="collapsed",
+        )
+        selected_mode = next(
+            (value for value, label in RUN_MODES.items() if label == mode_label),
+            location.mode,
+        )
+        if selected_mode != location.mode:
+            _select_workspace("run", mode=selected_mode)
+            return
+        if location.mode == "quick":
+            _render_quick_ops_mode()
+        else:
+            _render_saved_tasks(registered, tasks_dir)
+    elif location.view == "library":
+        _render_task_library(current_user_id=current_user_id, is_admin=is_admin)
+    elif location.view == "create":
+        _render_create_workspace(tasks_dir, is_admin, current_user_id, registered)
     else:
-        _render_run_mode(registered, tasks_dir)
+        _render_import_workspace(tasks_dir, current_user_id, registered)
 
 
 def _normalize_marcedit_import_result(value: object) -> dict:
@@ -319,6 +489,9 @@ def _normalize_marcedit_import_result(value: object) -> dict:
                 "status": status,
                 "source_line": str(item.get("source_line") or "")[:2048],
                 "reason": str(item.get("reason") or "")[:1024],
+                "cataloger_action": str(
+                    item.get("cataloger_action") or ""
+                )[:2048],
                 "choices": safe_text_list(item.get("choices"))[:8],
                 "instruction_sha256": str(
                     item.get("instruction_sha256") or ""
@@ -829,6 +1002,11 @@ def _render_marcedit_import_result() -> None:
                                     )
                     else:
                         st.caption(f"{status}: {reason}")
+                    cataloger_action = str(
+                        item.get("cataloger_action") or ""
+                    ).strip()
+                    if cataloger_action:
+                        st.info("Next: " + cataloger_action)
                     if source_line:
                         st.code(source_line, language="text")
                     if digest:
@@ -942,6 +1120,68 @@ def _render_run_mode(registered, tasks_dir: Path) -> None:
     else:
         _render_run_panel(registered, tasks_dir)
         _render_sync_run_result()
+
+
+def _render_saved_tasks(registered, tasks_dir: Path) -> None:
+    """Render the saved-task Run workflow."""
+    _render_run_mode(registered, tasks_dir)
+
+
+def _render_create_workspace(
+    tasks_dir: Path,
+    is_admin: bool,
+    current_user_id: str,
+    registered,
+) -> None:
+    """Render task authoring without importing or library navigation."""
+    st.subheader("Create task")
+    counts = task_db.count_visible(current_user_id)
+    own_tasks = task_db.list_own_tasks(current_user_id)
+    cnt_a, cnt_b, cnt_c, cnt_d = st.columns([2, 2, 2, 2])
+    cnt_a.metric("Yours", counts["own"])
+    cnt_b.metric("Shared with you", counts["shared_from_others"])
+    cnt_c.metric("Registered", len(registered))
+    if cnt_d.button("Clear my tasks", key="tasks_clear_mine"):
+        for task in own_tasks:
+            task_db.delete_task(current_user_id, task["name"])
+            tasks.TASK_REGISTRY.pop(task["name"], None)
+        st.session_state[K_EDITOR_OPEN] = False
+        _reset_operation_dialog_state()
+        st.rerun()
+    if not is_admin:
+        st.caption(
+            "ℹ️ You're using the **form builder** path. Raw-Python task "
+            "authoring is restricted to administrators."
+        )
+    if st.button("+ New task", key="tasks_new"):
+        _open_editor_for_new()
+        st.rerun()
+    _render_ai_draft_panel()
+    if st.session_state.get(K_AI_DRAFT_REVIEW) is not None:
+        _render_ai_draft_review()
+    if st.session_state[K_EDITOR_OPEN]:
+        _render_editor(tasks_dir, is_admin)
+
+
+def _render_import_workspace(
+    tasks_dir: Path,
+    current_user_id: str,
+    registered,
+) -> None:
+    """Render task-file import and its non-widget result/draft state."""
+    del current_user_id, registered
+    st.subheader("Import task")
+    upl = st.file_uploader(
+        "Import a MarcEdit .tasksfile (`.txt`) or `.task` archive",
+        type=["txt", "task"],
+        accept_multiple_files=False,
+        key="tasks_import_uploader",
+    )
+    if upl is not None and st.button("Import", key="tasks_import_btn"):
+        _do_marcedit_import(upl, tasks_dir)
+        st.rerun()
+    if st.session_state.get(K_MARCEDIT_IMPORT_RESULT) is not None:
+        _render_marcedit_import_result()
 
 
 def _render_quick_ops_mode() -> None:
@@ -1336,15 +1576,36 @@ def _render_task_library(
                     "folder-create", folder_id=selected_folder_id
                 )
             if action_cols[1].button(
-                "Rename", key="tasks_library_rename_folder"
+                "Rename",
+                key="tasks_library_rename_folder",
+                disabled=selected_folder["parent_id"] is None,
+                help=(
+                    "The Unfiled root is a stable library anchor."
+                    if selected_folder["parent_id"] is None
+                    else None
+                ),
             ):
                 _open_library_dialog("folder-rename", folder_id=selected_folder_id)
             if action_cols[2].button(
-                "Move", key="tasks_library_move_folder"
+                "Move",
+                key="tasks_library_move_folder",
+                disabled=selected_folder["parent_id"] is None,
+                help=(
+                    "The Unfiled root is a stable library anchor."
+                    if selected_folder["parent_id"] is None
+                    else None
+                ),
             ) and selected_folder["parent_id"] is not None:
                 _open_library_dialog("folder-move", folder_id=selected_folder_id)
             if action_cols[3].button(
-                "Delete", key="tasks_library_delete_folder"
+                "Delete",
+                key="tasks_library_delete_folder",
+                disabled=selected_folder["parent_id"] is None,
+                help=(
+                    "The Unfiled root is a stable library anchor."
+                    if selected_folder["parent_id"] is None
+                    else None
+                ),
             ):
                 _open_library_dialog("folder-delete", folder_id=selected_folder_id)
 
@@ -1406,7 +1667,9 @@ def _render_task_library(
         )
         visibility = st.session_state[K_LIBRARY_VISIBILITY]
         folder_scope = st.session_state.get(K_LIBRARY_SCOPE, "all")
-        if visibility == "all" and selected_folder_id is None:
+        if visibility == "all":
+            visibility = None
+        if visibility is None and selected_folder_id is None:
             visibility = {
                 "personal": "private",
                 "shared": "shared",
@@ -1444,6 +1707,7 @@ def _render_task_library(
             if row is None:
                 continue
             owned = result["owner_email"] == current_user_id
+            editable = owned or result["visibility"] == "shared"
             result_cols = st.columns([3, 3, 2, 1, 1, 1, 1])
             result_cols[0].markdown(
                 f"**`{result['name']}`**" +
@@ -1453,11 +1717,20 @@ def _render_task_library(
             result_cols[2].caption(
                 f"{result['folder_path'] or 'Unfiled'} · {result['operation_count']} operation(s)"
             )
-            if owned:
-                if result_cols[3].button("Edit", key=f"tasks_library_edit_{result['id']}"):
+            if editable:
+                if result_cols[3].button(
+                    "Edit",
+                    key=f"tasks_library_edit_{result['id']}",
+                    help=(
+                        "Edit shared content without changing its owner; "
+                        "the edit is audited."
+                        if not owned
+                        else None
+                    ),
+                ):
                     _open_editor_for_existing_row(row, is_admin)
                     st.rerun()
-                if result_cols[4].button(
+                if owned and result_cols[4].button(
                     "Share" if result["visibility"] == "private" else "Unshare",
                     key=f"tasks_library_share_{result['id']}",
                 ):
@@ -1566,7 +1839,8 @@ def _reset_operation_dialog_state() -> None:
 
 def _open_editor_for_new() -> None:
     """Open the editor for a brand-new task in form mode."""
-    st.session_state[K_FORCE_MODE] = MODE_BUILD
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    _write_workspace_location(dataclasses.replace(current, view="create"))
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_MODE] = "form"
     st.session_state[K_EDITOR_NAME] = ""
@@ -1582,6 +1856,8 @@ def _open_editor_for_new() -> None:
     )
     st.session_state[K_EDITOR_OPS] = []
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
+    st.session_state[K_EDITOR_ORIGINAL_OWNER] = None
+    st.session_state[K_EDITOR_PRESERVE_BODY] = False
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
@@ -1604,13 +1880,17 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     body via ``task_builder.parse_ops_from_source`` (same logic as
     the legacy file-based path).
     """
-    st.session_state[K_FORCE_MODE] = MODE_BUILD
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    _write_workspace_location(dataclasses.replace(current, view="create"))
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_NAME] = row["name"]
     st.session_state[K_EDITOR_DESCRIPTION] = row["description"]
     _sync_editor_widget_inputs(row["name"], row["description"])
     st.session_state[K_EDITOR_BODY] = row["body"]
     st.session_state[K_EDITOR_ORIGINAL_NAME] = row["name"]
+    st.session_state[K_EDITOR_ORIGINAL_OWNER] = (
+        row.get("owner_email") or session.current_user_id()
+    )
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
@@ -1626,6 +1906,7 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     parse_result = task_builder.parse_ops_from_source(row["body"])
     if parse_result["form_editable"]:
         st.session_state[K_EDITOR_MODE] = "form"
+        st.session_state[K_EDITOR_PRESERVE_BODY] = False
         parsed_ops = [
             op.to_dict() for op in parse_result["ops"]
         ]
@@ -1635,6 +1916,7 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     else:
         # Hand-written: code mode if admin, else read-only-style notice.
         st.session_state[K_EDITOR_MODE] = "code" if is_admin else "form"
+        st.session_state[K_EDITOR_PRESERVE_BODY] = not is_admin
         st.session_state[K_EDITOR_OPS] = []
 
 
@@ -2058,7 +2340,8 @@ def _ai_draft_operation_detail(op: ai_task_draft.DraftOperation) -> str:
 
 
 def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
-    st.session_state[K_FORCE_MODE] = MODE_BUILD
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    _write_workspace_location(dataclasses.replace(current, view="create"))
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_MODE] = "form"
     st.session_state[K_EDITOR_NAME] = review.task_name
@@ -2071,6 +2354,8 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
         task_authoring.normalize_operations_for_editor(draft_ops)
     )
     st.session_state[K_EDITOR_ORIGINAL_NAME] = None
+    st.session_state[K_EDITOR_ORIGINAL_OWNER] = None
+    st.session_state[K_EDITOR_PRESERVE_BODY] = False
     st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = True
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = review
@@ -2216,10 +2501,19 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
         K_EDITOR_DESCRIPTION_INPUT,
         st.session_state[K_EDITOR_DESCRIPTION],
     )
+    collaborator_edit = bool(
+        is_edit
+        and st.session_state.get(K_EDITOR_ORIGINAL_OWNER)
+        and st.session_state[K_EDITOR_ORIGINAL_OWNER] != session.current_user_id()
+    )
     st.session_state[K_EDITOR_NAME] = st.text_input(
         "Task name (lowercase, digits, hyphens)",
-        help="Used in the @task(...) decorator. Must be unique.",
+        help=(
+            "Used in the @task(...) decorator. Must be unique."
+            + (" Only the owner can rename a shared task." if collaborator_edit else "")
+        ),
         key=K_EDITOR_NAME_INPUT,
+        disabled=collaborator_edit,
     )
     st.session_state[K_EDITOR_DESCRIPTION] = st.text_input(
         "Description (one sentence)",
@@ -2397,6 +2691,12 @@ def _render_form_editor() -> None:
             "preserve the existing code unchanged; to edit it ask an "
             "admin or use a typed op above."
         )
+    if st.session_state.get(K_EDITOR_PRESERVE_BODY, False):
+        st.warning(
+            "This task uses hand-written code that cannot be shown in the "
+            "form editor. Save preserves the existing code; ask an admin to "
+            "edit the code or recreate it with typed operations."
+        )
 
     task_operation_cards.render_operation_cards(
         operations,
@@ -2510,7 +2810,11 @@ def _save_callback(tasks_dir: Path) -> None:
     mode = st.session_state.get(K_EDITOR_MODE, "form")
     visibility = st.session_state.get(K_EDITOR_VISIBILITY, "private")
     user = session.current_user_id()
+    original_owner = (
+        st.session_state.get(K_EDITOR_ORIGINAL_OWNER) or user
+    )
     needs_migration_review = False
+    native_definition = None
 
     if _ai_draft_save_blocked_for_new_task():
         st.session_state[K_SAVE_ERROR] = (
@@ -2521,7 +2825,7 @@ def _save_callback(tasks_dir: Path) -> None:
 
     original_row = None
     if original:
-        original_row = task_db.get_task(user, original)
+        original_row = task_db.get_task(original_owner, original)
         if original_row is None:
             st.session_state[K_SAVE_ERROR] = (
                 "This task changed or was removed. Refresh the task list and "
@@ -2530,7 +2834,20 @@ def _save_callback(tasks_dir: Path) -> None:
             return
 
     try:
-        if mode == "form":
+        if mode == "form" and st.session_state.get(K_EDITOR_PRESERVE_BODY, False):
+            raw_ops = st.session_state.get(K_EDITOR_OPS, [])
+            if raw_ops:
+                raise ValueError(
+                    "This hand-written task cannot combine typed operations "
+                    "with preserved code; ask an admin to recreate it first."
+                )
+            body = original_row["body"] if original_row else ""
+            extra_imports = [
+                line
+                for line in (original_row.get("extra_imports") or "").split("\n")
+                if line
+            ] or None
+        elif mode == "form":
             raw_ops = st.session_state.get(K_EDITOR_OPS, [])
             validation_errors = task_authoring.validate_operations(raw_ops)
             if validation_errors:
@@ -2550,8 +2867,27 @@ def _save_callback(tasks_dir: Path) -> None:
             body = rendered["body"]
             extra_imports = rendered["imports"]
         else:
+            if original_row and original_row.get("definition_json") is not None:
+                raise ValueError(
+                    "Native task definitions must be edited in form view."
+                )
             body = st.session_state.get(K_EDITOR_BODY, "")
             extra_imports = None
+
+        if (
+            original_row
+            and original_row.get("definition_json") is not None
+            and mode == "form"
+        ):
+            native_definition = native_tasks.definition_from_editor_operations(
+                native_tasks.load_definition_json(original_row["definition_json"]),
+                name=name,
+                description=description,
+                operations=[
+                    task_authoring.normalize_operation(op)
+                    for op in st.session_state.get(K_EDITOR_OPS, [])
+                ],
+            )
 
         # Pre-flight: compile the to-be-saved file before we hit SQL, so
         # a syntax error keeps the existing row intact.
@@ -2567,19 +2903,30 @@ def _save_callback(tasks_dir: Path) -> None:
         return
 
     try:
-        task_db.save_task(
-            owner=user,
-            name=name,
-            description=description,
-            body=body,
-            extra_imports=extra_imports,
-            visibility=visibility,
-            task_id=original_row["id"] if original_row else None,
-            expected_revision=(
-                original_row["revision"] if original_row else None
-            ),
-        )
-    except ValueError as exc:
+        if native_definition is not None:
+            task_db.save_native_task(
+                owner=original_owner,
+                actor=user,
+                definition=native_definition,
+                visibility=visibility,
+                task_id=original_row["id"],
+                expected_revision=original_row["revision"],
+            )
+        else:
+            task_db.save_task(
+                owner=original_owner if original_row else user,
+                actor=user,
+                name=name,
+                description=description,
+                body=body,
+                extra_imports=extra_imports,
+                visibility=visibility,
+                task_id=original_row["id"] if original_row else None,
+                expected_revision=(
+                    original_row["revision"] if original_row else None
+                ),
+            )
+    except (ValueError, task_db.NativeTaskStorageError) as exc:
         st.session_state[K_SAVE_ERROR] = str(exc)
         return
 
@@ -2590,6 +2937,8 @@ def _save_callback(tasks_dir: Path) -> None:
     task_db.materialize_to_dir(user, tasks_dir)
     tasks.load_user_tasks(tasks_dir, force_reload=True)
     st.session_state[K_EDITOR_OPEN] = False
+    st.session_state[K_EDITOR_ORIGINAL_OWNER] = None
+    st.session_state[K_EDITOR_PRESERVE_BODY] = False
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_REVIEW] = None
@@ -2610,6 +2959,12 @@ def _save_callback(tasks_dir: Path) -> None:
         visibility=visibility,
         is_admin=is_admin,
         body_bytes=len(body or ""),
+        owner_email=original_owner if original_row else user,
+        collaborative_edit=bool(
+            original_row
+            and original_row["owner_email"] != user
+            and original_row["visibility"] == "shared"
+        ),
     )
     if mode == "code" and is_admin:
         # Admin Code-view save is the highest-trust path — surfaces a
@@ -2625,6 +2980,8 @@ def _save_callback(tasks_dir: Path) -> None:
 def _cancel_callback() -> None:
     """on_click callback for Cancel. Mirrors the on_click pattern of Save."""
     st.session_state[K_EDITOR_OPEN] = False
+    st.session_state[K_EDITOR_ORIGINAL_OWNER] = None
+    st.session_state[K_EDITOR_PRESERVE_BODY] = False
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
     _reset_operation_dialog_state()

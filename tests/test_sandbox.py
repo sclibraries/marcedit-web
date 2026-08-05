@@ -687,6 +687,49 @@ def test_default_processing_limit_reaches_parent_and_child(
     ) in resource_limits
 
 
+def test_preexec_ignores_platform_unsupported_resource_limit(monkeypatch):
+    """A host-only rlimit limitation must not prevent sandbox startup."""
+    attempted = []
+
+    def setrlimit(resource_id, value):
+        attempted.append(resource_id)
+        if resource_id == sandbox.resource.RLIMIT_AS:
+            raise ValueError("address-space limits are unsupported here")
+
+    monkeypatch.setattr(sandbox.resource, "setrlimit", setrlimit)
+
+    sandbox._preexec_set_limits(3)
+
+    assert attempted == [
+        sandbox.resource.RLIMIT_CPU,
+        sandbox.resource.RLIMIT_AS,
+        sandbox.resource.RLIMIT_FSIZE,
+        sandbox.resource.RLIMIT_NPROC,
+    ]
+
+
+def test_child_pythonpath_resolves_relative_entries(
+    one_record_bytes, monkeypatch,
+):
+    """Changing the child cwd must not invalidate a source checkout path."""
+    captured = {}
+    process = _CompletedPopen(already_completed=True)
+
+    def fake_popen(_cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return process
+
+    monkeypatch.setenv("PYTHONPATH", ".")
+    monkeypatch.setattr(sandbox.subprocess, "Popen", fake_popen)
+
+    run_tasks_subprocess(
+        [TaskSpec(name="noop", body="pass")],
+        one_record_bytes,
+    )
+
+    assert captured["env"]["PYTHONPATH"] == str(Path.cwd())
+
+
 def test_fractional_timeout_uses_one_cpu_second(
     one_record_bytes, monkeypatch,
 ):

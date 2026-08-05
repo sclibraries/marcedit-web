@@ -12,8 +12,9 @@ content.
 `task_folders` stores a stable ID, scope (`personal` or `shared`), personal
 owner when applicable, parent ID, display name, revision, creator, and
 timestamps. Tasks receive a nullable folder ID during schema transition and a
-required valid folder assignment after migration. Root nodes are conceptual;
-catalogers create at most three levels beneath My Tasks or Shared Tasks.
+required valid folder assignment after migration. Root nodes are conceptual and
+immutable `Unfiled` anchors; catalogers cannot rename, move, or delete them.
+Catalogers create at most three levels beneath My Tasks or Shared Tasks.
 
 Folder names are unique case-insensitively within one parent and scope. A
 personal folder can contain only its owner's tasks. A shared folder can contain
@@ -35,6 +36,10 @@ the live Python SQLite library supports partial indexes before planning or
 deployment; otherwise the release is blocked rather than weakened to an
 application-only uniqueness check.
 
+Root folders use dedicated partial unique indexes (`parent_id IS NULL`) in
+addition to the sibling indexes. SQLite treats `NULL` values as distinct, so a
+single parent/name index cannot protect the shared or personal `Unfiled` root.
+
 ## Authorization
 
 Every signed-in cataloger can create, rename, move, and organize shared
@@ -49,9 +54,12 @@ revision and updated time, and records the organizer separately in audit. A
 concurrent editor holding the previous revision must refresh before saving;
 the move never transfers ownership or grants personal-folder access.
 
-Personal folders are manageable only by their owner. Existing task editing and
-deletion authorization remains unchanged. Search and counts always begin with
-the existing visible-task authorization filter.
+Personal folders are manageable only by their owner. Shared task content may
+be edited by any signed-in cataloger who can see the task; owner identity,
+shared visibility, and folder remain unchanged. Sharing, unsharing, and
+deletion remain owner-only. Shared edits use optimistic revisions and record
+both actor and owner in the audit log. Search and counts always begin with the
+existing visible-task authorization filter.
 
 ## Migration and visibility transitions
 
@@ -103,6 +111,11 @@ Search may derive a normalized document from the canonical native definition
 and parsed legacy operations, cached by task revision. It must not require a
 production SQLite extension. A task that cannot be structurally parsed remains
 searchable by safe metadata without exposing raw executable source.
+
+Native-definition rows opened in the form editor are saved through the native
+storage API, not the legacy body API. The inverse mapping is limited to the
+native v1 actions (delete tag, sort fields, and structured build field); any
+other form operation fails closed before the row is changed.
 
 ## Failure handling and testing
 

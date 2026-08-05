@@ -5,7 +5,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from jsonschema import Draft202012Validator
 
@@ -120,6 +120,154 @@ def _operation_for_step(step: Mapping[str, Any]) -> task_builder.Operation:
             },
         )
     raise NativeDefinitionError(f"unsupported native action {action!r}")
+
+
+def definition_from_editor_operations(
+    base_definition: Mapping[str, Any],
+    *,
+    name: str,
+    description: str,
+    operations: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Convert the native form-editor subset back to canonical JSON.
+
+    Native v1 intentionally supports only delete-tag, sort-fields, and the
+    structured build-field operation.  The form editor has a larger palette;
+    refusing unsupported kinds here prevents a native row from silently
+    degrading into a legacy executable snapshot.
+    """
+    base = validate_definition(base_definition)
+    previous_steps = list(base["steps"])
+    steps: list[dict[str, Any]] = []
+
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, Mapping):
+            raise NativeDefinitionError(
+                "native form operation must be an object"
+            )
+        kind = operation.get("kind")
+        params = operation.get("params") or {}
+        if not isinstance(params, Mapping):
+            raise NativeDefinitionError(
+                f"native operation {index + 1} parameters must be an object"
+            )
+        step_id = (
+            previous_steps[index].get("id")
+            if index < len(previous_steps)
+            else f"step-{index + 1}"
+        )
+        if kind == "delete-tag":
+            if set(params) != {"tag"}:
+                raise NativeDefinitionError(
+                    "native delete-tag operations only support the tag parameter"
+                )
+            steps.append({
+                "id": step_id,
+                "action": "delete_tag",
+                "target": {"tag": params.get("tag")},
+            })
+            continue
+        if kind == "sort-fields":
+            if params:
+                raise NativeDefinitionError(
+                    "native sort-fields operations do not accept parameters"
+                )
+            steps.append({"id": step_id, "action": "sort_fields"})
+            continue
+        if kind != "build-field":
+            raise NativeDefinitionError(
+                f"native form cannot store operation kind {kind!r}"
+            )
+        if params.get("condition", "always") != "always":
+            raise NativeDefinitionError(
+                "native build-field operations require the always condition"
+            )
+        existing_action = params.get("existing_field_action", "append")
+        if existing_action not in {"append", "skip_if_identical"}:
+            raise NativeDefinitionError(
+                "native build-field supports append or skip-if-identical only"
+            )
+        missing_action = params.get("missing_control_action", "skip_field")
+        if missing_action != "skip_field":
+            raise NativeDefinitionError(
+                "native build-field supports skip-missing-source only"
+            )
+        structured = params.get("structured_subfields")
+        if not isinstance(structured, list) or not structured:
+            raise NativeDefinitionError(
+                "native build-field requires structured subfields"
+            )
+        subfields: list[dict[str, Any]] = []
+        for subfield in structured:
+            if (
+                not isinstance(subfield, list)
+                or len(subfield) != 2
+                or not isinstance(subfield[1], list)
+            ):
+                raise NativeDefinitionError(
+                    "native build-field subfields must be structured rows"
+                )
+            segments: list[dict[str, Any]] = []
+            for segment in subfield[1]:
+                if not isinstance(segment, Mapping):
+                    raise NativeDefinitionError(
+                        "native build-field segments must be objects"
+                    )
+                segment_type = segment.get("type")
+                if segment_type == "text":
+                    segments.append({
+                        "type": "text",
+                        "value": segment.get("value"),
+                    })
+                elif segment_type == "control_field":
+                    segments.append({
+                        "type": "control_field",
+                        "tag": segment.get("tag"),
+                    })
+                else:
+                    raise NativeDefinitionError(
+                        "native build-field supports text and control-field "
+                        "segments only"
+                    )
+            subfields.append({
+                "code": subfield[0],
+                "segments": segments,
+            })
+        indicators = [
+            _native_indicator(params.get("ind1", " ")),
+            _native_indicator(params.get("ind2", " ")),
+        ]
+        steps.append({
+            "id": step_id,
+            "action": "build_field",
+            "target": {
+                "tag": params.get("tag"),
+                "indicators": indicators,
+            },
+            "subfields": subfields,
+            "missing_source": "skip_and_report",
+            "existing_target": (
+                "skip" if existing_action == "skip_if_identical" else "append"
+            ),
+        })
+
+    candidate = {
+        "schema_version": SUPPORTED_SCHEMA_VERSION,
+        "name": name,
+        "description": description,
+        "steps": steps,
+    }
+    try:
+        return validate_definition(candidate)
+    except (TypeError, ValueError) as exc:
+        raise NativeDefinitionError(str(exc)) from exc
+
+
+def _native_indicator(value: Any) -> str:
+    text = str(value or " ")
+    if text in {"", "\\", "\\\\"}:
+        return " "
+    return text
 
 
 def compile_definition(value: Mapping[str, Any]) -> CompiledNativeTask:

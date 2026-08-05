@@ -17,6 +17,27 @@ def test_compose_passes_gemini_key_from_environment():
     assert "GEMINI_API_KEY=${GEMINI_API_KEY:-}" in compose
 
 
+def test_hotfix_compose_exposes_only_the_synchronous_web_service():
+    compose = _build_context_file("docker-compose.hotfix.yml")
+
+    assert "service: marcedit-web" in compose
+    assert "marcedit-web-worker" not in compose
+    assert "durable worker" in compose
+
+
+def test_hotfix_compose_mounts_review_sources_read_only():
+    compose = _build_context_file("docker-compose.hotfix.yml")
+
+    for mount in (
+        "- ./docs:/app/docs:ro",
+        "- ./third_party:/app/third_party:ro",
+        "- ./.tickets:/app/.tickets:ro",
+        "- ./deploy:/app/deploy:ro",
+        "- ./scripts/capture_task_194_runtime_lineage.py:/app/scripts/capture_task_194_runtime_lineage.py:ro",
+    ):
+        assert mount in compose
+
+
 def test_compose_mounts_large_batch_benchmark_read_only():
     """Docker tests need the benchmark without exposing all host scripts."""
     compose = Path("docker-compose.yml").read_text()

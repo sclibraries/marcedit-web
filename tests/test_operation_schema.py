@@ -22,7 +22,7 @@ def test_v13_adds_durable_operation_tables():
         version = conn.execute(
             "SELECT version FROM _schema_version"
         ).fetchone()["version"]
-    assert version == 14
+    assert version == db.SCHEMA_VERSION
     assert {
         "operations",
         "operation_artifacts",
@@ -422,7 +422,7 @@ def test_v13_migrates_an_existing_v12_database():
                 "SELECT name FROM sqlite_master WHERE type='index'"
             )
         }
-    assert version["version"] == 14
+    assert version["version"] == db.SCHEMA_VERSION
     assert {
         "operations",
         "operation_artifacts",

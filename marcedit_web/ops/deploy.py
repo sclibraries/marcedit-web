@@ -25,6 +25,8 @@ class DeploymentConfig:
     unit: str
     database: Path
     audit_dir: Path
+    source_sha: str
+    release_sha: str
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,8 @@ class CommandResult:
 _UNIT_NAME = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 _BRANCH_NAME = re.compile(r"^[A-Za-z0-9._/-]+$")
 _VERSION = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
+_DIALOG_SIGNATURE = re.compile(r"^\(.*\)$", re.DOTALL)
+_MIN_CAPTURE_STREAMLIT = (1, 37, 0)
 
 
 def _result_stdout(value: Any) -> str:
@@ -105,6 +109,7 @@ def validate_lineage(
     lineage: Mapping[str, Any],
     *,
     approved_branch: str,
+    approved_release_sha: str,
 ) -> DeploymentConfig:
     """Validate Gate-0 facts and return the only safe deploy target."""
     if lineage.get("format") != "task-194-runtime-lineage-v1":
@@ -122,6 +127,11 @@ def validate_lineage(
         or approved_branch.startswith("-")
     ):
         raise DeploymentError("approved branch must be a safe branch name")
+    if (
+        not isinstance(approved_release_sha, str)
+        or re.fullmatch(r"[0-9a-fA-F]{40}", approved_release_sha) is None
+    ):
+        raise DeploymentError("approved release commit must be a 40-character SHA")
 
     root = Path(str(lineage.get("root", ""))).resolve()
     repository = lineage.get("repository")
@@ -136,6 +146,16 @@ def validate_lineage(
         raise DeploymentError(
             f"approved branch {approved_branch!r} does not match captured branch {branch!r}"
         )
+    status_result = repository.get("repository_status")
+    if not _result_ok(status_result) or _result_stdout(status_result).strip():
+        raise DeploymentError("captured repository is not clean")
+    sha_result = repository.get("repository_sha")
+    source_sha = _result_stdout(sha_result).strip()
+    if (
+        not _result_ok(sha_result)
+        or re.fullmatch(r"[0-9a-fA-F]{40}", source_sha) is None
+    ):
+        raise DeploymentError("captured repository commit is invalid")
 
     units = lineage.get("units")
     if not isinstance(units, Mapping):
@@ -156,7 +176,9 @@ def validate_lineage(
     python = _runtime_python(_unit_property(unit_output, "ExecStart"))
     database = _database_from_capture(lineage, unit_output)
     working_directory = _unit_property(unit_output, "WorkingDirectory")
-    if working_directory and Path(working_directory).resolve() != root:
+    if not working_directory:
+        raise DeploymentError("captured unit has no working directory")
+    if Path(working_directory).resolve() != root:
         raise DeploymentError("captured working directory differs from repository root")
     audit_dir = Path(
         _environment_value(unit_output, "MARCEDIT_WEB_AUDIT_DIR")
@@ -171,15 +193,22 @@ def validate_lineage(
     if not _result_ok(streamlit):
         raise DeploymentError("Streamlit dependency capture is incomplete")
     streamlit_version = _version(_result_stdout(streamlit))
-    if not ((1, 50, 0) <= streamlit_version < (2, 0, 0)):
-        raise DeploymentError("captured Streamlit version is outside >=1.50,<2")
+    if not (_MIN_CAPTURE_STREAMLIT <= streamlit_version < (2, 0, 0)):
+        raise DeploymentError(
+            "captured Streamlit version is outside the supported upgrade "
+            "range >=1.37,<2"
+        )
     sqlite = lineage.get("sqlite")
     sqlite_result = sqlite.get("python_sqlite") if isinstance(sqlite, Mapping) else None
     if not _result_ok(sqlite_result) or _version(_result_stdout(sqlite_result)) < (3, 8, 0):
         raise DeploymentError("production SQLite lacks partial indexes")
     dialog = lineage.get("dialog")
-    if not _result_ok(dialog) or "dismissible" not in _result_stdout(dialog):
-        raise DeploymentError("captured Streamlit dialog contract lacks dismissible")
+    dialog_signature = _result_stdout(dialog).strip()
+    if (
+        not _result_ok(dialog)
+        or _DIALOG_SIGNATURE.fullmatch(dialog_signature) is None
+    ):
+        raise DeploymentError("captured Streamlit dialog contract is missing")
 
     sudo = lineage.get("sudo")
     if (
@@ -194,6 +223,8 @@ def validate_lineage(
         unit=unit,
         database=database,
         audit_dir=audit_dir,
+        source_sha=source_sha.lower(),
+        release_sha=approved_release_sha.lower(),
     )
 
 
@@ -206,8 +237,18 @@ def render_commands(
     """Render the hotfix lifecycle with no worker or alternate-unit commands."""
     python = str(config.python)
     root = str(config.root)
+    verify_release = (
+        "import subprocess, sys; "
+        f"root={json.dumps(root)}; "
+        f"expected={json.dumps(config.release_sha)}; "
+        "actual=subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], "
+        "text=True).strip().lower(); "
+        "sys.exit(0 if actual == expected else "
+        "'approved release SHA mismatch: ' + actual)"
+    )
     return (
         ("git", "-C", root, "pull", "--ff-only", "origin", config.branch),
+        (python, "-c", verify_release),
         (python, "-m", "pip", "install", "--upgrade", "pip"),
         (python, "-m", "pip", "install", "-r", str(config.root / "requirements.txt")),
         (
@@ -265,6 +306,17 @@ def verify_repository_state(
         raise DeploymentError(
             f"repository branch changed; expected {config.branch!r}"
         )
+    commit = runner(
+        ["git", "-C", str(config.root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if commit.returncode != 0 or commit.stdout.strip().lower() != config.source_sha:
+        raise DeploymentError(
+            "repository commit changed after Gate 0; expected "
+            f"{config.source_sha}"
+        )
 
 
 def _run(commands: Sequence[Sequence[str]], *, root: Path, dry_run: bool) -> None:
@@ -281,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--lineage", type=Path, required=True)
     parser.add_argument("--branch", required=True)
+    parser.add_argument("--release-sha", required=True)
     parser.add_argument("--backup-dir", type=Path, required=True)
     parser.add_argument(
         "--health-url",
@@ -290,7 +343,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         lineage = json.loads(args.lineage.read_text(encoding="utf-8"))
-        config = validate_lineage(lineage, approved_branch=args.branch)
+        config = validate_lineage(
+            lineage,
+            approved_branch=args.branch,
+            approved_release_sha=args.release_sha,
+        )
         if config.root != args.root.resolve():
             raise DeploymentError("--root does not match the captured repository root")
         if not args.dry_run:

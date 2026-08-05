@@ -89,6 +89,75 @@ def test_capture_lineage_uses_the_discovered_unit_and_runtime_python(tmp_path):
     assert result["units"]["selected_unit"] == "marcedit-web-private.service"
 
 
+def test_capture_lineage_does_not_infer_python_when_execstart_is_unparseable(
+    tmp_path,
+):
+    commands = []
+
+    def runner(command):
+        commands.append(tuple(command))
+        if list(command[:3]) == [
+            "systemctl", "list-unit-files", "marcedit-web*.service"
+        ]:
+            return {
+                "returncode": 0,
+                "stdout": "marcedit-web.service enabled\n",
+                "stderr": "",
+            }
+        if list(command[:2]) == ["systemctl", "show"]:
+            return {
+                "returncode": 0,
+                "stdout": (
+                    "ActiveState=active\n"
+                    "WorkingDirectory=" + str(tmp_path) + "\n"
+                    "ExecStart=not-a-systemd-executable\n"
+                ),
+                "stderr": "",
+            }
+        return {"returncode": 0, "stdout": "captured", "stderr": ""}
+
+    result = task_194_runtime.capture_lineage(tmp_path, runner=runner)
+
+    assert result["complete"] is False
+    assert result["dependencies"]["python"]["status"] == "failed"
+    assert not any(
+        command and command[0] == str(tmp_path / ".venv" / "bin" / "python")
+        for command in commands
+    )
+
+
+def test_capture_lineage_reports_selected_unit_capture_failure(tmp_path):
+    def runner(command):
+        if list(command[:3]) == [
+            "systemctl", "list-unit-files", "marcedit-web*.service"
+        ]:
+            return {
+                "returncode": 0,
+                "stdout": "marcedit-web.service enabled\n",
+                "stderr": "",
+            }
+        if list(command[:2]) == ["systemctl", "show"]:
+            return {
+                "returncode": 1,
+                "stdout": (
+                    "ActiveState=active\n"
+                    "WorkingDirectory=" + str(tmp_path) + "\n"
+                    "ExecStart={ path="
+                    + str(tmp_path / ".venv" / "bin" / "streamlit")
+                    + " }\n"
+                ),
+                "stderr": "systemd query failed",
+            }
+        return {"returncode": 0, "stdout": "captured", "stderr": ""}
+
+    result = task_194_runtime.capture_lineage(tmp_path, runner=runner)
+
+    assert result["complete"] is False
+    assert any(
+        item.startswith("unit:") for item in result["capture_errors"]
+    )
+
+
 def test_capture_lineage_refuses_to_choose_between_multiple_active_units(tmp_path):
     def runner(command):
         if list(command[:3]) == [

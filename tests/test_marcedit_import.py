@@ -391,6 +391,7 @@ def test_adapter_exception_becomes_bounded_blocker_without_losing_siblings(
     ]
     blocker = result.draft.operations[1]
     assert task_authoring.validate_operation(blocker) == ()
+    assert blocker["params"]["cataloger_action"]
     assert "secret" not in blocker["params"]["reason"]
     assert "/private" not in blocker["params"]["reason"]
     assert result.draft.summary.converted == 2

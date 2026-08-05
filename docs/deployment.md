@@ -12,6 +12,11 @@ for the rationale.
 > the Operations page. The worker/Operations instructions later in this file
 > apply only to the separate infrastructure release.
 
+For local Docker verification of this boundary, use
+`docker-compose.hotfix.yml`; it extends only the web service and intentionally
+does not start `marcedit-web-worker`. The default `docker-compose.yml` remains
+the durable infrastructure topology.
+
 ## Quick start (existing host)
 
 After ITS has done the four one-time root operations (see
@@ -19,22 +24,33 @@ After ITS has done the four one-time root operations (see
 before deploying the hotfix. The capture is read-only and must be taken on the
 same host and checkout that will be updated:
 
+The `--branch` value must exactly match the branch recorded by the capture.
+Before this step, create the approved release branch from the captured
+production SHA and check it out in this working tree as a separate, approved
+Git action. If the checkout is still on another branch, do not substitute the
+release name in the command: either capture using the current branch or finish
+the approved checkout and recapture Gate 0. The deploy script refuses branch
+drift before pulling.
+
 ```bash
 sudo -iu marcedit
 cd /var/www/html/marcedit-web
-bash scripts/capture_task_194_runtime_lineage.py \
+./.venv/bin/python scripts/capture_task_194_runtime_lineage.py \
   --output /tmp/marcedit-task-194-runtime-lineage.json
 bash scripts/deploy.sh \
   --lineage /tmp/marcedit-task-194-runtime-lineage.json \
   --branch release-hotfix \
+  --release-sha APPROVED_RELEASE_SHA \
   --backup-dir /var/backups/marcedit-web/$(date -u +%F) \
   --dry-run
 ```
 
 Review the printed commands, then repeat without `--dry-run`. The script
 refuses incomplete or ambiguous lineage, a dirty or branch-drifted checkout,
-and any sudo rule that cannot restart the one captured unit. It never starts a
-durable worker or selects a unit from checked-in deployment files.
+and any sudo rule that cannot restart the one captured unit. It verifies the
+approved release SHA immediately after pulling and before changing the venv or
+database. It never starts a durable worker or selects a unit from checked-in
+deployment files.
 
 ### Published-image Compose deployments
 
