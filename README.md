@@ -44,6 +44,11 @@ untracked. The local OAuth client must allow
 `http://localhost:8501/oauth2callback` as its redirect URI. Public-mode and
 automated test containers remain separate anonymous surfaces.
 
+## Tasks
+
+Cataloger instructions for the Run, Library, Create, and Import workspace are
+in [`docs/task-workspace.md`](docs/task-workspace.md).
+
 Run the test suite:
 
 ```sh

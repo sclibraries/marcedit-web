@@ -69,4 +69,23 @@ Implementation checkpoint:
   2,515 tests passed and 18 explicit environment/corpus skips. Authenticated
   browser verification remains outstanding.
 
+Task 6 verification (2026-08-05):
+- Added the cataloger-facing [Tasks workspace guide](../docs/task-workspace.md)
+  and linked it from the README Tasks section.
+- Added a runtime capability test asserting that the Streamlit segmented
+  control exposes `options`, `selection_mode`, `key`, and `on_change`.
+- The exact focused TASK-193 suite passes in the Python 3.9 hotfix Compose
+  container: 445 passed, 0 failed, 0 skipped. The host Python 3.14 run has
+  442 passed and three existing raw-regex subprocess failures caused by its
+  `ModuleNotFoundError: marcedit_web` import-path mismatch.
+- The authoritative hotfix Compose suite passes: 2,592 passed, 0 failed, and
+  five explicit skips. Four parameterized Compose-render tests skip because
+  the Docker CLI is unavailable inside the test container; the institutional
+  task-corpus classification test skips because that corpus is not mounted and
+  synthetic fixtures remain authoritative.
+- `git diff --check` and `python3 -m compileall -q marcedit_web tests` both
+  exit 0. Full evidence is recorded in the local Task 6 report.
+- Authenticated browser acceptance and final code review are not available in
+  this worktree, so this ticket remains In-Progress.
+
 Status: In-Progress

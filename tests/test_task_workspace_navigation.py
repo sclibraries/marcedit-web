@@ -1,6 +1,9 @@
 """Tests for the deterministic TASK-193 Tasks query contract."""
 
 from dataclasses import fields
+import inspect
+
+import streamlit as st
 
 import pytest
 
@@ -171,3 +174,10 @@ def test_dialog_kinds_and_targets_are_parsed_without_authorization():
     assert location.dialog == "task-share"
     assert location.dialog_task_id == 10
     assert location.dialog_folder_id == 11
+
+
+def test_streamlit_supports_controlled_segmented_navigation():
+    signature = inspect.signature(st.segmented_control)
+    assert {"options", "selection_mode", "key", "on_change"}.issubset(
+        signature.parameters
+    )
