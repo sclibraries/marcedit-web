@@ -189,6 +189,30 @@ def test_run_mode_routes_exactly_one_workflow(monkeypatch, mode, expected):
     assert calls == [expected]
 
 
+def test_external_view_change_replaces_stale_selector_on_successive_renders(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    calls: list[str] = []
+    _wire(monkeypatch, tasks_render, calls)
+    fake_st.query_params.from_dict({"view": "run"})
+    tasks_render.render()
+    fake_st.query_params.from_dict({"view": "library"})
+    tasks_render.render()
+    assert calls == ["run", "library"]
+
+
+def test_external_run_mode_change_replaces_stale_selector_on_successive_renders(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    calls: list[str] = []
+    _wire(monkeypatch, tasks_render, calls)
+    fake_st.query_params.from_dict({"mode": "quick"})
+    tasks_render.render()
+    fake_st.query_params.from_dict({"mode": "saved"})
+    tasks_render.render()
+    assert calls == ["quick", "run"]
+
+
 def test_external_query_reinitialization_preserves_create_and_import_drafts(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)

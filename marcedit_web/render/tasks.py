@@ -204,6 +204,8 @@ WORKSPACE_VIEWS = {
 RUN_MODES = {"saved": "Saved tasks", "quick": "Quick changes"}
 K_WORKSPACE_LOCATION = "tasks_workspace_location"
 K_WORKSPACE_OWN_WRITE = "tasks_workspace_own_write"
+K_WORKSPACE_VIEW_WIDGET = "tasks_workspace_view"
+K_RUN_MODE_WIDGET = "tasks_run_mode"
 
 
 def _materialized_dir(user: str) -> Path:
@@ -315,6 +317,12 @@ def _authorized_workspace_location(
 
 def _apply_workspace_location(location: WorkspaceLocation) -> None:
     st.session_state[K_WORKSPACE_LOCATION] = location
+    # These selectors are widgets, but their values are URL projections. An
+    # external query-only rerun must discard the previous widget value before
+    # Streamlit instantiates the control again; otherwise a stale Run/Quick
+    # selection can overwrite the externally requested Library/Saved URL.
+    st.session_state.pop(K_WORKSPACE_VIEW_WIDGET, None)
+    st.session_state.pop(K_RUN_MODE_WIDGET, None)
     st.session_state[K_LIBRARY_SCOPE] = location.scope
     st.session_state[K_LIBRARY_FOLDER_ID] = location.folder_id
     filters = location.filters
@@ -418,7 +426,7 @@ def render() -> None:
         "Tasks workspace",
         options=list(WORKSPACE_VIEWS.values()),
         default=WORKSPACE_VIEWS[location.view],
-        key="tasks_workspace_view",
+        key=K_WORKSPACE_VIEW_WIDGET,
         label_visibility="collapsed",
     )
     selected_view = next(
@@ -435,7 +443,7 @@ def render() -> None:
             "Run mode",
             options=list(RUN_MODES.values()),
             default=RUN_MODES[location.mode],
-            key="tasks_run_mode",
+            key=K_RUN_MODE_WIDGET,
             label_visibility="collapsed",
         )
         selected_mode = next(
