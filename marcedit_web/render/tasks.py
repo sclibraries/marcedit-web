@@ -460,9 +460,9 @@ def render() -> None:
     elif location.view == "library":
         _render_task_library(current_user_id=current_user_id, is_admin=is_admin)
     elif location.view == "create":
-        _render_create_workspace(tasks_dir, is_admin, current_user_id, registered)
+        _render_create_workspace(tasks_dir, is_admin)
     else:
-        _render_import_workspace(tasks_dir, current_user_id, registered)
+        _render_import_workspace(tasks_dir)
 
 
 def _normalize_marcedit_import_result(value: object) -> dict:
@@ -779,16 +779,16 @@ def _clear_marcedit_import_result() -> None:
     st.session_state.pop(K_MARCEDIT_IMPORT_ADOPTED_ENTRY, None)
 
 
-def _adopt_migration_draft(
+def _adopt_import_into_create(
     draft: dict,
     *,
     entry_name: str | None = None,
     entry_key: str | None = None,
 ) -> None:
-    """Move one validated import draft into editor state without persistence."""
+    """Open one validated import draft as an unsaved Create working copy."""
 
     _open_editor_for_new()
-    name = str(draft.get("task_name") or "")
+    name = str(draft.get("name") or draft.get("task_name") or "")
     description = str(draft.get("description") or "")
     st.session_state[K_EDITOR_NAME] = name
     st.session_state[K_EDITOR_DESCRIPTION] = description
@@ -812,6 +812,21 @@ def _adopt_migration_draft(
     }
     st.session_state[K_MARCEDIT_IMPORT_ADOPTED_ENTRY] = entry_key
     _reset_operation_dialog_state()
+
+
+def _adopt_migration_draft(
+    draft: dict,
+    *,
+    entry_name: str | None = None,
+    entry_key: str | None = None,
+) -> None:
+    """Backward-compatible import adoption wrapper."""
+
+    _adopt_import_into_create(
+        draft,
+        entry_name=entry_name,
+        entry_key=entry_key,
+    )
 
 
 def _draft_result_entry(
@@ -920,7 +935,7 @@ def _render_marcedit_import_result() -> None:
         selected_offset = labels.index(selected)
         selected_entry = draft_entries[selected_offset][1]
         if st.button("Open selected draft", key="tasks_import_open_selected"):
-            _adopt_migration_draft(
+            _adopt_import_into_create(
                 selected_entry["draft"],
                 entry_name=selected_entry.get("entry_name") or filename,
                 entry_key=str(draft_entries[selected_offset][0]),
@@ -958,7 +973,7 @@ def _render_marcedit_import_result() -> None:
                     "Open migration draft",
                     key=f"tasks_import_open_draft_{index}",
                 ):
-                    _adopt_migration_draft(
+                    _adopt_import_into_create(
                         entry["draft"],
                         entry_name=entry_name,
                         entry_key=str(index),
@@ -1138,54 +1153,33 @@ def _render_saved_tasks(registered, tasks_dir: Path) -> None:
 def _render_create_workspace(
     tasks_dir: Path,
     is_admin: bool,
-    current_user_id: str,
-    registered,
 ) -> None:
-    """Render task authoring without importing or library navigation."""
-    st.subheader("Create task")
-    counts = task_db.count_visible(current_user_id)
-    own_tasks = task_db.list_own_tasks(current_user_id)
-    cnt_a, cnt_b, cnt_c, cnt_d = st.columns([2, 2, 2, 2])
-    cnt_a.metric("Yours", counts["own"])
-    cnt_b.metric("Shared with you", counts["shared_from_others"])
-    cnt_c.metric("Registered", len(registered))
-    if cnt_d.button("Clear my tasks", key="tasks_clear_mine"):
-        for task in own_tasks:
-            task_db.delete_task(current_user_id, task["name"])
-            tasks.TASK_REGISTRY.pop(task["name"], None)
-        st.session_state[K_EDITOR_OPEN] = False
-        _reset_operation_dialog_state()
-        st.rerun()
-    if not is_admin:
-        st.caption(
-            "ℹ️ You're using the **form builder** path. Raw-Python task "
-            "authoring is restricted to administrators."
-        )
-    if st.button("+ New task", key="tasks_new"):
-        _open_editor_for_new()
-        st.rerun()
-    _render_ai_draft_panel()
-    if st.session_state.get(K_AI_DRAFT_REVIEW) is not None:
-        _render_ai_draft_review()
-    if st.session_state[K_EDITOR_OPEN]:
-        _render_editor(tasks_dir, is_admin)
+    """Render only the Create workflow and its explicit draft state."""
+    if not st.session_state.get(K_EDITOR_OPEN):
+        if st.button("Create a new task", type="primary", key="tasks_new"):
+            _open_editor_for_new()
+            st.rerun()
+        _render_ai_draft_panel()
+        if st.session_state.get(K_AI_DRAFT_REVIEW) is not None:
+            _render_ai_draft_review()
+        return
+    _render_editor(tasks_dir, is_admin)
 
 
 def _render_import_workspace(
     tasks_dir: Path,
-    current_user_id: str,
-    registered,
 ) -> None:
     """Render task-file import and its non-widget result/draft state."""
-    del current_user_id, registered
     st.subheader("Import task")
     upl = st.file_uploader(
-        "Import a MarcEdit .tasksfile (`.txt`) or `.task` archive",
+        "Import an external task",
         type=["txt", "task"],
         accept_multiple_files=False,
         key="tasks_import_uploader",
     )
-    if upl is not None and st.button("Import", key="tasks_import_btn"):
+    if upl is not None and st.button(
+        "Review import", type="primary", key="tasks_import_btn"
+    ):
         _do_marcedit_import(upl, tasks_dir)
         st.rerun()
     if st.session_state.get(K_MARCEDIT_IMPORT_RESULT) is not None:
@@ -1845,10 +1839,48 @@ def _reset_operation_dialog_state() -> None:
     st.session_state.pop(K_OPERATION_CARDS_PENDING_REMOVE, None)
 
 
+def _discard_create_draft() -> None:
+    """Clear the explicit Create working copy without touching Import state."""
+
+    for key, value in (
+        (K_EDITOR_OPEN, False),
+        (K_EDITOR_MODE, "form"),
+        (K_EDITOR_NAME, ""),
+        (K_EDITOR_DESCRIPTION, ""),
+        (K_EDITOR_BODY, ""),
+        (K_EDITOR_OPS, []),
+        (K_EDITOR_ORIGINAL_NAME, None),
+        (K_EDITOR_ORIGINAL_OWNER, None),
+        (K_EDITOR_PRESERVE_BODY, False),
+        (K_EDITOR_VISIBILITY, "private"),
+        (K_EDITOR_FROM_AI_DRAFT, False),
+        (K_EDITOR_AI_DRAFT_REVIEW, None),
+    ):
+        st.session_state[key] = value
+    for key in (
+        K_EDITOR_NAME_INPUT,
+        K_EDITOR_DESCRIPTION_INPUT,
+        K_EDITOR_IMPORT_SUMMARY,
+        K_EDITOR_IMPORT_PROVENANCE,
+        K_EDITOR_IMPORT_DISCLOSURES,
+        K_EDITOR_IMPORT_SOURCE,
+    ):
+        st.session_state.pop(key, None)
+    _reset_operation_dialog_state()
+
+    # A discarded edit must not leave a stale task target in the Create URL.
+    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
+    _write_workspace_location(
+        dataclasses.replace(current, view="library", task_id=None)
+    )
+
+
 def _open_editor_for_new() -> None:
     """Open the editor for a brand-new task in form mode."""
     current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
-    _write_workspace_location(dataclasses.replace(current, view="create"))
+    _write_workspace_location(
+        dataclasses.replace(current, view="create", task_id=None)
+    )
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_MODE] = "form"
     st.session_state[K_EDITOR_NAME] = ""
@@ -1889,7 +1921,13 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
     the legacy file-based path).
     """
     current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
-    _write_workspace_location(dataclasses.replace(current, view="create"))
+    _write_workspace_location(
+        dataclasses.replace(
+            current,
+            view="create",
+            task_id=(int(row["id"]) if row.get("id") is not None else None),
+        )
+    )
     st.session_state[K_EDITOR_OPEN] = True
     st.session_state[K_EDITOR_NAME] = row["name"]
     st.session_state[K_EDITOR_DESCRIPTION] = row["description"]
@@ -2070,7 +2108,7 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                 and len(drafts) == 1
                 and drafts[0]["status"] == "draft_ready"
             ):
-                _adopt_migration_draft(
+                _adopt_import_into_create(
                     drafts[0]["draft"],
                     entry_name=drafts[0].get("entry_name") or upl.name,
                     entry_key="0",
@@ -2138,7 +2176,7 @@ def _do_marcedit_import(upl, tasks_dir: Path) -> None:
                     blocking=conv.draft.summary.blocking,
                 )
                 return
-            _adopt_migration_draft(
+            _adopt_import_into_create(
                 conv.draft.to_session_dict(),
                 entry_name=upl.name,
                 entry_key="0",
@@ -2348,10 +2386,7 @@ def _ai_draft_operation_detail(op: ai_task_draft.DraftOperation) -> str:
 
 
 def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
-    current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
-    _write_workspace_location(dataclasses.replace(current, view="create"))
-    st.session_state[K_EDITOR_OPEN] = True
-    st.session_state[K_EDITOR_MODE] = "form"
+    _open_editor_for_new()
     st.session_state[K_EDITOR_NAME] = review.task_name
     description = _ai_draft_review_description(review)
     st.session_state[K_EDITOR_DESCRIPTION] = description
@@ -2361,10 +2396,6 @@ def _open_editor_for_ai_draft(review: ai_task_draft.DraftReview) -> None:
     st.session_state[K_EDITOR_OPS] = (
         task_authoring.normalize_operations_for_editor(draft_ops)
     )
-    st.session_state[K_EDITOR_ORIGINAL_NAME] = None
-    st.session_state[K_EDITOR_ORIGINAL_OWNER] = None
-    st.session_state[K_EDITOR_PRESERVE_BODY] = False
-    st.session_state[K_EDITOR_VISIBILITY] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = True
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = review
     _reset_operation_dialog_state()
@@ -2938,20 +2969,34 @@ def _save_callback(tasks_dir: Path) -> None:
         st.session_state[K_SAVE_ERROR] = str(exc)
         return
 
+    saved_task_id = original_row["id"] if original_row else None
+    if saved_task_id is None:
+        try:
+            saved_row = task_db.get_task(user, name)
+        except sqlite3.OperationalError:
+            saved_row = None
+        if saved_row is not None:
+            saved_task_id = int(saved_row["id"])
+
     if original and original != name:
         tasks.TASK_REGISTRY.pop(original, None)
     tasks.TASK_REGISTRY.pop(name, None)
     # Re-materialize and reload so the running registry matches SQL.
     task_db.materialize_to_dir(user, tasks_dir)
     tasks.load_user_tasks(tasks_dir, force_reload=True)
-    st.session_state[K_EDITOR_OPEN] = False
-    st.session_state[K_EDITOR_ORIGINAL_OWNER] = None
-    st.session_state[K_EDITOR_PRESERVE_BODY] = False
-    st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
-    st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_REVIEW] = None
     st.session_state[K_AI_DRAFT_BLOCKING_ACK] = False
-    _reset_operation_dialog_state()
+    _discard_create_draft()
+    current_location = st.session_state.get(
+        K_WORKSPACE_LOCATION, WorkspaceLocation()
+    )
+    _write_workspace_location(
+        dataclasses.replace(
+            current_location,
+            view="library",
+            task_id=saved_task_id,
+        )
+    )
     st.session_state[K_SAVE_SUCCESS] = (
         f"Saved `{name}`. Needs migration review."
         if needs_migration_review
@@ -2987,12 +3032,7 @@ def _save_callback(tasks_dir: Path) -> None:
 
 def _cancel_callback() -> None:
     """on_click callback for Cancel. Mirrors the on_click pattern of Save."""
-    st.session_state[K_EDITOR_OPEN] = False
-    st.session_state[K_EDITOR_ORIGINAL_OWNER] = None
-    st.session_state[K_EDITOR_PRESERVE_BODY] = False
-    st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
-    st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
-    _reset_operation_dialog_state()
+    _discard_create_draft()
 
 
 # ---------------------------------------------------------------------------

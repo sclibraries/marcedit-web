@@ -414,6 +414,54 @@ def test_general_editor_navigation_preserves_pending_import_result(monkeypatch):
     assert fake_st.session_state[tasks_render.K_MARCEDIT_IMPORT_RESULT] == pending
 
 
+def test_library_edit_opens_create_with_stable_task_id(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    row = {
+        "id": 71,
+        "name": "fix-856",
+        "owner_email": "a@smith.edu",
+        "visibility": "private",
+        "description": "",
+        "body": "pass",
+    }
+
+    tasks_render._open_editor_for_existing_row(row, is_admin=False)
+
+    location = fake_st.session_state[tasks_render.K_WORKSPACE_LOCATION]
+    assert location.view == "create"
+    assert location.task_id == 71
+
+
+def test_import_adoption_opens_unsaved_create_draft(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    draft = {
+        "task_name": "partner-import",
+        "operations": [{"kind": "delete-tag"}],
+    }
+
+    tasks_render._adopt_import_into_create(draft)
+
+    assert fake_st.session_state[tasks_render.K_EDITOR_NAME] == "partner-import"
+    assert fake_st.session_state[tasks_render.K_EDITOR_OPS] == draft["operations"]
+    assert fake_st.session_state[tasks_render.K_WORKSPACE_LOCATION].view == "create"
+
+
+def test_discard_is_the_only_routine_create_draft_cleanup(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_EDITOR_OPEN] = True
+    fake_st.session_state[tasks_render.K_EDITOR_NAME] = "working"
+    fake_st.session_state[tasks_render.K_EDITOR_OPS] = [{"kind": "delete-tag"}]
+
+    tasks_render._discard_create_draft()
+
+    assert fake_st.session_state[tasks_render.K_EDITOR_OPEN] is False
+    assert fake_st.session_state[tasks_render.K_EDITOR_NAME] == ""
+    assert fake_st.session_state[tasks_render.K_EDITOR_OPS] == []
+
+
 def test_new_build_field_defaults_are_structured(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
