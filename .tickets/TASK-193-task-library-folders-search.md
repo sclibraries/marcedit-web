@@ -78,9 +78,13 @@ Task 6 verification (2026-08-05):
   container: 445 passed, 0 failed, 0 skipped. The host Python 3.14 run has
   442 passed and three existing raw-regex subprocess failures caused by its
   `ModuleNotFoundError: marcedit_web` import-path mismatch.
-- The authoritative hotfix Compose suite passes: 2,592 passed, 0 failed, and
-  five explicit skips. Four parameterized Compose-render tests skip because
-  the Docker CLI is unavailable inside the test container; the institutional
+- Final navigation/dialog changes were rechecked in the authoritative Python
+  3.9.25 / Streamlit 1.50.0 hotfix Compose run: 2,599 passed, 0 failed, and
+  five explicit skips (four Docker-CLI-in-container Compose-render checks and
+  one unavailable institutional task corpus).
+- The earlier Task 6 checkpoint run passed 2,592 tests with the same five
+  explicit skips. Four parameterized Compose-render tests skip because the
+  Docker CLI is unavailable inside the test container; the institutional
   task-corpus classification test skips because that corpus is not mounted and
   synthetic fixtures remain authoritative.
 - `git diff --check` and `python3 -m compileall -q marcedit_web tests` both
