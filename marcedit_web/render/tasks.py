@@ -1417,11 +1417,11 @@ def _open_create_folder(scope: str, parent_id: int | None) -> None:
         "scope": scope,
         "parent_id": parent_id,
     }
-    # Streamlit retains keyed widget values across dialog invocations. Clear
-    # the location controls so the newly requested scope/parent wins over a
-    # previous folder-create draft.
-    st.session_state.pop("tasks_library_dialog_scope", None)
-    st.session_state.pop("tasks_library_dialog_parent", None)
+    # Streamlit retains keyed widget values across dialog invocations. Set the
+    # location controls explicitly so the newly requested scope/parent wins
+    # over a previous folder-create draft.
+    st.session_state["tasks_library_dialog_scope"] = scope
+    st.session_state["tasks_library_dialog_parent"] = parent_id
     _open_library_dialog("folder-create", folder_id=parent_id)
 
 

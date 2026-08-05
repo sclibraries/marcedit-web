@@ -427,8 +427,8 @@ def test_reopening_folder_dialog_resets_keyed_location_widgets(monkeypatch):
     assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_DRAFT] == {
         "scope": "shared", "parent_id": 21
     }
-    assert "tasks_library_dialog_scope" not in fake_st.session_state
-    assert "tasks_library_dialog_parent" not in fake_st.session_state
+    assert fake_st.session_state["tasks_library_dialog_scope"] == "shared"
+    assert fake_st.session_state["tasks_library_dialog_parent"] == 21
 
 
 def test_stale_folder_dialog_target_keeps_cancel_visible(monkeypatch):
