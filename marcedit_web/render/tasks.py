@@ -163,6 +163,7 @@ K_LIBRARY_SUBFIELD = "tasks_library_subfield"
 K_LIBRARY_VALIDATION = "tasks_library_validation"
 K_LIBRARY_RECENT = "tasks_library_recent"
 K_LIBRARY_FILTER_DRAFT = "tasks_library_filter_draft"
+K_LIBRARY_FILTER_RESET_WIDGETS = "tasks_library_filter_reset_widgets"
 K_LIBRARY_DIALOG = "tasks_library_dialog"
 K_LIBRARY_DIALOG_FOLDER = "tasks_library_dialog_folder"
 K_LIBRARY_DIALOG_TASK = "tasks_library_dialog_task"
@@ -433,6 +434,9 @@ def _clear_library_filters() -> None:
     location = dataclasses.replace(current, filters=LibraryFilters())
     _write_workspace_location(location)
     st.session_state[K_LIBRARY_FILTER_DRAFT] = dict(_LIBRARY_FILTER_DEFAULTS)
+    # Widget keys cannot be changed after this form's controls are built.
+    # Defer the reset until the next rerun, before widget construction.
+    st.session_state[K_LIBRARY_FILTER_RESET_WIDGETS] = True
 
 
 def _commit_library_navigation(*, scope: str, folder_id: int | None) -> None:
@@ -512,6 +516,7 @@ def render() -> None:
     st.session_state.setdefault(
         K_LIBRARY_FILTER_DRAFT, dict(_LIBRARY_FILTER_DEFAULTS)
     )
+    st.session_state.setdefault(K_LIBRARY_FILTER_RESET_WIDGETS, False)
     st.session_state.setdefault(K_LIBRARY_DIALOG, None)
     st.session_state.setdefault(K_LIBRARY_DIALOG_DRAFT, {})
     st.session_state.setdefault(K_EDITOR_FROM_AI_DRAFT, False)
@@ -1721,8 +1726,12 @@ def _render_library_filters() -> None:
     # with the submitted values. Only hydrate keys that do not exist yet;
     # unconditionally copying the old draft here would overwrite a just-typed
     # value (for example, replacing ``EBA`` with the previous ``856``).
+    reset_widgets = st.session_state.pop(K_LIBRARY_FILTER_RESET_WIDGETS, False)
     for field, key in widget_keys.items():
-        st.session_state.setdefault(key, draft[field])
+        if reset_widgets:
+            st.session_state[key] = _LIBRARY_FILTER_DEFAULTS[field]
+        else:
+            st.session_state.setdefault(key, draft[field])
 
     with _library_filter_form():
         st.text_input(

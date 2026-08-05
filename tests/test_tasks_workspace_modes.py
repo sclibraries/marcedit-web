@@ -361,6 +361,46 @@ def test_clear_filters_writes_once(monkeypatch):
     assert fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT]["query"] == ""
 
 
+def test_clear_filters_resets_keyed_widgets_on_next_rerun(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_WORKSPACE_LOCATION] = (
+        tasks_render.WorkspaceLocation(
+            view="library",
+            filters=tasks_render.LibraryFilters(
+                query="EBA", visibility="shared", tag="035"
+            ),
+        )
+    )
+    fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT] = {
+        "query": "EBA", "visibility": "shared", "owner": "", "tag": "035",
+        "subfield": "a", "operation": "all", "validation": "valid",
+        "updated": "30",
+    }
+    for key, value in {
+        tasks_render.K_LIBRARY_QUERY: "EBA",
+        tasks_render.K_LIBRARY_VISIBILITY: "shared",
+        tasks_render.K_LIBRARY_OWNER: "",
+        tasks_render.K_LIBRARY_TAG: "035",
+        tasks_render.K_LIBRARY_SUBFIELD: "a",
+        tasks_render.K_LIBRARY_KIND: "all",
+        tasks_render.K_LIBRARY_VALIDATION: "valid",
+        tasks_render.K_LIBRARY_RECENT: "30",
+    }.items():
+        fake_st.session_state[key] = value
+
+    tasks_render._clear_library_filters()
+    tasks_render._render_library_filters()  # next rerun, before widgets build
+
+    assert fake_st.session_state[tasks_render.K_LIBRARY_QUERY] == ""
+    assert fake_st.session_state[tasks_render.K_LIBRARY_VISIBILITY] == "all"
+    assert fake_st.session_state[tasks_render.K_LIBRARY_TAG] == ""
+    assert fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT]["query"] == ""
+    assert not fake_st.session_state.get(
+        tasks_render.K_LIBRARY_FILTER_RESET_WIDGETS, False
+    )
+
+
 def test_external_url_restores_filter_draft(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
