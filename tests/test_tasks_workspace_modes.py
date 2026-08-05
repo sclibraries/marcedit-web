@@ -291,6 +291,59 @@ def test_apply_filters_writes_once_and_updates_applied_location(monkeypatch):
     assert fake_st.session_state[tasks_render.K_WORKSPACE_LOCATION].filters.tag == "035"
 
 
+def test_apply_submit_rerun_preserves_values_delivered_by_streamlit(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT] = {
+        "query": "856", "visibility": "all", "owner": "", "tag": "",
+        "subfield": "", "operation": "all", "validation": "all",
+        "updated": "any",
+    }
+    # Model Streamlit's submit rerun: keyed widgets already contain the new
+    # values before the renderer executes again.
+    fake_st.session_state.update({
+        tasks_render.K_LIBRARY_QUERY: "EBA",
+        tasks_render.K_LIBRARY_VISIBILITY: "shared",
+        tasks_render.K_LIBRARY_OWNER: "",
+        tasks_render.K_LIBRARY_TAG: "035",
+        tasks_render.K_LIBRARY_SUBFIELD: "a",
+        tasks_render.K_LIBRARY_KIND: "all",
+        tasks_render.K_LIBRARY_VALIDATION: "valid",
+        tasks_render.K_LIBRARY_RECENT: "30",
+    })
+    fake_st.clicked_labels.add("Apply filters")
+    fake_st.query_params.write_count = 0
+
+    tasks_render._render_library_filters()
+
+    assert fake_st.query_params.write_count == 1
+    assert fake_st.query_params["q"] == "EBA"
+    assert fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT]["query"] == "EBA"
+
+
+def test_folder_navigation_captures_current_filter_widgets(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    fake_st.session_state[tasks_render.K_LIBRARY_FILTER_DRAFT] = {
+        "query": "856", "visibility": "all", "owner": "", "tag": "",
+        "subfield": "", "operation": "all", "validation": "all",
+        "updated": "any",
+    }
+    fake_st.session_state[tasks_render.K_LIBRARY_QUERY] = "EBA"
+    fake_st.clicked_labels.add("📁 Records (1)")
+    fake_st.query_params.write_count = 0
+
+    tasks_render._render_folder_node(
+        [{"id": 11, "name": "Records", "scope": "personal", "parent_id": None,
+          "task_ids": [3]}],
+        scope="personal",
+        parent_id=None,
+    )
+
+    assert fake_st.query_params.write_count == 1
+    assert fake_st.query_params["q"] == "EBA"
+
+
 def test_clear_filters_writes_once(monkeypatch):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
@@ -360,6 +413,65 @@ def test_create_folder_dialog_preserves_explicit_location(monkeypatch, scope, pa
     draft = fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_DRAFT]
     assert draft["scope"] == scope
     assert draft["parent_id"] == parent_id
+
+
+def test_reopening_folder_dialog_resets_keyed_location_widgets(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+
+    tasks_render._open_create_folder(scope="personal", parent_id=11)
+    fake_st.session_state["tasks_library_dialog_scope"] = "personal"
+    fake_st.session_state["tasks_library_dialog_parent"] = 11
+    tasks_render._open_create_folder(scope="shared", parent_id=21)
+
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG_DRAFT] == {
+        "scope": "shared", "parent_id": 21
+    }
+    assert "tasks_library_dialog_scope" not in fake_st.session_state
+    assert "tasks_library_dialog_parent" not in fake_st.session_state
+
+
+def test_stale_folder_dialog_target_keeps_cancel_visible(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(tasks_render.task_library, "list_folder_tree", lambda actor: [])
+    fake_st.session_state.update({
+        tasks_render.K_LIBRARY_DIALOG: "folder-rename",
+        tasks_render.K_LIBRARY_DIALOG_FOLDER: 999,
+    })
+
+    tasks_render._render_library_dialog()
+
+    assert "Cancel" in fake_st.button_labels
+    assert fake_st.errors
+
+
+def test_empty_task_destination_dialog_keeps_cancel_visible(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "cat@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.task_library, "list_folder_tree", lambda actor: []
+    )
+    monkeypatch.setattr(
+        tasks_render.task_library,
+        "get_task_for_actor",
+        lambda actor, task_id: {"visibility": "private", "revision": 1},
+    )
+    fake_st.session_state.update({
+        tasks_render.K_LIBRARY_DIALOG: "task-share",
+        tasks_render.K_LIBRARY_DIALOG_TASK: 10,
+    })
+
+    tasks_render._render_library_dialog()
+
+    assert "Cancel" in fake_st.button_labels
+    assert fake_st.errors
 
 
 def test_external_url_cannot_open_inaccessible_task_or_folder(monkeypatch):

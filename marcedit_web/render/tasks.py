@@ -377,6 +377,26 @@ def _library_filter_draft() -> dict[str, str]:
     return draft
 
 
+def _capture_library_filter_widgets() -> dict[str, str]:
+    """Copy currently rendered widget values into the session draft."""
+    draft = _library_filter_draft()
+    widget_keys = {
+        "query": K_LIBRARY_QUERY,
+        "visibility": K_LIBRARY_VISIBILITY,
+        "owner": K_LIBRARY_OWNER,
+        "tag": K_LIBRARY_TAG,
+        "subfield": K_LIBRARY_SUBFIELD,
+        "operation": K_LIBRARY_KIND,
+        "validation": K_LIBRARY_VALIDATION,
+        "updated": K_LIBRARY_RECENT,
+    }
+    for field, key in widget_keys.items():
+        if key in st.session_state:
+            draft[field] = str(st.session_state[key] or "")
+    st.session_state[K_LIBRARY_FILTER_DRAFT] = draft
+    return draft
+
+
 def _library_filters_from_draft(draft: dict[str, str]) -> LibraryFilters:
     """Build the bounded navigation value used for an applied search."""
     return LibraryFilters(
@@ -418,7 +438,9 @@ def _clear_library_filters() -> None:
 def _commit_library_navigation(*, scope: str, folder_id: int | None) -> None:
     """Commit a folder selection and any staged filters in one URL write."""
     current = st.session_state.get(K_WORKSPACE_LOCATION, WorkspaceLocation())
-    applied = _library_filters_from_draft(_library_filter_draft())
+    # Folder clicks are outside the filter form, so capture values Streamlit
+    # delivered for the current widgets before committing the single URL write.
+    applied = _library_filters_from_draft(_capture_library_filter_widgets())
     location = dataclasses.replace(
         current,
         view="library",
@@ -1395,7 +1417,21 @@ def _open_create_folder(scope: str, parent_id: int | None) -> None:
         "scope": scope,
         "parent_id": parent_id,
     }
+    # Streamlit retains keyed widget values across dialog invocations. Clear
+    # the location controls so the newly requested scope/parent wins over a
+    # previous folder-create draft.
+    st.session_state.pop("tasks_library_dialog_scope", None)
+    st.session_state.pop("tasks_library_dialog_parent", None)
     _open_library_dialog("folder-create", folder_id=parent_id)
+
+
+def _render_library_dialog_cancel(error_key: str) -> None:
+    """Keep a visible escape action available on stale/error dialog states."""
+    if st.button("Cancel", key="tasks_library_dialog_cancel"):
+        st.session_state[K_LIBRARY_DIALOG] = None
+        st.session_state[K_LIBRARY_DIALOG_DRAFT] = {}
+        st.session_state.pop(error_key, None)
+        st.rerun()
 
 
 def _render_library_dialog() -> None:
@@ -1468,6 +1504,7 @@ def _render_library_dialog() -> None:
         )
         if folder is None:
             st.error("That folder is no longer available. Refresh the library.")
+            _render_library_dialog_cancel(error_key)
             return
         st.markdown(f"**{paths[folder_id]}**")
         if mode == "folder-rename":
@@ -1556,6 +1593,7 @@ def _render_library_dialog() -> None:
         task = task_library.get_task_for_actor(actor, int(task_id))
         if task is None:
             st.error("That task is no longer available. Refresh the library.")
+            _render_library_dialog_cancel(error_key)
             return
         if mode == "task-share":
             options = [item for item in folders if item["scope"] == "shared"]
@@ -1583,6 +1621,7 @@ def _render_library_dialog() -> None:
             label = "Destination folder"
         if not options:
             st.error("No compatible destination folders are available.")
+            _render_library_dialog_cancel(error_key)
             return
         option_ids = [int(item["id"]) for item in options]
         selected = st.selectbox(
@@ -1625,11 +1664,8 @@ def _render_library_dialog() -> None:
                 st.session_state[K_LIBRARY_DIALOG] = None
                 st.session_state.pop(error_key, None)
                 st.rerun()
-    if mode and st.button("Cancel", key="tasks_library_dialog_cancel"):
-        st.session_state[K_LIBRARY_DIALOG] = None
-        st.session_state[K_LIBRARY_DIALOG_DRAFT] = {}
-        st.session_state.pop(error_key, None)
-        st.rerun()
+    if mode:
+        _render_library_dialog_cancel(error_key)
     if st.session_state.get(error_key):
         st.error(st.session_state[error_key])
 
@@ -1681,8 +1717,12 @@ def _render_library_filters() -> None:
         "validation": K_LIBRARY_VALIDATION,
         "updated": K_LIBRARY_RECENT,
     }
+    # On a form-submit rerun Streamlit has already populated keyed widgets
+    # with the submitted values. Only hydrate keys that do not exist yet;
+    # unconditionally copying the old draft here would overwrite a just-typed
+    # value (for example, replacing ``EBA`` with the previous ``856``).
     for field, key in widget_keys.items():
-        st.session_state[key] = draft[field]
+        st.session_state.setdefault(key, draft[field])
 
     with _library_filter_form():
         st.text_input(
@@ -1747,20 +1787,7 @@ def _render_library_filters() -> None:
 
     # Read widget state only after the form closes; typing therefore changes
     # the session-scoped draft and never touches URL history.
-    st.session_state[K_LIBRARY_FILTER_DRAFT] = {
-        "query": str(st.session_state.get(K_LIBRARY_QUERY, "") or ""),
-        "visibility": str(
-            st.session_state.get(K_LIBRARY_VISIBILITY, "all") or "all"
-        ),
-        "owner": str(st.session_state.get(K_LIBRARY_OWNER, "") or ""),
-        "tag": str(st.session_state.get(K_LIBRARY_TAG, "") or ""),
-        "subfield": str(st.session_state.get(K_LIBRARY_SUBFIELD, "") or ""),
-        "operation": str(st.session_state.get(K_LIBRARY_KIND, "all") or "all"),
-        "validation": str(
-            st.session_state.get(K_LIBRARY_VALIDATION, "all") or "all"
-        ),
-        "updated": str(st.session_state.get(K_LIBRARY_RECENT, "any") or "any"),
-    }
+    _capture_library_filter_widgets()
     if applied:
         _apply_library_filters()
     elif cleared:
