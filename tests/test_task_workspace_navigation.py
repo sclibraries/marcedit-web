@@ -77,6 +77,21 @@ def test_run_mode_is_omitted_outside_run_view():
     assert canonical_tasks_query(location) == {"view": "library"}
 
 
+def test_dialog_fields_are_library_only():
+    location = parse_tasks_query(
+        {
+            "view": "create",
+            "dialog": "folder-delete",
+            "dialog_folder": "31",
+        },
+        operation_kinds=set(),
+    )
+
+    assert location.dialog == "folder-delete"
+    assert location.dialog_folder_id == 31
+    assert canonical_tasks_query(location) == {"view": "create"}
+
+
 @pytest.mark.parametrize("key", sorted(TASK_QUERY_KEYS))
 def test_every_tasks_key_is_owned_and_canonicalized(key):
     assert key in TASK_QUERY_KEYS
@@ -133,10 +148,7 @@ def test_ids_are_positive_and_canonicalized():
     assert location.folder_id == 1
     assert location.task_id is None
     assert location.dialog_task_id == 12
-    assert canonical_tasks_query(location) == {
-        "folder": "1",
-        "dialog_task": "12",
-    }
+    assert canonical_tasks_query(location) == {"folder": "1"}
 
 
 def test_huge_or_out_of_range_ids_fall_back_without_affecting_other_ids():

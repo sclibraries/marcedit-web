@@ -180,6 +180,8 @@ def parse_tasks_query(
     dialog = _scalar(raw, "dialog")
     if dialog not in _DIALOG_KINDS:
         dialog = None
+    dialog_task_id = _positive_id(raw, "dialog_task")
+    dialog_folder_id = _positive_id(raw, "dialog_folder")
 
     return WorkspaceLocation(
         view=view,
@@ -198,8 +200,8 @@ def parse_tasks_query(
         ),
         task_id=_positive_id(raw, "task"),
         dialog=dialog,
-        dialog_task_id=_positive_id(raw, "dialog_task"),
-        dialog_folder_id=_positive_id(raw, "dialog_folder"),
+        dialog_task_id=dialog_task_id,
+        dialog_folder_id=dialog_folder_id,
     )
 
 
@@ -236,11 +238,11 @@ def canonical_tasks_query(location: WorkspaceLocation) -> dict[str, str]:
 
     if location.task_id is not None:
         result["task"] = str(location.task_id)
-    if location.dialog is not None:
+    if location.view == "library" and location.dialog is not None:
         result["dialog"] = location.dialog
-    if location.dialog_task_id is not None:
+    if location.view == "library" and location.dialog_task_id is not None:
         result["dialog_task"] = str(location.dialog_task_id)
-    if location.dialog_folder_id is not None:
+    if location.view == "library" and location.dialog_folder_id is not None:
         result["dialog_folder"] = str(location.dialog_folder_id)
     return result
 

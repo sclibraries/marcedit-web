@@ -262,6 +262,19 @@ def test_selecting_another_workspace_clears_dialog_url_but_keeps_draft(monkeypat
     assert "dialog_folder" not in fake_st.query_params
 
 
+def test_non_library_url_cannot_restore_library_dialog(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    requested = tasks_render.WorkspaceLocation(
+        view="create", dialog="folder-delete", dialog_folder_id=31
+    )
+
+    resolved = tasks_render._sync_workspace_from_url(requested, set(), {31})
+
+    assert resolved.dialog is None
+    assert fake_st.session_state[tasks_render.K_LIBRARY_DIALOG] is None
+
+
 @pytest.mark.parametrize(("mode", "expected"), [("saved", "run"), ("quick", "quick")])
 def test_run_mode_routes_exactly_one_workflow(monkeypatch, mode, expected):
     fake_st = _FakeStreamlit()

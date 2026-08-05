@@ -317,6 +317,17 @@ def _authorized_workspace_location(
     visible_task_ids: set[int],
     visible_folder_ids: set[int],
 ) -> WorkspaceLocation:
+    if location.view != "library" and (
+        location.dialog is not None
+        or location.dialog_task_id is not None
+        or location.dialog_folder_id is not None
+    ):
+        location = dataclasses.replace(
+            location,
+            dialog=None,
+            dialog_task_id=None,
+            dialog_folder_id=None,
+        )
     target_ids = (location.task_id, location.folder_id)
     dialog_target_ids = (location.dialog_task_id, location.dialog_folder_id)
     if any(
