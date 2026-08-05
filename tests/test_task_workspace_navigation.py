@@ -130,6 +130,20 @@ def test_ids_are_positive_and_canonicalized():
     }
 
 
+def test_huge_or_out_of_range_ids_fall_back_without_affecting_other_ids():
+    location = parse_tasks_query(
+        {
+            "folder": "9" * 5000,
+            "task": "9223372036854775807",
+            "dialog_folder": "9223372036854775808",
+        },
+        operation_kinds=set(),
+    )
+    assert location.folder_id is None
+    assert location.task_id == 9223372036854775807
+    assert location.dialog_folder_id is None
+
+
 def test_operation_must_be_all_or_renderer_supplied_kind():
     assert (
         parse_tasks_query(
@@ -157,4 +171,3 @@ def test_dialog_kinds_and_targets_are_parsed_without_authorization():
     assert location.dialog == "task-share"
     assert location.dialog_task_id == 10
     assert location.dialog_folder_id == 11
-

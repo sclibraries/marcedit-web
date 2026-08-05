@@ -51,6 +51,7 @@ _DIALOG_KINDS = frozenset(
 
 _POSITIVE_INTEGER = re.compile(r"^[0-9]+$")
 _SUBFIELD = re.compile(r"^[A-Za-z0-9]$")
+_MAX_SQLITE_ID = (2**63) - 1
 
 
 @dataclass(frozen=True)
@@ -116,8 +117,13 @@ def _positive_id(raw: Mapping[str, QueryValue], key: str) -> Optional[int]:
     value = _scalar(raw, key)
     if value is None or not _POSITIVE_INTEGER.fullmatch(value):
         return None
+    # SQLite INTEGER identifiers are signed 64-bit values.  Check the
+    # decimal length before conversion so hostile URLs cannot trigger an
+    # unbounded ``int`` parse (Python 3.9 has no integer-string limit).
+    if len(value) > len(str(_MAX_SQLITE_ID)):
+        return None
     parsed = int(value)
-    return parsed if parsed > 0 else None
+    return parsed if 0 < parsed <= _MAX_SQLITE_ID else None
 
 
 def _enum(
@@ -249,4 +255,3 @@ def merge_tasks_query(
     }
     merged.update(canonical_tasks_query(location))
     return merged
-
