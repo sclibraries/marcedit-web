@@ -625,7 +625,7 @@ def _preview_artifact_is_valid(preview) -> bool:
 
 
 def _request_is_current(preview, request: QuickFieldChangeRequest, store, *, job_file_id, job_file_version_id) -> bool:
-    if preview is None or preview.error is not None:
+    if preview is None or not hasattr(preview, "error") or preview.error is not None:
         return False
     if _matcher_bound_error(request) is not None:
         return False
@@ -755,6 +755,10 @@ def render_common_field_changes(
         st.session_state[K_PREVIEW] = preview
 
     preview = st.session_state.get(K_PREVIEW)
+    if preview is not None and not hasattr(preview, "error"):
+        quick_field_change_runner.cleanup_artifact(preview)
+        st.session_state.pop(K_PREVIEW, None)
+        preview = None
     current = _request_is_current(
         preview,
         request,

@@ -114,6 +114,18 @@ def test_preview_button_cannot_replace_the_preview_object(monkeypatch):
     assert renderer.K_PREVIEW not in fake.session_state
 
 
+def test_legacy_boolean_preview_state_is_discarded(monkeypatch):
+    fake = FakeStreamlit(
+        selections={"Operation": "Delete field", "Field tag": "001"},
+        session_state={renderer.K_PREVIEW: False},
+    )
+
+    _render(monkeypatch, fake)
+
+    assert renderer.K_PREVIEW not in fake.session_state
+    assert not fake.errors
+
+
 def test_operation_labels_are_alphabetical(monkeypatch):
     fake = FakeStreamlit()
     _render(monkeypatch, fake)
