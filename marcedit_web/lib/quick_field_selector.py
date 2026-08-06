@@ -312,10 +312,16 @@ def describe_selector(selector: FieldSelector) -> str:
         mode_label = mode_labels[field_filter.match_mode]
         value = field_filter.match_value
         if field_filter.match_mode == "raw_regex":
-            text = (
-                f"subfield ${field_filter.subfield_code} matches regular expression "
-                f"'{value}'"
-            )
+            if value == "":
+                text = (
+                    f"subfield ${field_filter.subfield_code} is present "
+                    "(any value)"
+                )
+            else:
+                text = (
+                    f"subfield ${field_filter.subfield_code} matches regular expression "
+                    f"'{value}'"
+                )
         else:
             text = f"subfield ${field_filter.subfield_code} {mode_label} '{value}'"
         if field_filter.ignore_case:

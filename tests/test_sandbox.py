@@ -360,6 +360,41 @@ def test_structured_adapter_error_preserves_original_record(one_record_bytes):
     assert _read_output(result)[0].get_fields("245")
 
 
+def test_invalid_raw_regex_is_reported_when_all_input_records_are_malformed():
+    invalid_payload = request_to_payload(
+        QuickFieldChangeRequest(
+            "delete-field",
+            FieldSelector(
+                FieldFilter(
+                    "245",
+                    subfield_code="a",
+                    match_mode="raw_regex",
+                    match_value="[",
+                )
+            ),
+        )
+    )
+
+    result = run_tasks_subprocess(
+        [
+            TaskSpec(
+                name="invalid-regex",
+                body="",
+                adapter="quick-field-change",
+                adapter_payload=invalid_payload,
+            )
+        ],
+        b"not a MARC record",
+    )
+
+    assert result.returncode != 0
+    assert result.error_count >= 2
+    assert {error["code"] for error in result.errors} >= {
+        "malformed-record",
+        "adapter-validation-failed",
+    }
+
+
 def test_direct_sandbox_rejects_migration_blocker_before_child_execution(
     one_record_bytes, monkeypatch
 ):

@@ -250,6 +250,22 @@ def test_invalid_raw_regex_is_reported_at_matching_boundary():
         )
 
 
+def test_describe_selector_explains_empty_raw_regex_as_presence_check():
+    selector = FieldSelector(
+        FieldFilter(
+            tag="650",
+            subfield_code="a",
+            match_mode="raw_regex",
+            match_value="",
+        )
+    )
+
+    description = describe_selector(selector)
+
+    assert "$a is present (any value)" in description
+    assert "regular expression ''" not in description
+
+
 @pytest.mark.parametrize("number", [0, -1, 1000, True, None])
 def test_numbered_occurrence_is_bounded_to_one_through_999(number):
     occurrence = Occurrence(mode="numbered", number=number)

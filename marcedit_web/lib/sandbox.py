@@ -342,10 +342,11 @@ def main():
     try:
         prepared_adapters = _prepare_tasks(
             tasks,
-            # An empty input has no per-record boundary at which to compile
-            # raw expressions, so validate the request before iteration. On
-            # non-empty inputs the existing per-record error path preserves
-            # original records while retaining legacy sandbox semantics.
+            # Valid records retain the existing per-record error path for
+            # malformed raw expressions, preserving the original record.
+            # When no valid record is available, the post-iteration check
+            # below validates the request so malformed input cannot make an
+            # invalid expression look successful.
             validate_regex=os.path.getsize(args.input) == 0,
         )
     except Exception as exc:
@@ -382,6 +383,7 @@ def main():
         else {}
     )
     transforms.reset_partner_batch_totals()
+    valid_record_seen = False
     with open(args.input, "rb") as fin:
         reader = pymarc.MARCReader(fin, to_unicode=True, permissive=True)
         with open(args.output, "wb") as fout:
@@ -398,6 +400,7 @@ def main():
                         })
                     _write_progress(args.progress, idx)
                     continue
+                valid_record_seen = True
                 failed_task = None
                 original_record = (
                     copy.deepcopy(record)
@@ -477,6 +480,38 @@ def main():
                     # same cardinality as the input.
                     writer.write(record)
                 _write_progress(args.progress, idx)
+
+    if not valid_record_seen and any(
+        adapter is not None for adapter in prepared_adapters
+    ):
+        try:
+            # A non-empty file can still contain only malformed records. The
+            # normal per-record adapter path is then unreachable, so perform
+            # the same child-side syntax validation used for an empty file.
+            _prepare_tasks(tasks, validate_regex=True)
+        except Exception as exc:
+            message = _bounded_text(
+                "%s: %s" % (type(exc).__name__, exc),
+                args.max_message_chars,
+                args.max_message_bytes,
+            )
+            error_count += 1
+            if len(errors) < args.max_errors:
+                errors.append({
+                    "index": 0,
+                    "code": "adapter-validation-failed",
+                    "task": None,
+                    "message": message,
+                })
+            with open(args.errors, "w") as error_file:
+                json.dump({
+                    "error_count": error_count,
+                    "errors": errors,
+                    "captured_results": captured_results,
+                    "partner_totals": transforms.get_partner_batch_totals(),
+                    "adapter_totals": adapter_totals,
+                }, error_file)
+            raise
 
     with open(args.errors, "w") as f:
         json.dump({

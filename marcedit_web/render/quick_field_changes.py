@@ -531,7 +531,10 @@ def _selector_summary(selector: FieldSelector | None, *, include_occurrence: boo
             else _MATCH_MODE_LABELS.get(field_filter.match_mode, field_filter.match_mode)
         )
         value = field_filter.match_value
-        parts.append(f"${field_filter.subfield_code} {mode.lower()} '{value}'")
+        if field_filter.match_mode == "raw_regex" and value == "":
+            parts.append(f"${field_filter.subfield_code} is present (any value)")
+        else:
+            parts.append(f"${field_filter.subfield_code} {mode.lower()} '{value}'")
         if field_filter.ignore_case:
             parts.append("case-insensitive")
     if include_occurrence:

@@ -346,6 +346,25 @@ def test_raw_regex_summary_uses_cataloger_language():
     assert "raw_regex" not in summary
 
 
+def test_empty_raw_regex_summary_explains_presence_check():
+    request = QuickFieldChangeRequest(
+        "delete-field",
+        FieldSelector(
+            FieldFilter(
+                "650",
+                subfield_code="a",
+                match_mode="raw_regex",
+                match_value="",
+            )
+        ),
+    )
+
+    summary = renderer._summary(request)
+
+    assert "$a is present (any value)" in summary
+    assert "regular expression ''" not in summary
+
+
 def test_apply_requires_owned_preview_artifact(monkeypatch):
     store = SimpleNamespace(revision=0)
     request = QuickFieldChangeRequest(
