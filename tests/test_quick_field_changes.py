@@ -14,6 +14,7 @@ from marcedit_web.lib.quick_field_changes import (
     request_to_payload,
     validate_request,
 )
+from marcedit_web.lib import transforms
 from marcedit_web.lib.quick_field_selector import FieldFilter, FieldSelector, Occurrence
 
 
@@ -78,6 +79,62 @@ def test_add_field_data_identical_suppression_and_subfield_limit():
     assert apply_quick_field_change(record, request).changed is False
     too_many = QuickFieldChangeRequest("add-field", destination_tag="245", ind1="1", ind2="0", subfields=tuple(("a", str(i)) for i in range(101)))
     assert any("100" in error for error in validate_request(too_many))
+
+
+@pytest.mark.parametrize(
+    "request_value",
+    [
+        QuickFieldChangeRequest("add-subfield", _selector(), subfield_code="9", position="start"),
+        QuickFieldChangeRequest("add-subfield", _selector(), subfield_code="9", repeat_policy="skip"),
+        QuickFieldChangeRequest("add-field", destination_tag="245", ind1="1", ind2="0", record_scope="when_tag_absent"),
+        QuickFieldChangeRequest("copy-field", _selector(), destination_tag="956", destination_policy="replace-all"),
+    ],
+)
+def test_request_enums_are_fail_closed(request_value):
+    assert validate_request(request_value)
+
+
+def test_payload_rejects_non_row_subfield_values():
+    payload = request_to_payload(
+        QuickFieldChangeRequest("add-field", destination_tag="245", ind1="1", ind2="0")
+    )
+    for rows in ({"a": "b", "x": "y"}, [["a"]], [["a", 1]]):
+        payload["subfields"] = rows
+        with pytest.raises(ValueError):
+            request_from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [("x" * 1025, "1,024"), ("€" * 1024, "2,048")],
+)
+def test_delete_subfield_matcher_obeys_selector_size_bounds(value, message):
+    request = QuickFieldChangeRequest(
+        "delete-subfield", _selector(), subfield_code="u", subfield_value=value
+    )
+    assert any(message in error for error in validate_request(request))
+
+
+def test_data_identical_scope_uses_shared_add_helper(monkeypatch):
+    record = _record(_field("245", "1", "0", ("a", "Existing")))
+    original = transforms.add_field_if_absent
+    calls = []
+
+    def wrapped(current_record, field):
+        calls.append(field)
+        return original(current_record, field)
+
+    monkeypatch.setattr(transforms, "add_field_if_absent", wrapped)
+    request = QuickFieldChangeRequest(
+        "add-field",
+        destination_tag="245",
+        ind1="1",
+        ind2="0",
+        subfields=(("a", "New"),),
+        record_scope="identical_absent",
+    )
+    assert apply_quick_field_change(record, request).changed
+    assert len(calls) == 1
 
 
 def test_add_and_delete_subfield_are_occurrence_scoped():

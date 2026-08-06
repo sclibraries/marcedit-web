@@ -26,6 +26,7 @@ from .quick_field_selector import (
     validate_field_filter,
     validate_selector,
 )
+from .quick_field_selector import _MAX_MATCH_BYTES, _MAX_MATCH_CHARS
 
 
 _KINDS = frozenset(
@@ -49,24 +50,10 @@ _DELETE_KINDS = frozenset({"delete-field"})
 _DUPLICATE_KINDS = frozenset({"remove-duplicate-fields"})
 _SET_INDICATOR_KINDS = frozenset({"set-indicators"})
 _SWAP_KINDS = frozenset({"swap-field-occurrences"})
-_POSITIONS = frozenset({"append", "prepend", "end", "start"})
-_REPEAT_POLICIES = frozenset(
-    {"append", "skip", "skip_identical", "skip-if-identical", "skip_if_identical"}
-)
-_RECORD_SCOPES = frozenset(
-    {
-        "every",
-        "tag_absent",
-        "when_tag_absent",
-        "if_tag_absent",
-        "identical_absent",
-        "when_identical_absent",
-        "if_identical_absent",
-    }
-)
-_DESTINATION_POLICIES = frozenset(
-    {"append", "skip", "skip_identical", "skip-if-identical", "replace_all", "replace-all"}
-)
+_POSITIONS = frozenset({"append", "prepend"})
+_REPEAT_POLICIES = frozenset({"append", "skip_identical"})
+_RECORD_SCOPES = frozenset({"every", "tag_absent", "identical_absent"})
+_DESTINATION_POLICIES = frozenset({"append", "skip_identical", "replace_all"})
 _SUBFIELD_OCCURRENCES = frozenset({"first", "every"})
 _KEEP_DUPLICATES = frozenset({"first", "last"})
 
@@ -240,6 +227,11 @@ def validate_request(request: object) -> tuple[str, ...]:
         errors.extend(_validate_subfield_code(request.subfield_code, required=True))
         if not isinstance(request.subfield_value, str):
             errors.append("subfield value must be text")
+        else:
+            if len(request.subfield_value) > _MAX_MATCH_CHARS:
+                errors.append("subfield value must be at most 1,024 characters")
+            if len(request.subfield_value.encode("utf-8")) > _MAX_MATCH_BYTES:
+                errors.append("subfield value must be at most 2,048 bytes")
         if not _supported(request.subfield_occurrence, _SUBFIELD_OCCURRENCES):
             errors.append("subfield occurrence must be first or every")
         if not isinstance(request.remove_empty_field, bool):
@@ -396,12 +388,21 @@ def request_from_payload(payload: object) -> QuickFieldChangeRequest:
         raise ValueError("request payload must be an object")
     try:
         subfields_raw = payload.get("subfields", ())
-        if isinstance(subfields_raw, list):
-            subfields = tuple(tuple(pair) for pair in subfields_raw)
-        elif isinstance(subfields_raw, tuple):
-            subfields = tuple(tuple(pair) for pair in subfields_raw)
-        else:
-            subfields = subfields_raw
+        if not isinstance(subfields_raw, (list, tuple)):
+            raise ValueError("subfields must be a list of code/value rows")
+        subfields_list: list[tuple[str, str]] = []
+        for index, pair in enumerate(subfields_raw):
+            if (
+                not isinstance(pair, (list, tuple))
+                or len(pair) != 2
+                or not isinstance(pair[0], str)
+                or not isinstance(pair[1], str)
+            ):
+                raise ValueError(
+                    f"subfield row {index + 1} must be a two-item text list"
+                )
+            subfields_list.append((pair[0], pair[1]))
+        subfields = tuple(subfields_list)
         request = QuickFieldChangeRequest(
             kind=payload["kind"],
             selector=_selector_from_payload(payload.get("selector"), "selector"),
@@ -494,9 +495,12 @@ def _apply_add_field(record: Record, request: QuickFieldChangeRequest) -> Record
         candidate = transforms.make_field(tag, request.ind1 or "", request.ind2 or "", *request.subfields)
     existing = record.get_fields(tag)
     scope = request.record_scope
-    if scope in {"tag_absent", "when_tag_absent", "if_tag_absent"} and existing:
+    if scope == "tag_absent" and existing:
         return RecordChangeResult(False)
-    if scope in {"identical_absent", "when_identical_absent", "if_identical_absent"}:
+    if scope == "identical_absent":
+        if not _is_control_tag(tag):
+            added = transforms.add_field_if_absent(record, candidate)
+            return RecordChangeResult(added, fields_affected=1 if added else 0)
         if any(_same_data_field(candidate, field) for field in existing):
             return RecordChangeResult(False)
     record.add_ordered_field(candidate)
@@ -507,8 +511,8 @@ def _apply_add_subfield(record: Record, request: QuickFieldChangeRequest) -> Rec
     selected = _resolved(record, request.selector)  # type: ignore[arg-type]
     if isinstance(selected, RecordChangeResult):
         return selected
-    position = "start" if request.position in {"prepend", "start"} else "end"
-    skip_existing = request.repeat_policy in {"skip", "skip_identical", "skip-if-identical", "skip_if_identical"}
+    position = "start" if request.position == "prepend" else "end"
+    skip_existing = request.repeat_policy == "skip_identical"
     changed_fields = 0
     added = 0
     if request.selector is not None and request.selector.occurrence.mode == "every" and _selector_unfiltered(request.selector) and position == "end" and not skip_existing:
@@ -537,7 +541,6 @@ def _apply_delete_subfield(record: Record, request: QuickFieldChangeRequest) -> 
     changed_fields = 0
     removed = 0
     remove_fields: list[Field] = []
-    ff = request.selector.field_filter if request.selector is not None else None
     can_use_helper = (
         request.selector is not None
         and request.selector.occurrence.mode == "every"
@@ -590,7 +593,7 @@ def _apply_copy_field(record: Record, request: QuickFieldChangeRequest) -> Recor
     destination = request.destination_tag
     candidates = [_copy_clone(field, destination) for field in selected]
     policy = request.destination_policy
-    if policy in {"replace_all", "replace-all"}:
+    if policy == "replace_all":
         old_count = len(record.get_fields(destination))
         record.fields[:] = [field for field in record.fields if field.tag != destination]
         for candidate in candidates:
@@ -598,7 +601,7 @@ def _apply_copy_field(record: Record, request: QuickFieldChangeRequest) -> Recor
         return RecordChangeResult(bool(candidates or old_count), fields_affected=len(candidates) + old_count)
     added = 0
     for candidate in candidates:
-        if policy in {"skip", "skip_identical", "skip-if-identical"} and any(
+        if policy == "skip_identical" and any(
             _same_data_field(candidate, existing) for existing in record.get_fields(destination)
         ):
             continue
