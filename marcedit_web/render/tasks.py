@@ -4058,7 +4058,7 @@ def _render_quick_find_replace() -> None:
     if not session.has_upload():
         return  # nothing to find against
 
-    with st.expander("✨ Quick find/replace", expanded=True):
+    with st.container():
         st.caption(
             "Run a one-shot find/replace across the loaded batch. "
             "Preview first; apply after you've reviewed the diff. "
@@ -4591,7 +4591,7 @@ def _render_quick_batch_operations(kind: str) -> None:
         return
 
     st.divider()
-    with st.expander("Quick batch operations", expanded=True):
+    with st.container():
         st.caption(
             "Run a structured cleanup across the loaded batch. Preview first; "
             "nothing is saved to your task list."
