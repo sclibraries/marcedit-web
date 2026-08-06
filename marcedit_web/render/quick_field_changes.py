@@ -351,7 +351,7 @@ def _render_add_field() -> QuickFieldChangeRequest:
         ind2 = _text("Indicator 2", key=_widget_key("add_ind2"), max_chars=1)
         subfields = _render_subfields("add_subfield")
         control_value = ""
-        indicators = (ind1[:1], ind2[:1])
+        indicators = (ind1[:1] or " ", ind2[:1] or " ")
     scope = _choice(
         "Add field record scope",
         (

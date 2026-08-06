@@ -126,6 +126,31 @@ def test_legacy_boolean_preview_state_is_discarded(monkeypatch):
     assert not fake.errors
 
 
+@pytest.mark.parametrize(
+    ("ind1", "ind2", "expected1", "expected2"),
+    [
+        ("", "", " ", " "),
+        ("1", "0", "1", "0"),
+    ],
+)
+def test_add_field_indicator_inputs_normalize_blank_values(
+    monkeypatch, ind1, ind2, expected1, expected2,
+):
+    fake = FakeStreamlit(
+        selections={
+            "Destination tag": "035",
+            "Indicator 1": ind1,
+            "Indicator 2": ind2,
+        }
+    )
+    monkeypatch.setattr(renderer, "st", fake)
+
+    request = renderer._render_add_field()
+
+    assert request.ind1 == expected1
+    assert request.ind2 == expected2
+
+
 def test_operation_labels_are_alphabetical(monkeypatch):
     fake = FakeStreamlit()
     _render(monkeypatch, fake)
