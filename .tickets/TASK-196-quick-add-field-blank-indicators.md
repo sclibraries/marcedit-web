@@ -12,4 +12,9 @@ Success Criteria:
 - Explicit one-character indicators remain unchanged.
 - Regression tests cover blank and explicit indicators.
 
-Status: In-Progress
+Completion evidence:
+- Commit: `b629f36`.
+- Focused renderer and transformation tests: 54 passed, 0 failed.
+- Authoritative Docker suite: 2,753 passed, 5 skipped, 0 failed.
+
+Status: Completed
