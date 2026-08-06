@@ -2,6 +2,8 @@ Title: Add focused one-operation Quick field changes
 
 Design: [Focused Quick field changes](../docs/superpowers/specs/2026-08-06-task-195-focused-quick-field-changes-design.md)
 
+Plan: [Focused Quick field changes implementation](../docs/superpowers/plans/2026-08-06-task-195-focused-quick-field-changes.md)
+
 Scope:
 - Expand Quick changes with cataloger-oriented one-time field operations:
   add field, delete field, add subfield, delete subfield, set indicators,

@@ -60,6 +60,11 @@ selector must resolve to one distinct field. A numbered occurrence is bounded
 to 1–999. Match text and raw expressions use the existing bounded request-size
 contract rather than accepting unbounded session or URL state.
 
+Each match value or raw expression retains the existing 1,024-character and
+2,048-byte limit. The complete canonical structured-adapter payload is bounded
+separately to 65,536 characters and 131,072 bytes so the approved 100-row Add
+field request remains representable. Exceeding either boundary blocks Preview.
+
 Control fields reject indicator and subfield filters. Leader `000` is not a
 field selector target; existing Leader Quick controls remain authoritative.
 The selector is a pure library component with no Streamlit, database, session,
