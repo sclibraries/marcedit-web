@@ -49,4 +49,4 @@ Success Criteria:
 - The new controls live in a dedicated Quick field changes renderer;
   `render/tasks.py` only mounts it and supplies existing file/version context.
 
-Status: Todo
+Status: In-Progress
