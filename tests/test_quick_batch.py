@@ -5,6 +5,8 @@ from __future__ import annotations
 import pymarc
 import pytest
 import copy
+from pathlib import Path
+from types import SimpleNamespace
 
 from marcedit_web.lib import transforms
 from marcedit_web.lib import quick_batch as qb
@@ -518,3 +520,86 @@ def test_quick_batch_rejects_same_revision_preview_from_another_file(
 )
 def test_validate_request_rejects_incomplete_operations(quick_request, message):
     assert message in (validate_request(quick_request) or "")
+
+
+def test_common_field_apply_clears_superseded_quick_batch_evidence(
+    monkeypatch, tmp_path
+):
+    """A Common change must not leave an older Quick Batch download visible."""
+    from marcedit_web.render import tasks as tasks_render
+
+    class FakeStreamlit:
+        def __init__(self):
+            self.session_state = {}
+            self.errors = []
+            self.successes = []
+            self.rerun_called = False
+
+        def error(self, message):
+            self.errors.append(str(message))
+
+        def success(self, message):
+            self.successes.append(str(message))
+
+        def rerun(self):
+            self.rerun_called = True
+
+    fake_st = FakeStreamlit()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    store = _store(tmp_path, _record())
+    stale_export = tmp_path / "old-quick-batch.mrc"
+    stale_export.write_bytes(b"old")
+    fake_st.session_state.update(
+        {
+            tasks_render._K_QB_PREVIEW: SimpleNamespace(),
+            tasks_render._K_QB_EXPORT: {
+                "path": str(stale_export),
+                "temporary": True,
+                "temporary_dir": None,
+            },
+        }
+    )
+    workdir = tmp_path / "candidate"
+    workdir.mkdir()
+    candidate_path = workdir / "candidate.mrc"
+    store.write_mrc_to(candidate_path)
+    candidate = SimpleNamespace(
+        output_path=Path(candidate_path),
+        workdir=workdir,
+        changed_count=1,
+        skipped_count=0,
+    )
+    preview = SimpleNamespace(
+        request=SimpleNamespace(kind="swap-field-occurrences"),
+        reason_counts={},
+        fields_affected=1,
+        subfields_affected=0,
+    )
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(tasks_render.session, "current_user_id", lambda: "cataloger")
+    monkeypatch.setattr(tasks_render.session, "current_filename", lambda: "quick-batch.mrc")
+    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: False)
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "build_apply_candidate",
+        lambda *args, **kwargs: candidate,
+    )
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "adopt_candidate_to_store",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *args, **kwargs: None)
+
+    tasks_render._apply_quick_field_change_preview(preview, preview.request)
+
+    assert tasks_render._K_QB_PREVIEW not in fake_st.session_state
+    assert tasks_render._K_QB_EXPORT not in fake_st.session_state
+    assert not stale_export.exists()
+    assert tasks_render._K_QFC_EXPORT in fake_st.session_state
+    assert fake_st.rerun_called

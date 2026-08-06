@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pymarc
+import pytest
 
 from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.lib.quick_field_changes import QuickFieldChangeRequest
@@ -272,4 +273,70 @@ def test_quick_field_change_adoption_failure_cleans_candidate_and_keeps_history(
     assert cleaned == [candidate]
     assert snapshots == []
     assert fake_st.errors == ["output mismatch"]
+    assert not fake_st.rerun_called
+
+
+@pytest.mark.parametrize(
+    ("message", "job_context"),
+    [
+        ("Loaded batch changed since preview.", False),
+        ("Sandbox operation cancelled.", False),
+        ("Apply output counts differ from the preview.", False),
+        ("Loaded file changed since preview.", True),
+    ],
+)
+def test_apply_rejects_stale_or_failed_candidate_without_history(
+    monkeypatch, tmp_path, message, job_context,
+):
+    """Tasks integration surfaces runner freshness/sandbox failures safely."""
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    preview = _preview(
+        store,
+        job_file_id=10 if job_context else None,
+        job_file_version_id=100 if job_context else None,
+    )
+    calls = []
+    fake_st.session_state.update(
+        {
+            "job_file_id": 11 if job_context else None,
+            "job_file_version_id": 101 if job_context else None,
+        }
+    )
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: job_context)
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "build_apply_candidate",
+        lambda *args, **kwargs: calls.append((args, kwargs))
+        or (_ for _ in ()).throw(ValueError(message)),
+    )
+    monkeypatch.setattr(
+        tasks_render.session,
+        "adopt_current_candidate",
+        lambda **kwargs: calls.append("adopt"),
+    )
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "adopt_candidate_to_store",
+        lambda *args, **kwargs: calls.append("adopt"),
+    )
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **kwargs: calls.append("snapshot"),
+    )
+
+    tasks_render._apply_quick_field_change_preview(preview, preview.request)
+
+    assert fake_st.errors == [message]
+    assert calls and calls[0][1]["job_file_id"] == (
+        11 if job_context else None
+    )
+    assert calls[0][1]["job_file_version_id"] == (
+        101 if job_context else None
+    )
+    assert "adopt" not in calls[1:]
+    assert "snapshot" not in calls[1:]
     assert not fake_st.rerun_called

@@ -91,10 +91,6 @@ from marcedit_web.render import (
     task_operation_reference,
 )
 
-# Keep the module name discoverable for callers that patch the renderer at the
-# Tasks boundary; the explicit alias above keeps internal references readable.
-quick_field_changes = quick_field_changes_render
-
 logger = logging.getLogger("marcedit_web.render.tasks")
 
 
