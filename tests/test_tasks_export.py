@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 class _Spinner:
     def __enter__(self):
@@ -20,6 +22,34 @@ class _Spinner:
 class _RunStatus(_Spinner):
     def update(self, **_kwargs):
         pass
+
+
+class _RecordingActivity(_Spinner):
+    def __init__(self):
+        self.phase_calls = []
+        self.completed = []
+        self.failed = []
+
+    def phase(self, label, message):
+        self.phase_calls.append((label, message))
+
+    def complete(self, label, message):
+        self.completed.append((label, message))
+
+    def fail(self, label, message):
+        self.failed.append((label, message))
+
+
+class _RecordingActivityFactory:
+    def __init__(self):
+        self.calls = []
+        self.activities = []
+
+    def __call__(self, operation_id, label, *, phase, total=None):
+        activity = _RecordingActivity()
+        self.calls.append((operation_id, label, phase, total))
+        self.activities.append(activity)
+        return activity
 
 
 def _tasks_render():
@@ -450,6 +480,106 @@ def test_run_panel_explains_synchronous_processing(monkeypatch):
     rendered = " ".join(fake_st.captions)
     assert "synchronously" in rendered.lower()
     assert "review" in rendered.lower()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "timed_out"),
+    ((0, False), (1, True), (7, False)),
+)
+def test_saved_task_run_reports_shared_activity_without_changing_result(
+    monkeypatch, tmp_path, returncode, timed_out,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render()
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    activity_factory = _RecordingActivityFactory()
+    monkeypatch.setattr(
+        tasks_render.operation_activity, "open_activity", activity_factory
+    )
+
+    source = tmp_path / "current.mrc"
+    source.write_bytes(b"source")
+    store = SimpleNamespace(
+        path=source,
+        count=lambda: 3,
+        write_mrc_to=lambda destination: destination.write_bytes(b"source"),
+    )
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "owner@smith.edu"
+    )
+    monkeypatch.setattr(
+        tasks_render.session, "current_filename", lambda: "vendor.mrc"
+    )
+    monkeypatch.setattr(
+        tasks_render.editor,
+        "parse_user_task_file",
+        lambda _path: {"body": "pass\n"},
+    )
+    output = tmp_path / "output.mrc"
+    output.write_bytes(b"")
+    sandbox_result = tasks_render.sandbox.SandboxResult(
+        output_path=output,
+        errors=[],
+        returncode=returncode,
+        timed_out=timed_out,
+    )
+    sync_run = tasks_render.synchronous_task_runner.SyncRun(
+        input_path=tmp_path / "input.mrc",
+        output_path=output,
+        workdir=tmp_path,
+        result=sandbox_result,
+    )
+    runner_calls = []
+
+    def _run_tasks(input_path, specs, *, tmp_dir):
+        runner_calls.append((input_path, list(specs), tmp_dir))
+        return sync_run
+
+    monkeypatch.setattr(
+        tasks_render.synchronous_task_runner,
+        "run_tasks",
+        _run_tasks,
+    )
+
+    @contextmanager
+    def _batch_operation(*_args, **_kwargs):
+        yield SimpleNamespace(mark_error=lambda _label: None)
+
+    monkeypatch.setattr(tasks_render, "_batch_operation", _batch_operation)
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks_render.task_diff, "compute_task_diff", lambda *_args: None
+    )
+
+    tasks_render._execute_synchronous_run(["cleanup"], tmp_path)
+
+    assert activity_factory.calls == [
+        ("saved-task-run", "Running tasks…", "Preparing", 3)
+    ]
+    assert runner_calls[0][1][0] == tasks_render.sandbox.TaskSpec(
+        name="cleanup", body="pass\n", imports=[]
+    )
+    activity = activity_factory.activities[0]
+    assert [label for label, _message in activity.phase_calls] == [
+        "Sandbox execution"
+    ]
+    if timed_out or returncode:
+        assert activity.failed
+        assert activity.completed == []
+    else:
+        assert activity.completed == [
+            ("Done — review the result below", "Review the result below.")
+        ]
+        assert activity.failed == []
+    assert fake_st.session_state[tasks_render.K_SYNC_RUN_RESULT]["output_path"] == str(
+        sandbox_result.output_path
+    )
 
 
 def test_saved_task_submission_preserves_order_and_exact_job_version(

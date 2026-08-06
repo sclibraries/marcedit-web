@@ -3620,10 +3620,16 @@ def _execute_synchronous_run(selection: list[str], tasks_dir: Path) -> None:
 
     workdir = Path(tempfile.mkdtemp(prefix="marcedit-web-sync-"))
     input_path = workdir / "input.mrc"
-    with st.status("Running tasks…", expanded=True) as status:
+    with operation_activity.open_activity(
+        "saved-task-run",
+        "Running tasks…",
+        phase="Preparing",
+        total=store.count(),
+    ) as activity:
         st.write(f"Reading **{store.count():,}** records from upload")
         store.write_mrc_to(input_path)
-        st.write(
+        activity.phase(
+            "Sandbox execution",
             f"Running {len(specs)} task(s) in the sandbox: "
             + ", ".join(f"`{spec.name}`" for spec in specs)
         )
@@ -3639,23 +3645,27 @@ def _execute_synchronous_run(selection: list[str], tasks_dir: Path) -> None:
                     measurement.mark_error("SandboxNonzeroExit")
         except Exception as exc:  # noqa: BLE001 - show bounded user action
             logger.exception("synchronous saved-task run failed")
-            status.update(label="Task run failed", state="error", expanded=False)
+            activity.fail(
+                "Task run failed",
+                f"Task run failed before producing an output: {exc}",
+            )
             st.error(f"Task run failed before producing an output: {exc}")
             shutil.rmtree(workdir, ignore_errors=True)
             return
         if result.timed_out:
-            status.update(label="Sandbox timed out", state="error", expanded=False)
+            activity.fail(
+                "Sandbox timed out",
+                "The sandbox time limit was reached.",
+            )
         elif result.returncode != 0:
-            status.update(
-                label=f"Sandbox exited with code {result.returncode}",
-                state="error",
-                expanded=False,
+            activity.fail(
+                f"Sandbox exited with code {result.returncode}",
+                "Review the sandbox diagnostics below.",
             )
         else:
-            status.update(
-                label="Done — review the result below",
-                state="complete",
-                expanded=False,
+            activity.complete(
+                "Done — review the result below",
+                "Review the result below.",
             )
 
     try:
