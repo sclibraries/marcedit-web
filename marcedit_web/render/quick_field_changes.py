@@ -42,6 +42,9 @@ EXPECTED_LABELS = [
     "Set indicators",
     "Swap field occurrences",
 ]
+# Public aliases keep the renderer contract discoverable to callers/tests
+# without making the UI depend on internal dictionary names.
+OPERATION_LABELS = EXPECTED_LABELS
 
 OPERATION_KINDS: Mapping[str, str] = {
     "Add field": "add-field",
@@ -69,6 +72,7 @@ OCCURRENCE_COMPATIBILITY: Mapping[str, tuple[str, ...]] = {
     "set-indicators": ("first", "last", "every", "numbered"),
     "swap-field-occurrences": ("first", "last", "numbered"),
 }
+COMPATIBILITY_MATRIX = OCCURRENCE_COMPATIBILITY
 
 _OCCURRENCE_LABELS = {
     "first": "First matching field",
