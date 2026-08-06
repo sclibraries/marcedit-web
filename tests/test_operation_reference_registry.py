@@ -124,7 +124,11 @@ def test_quick_change_browser_fixture_is_small_and_sanitized():
         "quick-missing-occurrences",
     }
     assert len(records[0].get_fields("070")) == 2
-    assert len(records[0].get_fields("856")) == 3
+    first_856 = records[0].get_fields("856")
+    assert len(first_856) == 3
+    first_urls = [field["u"] for field in first_856]
+    assert sum("vendor.example" in url for url in first_urls) == 2
+    assert sum("vendor.example" not in url for url in first_urls) == 1
     assert len(records[0].get_fields("035")) == 3
     first, second, near = records[0].get_fields("035")
     assert str(first) == str(second)
@@ -132,3 +136,7 @@ def test_quick_change_browser_fixture_is_small_and_sanitized():
     assert all(record.get_fields("008") for record in records)
     assert len(records[1].get_fields("070")) == 1
     assert not records[2].get_fields("070")
+    assert not any(
+        "vendor.example" in field["u"]
+        for field in records[2].get_fields("856")
+    )

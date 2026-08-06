@@ -863,7 +863,7 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Before:** `(no 877 field)`
 
-**After:** `877  \$m Map`
+**After:** `877  $m Map`
 
 **Related:** none
 
@@ -883,9 +883,9 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Error behavior:** Control fields, invalid codes, and invalid matcher values block Preview.
 
-**Before:** `856 40 \$u https://vendor.example/item`
+**Before:** `856 40 $u https://vendor.example/item`
 
-**After:** `856 40 \$u https://vendor.example/item \$y Vendor link`
+**After:** `856 40 $u https://vendor.example/item $y Vendor link`
 
 **Related:** `delete-subfield`
 
@@ -905,9 +905,10 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Error behavior:** Incompatible control/data tags or invalid destination policies block Preview.
 
-**Before:** `245 10 \$a Title`
+**Before:** `245 10 $a Title`
 
-**After:** `245 10 \$a Title\n246 30 \$a Title`
+**After:** `245 10 $a Title
+246 30 $a Title`
 
 **Related:** none
 
@@ -927,7 +928,7 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Error behavior:** Invalid tags, filters, occurrence choices, or unsafe matchers block Preview.
 
-**Before:** `856 40 \$u https://old.example/item`
+**Before:** `856 40 $u https://old.example/item`
 
 **After:** `(selected 856 field removed)`
 
@@ -949,9 +950,9 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Error behavior:** Control fields, invalid codes, and invalid guided or regular-expression matchers block Preview.
 
-**Before:** `856 40 \$u https://vendor.example/item \$y obsolete`
+**Before:** `856 40 $u https://vendor.example/item $y obsolete`
 
-**After:** `856 40 \$u https://vendor.example/item`
+**After:** `856 40 $u https://vendor.example/item`
 
 **Related:** `add-subfield`
 
@@ -971,9 +972,9 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Error behavior:** Incompatible control/data tags and invalid destination tags block Preview.
 
-**Before:** `490  \$a Series`
+**Before:** `490  $a Series`
 
-**After:** `830  \$a Series (same source position)`
+**After:** `830  $a Series (same source position)`
 
 **Related:** `sort-fields`
 
@@ -993,9 +994,10 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Error behavior:** Invalid duplicate filters or keep choices block Preview.
 
-**Before:** `035  \$a (OCoLC)123\n035  \$a (OCoLC)123`
+**Before:** `035  $a (OCoLC)123
+035  $a (OCoLC)123`
 
-**After:** `035  \$a (OCoLC)123`
+**After:** `035  $a (OCoLC)123`
 
 **Related:** none
 
@@ -1015,9 +1017,9 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Error behavior:** Control fields, missing indicator choices, or invalid filters block Preview.
 
-**Before:** `245 10 \$a Title`
+**Before:** `245 10 $a Title`
 
-**After:** `245 00 \$a Title`
+**After:** `245 00 $a Title`
 
 **Related:** none
 
@@ -1037,9 +1039,11 @@ These nine labels are alphabetical. Choose exactly one for each Preview and Appl
 
 **Error behavior:** Selectors must be distinct and use the same exact tag; Every is not available for Swap.
 
-**Before:** `070  4 \$a QA76.73.P98\n070  4 \$a QA76.73.P99`
+**Before:** `070  4 $a QA76.73.P98
+070  4 $a QA76.73.P99`
 
-**After:** `070  4 \$a QA76.73.P99\n070  4 \$a QA76.73.P98`
+**After:** `070  4 $a QA76.73.P99
+070  4 $a QA76.73.P98`
 
 **Related:** none
 
