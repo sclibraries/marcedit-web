@@ -9,6 +9,7 @@ import pytest
 
 from marcedit_web.lib.quick_field_changes import QuickFieldChangeRequest
 from marcedit_web.lib.quick_field_change_runner import QuickFieldChangePreview
+from marcedit_web.lib.quick_field_selector import FieldFilter, FieldSelector, Occurrence
 from marcedit_web.render import quick_field_changes as renderer
 
 
@@ -44,7 +45,7 @@ class FakeStreamlit:
         return self.selections.get(label, options[index])
 
     def text_input(self, label, *, value="", key, **kwargs):
-        self.widgets.append(("text_input", label, key))
+        self.widgets.append(("text_input", label, key, kwargs))
         return self.selections.get(label, value)
 
     def number_input(self, label, *, value, key, **kwargs):
@@ -208,3 +209,155 @@ def test_preview_error_remains_visible(monkeypatch):
     )
     _render(monkeypatch, fake, store=None)
     assert fake.errors == ["sandbox failed"]
+
+
+def test_matrix_order_is_first_last_numbered_every():
+    assert renderer.OCCURRENCE_COMPATIBILITY["delete-field"] == (
+        "first",
+        "last",
+        "numbered",
+        "every",
+    )
+    assert renderer.OCCURRENCE_COMPATIBILITY["swap-field-occurrences"] == (
+        "first",
+        "last",
+        "numbered",
+    )
+
+
+@pytest.mark.parametrize("operation", ["Add subfield", "Delete subfield"])
+def test_control_tag_hides_operation_subfield_widgets_and_blocks_preview(
+    monkeypatch, operation,
+):
+    fake = FakeStreamlit(
+        selections={"Operation": operation, "Field tag": "001"},
+        pressed={renderer.K_PREVIEW_BUTTON},
+    )
+    build_calls = []
+    monkeypatch.setattr(
+        renderer.quick_field_change_runner,
+        "build_preview",
+        lambda *args, **kwargs: build_calls.append(args),
+    )
+    _render(monkeypatch, fake)
+    labels = [row[1] for row in fake.widgets]
+    assert "Subfield value" not in labels
+    assert "Subfield value match" not in labels
+    assert not build_calls
+    assert any("Control fields cannot" in error for error in fake.errors)
+
+
+@pytest.mark.parametrize("operation", ["Copy field", "Move or retag field"])
+def test_copy_and_move_render_destination_controls(monkeypatch, operation):
+    fake = FakeStreamlit(selections={"Operation": operation})
+    _render(monkeypatch, fake)
+    assert any(row[1] == "Destination tag" for row in fake.widgets)
+
+
+def test_matcher_widgets_pin_existing_character_bound(monkeypatch):
+    fake = FakeStreamlit(
+        selections={
+            "Operation": "Delete field",
+            "Field tag": "245",
+            "Subfield code": "a",
+        }
+    )
+    _render(monkeypatch, fake)
+    match_rows = [row for row in fake.widgets if row[0] == "text_input" and row[1] == "Match value"]
+    assert match_rows and match_rows[0][3]["max_chars"] == 1024
+
+
+def test_raw_regex_changes_filter_mode_without_renderer_compilation(monkeypatch):
+    fake = FakeStreamlit(
+        selections={
+            "Operation": "Delete field",
+            "Field tag": "245",
+            "Subfield code": "a",
+            "Use raw regular expression": True,
+        },
+        pressed={renderer.K_PREVIEW_BUTTON},
+    )
+    captured = []
+    error_preview = QuickFieldChangePreview(
+        request=QuickFieldChangeRequest(kind="delete-field"),
+        request_json="",
+        error="preview failed",
+    )
+    monkeypatch.setattr(
+        renderer.quick_field_change_runner,
+        "build_preview",
+        lambda store, request, **kwargs: captured.append(request) or error_preview,
+    )
+    _render(monkeypatch, fake, store=SimpleNamespace(revision=0))
+    assert captured[0].selector.field_filter.match_mode == "raw_regex"
+
+
+def test_apply_requires_owned_preview_artifact(monkeypatch):
+    store = SimpleNamespace(revision=0)
+    request = QuickFieldChangeRequest(
+        kind="delete-field",
+        selector=FieldSelector(FieldFilter("")),
+    )
+    preview = QuickFieldChangePreview(
+        request=request,
+        request_json=renderer._canonical_request_json(request),
+        store_id=id(store),
+        store_revision=store.revision,
+        output_path=Path("/tmp/missing-preview.mrc"),
+    )
+    monkeypatch.setattr(renderer, "_preview_artifact_is_valid", lambda value: False)
+    calls = []
+    fake = FakeStreamlit(
+        session_state={renderer.K_PREVIEW: preview},
+        pressed={renderer.K_APPLY_BUTTON},
+    )
+    _render(monkeypatch, fake, store=store, on_apply=lambda *args: calls.append(args))
+    assert not calls
+    assert any("stale" in message.lower() for message in fake.infos)
+
+
+def test_current_preview_applies_preview_and_current_request(monkeypatch):
+    store = SimpleNamespace(revision=0)
+    request = QuickFieldChangeRequest(
+        kind="delete-field",
+        selector=FieldSelector(FieldFilter("")),
+    )
+    preview = QuickFieldChangePreview(
+        request=request,
+        request_json=renderer._canonical_request_json(request),
+        store_id=id(store),
+        store_revision=store.revision,
+        output_path=Path("/tmp/preview.mrc"),
+    )
+    monkeypatch.setattr(renderer, "_preview_artifact_is_valid", lambda value: True)
+    calls = []
+    fake = FakeStreamlit(
+        selections={"Operation": "Delete field"},
+        session_state={renderer.K_PREVIEW: preview},
+        pressed={renderer.K_APPLY_BUTTON},
+    )
+    _render(monkeypatch, fake, store=store, on_apply=lambda *args: calls.append(args))
+    assert calls == [(preview, request)]
+
+
+def test_summary_includes_selection_and_operation_parameters():
+    selector = FieldSelector(
+        FieldFilter(
+            "245",
+            subfield_code="a",
+            match_mode="contains",
+            match_value="Title",
+            ignore_case=True,
+        ),
+        Occurrence(mode="numbered", number=2),
+    )
+    request = QuickFieldChangeRequest(
+        kind="copy-field",
+        selector=selector,
+        destination_tag="246",
+        destination_policy="replace_all",
+    )
+    summary = renderer._summary(request)
+    assert "245" in summary and "$a contains 'Title'" in summary
+    assert "numbered matching field #2" in summary
+    assert "246" in summary and "replace all" in summary

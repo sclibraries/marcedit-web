@@ -9,6 +9,7 @@ processed in this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Callable, Iterable, Mapping
 
 import streamlit as st
@@ -63,13 +64,13 @@ OPERATION_KINDS: Mapping[str, str] = {
 # collection-wide operations do not have an occurrence selector at all.
 OCCURRENCE_COMPATIBILITY: Mapping[str, tuple[str, ...]] = {
     "add-field": (),
-    "add-subfield": ("first", "last", "every", "numbered"),
-    "copy-field": ("first", "last", "every", "numbered"),
-    "delete-field": ("first", "last", "every", "numbered"),
-    "delete-subfield": ("first", "last", "every", "numbered"),
-    "move-field": ("first", "last", "every", "numbered"),
+    "add-subfield": ("first", "last", "numbered", "every"),
+    "copy-field": ("first", "last", "numbered", "every"),
+    "delete-field": ("first", "last", "numbered", "every"),
+    "delete-subfield": ("first", "last", "numbered", "every"),
+    "move-field": ("first", "last", "numbered", "every"),
     "remove-duplicate-fields": (),
-    "set-indicators": ("first", "last", "every", "numbered"),
+    "set-indicators": ("first", "last", "numbered", "every"),
     "swap-field-occurrences": ("first", "last", "numbered"),
 }
 COMPATIBILITY_MATRIX = OCCURRENCE_COMPATIBILITY
@@ -93,6 +94,8 @@ _INDICATOR_FILTER_FROM_LABEL = {
     "Any": IndicatorFilter(),
     "MARC blank": IndicatorFilter(mode="blank"),
 }
+_MAX_MATCH_CHARS = 1024
+_MAX_MATCH_BYTES = 2048
 
 
 @dataclass(frozen=True)
@@ -165,6 +168,7 @@ def _match_controls(prefix: str, *, allow_subfield: bool) -> tuple[str, str, str
         match_value = _text(
             "Match value",
             key=_widget_key(prefix + "_match_value"),
+            max_chars=_MAX_MATCH_CHARS,
         )
         ignore_case = _checkbox(
             "Ignore case",
@@ -177,6 +181,36 @@ def _match_controls(prefix: str, *, allow_subfield: bool) -> tuple[str, str, str
             ):
                 match_mode = "raw_regex"
     return subfield_code, match_mode, match_value, ignore_case
+
+
+def _canonical_request_json(request: QuickFieldChangeRequest) -> str:
+    return json.dumps(
+        quick_field_changes.request_to_payload(request),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _matcher_bound_error(request: QuickFieldChangeRequest) -> str | None:
+    """Keep UI-created matcher values inside the selector's shared bounds."""
+
+    filters = []
+    for selector in (request.selector, request.second_selector):
+        if selector is not None:
+            filters.append(selector.field_filter)
+    if request.duplicate_filter is not None:
+        filters.append(request.duplicate_filter)
+    values = [field_filter.match_value for field_filter in filters]
+    if request.kind == "delete-subfield":
+        values.append(request.subfield_value)
+    for value in values:
+        if len(value) > _MAX_MATCH_CHARS:
+            return "Match text must be at most 1,024 characters."
+        if len(value.encode("utf-8")) > _MAX_MATCH_BYTES:
+            return "Match text must be at most 2,048 bytes."
+    return None
 
 
 def _render_selector(
@@ -379,6 +413,9 @@ def _render_request(kind: str) -> tuple[QuickFieldChangeRequest, tuple[_Selector
 
     request, controls = _render_selector_request(kind)
     kwargs: dict[str, object] = {}
+    if kind in {"add-subfield", "delete-subfield"} and controls[0].is_control:
+        st.warning("Control fields cannot receive subfield changes.")
+        return QuickFieldChangeRequest(kind=kind, selector=request.selector), controls
     if kind in {"copy-field", "move-field"}:
         kwargs["destination_tag"] = _text(
             "Destination tag",
@@ -435,6 +472,7 @@ def _render_request(kind: str) -> tuple[QuickFieldChangeRequest, tuple[_Selector
         kwargs["subfield_value"] = _text(
             "Subfield value match",
             key=_widget_key("delete_subfield_value"),
+            max_chars=_MAX_MATCH_CHARS,
         )
         kwargs["subfield_occurrence"] = {
             "First matching subfield": "first",
@@ -463,39 +501,122 @@ def _render_request(kind: str) -> tuple[QuickFieldChangeRequest, tuple[_Selector
     return QuickFieldChangeRequest(kind=kind, selector=request.selector, **kwargs), controls
 
 
+def _selector_summary(selector: FieldSelector | None, *, include_occurrence: bool = True) -> str:
+    if selector is None:
+        return "(no selector)"
+    field_filter = selector.field_filter
+    tag = field_filter.tag or "(enter a tag)"
+    parts = [f"tag {tag}"]
+    for position, criterion in ((1, field_filter.ind1), (2, field_filter.ind2)):
+        if criterion.mode == "blank":
+            parts.append(f"indicator {position} MARC blank")
+        elif criterion.mode == "exact":
+            parts.append(f"indicator {position} '{criterion.value}'")
+    if field_filter.subfield_code:
+        mode = _MATCH_MODE_LABELS.get(field_filter.match_mode, field_filter.match_mode)
+        value = field_filter.match_value
+        parts.append(f"${field_filter.subfield_code} {mode.lower()} '{value}'")
+        if field_filter.ignore_case:
+            parts.append("case-insensitive")
+    if include_occurrence:
+        occurrence = _OCCURRENCE_LABELS.get(
+            selector.occurrence.mode,
+            selector.occurrence.mode,
+        )
+        if selector.occurrence.mode == "numbered":
+            occurrence += f" #{selector.occurrence.number}"
+        parts.append(occurrence.lower())
+    return ", ".join(parts)
+
+
 def _summary(request: QuickFieldChangeRequest) -> str:
     label = next(
         (name for name, kind in OPERATION_KINDS.items() if kind == request.kind),
         request.kind,
     )
     if request.kind == "add-field":
-        return f"{label}: add {request.destination_tag or '(enter a tag)'} to the selected records."
-    if request.kind == "remove-duplicate-fields":
-        return f"{label}: keep the {request.keep_duplicate} exact copy for each matching tag."
-    if request.selector is not None:
-        tag = request.selector.field_filter.tag or "(enter a tag)"
-        occurrence = _OCCURRENCE_LABELS.get(request.selector.occurrence.mode, "First matching field")
-        if request.kind == "swap-field-occurrences" and request.second_selector is not None:
-            second_tag = request.second_selector.field_filter.tag or "(enter a tag)"
-            return (
-                f"{label}: swap the {occurrence.lower()} {tag} with the "
-                f"{_OCCURRENCE_LABELS.get(request.second_selector.occurrence.mode, 'first matching field').lower()} {second_tag}."
+        destination = request.destination_tag or "(enter a tag)"
+        if transforms.is_control_tag(destination):
+            content = f"control value '{request.control_value}'"
+        else:
+            content = (
+                f"indicators '{request.ind1 or ''}'/'{request.ind2 or ''}'"
+                f" and subfields {list(request.subfields)!r}"
             )
-        return f"{label}: {occurrence.lower()} for {tag}."
+        scope = {
+            "every": "every record",
+            "tag_absent": "records where the tag is absent",
+            "identical_absent": "records where the identical field is absent",
+        }.get(request.record_scope, request.record_scope)
+        return f"{label}: add {destination} with {content} to {scope}."
+    if request.kind == "remove-duplicate-fields":
+        return (
+            f"{label}: for {_selector_summary(FieldSelector(request.duplicate_filter), include_occurrence=False) if request.duplicate_filter else '(enter a tag)'}, "
+            f"keep the {request.keep_duplicate} exact copy."
+        )
+    if request.selector is not None:
+        selection = _selector_summary(request.selector)
+        if request.kind == "swap-field-occurrences" and request.second_selector is not None:
+            return (
+                f"{label}: swap {selection} with "
+                f"{_selector_summary(request.second_selector)}."
+            )
+        if request.kind == "copy-field":
+            return (
+                f"{label}: copy {selection} to tag {request.destination_tag or '(enter a tag)'} "
+                f"using {request.destination_policy.replace('_', ' ')}."
+            )
+        if request.kind == "move-field":
+            return (
+                f"{label}: retag {selection} to {request.destination_tag or '(enter a tag)'} "
+                "while preserving source position."
+            )
+        if request.kind == "add-subfield":
+            return (
+                f"{label}: add ${request.subfield_code or '?'}='{request.subfield_value}' to {selection}; "
+                f"{request.position}, {request.repeat_policy.replace('_', ' ')}."
+            )
+        if request.kind == "delete-subfield":
+            return (
+                f"{label}: delete ${request.subfield_code or '?'} matching '{request.subfield_value}' "
+                f"from {selection}; {request.subfield_occurrence}, "
+                f"remove empty field={request.remove_empty_field}."
+            )
+        if request.kind == "set-indicators":
+            return (
+                f"{label}: set indicator 1={request.ind1!r}, indicator 2={request.ind2!r} "
+                f"on {selection}."
+            )
+        return f"{label}: delete {selection}."
     return label
+
+
+def _preview_artifact_is_valid(preview) -> bool:
+    """Require the runner-owned preview bytes before enabling Apply."""
+
+    try:
+        quick_field_change_runner._owned_output(preview)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+    return True
 
 
 def _request_is_current(preview, request: QuickFieldChangeRequest, store, *, job_file_id, job_file_version_id) -> bool:
     if preview is None or preview.error is not None:
+        return False
+    if _matcher_bound_error(request) is not None:
         return False
     if preview.store_id != id(store) or preview.store_revision != getattr(store, "revision", None):
         return False
     if preview.job_file_id != job_file_id or preview.job_file_version_id != job_file_version_id:
         return False
     try:
-        return quick_field_changes.request_to_payload(preview.request) == quick_field_changes.request_to_payload(request)
-    except Exception:
-        return preview.request == request
+        return (
+            _canonical_request_json(request) == preview.request_json
+            and _preview_artifact_is_valid(preview)
+        )
+    except (TypeError, ValueError, AttributeError):
+        return False
 
 
 def _render_preview_evidence(preview) -> None:
@@ -572,7 +693,18 @@ def render_common_field_changes(
     if any(control.selector.occurrence.mode == "every" for control in controls):
         st.warning("Every-match may change multiple fields (a multi-field change) in one record.")
 
-    if st.button("Preview", key=K_PREVIEW_BUTTON, disabled=store is None):
+    request_error = _matcher_bound_error(request)
+    if (
+        request_error is None
+        and kind in {"add-subfield", "delete-subfield"}
+        and any(control.is_control for control in controls)
+    ):
+        request_error = "Control fields cannot receive subfield changes."
+    if request_error:
+        st.error(request_error)
+
+    preview_disabled = store is None or request_error is not None
+    if st.button("Preview", key=K_PREVIEW_BUTTON, disabled=preview_disabled) and not preview_disabled:
         previous = st.session_state.get(K_PREVIEW)
         quick_field_change_runner.cleanup_artifact(previous)
         if store is None:
@@ -602,12 +734,18 @@ def render_common_field_changes(
     )
     if preview is not None and preview.error is not None:
         st.error(preview.error)
+    elif request_error:
+        pass
     elif preview is not None and not current:
         st.info("This preview is stale. Preview the current request again before applying.")
     elif preview is not None:
         _render_preview_evidence(preview)
 
-    if st.button("Apply preview", key=K_APPLY_BUTTON, disabled=not current):
+    if (
+        st.button("Apply preview", key=K_APPLY_BUTTON, disabled=not current or request_error is not None)
+        and current
+        and request_error is None
+    ):
         on_apply(preview, request)
 
 
