@@ -10,6 +10,7 @@ import pytest
 from marcedit_web.lib.quick_field_changes import QuickFieldChangeRequest
 from marcedit_web.lib.quick_field_change_runner import QuickFieldChangePreview
 from marcedit_web.lib.quick_field_selector import FieldFilter, FieldSelector, Occurrence
+from marcedit_web.lib.task_diff import PerRecordDiff, TaskDiffSummary
 from marcedit_web.render import quick_field_changes as renderer
 
 
@@ -247,6 +248,22 @@ def test_control_tag_hides_operation_subfield_widgets_and_blocks_preview(
     assert any("Control fields cannot" in error for error in fake.errors)
 
 
+def test_control_tag_set_indicators_blocks_preview(monkeypatch):
+    fake = FakeStreamlit(
+        selections={"Operation": "Set indicators", "Field tag": "001"},
+        pressed={renderer.K_PREVIEW_BUTTON},
+    )
+    build_calls = []
+    monkeypatch.setattr(
+        renderer.quick_field_change_runner,
+        "build_preview",
+        lambda *args, **kwargs: build_calls.append(args),
+    )
+    _render(monkeypatch, fake)
+    assert not build_calls
+    assert any("cannot have indicators" in error for error in fake.errors)
+
+
 @pytest.mark.parametrize("operation", ["Copy field", "Move or retag field"])
 def test_copy_and_move_render_destination_controls(monkeypatch, operation):
     fake = FakeStreamlit(selections={"Operation": operation})
@@ -338,6 +355,46 @@ def test_current_preview_applies_preview_and_current_request(monkeypatch):
     )
     _render(monkeypatch, fake, store=store, on_apply=lambda *args: calls.append(args))
     assert calls == [(preview, request)]
+
+
+def test_real_owned_preview_gate_and_evidence_metrics(monkeypatch):
+    runner = renderer.quick_field_change_runner
+    workdir = runner._new_workdir()
+    output = workdir / "output.mrc"
+    output.write_bytes(b"candidate")
+    preview = QuickFieldChangePreview(
+        request=QuickFieldChangeRequest(kind="delete-field"),
+        request_json="",
+        output_path=output,
+        workdir=workdir,
+        record_count=3,
+        changed_count=2,
+        unchanged_count=1,
+        skipped_count=0,
+        fields_affected=2,
+        subfields_affected=0,
+        reason_counts={"no-filtered-fields": 1},
+        diff_summary=TaskDiffSummary(
+            changed_count=2,
+            per_record_diffs=[
+                PerRecordDiff(
+                    record_index=0,
+                    identifier="r1",
+                    rows=[("=245  old", "=245  new", "changed")],
+                )
+            ],
+        ),
+    )
+    try:
+        assert renderer._preview_artifact_is_valid(preview)
+        fake = FakeStreamlit()
+        monkeypatch.setattr(renderer, "st", fake)
+        renderer._render_preview_evidence(preview)
+        assert ("Changed", 2) in fake.metrics
+        assert any("no-filtered-fields: 1" in caption for caption in fake.captions)
+        assert any("Record r1 changes" == label for label, _expanded in fake.expanders)
+    finally:
+        runner.cleanup_artifact(preview)
 
 
 def test_summary_includes_selection_and_operation_parameters():

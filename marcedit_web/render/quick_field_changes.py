@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
 import streamlit as st
@@ -595,7 +596,12 @@ def _preview_artifact_is_valid(preview) -> bool:
     """Require the runner-owned preview bytes before enabling Apply."""
 
     try:
-        quick_field_change_runner._owned_output(preview)
+        if not quick_field_change_runner.artifact_is_owned(preview):
+            return False
+        output = Path(preview.output_path)
+        workdir = Path(preview.workdir).resolve(strict=True)
+        if output.resolve().parent != workdir or not output.is_file():
+            return False
     except (AttributeError, OSError, TypeError, ValueError):
         return False
     return True
@@ -700,6 +706,12 @@ def render_common_field_changes(
         and any(control.is_control for control in controls)
     ):
         request_error = "Control fields cannot receive subfield changes."
+    if (
+        request_error is None
+        and kind == "set-indicators"
+        and any(control.is_control for control in controls)
+    ):
+        request_error = "Control fields cannot have indicators."
     if request_error:
         st.error(request_error)
 

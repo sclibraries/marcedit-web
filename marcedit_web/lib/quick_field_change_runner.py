@@ -327,6 +327,21 @@ def _artifact_owned(workdir: Path) -> bool:
         return False
 
 
+def artifact_is_owned(artifact: object | None) -> bool:
+    """Return whether a preview/candidate workspace belongs to this runner."""
+
+    if artifact is None:
+        return False
+    workdir = getattr(
+        artifact,
+        "workdir",
+        artifact if isinstance(artifact, Path) else None,
+    )
+    if workdir is None:
+        return False
+    return _artifact_owned(Path(workdir))
+
+
 def _preview_base(
     request: QuickFieldChangeRequest,
     request_json: str,
@@ -529,5 +544,6 @@ __all__ = [
     "build_preview",
     "build_apply_candidate",
     "cleanup_artifact",
+    "artifact_is_owned",
     "adopt_candidate_to_store",
 ]
