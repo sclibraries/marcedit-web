@@ -8,8 +8,72 @@ from types import SimpleNamespace
 
 import pymarc
 
+from marcedit_web.lib.batch_replace import BatchReplaceRequest
 from marcedit_web.lib.quick_batch import QuickBatchRequest
 from marcedit_web.lib.record_store import RecordStore
+from marcedit_web.render import operation_activity
+
+
+class _RecordingActivity:
+    def __init__(self, operation_id, events=None):
+        self.operation_id = operation_id
+        self.phase_calls = []
+        self.progress_calls = []
+        self.completed = []
+        self.failed = []
+        self.events = events if events is not None else []
+        self.progress_callback = self._progress
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def phase(self, label, message):
+        self.phase_calls.append((label, message))
+
+    def _progress(self, processed, total):
+        self.progress_calls.append((processed, total))
+
+    def complete(self, label, message):
+        self.events.append("complete")
+        self.completed.append((label, message))
+
+    def fail(self, label, message):
+        self.events.append("fail")
+        self.failed.append((label, message))
+
+
+class _RecordingActivityFactory:
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.activities = []
+
+    def __call__(self, operation_id, label, *, phase, total=None):
+        activity = _RecordingActivity(operation_id, self.events)
+        activity.phase_calls.append((phase, label))
+        self.activities.append(activity)
+        return activity
+
+
+class _QuietActivity:
+    progress_callback = staticmethod(lambda *_args: None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def phase(self, *_args):
+        return None
+
+    def complete(self, *_args):
+        return None
+
+    def fail(self, *_args):
+        return None
 
 
 class _Spinner:
@@ -108,6 +172,17 @@ def _store(tmp_path):
     )
 
 
+def _replace_request():
+    return BatchReplaceRequest(
+        tag="001",
+        subfield=None,
+        find="quick-batch-ui",
+        replace="quick-ui-updated",
+        regex=False,
+        ignore_case=False,
+    )
+
+
 def _tasks_render(monkeypatch, fake_st):
     sys.modules.setdefault(
         "streamlit_ace",
@@ -116,6 +191,11 @@ def _tasks_render(monkeypatch, fake_st):
     from marcedit_web.render import tasks as tasks_render
 
     monkeypatch.setattr(tasks_render, "st", fake_st)
+    monkeypatch.setattr(
+        operation_activity,
+        "open_activity",
+        lambda *_args, **_kwargs: _QuietActivity(),
+    )
     return tasks_render
 
 
@@ -124,6 +204,8 @@ def test_quick_batch_preview_stores_non_mutating_preview(monkeypatch, tmp_path):
     tasks_render = _tasks_render(monkeypatch, fake_st)
     store = _store(tmp_path)
     monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    factory = _RecordingActivityFactory()
+    monkeypatch.setattr(operation_activity, "open_activity", factory)
 
     request = QuickBatchRequest(kind="leader", position="05", value="c")
     tasks_render._build_and_store_quick_batch_preview(request)
@@ -133,10 +215,79 @@ def test_quick_batch_preview_stores_non_mutating_preview(monkeypatch, tmp_path):
     assert preview.changed_count == 1
     assert str(preview_store.get(0).leader)[5] == "c"
     assert str(store.get(0).leader)[5] == "n"
-    assert fake_st.progress_updates == [0.0, 1.0]
-    assert fake_st.status_messages == ["Previewing record 1 of 1…"]
-    assert fake_st.progress_cleared == 1
-    assert fake_st.status_cleared == 1
+    activity = factory.activities[0]
+    assert activity.operation_id == "quick-batch-preview"
+    assert activity.completed
+    assert activity.failed == []
+
+
+def test_quick_batch_preview_passes_activity_progress_callback_at_boundaries(
+    monkeypatch, tmp_path,
+):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    factory = _RecordingActivityFactory()
+    monkeypatch.setattr(operation_activity, "open_activity", factory)
+    preview = tasks_render.quick_batch.build_preview(
+        store, QuickBatchRequest(kind="leader", position="05", value="c")
+    )
+    captured = []
+
+    def fake_build_preview(store_arg, request_arg, *, progress):
+        captured.append((request_arg, progress))
+        for processed in (1, 250, 1000):
+            progress(processed, 1000)
+        return preview
+
+    monkeypatch.setattr(
+        tasks_render.quick_batch, "build_preview", fake_build_preview
+    )
+    request = QuickBatchRequest(kind="leader", position="05", value="c")
+
+    tasks_render._build_and_store_quick_batch_preview(request)
+
+    assert captured[0][0] is request
+    assert captured[0][1] is factory.activities[0].progress_callback
+    assert factory.activities[0].progress_calls == [
+        (1, 1000),
+        (250, 1000),
+        (1000, 1000),
+    ]
+
+
+def test_quick_batch_apply_completes_activity_before_rerun(monkeypatch, tmp_path):
+    events = []
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(tasks_render.session, "current_user_id", lambda: "cataloger")
+    monkeypatch.setattr(tasks_render.session, "current_filename", lambda: "quick-ui.mrc")
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **kwargs: {"id": 7, "job_id": kwargs["job_id"], "kind": kwargs["kind"]},
+    )
+    factory = _RecordingActivityFactory(events)
+    monkeypatch.setattr(operation_activity, "open_activity", factory)
+    original_rerun = fake_st.rerun
+
+    def rerun():
+        events.append("rerun")
+        original_rerun()
+
+    fake_st.rerun = rerun
+    preview = tasks_render.quick_batch.build_preview(
+        store, QuickBatchRequest(kind="leader", position="05", value="c")
+    )
+
+    tasks_render._apply_quick_batch_preview(preview)
+
+    assert events.index("complete") < events.index("rerun")
+    assert factory.activities[0].operation_id == "quick-batch-apply"
 
 
 def test_quick_batch_preview_clears_quick_find_replace_preview(monkeypatch, tmp_path):
@@ -153,28 +304,80 @@ def test_quick_batch_preview_clears_quick_find_replace_preview(monkeypatch, tmp_
     assert tasks_render._K_QB_PREVIEW in fake_st.session_state
 
 
-def test_quick_batch_progress_callback_is_throttled(monkeypatch):
+def test_quick_find_replace_preview_uses_activity_phases_and_preserves_request(
+    monkeypatch, tmp_path,
+):
     fake_st = _FakeStreamlit()
     tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    request = _replace_request()
+    returned_preview = tasks_render.batch_replace.build_preview(store, request)
+    factory = _RecordingActivityFactory()
+    monkeypatch.setattr(operation_activity, "open_activity", factory)
+    captured = []
 
-    callback, progress, status = tasks_render._quick_batch_progress(
-        "Previewing",
-        min_step=200,
+    def fake_build_preview(store_arg, request_arg):
+        captured.append((store_arg, request_arg))
+        return returned_preview
+
+    monkeypatch.setattr(
+        tasks_render.batch_replace, "build_preview", fake_build_preview
     )
-    for processed in range(1, 1001):
-        callback(processed, 1000)
-    progress.empty()
-    status.empty()
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
 
-    assert fake_st.status_messages == [
-        "Previewing record 1 of 1,000…",
-        "Previewing record 200 of 1,000…",
-        "Previewing record 400 of 1,000…",
-        "Previewing record 600 of 1,000…",
-        "Previewing record 800 of 1,000…",
-        "Previewing record 1,000 of 1,000…",
+    tasks_render._build_and_store_preview(request)
+
+    assert captured == [(store, request)]
+    assert fake_st.session_state[tasks_render._K_BR_PREVIEW] is returned_preview
+    activity = factory.activities[0]
+    assert activity.operation_id == "quick-find-replace-preview"
+    assert [label for label, _message in activity.phase_calls] == [
+        "Preparing",
+        "Previewing",
+        "Finalizing",
     ]
-    assert fake_st.progress_updates == [0.0, 0.001, 0.2, 0.4, 0.6, 0.8, 1.0]
+    assert activity.completed
+
+
+def test_quick_find_replace_apply_uses_activity_phases_and_completes_before_rerun(
+    monkeypatch, tmp_path,
+):
+    events = []
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    request = _replace_request()
+    preview = tasks_render.batch_replace.build_preview(store, request)
+    factory = _RecordingActivityFactory(events)
+    monkeypatch.setattr(operation_activity, "open_activity", factory)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(tasks_render.session, "current_user_id", lambda: "cataloger")
+    monkeypatch.setattr(tasks_render.session, "current_filename", lambda: "quick-ui.mrc")
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **kwargs: {"id": 7, "job_id": kwargs["job_id"], "kind": kwargs["kind"]},
+    )
+    original_rerun = fake_st.rerun
+
+    def rerun():
+        events.append("rerun")
+        original_rerun()
+
+    fake_st.rerun = rerun
+
+    tasks_render._apply_quick_preview(preview)
+
+    activity = factory.activities[0]
+    assert activity.operation_id == "quick-find-replace-apply"
+    assert [label for label, _message in activity.phase_calls] == [
+        "Preparing",
+        "Applying",
+        "Finalizing",
+    ]
+    assert activity.completed
+    assert events.index("complete") < events.index("rerun")
 
 
 def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tmp_path):
@@ -253,10 +456,6 @@ def test_quick_batch_apply_mutates_store_clears_cache_and_audits(monkeypatch, tm
     assert fake_st.spinners == [
         "Applying quick batch operation to 1 record…"
     ]
-    assert fake_st.progress_updates == [0.0, 1.0]
-    assert fake_st.status_messages == ["Checking record 1 of 1…"]
-    assert fake_st.progress_cleared == 1
-    assert fake_st.status_cleared == 1
     assert fake_st.rerun_called is True
 
 

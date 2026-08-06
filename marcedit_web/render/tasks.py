@@ -1459,6 +1459,8 @@ def _render_quick_ops_mode() -> None:
         st.session_state[_K_QUICK_OPERATION_ACTIVE] = selected
 
     if selected == "find-replace":
+        operation_activity.render_completion("quick-find-replace-preview")
+        operation_activity.render_completion("quick-find-replace-apply")
         _render_quick_find_replace()
     elif selected.startswith("field:"):
         operation_activity.render_completion("quick-field-change-preview")
@@ -4164,21 +4166,36 @@ def _build_and_store_preview(request: BatchReplaceRequest) -> None:
         st.error("No loaded batch — upload a `.mrc` on Home first.")
         return
 
-    with st.spinner("Building preview…"):
-        try:
-            with _batch_operation(
-                "quick-replace", phase="preview", store=store
-            ) as measurement:
-                preview = batch_replace.build_preview(store, request)
-                if preview.error:
-                    measurement.mark_error("PreviewError")
-        except ValueError as exc:
-            st.error(str(exc))
-            return
+    with operation_activity.open_activity(
+        "quick-find-replace-preview",
+        "Find and replace preview",
+        phase="Preparing",
+    ) as activity:
+        activity.phase("Previewing", "Building a Find and replace preview…")
+        with st.spinner("Building preview…"):
+            try:
+                with _batch_operation(
+                    "quick-replace", phase="preview", store=store
+                ) as measurement:
+                    preview = batch_replace.build_preview(store, request)
+                    if preview.error:
+                        measurement.mark_error("PreviewError")
+            except ValueError as exc:
+                activity.fail("Preview failed", str(exc))
+                st.error(str(exc))
+                return
 
-    quick_batch.cleanup_preview(st.session_state.pop(_K_QB_PREVIEW, None))
-    batch_replace.cleanup_preview(st.session_state.get(_K_BR_PREVIEW))
-    st.session_state[_K_BR_PREVIEW] = preview
+        activity.phase("Finalizing", "Preparing the Find and replace preview…")
+        quick_batch.cleanup_preview(st.session_state.pop(_K_QB_PREVIEW, None))
+        batch_replace.cleanup_preview(st.session_state.get(_K_BR_PREVIEW))
+        st.session_state[_K_BR_PREVIEW] = preview
+        if preview.error:
+            activity.fail("Preview failed", preview.error)
+        else:
+            activity.complete(
+                "Preview ready",
+                "Review the Find and replace preview below.",
+            )
 
 
 def _render_quick_preview(preview) -> None:
@@ -4237,10 +4254,26 @@ def _apply_quick_preview(preview) -> None:
     if store is None:
         st.error("No loaded batch — upload one on Home first.")
         return
+    with operation_activity.open_activity(
+        "quick-find-replace-apply",
+        "Find and replace apply",
+        phase="Preparing",
+    ) as activity:
+        activity.phase("Applying", "Applying the Find and replace preview…")
+        _apply_quick_preview_impl(preview, activity)
+
+
+def _apply_quick_preview_impl(preview, activity) -> None:
+    """Run apply, audit, refresh derived caches."""
+    store = session.current_store()
+    if store is None:
+        st.error("No loaded batch — upload one on Home first.")
+        return
     if _uses_job_file_versions():
         try:
             result, version = _adopt_quick_replace_preview(store, preview)
         except (job_files.JobFileError, collaboration.CollaborationError) as exc:
+            activity.fail("Apply failed", str(exc))
             st.error(str(exc))
             return
         snapshot = None
@@ -4255,6 +4288,7 @@ def _apply_quick_preview(preview) -> None:
                 if result.error:
                     measurement.mark_error("ApplyError")
             if result.error:
+                activity.fail("Apply failed", result.error)
                 st.error(result.error)
                 return
 
@@ -4281,6 +4315,7 @@ def _apply_quick_preview(preview) -> None:
                     "Change applied, but recording the history snapshot failed."
                 )
     if result.error:
+        activity.fail("Apply failed", result.error)
         st.error(result.error)
         return
     if snapshot is not None:
@@ -4311,6 +4346,11 @@ def _apply_quick_preview(preview) -> None:
     message = f"Applied to {result.applied_count} record(s)"
     if version is not None:
         message += f" as version {version['version_number']}"
+    activity.phase("Finalizing", "Recording the Find and replace result…")
+    activity.complete(
+        "Find and replace applied",
+        message + ". Other records are unchanged.",
+    )
     st.success(message + ". Other records are unchanged.")
     st.rerun()
 
@@ -4620,6 +4660,9 @@ def _render_quick_batch_operations(kind: str) -> None:
         st.error("This Quick batch operation is not available.")
         return
 
+    operation_activity.render_completion("quick-batch-preview")
+    operation_activity.render_completion("quick-batch-apply")
+
     st.divider()
     with st.container():
         st.caption(
@@ -4756,27 +4799,37 @@ def _build_and_store_quick_batch_preview(request: QuickBatchRequest) -> None:
         st.error("No loaded batch — upload a `.mrc` on Home first.")
         return
 
-    on_progress, progress, status = _quick_batch_progress("Previewing")
-
-    with st.spinner("Building preview…"):
-        with _batch_operation(
-            "quick-batch", phase="preview", store=store
-        ) as measurement:
-            preview = quick_batch.build_preview(
-                store, request, progress=on_progress
-            )
-            if _uses_job_file_versions():
-                preview.job_file_id = st.session_state.get("job_file_id")
-                preview.job_file_version_id = st.session_state.get(
-                    "job_file_version_id"
+    with operation_activity.open_activity(
+        "quick-batch-preview",
+        "Quick batch preview",
+        phase="Preparing",
+        total=store.count(),
+    ) as activity:
+        activity.phase("Previewing", "Building a Quick batch preview…")
+        with st.spinner("Building preview…"):
+            with _batch_operation(
+                "quick-batch", phase="preview", store=store
+            ) as measurement:
+                preview = quick_batch.build_preview(
+                    store, request, progress=activity.progress_callback
                 )
-            if preview.error:
-                measurement.mark_error("PreviewError")
-    progress.empty()
-    status.empty()
-    batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
-    quick_batch.cleanup_preview(st.session_state.get(_K_QB_PREVIEW))
-    st.session_state[_K_QB_PREVIEW] = preview
+                if _uses_job_file_versions():
+                    preview.job_file_id = st.session_state.get("job_file_id")
+                    preview.job_file_version_id = st.session_state.get(
+                        "job_file_version_id"
+                    )
+                if preview.error:
+                    measurement.mark_error("PreviewError")
+        batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
+        quick_batch.cleanup_preview(st.session_state.get(_K_QB_PREVIEW))
+        st.session_state[_K_QB_PREVIEW] = preview
+        if preview.error:
+            activity.fail("Preview failed", preview.error)
+        else:
+            activity.complete(
+                "Preview ready",
+                "Review the Quick batch preview below.",
+            )
 
 
 def _render_quick_batch_preview(preview) -> None:
@@ -4829,63 +4882,65 @@ def _apply_quick_batch_preview(preview) -> None:
         st.error("No loaded batch — upload one on Home first.")
         return
     record_count = preview.record_count
-    on_progress, progress, status = _quick_batch_progress("Checking")
     export_filename = _export_filename(session.current_filename(), "quickbatch")
-    if _uses_job_file_versions():
-        try:
-            version = _adopt_quick_batch_preview(store, preview)
-        except (job_files.JobFileError, collaboration.CollaborationError) as exc:
-            progress.empty()
-            status.empty()
-            st.error(str(exc))
-            return
-        result = quick_batch.QuickBatchResult(
-            changed_count=preview.changed_count,
-            skipped_count=preview.skipped_count,
-        )
-        snapshot = None
-        quick_batch.cleanup_preview(preview)
-        export_source = session.current_store().path
-    else:
-        version = None
-        with snapshot_actions.staged_store_path(store) as before_path:
-            with st.spinner(
-                f"Applying quick batch operation to {record_count:,} record"
-                f"{'s' if record_count != 1 else ''}…"
-            ):
-                with _batch_operation(
-                    "quick-batch", phase="apply", store=store
-                ) as measurement:
-                    result = quick_batch.apply_preview(
-                        store, preview, progress=on_progress
-                    )
-                    if result.error:
-                        measurement.mark_error("ApplyError")
-            if result.error:
-                progress.empty()
-                status.empty()
-                st.error(result.error)
+    with operation_activity.open_activity(
+        "quick-batch-apply",
+        "Quick batch apply",
+        phase="Preparing",
+        total=record_count,
+    ) as activity:
+        activity.phase("Applying", "Applying the Quick batch preview…")
+        if _uses_job_file_versions():
+            try:
+                version = _adopt_quick_batch_preview(store, preview)
+            except (job_files.JobFileError, collaboration.CollaborationError) as exc:
+                activity.fail("Apply failed", str(exc))
+                st.error(str(exc))
                 return
-            # Non-job Quick Load compatibility boundary: legacy history only.
-            snapshot = snapshot_actions.record_job_snapshot(
-                job_id=st.session_state.get("current_job_id"),
-                user_email=session.current_user_id(),
-                kind="quick-batch",
-                label=_QB_OPERATION_LABELS.get(
-                    preview.request.kind, preview.request.kind
-                ),
-                before_path=before_path,
-                after_path=store.path,
-                summary={
-                    "operation_kind": preview.request.kind,
-                    "changed_count": result.changed_count,
-                    "skipped_count": result.skipped_count,
-                    "export_filename": export_filename,
-                },
+            result = quick_batch.QuickBatchResult(
+                changed_count=preview.changed_count,
+                skipped_count=preview.skipped_count,
             )
-        export_source = store.path
-    progress.empty()
-    status.empty()
+            snapshot = None
+            quick_batch.cleanup_preview(preview)
+            export_source = session.current_store().path
+        else:
+            version = None
+            with snapshot_actions.staged_store_path(store) as before_path:
+                with st.spinner(
+                    f"Applying quick batch operation to {record_count:,} record"
+                    f"{'s' if record_count != 1 else ''}…"
+                ):
+                    with _batch_operation(
+                        "quick-batch", phase="apply", store=store
+                    ) as measurement:
+                        result = quick_batch.apply_preview(
+                            store, preview, progress=activity.progress_callback
+                        )
+                        if result.error:
+                            measurement.mark_error("ApplyError")
+                if result.error:
+                    activity.fail("Apply failed", result.error)
+                    st.error(result.error)
+                    return
+                # Non-job Quick Load compatibility boundary: legacy history only.
+                snapshot = snapshot_actions.record_job_snapshot(
+                    job_id=st.session_state.get("current_job_id"),
+                    user_email=session.current_user_id(),
+                    kind="quick-batch",
+                    label=_QB_OPERATION_LABELS.get(
+                        preview.request.kind, preview.request.kind
+                    ),
+                    before_path=before_path,
+                    after_path=store.path,
+                    summary={
+                        "operation_kind": preview.request.kind,
+                        "changed_count": result.changed_count,
+                        "skipped_count": result.skipped_count,
+                        "export_filename": export_filename,
+                    },
+                )
+            export_source = store.path
     if snapshot is not None:
         audit_event(
             "job-snapshot-created",
@@ -4917,6 +4972,8 @@ def _apply_quick_batch_preview(preview) -> None:
     message = f"Applied quick batch operation to {result.changed_count} record(s)"
     if version is not None:
         message += f" as version {version['version_number']}"
+    activity.phase("Finalizing", "Recording the Quick batch result…")
+    activity.complete("Quick batch applied", message + ".")
     st.success(message + ".")
     st.rerun()
 
@@ -4992,29 +5049,6 @@ def _render_quick_batch_export() -> None:
         mime="application/marc",
         key="quick_batch_download_updated",
     )
-
-
-def _quick_batch_progress(verb: str, *, min_step: int = 250):
-    progress = st.progress(0.0)
-    status = st.empty()
-    last_rendered = 0
-
-    def on_progress(processed: int, total: int) -> None:
-        nonlocal last_rendered
-        if total <= 0:
-            return
-        if (
-            processed != 1
-            and processed != total
-            and processed % min_step != 0
-            and processed - last_rendered < min_step
-        ):
-            return
-        last_rendered = processed
-        progress.progress(processed / total)
-        status.markdown(f"{verb} record {processed:,} of {total:,}…")
-
-    return on_progress, progress, status
 
 
 def _history_location_caption(snapshot_id) -> str:

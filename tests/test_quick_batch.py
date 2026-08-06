@@ -18,6 +18,26 @@ from marcedit_web.lib.quick_batch import (
     validate_request,
 )
 from marcedit_web.lib.record_store import RecordStore
+from marcedit_web.render import operation_activity
+
+
+class _QuietActivity:
+    progress_callback = staticmethod(lambda *_args: None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def phase(self, *_args):
+        return None
+
+    def complete(self, *_args):
+        return None
+
+    def fail(self, *_args):
+        return None
 
 
 def _store(tmp_path, *records):
@@ -546,6 +566,11 @@ def test_common_field_apply_clears_superseded_quick_batch_evidence(
 
     fake_st = FakeStreamlit()
     monkeypatch.setattr(tasks_render, "st", fake_st)
+    monkeypatch.setattr(
+        operation_activity,
+        "open_activity",
+        lambda *_args, **_kwargs: _QuietActivity(),
+    )
     store = _store(tmp_path, _record())
     stale_export = tmp_path / "old-quick-batch.mrc"
     stale_export.write_bytes(b"old")
