@@ -37,11 +37,12 @@ class ActivityHandle:
             self._message.write("Progress unavailable — processing records…")
             return
 
+        if processed <= self._last_rendered:
+            return
         if (
             processed != 1
             and processed != total
             and processed % _PROGRESS_STEP != 0
-            and processed - self._last_rendered < _PROGRESS_STEP
         ):
             return
 

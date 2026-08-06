@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from marcedit_web.render import operation_activity
 
 
@@ -140,6 +138,23 @@ def test_progress_uses_existing_first_boundary_and_throttle(monkeypatch):
     ]
 
 
+def test_progress_ignores_sparse_non_boundary_callbacks(monkeypatch):
+    fake = FakeStreamlit()
+    monkeypatch.setattr(operation_activity, "st", fake)
+    with operation_activity.open_activity(
+        "quick-batch-preview", "Quick batch", phase="Previewing", total=1000
+    ) as activity:
+        for value in (1, 501, 750, 1000):
+            activity.progress_callback(value, 1000)
+
+    assert fake.progress.values == [0.0, 0.001, 0.75, 1.0]
+    assert fake.messages == [
+        "Previewing record 1 of 1,000…",
+        "Previewing record 750 of 1,000…",
+        "Previewing record 1,000 of 1,000…",
+    ]
+
+
 def test_zero_total_reports_progress_unavailable(monkeypatch):
     fake = FakeStreamlit()
     monkeypatch.setattr(operation_activity, "st", fake)
@@ -148,7 +163,7 @@ def test_zero_total_reports_progress_unavailable(monkeypatch):
     ) as activity:
         activity.progress_callback(0, 0)
 
-    assert any("Progress unavailable" in message for message in fake.messages)
+    assert fake.messages[-1] == "Progress unavailable — processing records…"
     assert fake.progress.created == []
 
 
@@ -160,8 +175,30 @@ def test_unknown_total_reports_progress_unavailable(monkeypatch):
     ) as activity:
         activity.progress_callback(1, 0)
 
-    assert any("Progress unavailable" in message for message in fake.messages)
+    assert fake.messages[-1] == "Progress unavailable — processing records…"
     assert fake.progress.created == []
+
+
+def test_failure_collapses_status_and_stores_error_summary(monkeypatch):
+    fake = FakeStreamlit()
+    monkeypatch.setattr(operation_activity, "st", fake)
+
+    with operation_activity.open_activity(
+        "find-preview", "Find and replace", phase="Preparing", total=None
+    ) as activity:
+        activity.fail("Preview failed", "The sandbox rejected this request.")
+
+    assert fake.status.updates[-1] == {
+        "label": "Preview failed",
+        "state": "error",
+        "expanded": False,
+    }
+    assert fake.session_state[operation_activity.COMPLETION_KEY] == {
+        "operation_id": "find-preview",
+        "state": "error",
+        "label": "Preview failed",
+        "message": "The sandbox rejected this request.",
+    }
 
 
 def test_render_completion_and_clear_are_operation_scoped(monkeypatch):
