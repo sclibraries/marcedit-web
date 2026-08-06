@@ -219,8 +219,14 @@ from marcedit_web.lib import transforms  # standard helpers in scope
 # Structured adapters are intentionally dispatched through this literal map.
 # Do not derive a callable from request data with globals(), getattr(), or a
 # module path: the request may select only the fixed adapter named here.
+def _prepare_quick_field_change(payload):
+    from marcedit_web.lib import quick_field_changes
+
+    return quick_field_changes.prepare_quick_field_change_adapter(payload)
+
+
 _ADAPTER_PREPARERS = {
-    "quick-field-change": None,
+    "quick-field-change": _prepare_quick_field_change,
 }
 
 
@@ -315,16 +321,8 @@ def _prepare_tasks(tasks):
             if not isinstance(adapter, str) or adapter not in _ADAPTER_PREPARERS:
                 raise ValueError("structured adapter is not allowlisted")
             _validate_adapter_payload_size(payload)
-            if adapter == "quick-field-change":
-                from marcedit_web.lib import quick_field_changes
-
-                preparer = quick_field_changes.prepare_quick_field_change_adapter
-            else:
-                preparer = _ADAPTER_PREPARERS[adapter]
-            if preparer is None:
-                raise ValueError("structured adapter is not available")
             prepared_adapters.append(
-                preparer(payload)
+                _ADAPTER_PREPARERS[adapter](payload)
             )
         else:
             if payload is not None:
