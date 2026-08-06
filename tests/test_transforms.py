@@ -7,6 +7,11 @@ import re
 import pymarc
 import pytest
 
+from marcedit_web.lib.quick_field_changes import (
+    QuickFieldChangeRequest,
+    apply_quick_field_change,
+)
+from marcedit_web.lib.quick_field_selector import FieldFilter, FieldSelector, Occurrence
 from marcedit_web.lib import transforms
 
 
@@ -261,6 +266,120 @@ def test_move_field_same_tag_is_noop(record):
         for f in record.get_fields("856")
     ]
     assert before == after
+
+
+def _quick_record(*fields):
+    result = pymarc.Record()
+    result.fields[:] = fields
+    return result
+
+
+def _quick_field(tag, ind1=" ", ind2=" ", *subfields, data=None):
+    if data is not None:
+        return pymarc.Field(tag=tag, data=data)
+    return pymarc.Field(
+        tag=tag,
+        indicators=[ind1, ind2],
+        subfields=[pymarc.Subfield(code, value) for code, value in subfields],
+    )
+
+
+def test_quick_add_field_matches_shared_data_helper():
+    quick = _quick_record(_quick_field("245", "1", "0", ("a", "Title")))
+    shared = _quick_record(_quick_field("245", "1", "0", ("a", "Title")))
+    request = QuickFieldChangeRequest(
+        "add-field", destination_tag="245", ind1="1", ind2="0", subfields=(("a", "Other"),), record_scope="identical_absent"
+    )
+    apply_quick_field_change(quick, request)
+    candidate = transforms.make_field("245", "1", "0", ("a", "Other"))
+    transforms.add_field_if_absent(shared, candidate)
+    assert [f.value() for f in quick.fields] == [f.value() for f in shared.fields]
+
+
+def test_quick_every_add_subfield_matches_shared_helper():
+    quick = _quick_record(_quick_field("856", "4", "0", ("u", "one")), _quick_field("856", "4", "0", ("u", "two")))
+    shared = _quick_record(*[_quick_field("856", "4", "0", ("u", value)) for value in ("one", "two")])
+    selector = FieldSelector(FieldFilter("856"), occurrence=Occurrence("every"))
+    request = QuickFieldChangeRequest("add-subfield", selector, subfield_code="9", subfield_value="local")
+    apply_quick_field_change(quick, request)
+    transforms.add_subfield_to_fields(shared, "856", "9", "local")
+    assert [f.value() for f in quick.fields] == [f.value() for f in shared.fields]
+
+
+def test_quick_every_copy_matches_shared_helper():
+    quick = _quick_record(_quick_field("856", "4", "0", ("u", "one")))
+    shared = _quick_record(_quick_field("856", "4", "0", ("u", "one")))
+    selector = FieldSelector(FieldFilter("856"), occurrence=Occurrence("every"))
+    apply_quick_field_change(quick, QuickFieldChangeRequest("copy-field", selector, destination_tag="956"))
+    transforms.copy_field(shared, "856", "956")
+    assert [f.value() for f in quick.fields] == [f.value() for f in shared.fields]
+
+
+def test_quick_every_delete_field_matches_exact_tag_helper():
+    quick = _quick_record(_quick_field("245", "1", "0", ("a", "one")), _quick_field("650", " ", "0", ("a", "topic")), _quick_field("245", "1", "0", ("a", "two")))
+    shared = _quick_record(*[_quick_field(f.tag, *list(f.indicators), *( (sf.code, sf.value) for sf in f.subfields)) for f in quick.fields])
+    selector = FieldSelector(FieldFilter("245"), occurrence=Occurrence("every"))
+    apply_quick_field_change(quick, QuickFieldChangeRequest("delete-field", selector))
+    transforms.delete_tags(shared, "245")
+    assert [f.value() for f in quick.fields] == [f.value() for f in shared.fields]
+
+
+def test_quick_every_delete_subfield_matches_shared_value_helper():
+    quick = _quick_record(_quick_field("856", "4", "0", ("u", "https://example.test/a"), ("u", "other")))
+    shared = _quick_record(_quick_field("856", "4", "0", ("u", "https://example.test/a"), ("u", "other")))
+    selector = FieldSelector(FieldFilter("856"), occurrence=Occurrence("every"))
+    request = QuickFieldChangeRequest("delete-subfield", selector, subfield_code="u", subfield_value="https://example.test/a")
+    apply_quick_field_change(quick, request)
+    transforms.delete_subfields_matching_value(shared, "856", "u", "https://example.test/a")
+    assert [f.value() for f in quick.fields] == [f.value() for f in shared.fields]
+
+
+def test_quick_every_move_matches_shared_retag_output():
+    quick = _quick_record(_quick_field("856", "4", "0", ("u", "one")))
+    shared = _quick_record(_quick_field("856", "4", "0", ("u", "one")))
+    selector = FieldSelector(FieldFilter("856"), occurrence=Occurrence("every"))
+    apply_quick_field_change(quick, QuickFieldChangeRequest("move-field", selector, destination_tag="956"))
+    transforms.move_field(shared, "856", "956")
+    assert [f.value() for f in quick.fields] == [f.value() for f in shared.fields]
+
+
+def test_quick_every_indicators_matches_shared_helper():
+    quick = _quick_record(_quick_field("245", "1", "0", ("a", "one")))
+    shared = _quick_record(_quick_field("245", "1", "0", ("a", "one")))
+    selector = FieldSelector(FieldFilter("245"), occurrence=Occurrence("every"))
+    request = QuickFieldChangeRequest("set-indicators", selector, ind1=" ", ind2="1")
+    apply_quick_field_change(quick, request)
+    transforms.set_indicators(shared, "245", ind1=" ", ind2="1")
+    assert [f.value() for f in quick.fields] == [f.value() for f in shared.fields]
+
+
+def test_quick_raw_regex_delete_matches_shared_regex_helper():
+    quick = _quick_record(_quick_field("856", "4", "0", ("u", "https://example.test/a"), ("u", "other")))
+    shared = _quick_record(_quick_field("856", "4", "0", ("u", "https://example.test/a"), ("u", "other")))
+    request = QuickFieldChangeRequest(
+        "delete-subfield",
+        FieldSelector(FieldFilter("856", subfield_code="u", match_mode="raw_regex", match_value=r"^https://example\\.test/"), occurrence=Occurrence("every")),
+        subfield_code="u",
+    )
+    apply_quick_field_change(quick, request)
+    transforms.delete_subfields_matching_value(shared, "856", "u", r"^https://example\\.test/", match="regex")
+    assert [f.value() for f in quick.fields] == [f.value() for f in shared.fields]
+
+
+def test_quick_first_does_not_call_whole_tag_delete_helper(monkeypatch):
+    record = _quick_record(_quick_field("245", "1", "0", ("a", "one")), _quick_field("245", "1", "0", ("a", "two")))
+    called = False
+
+    def fail(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("whole-tag helper must not widen First")
+
+    monkeypatch.setattr(transforms, "delete_tags", fail)
+    selector = FieldSelector(FieldFilter("245"))
+    apply_quick_field_change(record, QuickFieldChangeRequest("delete-field", selector))
+    assert called is False
+    assert [f.get_subfields("a")[0] for f in record.fields] == ["two"]
 
 
 def test_add_subfield_to_fields_appends_by_default(record):
