@@ -291,12 +291,12 @@ def _request_payload_size_error(request: QuickFieldChangeRequest) -> str | None:
         return None
     if len(encoded) > MAX_ADAPTER_PAYLOAD_CHARS:
         return (
-            "Quick field change request exceeds the maximum of "
+            "Quick field change adapter payload exceeds the maximum of "
             f"{MAX_ADAPTER_PAYLOAD_CHARS:,} characters."
         )
     if len(encoded.encode("utf-8")) > MAX_ADAPTER_PAYLOAD_BYTES:
         return (
-            "Quick field change request exceeds the maximum of "
+            "Quick field change adapter payload exceeds the maximum of "
             f"{MAX_ADAPTER_PAYLOAD_BYTES:,} bytes."
         )
     return None
