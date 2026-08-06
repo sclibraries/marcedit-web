@@ -59,6 +59,8 @@ from marcedit_web.lib import task_preflight
 
 logger = logging.getLogger("marcedit_web.sandbox")
 
+_ADAPTER_ALLOWLIST = frozenset({"quick-field-change"})
+
 
 # Bytes-per-resource ceilings. Tuned for "100K records of small/medium
 # pymarc.Record objects fits in 512 MB" — there's some headroom for
@@ -77,6 +79,9 @@ MAX_ERROR_MESSAGE_BYTES = 2048
 MAX_ERROR_DETAIL_BYTES = 4096
 MAX_ERROR_PAYLOAD_BYTES = MAX_RETAINED_ERRORS * MAX_ERROR_DETAIL_BYTES
 MAX_STDERR_BYTES = 8192
+MAX_ADAPTER_PAYLOAD_CHARS = 65_536
+MAX_ADAPTER_PAYLOAD_BYTES = 131_072
+MAX_ADAPTER_REASON_CODES = 20
 _TERMINATION_GRACE_SECONDS = 2
 
 
@@ -89,6 +94,8 @@ class TaskSpec:
     imports: list[str] = field(default_factory=list)
     capture_result: Optional[str] = None
     partner_batch_limits: dict[str, int] = field(default_factory=dict)
+    adapter: Optional[str] = None
+    adapter_payload: object = None
 
 
 @dataclass
@@ -114,6 +121,7 @@ class SandboxResult:
     cancelled: bool = False
     captured_results: list[dict] = field(default_factory=list)
     partner_totals: dict[str, int] = field(default_factory=dict)
+    adapter_totals: dict[str, object] = field(default_factory=dict)
 
 
 # Inlined driver script — passed via -c to the child. Kept here so the
@@ -121,6 +129,7 @@ class SandboxResult:
 # inside the container).
 _DRIVER_SCRIPT = r"""
 import argparse
+import copy
 import io
 import json
 import os
@@ -205,16 +214,133 @@ _set_limits(args.cpu_seconds)
 
 import pymarc
 from marcedit_web.lib import transforms  # standard helpers in scope
+from marcedit_web.lib import quick_field_changes
+
+
+# Structured adapters are intentionally dispatched through this literal map.
+# Do not derive a callable from request data with globals(), getattr(), or a
+# module path: the request may select only the fixed adapter named here.
+_ADAPTER_PREPARERS = {
+    "quick-field-change": quick_field_changes.prepare_quick_field_change_adapter,
+}
+
+
+_ADAPTER_RESULT_KEYS = {
+    "changed",
+    "skipped",
+    "reason",
+    "fields_affected",
+    "subfields_affected",
+}
+
+
+def _new_adapter_totals():
+    return {
+        "changed_records": 0,
+        "unchanged_records": 0,
+        "skipped_records": 0,
+        "fields_affected": 0,
+        "subfields_affected": 0,
+        "reason_codes": {},
+    }
+
+
+def _record_adapter_result(totals, result):
+    if not isinstance(result, dict) or set(result) != _ADAPTER_RESULT_KEYS:
+        raise ValueError("structured adapter returned an invalid result")
+    changed = result["changed"]
+    skipped = result["skipped"]
+    reason = result["reason"]
+    fields_affected = result["fields_affected"]
+    subfields_affected = result["subfields_affected"]
+    if not isinstance(changed, bool) or not isinstance(skipped, bool):
+        raise ValueError("structured adapter result flags are invalid")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError("structured adapter result reason is invalid")
+    for value in (fields_affected, subfields_affected):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value > 2147483647
+        ):
+            raise ValueError("structured adapter result counts are invalid")
+    if skipped:
+        totals["skipped_records"] += 1
+    elif changed:
+        totals["changed_records"] += 1
+    else:
+        totals["unchanged_records"] += 1
+    totals["fields_affected"] += fields_affected
+    totals["subfields_affected"] += subfields_affected
+    if reason:
+        reason = reason.replace("\x00", "")[:64]
+        reason = reason.encode("utf-8", "replace")[:128].decode(
+            "utf-8", "ignore"
+        )
+        reasons = totals["reason_codes"]
+        if reason in reasons:
+            reasons[reason] += 1
+        elif len(reasons) < 20:
+            reasons[reason] = 1
+
+
+def _validate_adapter_payload_size(payload):
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("adapter payload must be JSON-serializable") from exc
+    if len(encoded) > 65536:
+        raise ValueError("adapter payload exceeds the maximum character size")
+    if len(encoded.encode("utf-8")) > 131072:
+        raise ValueError("adapter payload exceeds the maximum byte size")
+
+
+def _prepare_tasks(tasks):
+    prepared_adapters = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise ValueError("sandbox task must be an object")
+        body = task.get("body", "")
+        adapter = task.get("adapter")
+        payload = task.get("adapter_payload")
+        if adapter is not None:
+            if body != "":
+                raise ValueError("task body and adapter are mutually exclusive")
+            if not isinstance(adapter, str) or adapter not in _ADAPTER_PREPARERS:
+                raise ValueError("structured adapter is not allowlisted")
+            _validate_adapter_payload_size(payload)
+            prepared_adapters.append(
+                _ADAPTER_PREPARERS[adapter](payload)
+            )
+        else:
+            if payload is not None:
+                raise ValueError("adapter payload requires an adapter")
+            prepared_adapters.append(None)
+    return prepared_adapters
 
 
 def main():
     with open(args.tasks) as f:
         tasks = json.load(f)
 
+    prepared_adapters = _prepare_tasks(tasks)
+
     errors = []
     error_count = 0
     captured_results = []
     partner_totals = {}
+    adapter_totals = (
+        _new_adapter_totals()
+        if any(adapter is not None for adapter in prepared_adapters)
+        else {}
+    )
     transforms.reset_partner_batch_totals()
     with open(args.input, "rb") as fin:
         reader = pymarc.MARCReader(fin, to_unicode=True, permissive=True)
@@ -233,6 +359,11 @@ def main():
                     _write_progress(args.progress, idx)
                     continue
                 failed_task = None
+                original_record = (
+                    copy.deepcopy(record)
+                    if any(adapter is not None for adapter in prepared_adapters)
+                    else None
+                )
                 try:
                     for task_index, task in enumerate(tasks):
                         # Fresh namespace per task so symbols don't leak.
@@ -253,32 +384,38 @@ def main():
                         for _name in dir(transforms):
                             if not _name.startswith("_"):
                                 ns[_name] = getattr(transforms, _name)
-                        # Imports requested by the task (e.g. specific
-                        # transforms helpers) — run first.
-                        for imp in task.get("imports", []):
-                            exec(compile(imp, "<task-import>", "exec"), ns)
-                        exec(compile(
-                            task["body"],
-                            "<task:%s>" % task.get("name", "?"),
-                            "exec",
-                        ), ns)
-                        capture_name = task.get("capture_result")
-                        if capture_name and len(captured_results) < idx:
-                            value = _validated_capture_result(
-                                ns.get(capture_name)
-                            )
-                            json.dumps(value)
-                            captured_results.append({
-                                "record_index": idx,
-                                "task": _bounded_text(
-                                    task.get("name", "?"),
-                                    args.max_task_chars,
-                                    args.max_task_bytes,
-                                ),
-                                "result": value,
-                            })
+                        if prepared_adapters[task_index] is not None:
+                            adapter_result = prepared_adapters[task_index](record)
+                            _record_adapter_result(adapter_totals, adapter_result)
+                        else:
+                            # Imports requested by the task (e.g. specific
+                            # transforms helpers) — run first.
+                            for imp in task.get("imports", []):
+                                exec(compile(imp, "<task-import>", "exec"), ns)
+                            exec(compile(
+                                task["body"],
+                                "<task:%s>" % task.get("name", "?"),
+                                "exec",
+                            ), ns)
+                            capture_name = task.get("capture_result")
+                            if capture_name and len(captured_results) < idx:
+                                value = _validated_capture_result(
+                                    ns.get(capture_name)
+                                )
+                                json.dumps(value)
+                                captured_results.append({
+                                    "record_index": idx,
+                                    "task": _bounded_text(
+                                        task.get("name", "?"),
+                                        args.max_task_chars,
+                                        args.max_task_bytes,
+                                    ),
+                                    "result": value,
+                                })
                     writer.write(record)
                 except Exception as exc:
+                    if original_record is not None:
+                        record = original_record
                     failed_task = task.get("name", "?") if 'task' in locals() else "?"
                     error_count += 1
                     if len(errors) < args.max_errors:
@@ -307,6 +444,7 @@ def main():
             "errors": errors,
             "captured_results": captured_results,
             "partner_totals": transforms.get_partner_batch_totals(),
+            "adapter_totals": adapter_totals,
         }, f)
 
 
@@ -356,6 +494,34 @@ def _resolved_pythonpath(value: str) -> str:
     return os.pathsep.join(entries)
 
 
+def _canonical_adapter_payload(payload: object) -> object:
+    """Validate, bound, and normalize one structured adapter payload."""
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("adapter payload must be JSON-serializable") from exc
+    if len(encoded) > MAX_ADAPTER_PAYLOAD_CHARS:
+        raise ValueError(
+            "adapter payload exceeds the maximum of "
+            f"{MAX_ADAPTER_PAYLOAD_CHARS:,} characters"
+        )
+    encoded_bytes = encoded.encode("utf-8")
+    if len(encoded_bytes) > MAX_ADAPTER_PAYLOAD_BYTES:
+        raise ValueError(
+            "adapter payload exceeds the maximum of "
+            f"{MAX_ADAPTER_PAYLOAD_BYTES:,} bytes"
+        )
+    # Use the canonical JSON representation as the child request value. This
+    # prevents insertion-order differences from changing the serialized task.
+    return json.loads(encoded)
+
+
 def run_tasks_subprocess(
     tasks: Iterable[TaskSpec],
     record_bytes: Optional[bytes] = None,
@@ -395,18 +561,51 @@ def run_tasks_subprocess(
             "exactly one of record_bytes or input_path is required"
         )
 
-    tasks_list = [
-        {
-            "name": t.name,
-            "body": t.body,
-            "imports": list(t.imports),
-            "capture_result": t.capture_result,
-            "partner_batch_limits": dict(t.partner_batch_limits),
-        }
-        for t in tasks
-    ]
-    for task in tasks_list:
-        task_preflight.assert_runnable_task_body(task["body"])
+    tasks_list = []
+    for task_spec in tasks:
+        adapter = task_spec.adapter
+        body = task_spec.body
+        if adapter is not None:
+            if body != "":
+                raise ValueError(
+                    "task body and adapter are mutually exclusive"
+                )
+            if not isinstance(adapter, str) or adapter not in _ADAPTER_ALLOWLIST:
+                raise ValueError("structured adapter is not allowlisted")
+            if task_spec.adapter_payload is None:
+                payload = None
+            else:
+                payload = _canonical_adapter_payload(task_spec.adapter_payload)
+            # Validate request shape in the parent without preparing or
+            # matching fields. Raw regular expressions therefore compile only
+            # inside the child adapter boundary.
+            if adapter == "quick-field-change":
+                from marcedit_web.lib import quick_field_changes
+
+                try:
+                    request = quick_field_changes.request_from_payload(payload)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"adapter operation payload is invalid: {exc}") from exc
+                request_errors = quick_field_changes.validate_request(request)
+                if request_errors:
+                    raise ValueError(
+                        "adapter operation payload is invalid: "
+                        + "; ".join(request_errors)
+                    )
+        else:
+            if task_spec.adapter_payload is not None:
+                raise ValueError("adapter payload requires an adapter")
+            task_preflight.assert_runnable_task_body(body)
+            payload = None
+        tasks_list.append({
+            "name": task_spec.name,
+            "body": body,
+            "imports": list(task_spec.imports),
+            "capture_result": task_spec.capture_result,
+            "partner_batch_limits": dict(task_spec.partner_batch_limits),
+            "adapter": adapter,
+            "adapter_payload": payload,
+        })
 
     workdir = (
         tmp_dir
@@ -429,7 +628,15 @@ def run_tasks_subprocess(
     stderr_path = workdir / "stderr.log"
     for result_path in (output_path, errors_path, stderr_path):
         result_path.unlink(missing_ok=True)
-    tasks_path.write_text(json.dumps(tasks_list))
+    tasks_path.write_text(
+        json.dumps(
+            tasks_list,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    )
     if progress_path is not None:
         progress_path = progress_path.absolute()
         progress_path.parent.mkdir(parents=True, exist_ok=True)
@@ -591,6 +798,9 @@ def run_tasks_subprocess(
             and not isinstance(value, bool)
             and 0 <= value <= 2_147_483_647
         }
+        adapter_totals = _bound_adapter_totals(
+            error_payload.get("adapter_totals")
+        )
     else:
         errors = [
             bound_error(error)
@@ -600,6 +810,7 @@ def run_tasks_subprocess(
         error_count = len(errors)
         captured_results = []
         partner_totals = {}
+        adapter_totals = {}
 
     if timed_out:
         error_count += 1
@@ -633,6 +844,7 @@ def run_tasks_subprocess(
         cancelled=cancelled,
         captured_results=captured_results,
         partner_totals=partner_totals,
+        adapter_totals=adapter_totals,
     )
 
 
@@ -711,6 +923,48 @@ def bound_error(error: dict) -> dict:
             MAX_ERROR_MESSAGE_BYTES,
         ),
     }
+
+
+def _bound_adapter_totals(value: object) -> dict[str, object]:
+    """Accept only the fixed, bounded adapter aggregate shape."""
+    if not isinstance(value, dict):
+        return {}
+    totals: dict[str, object] = {}
+    for key in (
+        "changed_records",
+        "unchanged_records",
+        "skipped_records",
+        "fields_affected",
+        "subfields_affected",
+    ):
+        count = value.get(key)
+        if (
+            isinstance(count, int)
+            and not isinstance(count, bool)
+            and 0 <= count <= 2_147_483_647
+        ):
+            totals[key] = count
+    reasons = value.get("reason_codes")
+    if isinstance(reasons, dict):
+        bounded_reasons: dict[str, int] = {}
+        for reason, count in reasons.items():
+            if len(bounded_reasons) >= MAX_ADAPTER_REASON_CODES:
+                break
+            if not isinstance(reason, str):
+                continue
+            bounded_reason = _bounded_text(
+                reason,
+                MAX_ERROR_CODE_CHARS,
+                MAX_ERROR_CODE_BYTES,
+            )
+            if (
+                isinstance(count, int)
+                and not isinstance(count, bool)
+                and 0 <= count <= 2_147_483_647
+            ):
+                bounded_reasons[bounded_reason] = count
+        totals["reason_codes"] = bounded_reasons
+    return totals
 
 
 def _bounded_text(value, max_chars: int, max_bytes: int) -> str:

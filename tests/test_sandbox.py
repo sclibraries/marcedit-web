@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import signal
 import sys
 from pathlib import Path
@@ -19,6 +20,8 @@ import pytest
 
 from marcedit_web.lib import sandbox
 from marcedit_web.lib.sandbox import SandboxResult, TaskSpec, run_tasks_subprocess
+from marcedit_web.lib.quick_field_changes import QuickFieldChangeRequest, request_to_payload
+from marcedit_web.lib.quick_field_selector import FieldFilter, FieldSelector, Occurrence
 
 
 pytestmark = pytest.mark.skipif(
@@ -103,6 +106,241 @@ def test_noop_task_round_trips(one_record_bytes):
     reread = _read_output(result)
     assert len(reread) == 1
     assert reread[0].get("001").data == "1234567890"
+
+
+def _delete_245_payload():
+    return request_to_payload(
+        QuickFieldChangeRequest(
+            "delete-field",
+            FieldSelector(FieldFilter("245"), Occurrence("every")),
+        )
+    )
+
+
+def test_structured_adapter_mutates_without_task_body(one_record_bytes):
+    result = run_tasks_subprocess(
+        [TaskSpec(
+            name="quick-field-change",
+            body="",
+            adapter="quick-field-change",
+            adapter_payload=_delete_245_payload(),
+        )],
+        one_record_bytes,
+    )
+    assert result.returncode == 0
+    assert _read_output(result)[0].get_fields("245") == []
+    assert result.adapter_totals["changed_records"] == 1
+
+
+def test_structured_adapter_aggregates_skips_and_bounded_reasons(one_record_bytes):
+    payload = request_to_payload(
+        QuickFieldChangeRequest(
+            "delete-field",
+            FieldSelector(FieldFilter("999"), Occurrence("every")),
+        )
+    )
+    result = run_tasks_subprocess(
+        [TaskSpec(name="quick-field-change", body="", adapter="quick-field-change", adapter_payload=payload)],
+        one_record_bytes,
+    )
+    assert result.adapter_totals == {
+        "changed_records": 0,
+        "unchanged_records": 0,
+        "skipped_records": 1,
+        "fields_affected": 0,
+        "subfields_affected": 0,
+        "reason_codes": {"no-filtered-fields": 1},
+    }
+
+
+@pytest.mark.parametrize(
+    "spec, message",
+    [
+        (
+            TaskSpec(
+                name="mixed",
+                body="pass",
+                adapter="quick-field-change",
+                adapter_payload=_delete_245_payload(),
+            ),
+            "body and adapter",
+        ),
+        (
+            TaskSpec(
+                name="unknown",
+                body="",
+                adapter="not-allowlisted",
+                adapter_payload={},
+            ),
+            "adapter",
+        ),
+        (
+            TaskSpec(
+                name="not-json",
+                body="",
+                adapter="quick-field-change",
+                adapter_payload=object(),
+            ),
+            "JSON",
+        ),
+        (
+            TaskSpec(
+                name="malformed",
+                body="",
+                adapter="quick-field-change",
+                adapter_payload={"kind": "unknown"},
+            ),
+            "operation",
+        ),
+        (
+            TaskSpec(
+                name="oversized",
+                body="",
+                adapter="quick-field-change",
+                adapter_payload={"kind": "delete-field", "padding": "x" * 65537},
+            ),
+            "payload",
+        ),
+    ],
+)
+def test_structured_adapter_rejects_invalid_envelopes(one_record_bytes, spec, message):
+    with pytest.raises(ValueError, match=message):
+        run_tasks_subprocess([spec], one_record_bytes)
+
+
+def _run_forged_child_task(tmp_path, one_record_bytes, task):
+    tasks_path = tmp_path / "tasks.json"
+    tasks_path.write_text(json.dumps([task]))
+    input_path = tmp_path / "input.mrc"
+    input_path.write_bytes(one_record_bytes)
+    output_path = tmp_path / "output.mrc"
+    errors_path = tmp_path / "errors.json"
+    command = [
+        sys.executable,
+        "-c",
+        sandbox._DRIVER_SCRIPT,
+        "--input", str(input_path),
+        "--tasks", str(tasks_path),
+        "--output", str(output_path),
+        "--errors", str(errors_path),
+        "--max-errors", str(sandbox.MAX_RETAINED_ERRORS),
+        "--max-code-chars", str(sandbox.MAX_ERROR_CODE_CHARS),
+        "--max-code-bytes", str(sandbox.MAX_ERROR_CODE_BYTES),
+        "--max-task-chars", str(sandbox.MAX_ERROR_TASK_CHARS),
+        "--max-task-bytes", str(sandbox.MAX_ERROR_TASK_BYTES),
+        "--max-message-chars", str(sandbox.MAX_ERROR_MESSAGE_CHARS),
+        "--max-message-bytes", str(sandbox.MAX_ERROR_MESSAGE_BYTES),
+        "--cpu-seconds", "30",
+    ]
+    return sandbox.subprocess.run(
+        command,
+        cwd=str(tmp_path),
+        env={
+            "PYTHONPATH": str(Path.cwd()),
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        {
+            "name": "mixed",
+            "body": "pass",
+            "adapter": "quick-field-change",
+            "adapter_payload": _delete_245_payload(),
+        },
+        {
+            "name": "unknown",
+            "body": "",
+            "adapter": "not-allowlisted",
+            "adapter_payload": {},
+        },
+        {
+            "name": "not-json",
+            "body": "",
+            "adapter": "quick-field-change",
+            "adapter_payload": "not an operation object",
+        },
+        {
+            "name": "malformed",
+            "body": "",
+            "adapter": "quick-field-change",
+            "adapter_payload": {"kind": "unknown"},
+        },
+        {
+            "name": "oversized",
+            "body": "",
+            "adapter": "quick-field-change",
+            "adapter_payload": {"kind": "delete-field", "padding": "x" * 65537},
+        },
+    ],
+)
+def test_child_structured_adapter_rejects_invalid_envelopes(
+    one_record_bytes, tmp_path, task,
+):
+    """The child validates the envelope even if its task JSON is forged."""
+    process = _run_forged_child_task(tmp_path, one_record_bytes, task)
+    assert process.returncode != 0
+
+
+def test_parent_does_not_compile_raw_regex_adapter_in_process(one_record_bytes, monkeypatch):
+    original_compile = re.compile
+    calls = []
+
+    def spy(pattern, *args, **kwargs):
+        calls.append(pattern)
+        return original_compile(pattern, *args, **kwargs)
+
+    monkeypatch.setattr(re, "compile", spy)
+    payload = request_to_payload(
+        QuickFieldChangeRequest(
+            "delete-field",
+            FieldSelector(
+                FieldFilter(
+                    "245",
+                    subfield_code="a",
+                    match_mode="raw_regex",
+                    match_value="^x+$",
+                ),
+                Occurrence("every"),
+            ),
+        )
+    )
+    result = run_tasks_subprocess(
+        [TaskSpec(name="raw-regex", body="", adapter="quick-field-change", adapter_payload=payload)],
+        one_record_bytes,
+    )
+    assert result.returncode == 0
+    assert calls == []
+
+
+def test_structured_adapter_error_preserves_original_record(one_record_bytes):
+    payload = request_to_payload(
+        QuickFieldChangeRequest(
+            "delete-field",
+            FieldSelector(
+                FieldFilter(
+                    "245",
+                    subfield_code="a",
+                    match_mode="raw_regex",
+                    match_value="[",
+                ),
+                Occurrence("every"),
+            ),
+        )
+    )
+    result = run_tasks_subprocess(
+        [TaskSpec(name="raw-regex", body="", adapter="quick-field-change", adapter_payload=payload)],
+        one_record_bytes,
+    )
+    assert result.returncode == 0
+    assert result.errors[0]["code"] == "transform-failed"
+    assert _read_output(result)[0].get_fields("245")
 
 
 def test_direct_sandbox_rejects_migration_blocker_before_child_execution(
