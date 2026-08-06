@@ -838,3 +838,219 @@ This guide is generated from the checked-in deterministic operation registry.
 **Stored representation:** Structured target, match, action, occurrence, and replacement parameters validated by the task form.
 
 **Related:** `sort-fields`
+
+## Common field changes
+
+Common Quick field changes are one-operation edits: choose one change, read its summary, Preview, then Apply the same current preview. Existing fields are filtered before the First, Last, Numbered, or Every occurrence is chosen. Records missing a requested occurrence are skipped and grouped by reason. Guided matching is the normal path; an optional Advanced regular expression is available when needed. Preview and Apply are recoverable, and a changed selector requires a new Preview.
+
+These nine labels are alphabetical. Choose exactly one for each Preview and Apply cycle.
+
+### Add field
+
+**Purpose:** Add one explicitly described control or data field.
+
+**When to use:** Use when a field should be added once without saving a task.
+
+**Inputs:** destination tag, indicators, subfields or control value, record scope
+
+**Behavior:** Adds the field to every record, or only when its tag or complete identity is absent.
+
+**Preserves:** Existing fields, their values, and their source order remain unchanged.
+
+**Skip behavior:** A record is unchanged when its selected add-field scope says the field is already present.
+
+**Error behavior:** Invalid tags, indicators, control values, or subfield rows block Preview.
+
+**Before:** `(no 877 field)`
+
+**After:** `877  \$m Map`
+
+**Related:** none
+
+### Add subfield
+
+**Purpose:** Append or prepend one code and value to selected variable fields.
+
+**When to use:** Use when existing fields need one explicit subfield added.
+
+**Inputs:** field filter, occurrence, subfield code, subfield value, position, repeat policy
+
+**Behavior:** Adds the pair to the fields that pass the filter and then the chosen occurrence.
+
+**Preserves:** Field tags, indicators, existing ordered subfields, and unrelated fields remain unchanged.
+
+**Skip behavior:** Records with no matching occurrence are skipped and listed by the selector reason.
+
+**Error behavior:** Control fields, invalid codes, and invalid matcher values block Preview.
+
+**Before:** `856 40 \$u https://vendor.example/item`
+
+**After:** `856 40 \$u https://vendor.example/item \$y Vendor link`
+
+**Related:** `delete-subfield`
+
+### Copy field
+
+**Purpose:** Deep-copy selected complete fields to one destination tag.
+
+**When to use:** Use when selected fields should also appear under another tag.
+
+**Inputs:** field filter, occurrence, destination tag, destination policy
+
+**Behavior:** Copies only fields resolved after filtering and occurrence selection; choose Append, Skip identical, or Replace all destination fields.
+
+**Preserves:** Source fields and complete indicators and subfield order are preserved.
+
+**Skip behavior:** Records without a selected source field are skipped without changing destination fields.
+
+**Error behavior:** Incompatible control/data tags or invalid destination policies block Preview.
+
+**Before:** `245 10 \$a Title`
+
+**After:** `245 10 \$a Title\n246 30 \$a Title`
+
+**Related:** none
+
+### Delete field
+
+**Purpose:** Remove selected complete fields.
+
+**When to use:** Use when only a chosen occurrence or filtered set should be removed.
+
+**Inputs:** field filter, occurrence
+
+**Behavior:** Removes the fields that pass the filter and then the selected First, Last, Numbered, or Every occurrence.
+
+**Preserves:** All non-selected fields and the relative order of remaining fields remain unchanged.
+
+**Skip behavior:** Records with no selected occurrence are skipped and grouped by reason.
+
+**Error behavior:** Invalid tags, filters, occurrence choices, or unsafe matchers block Preview.
+
+**Before:** `856 40 \$u https://old.example/item`
+
+**After:** `(selected 856 field removed)`
+
+**Related:** none
+
+### Delete subfield
+
+**Purpose:** Remove one code from selected variable fields, optionally matching its value.
+
+**When to use:** Use when a subfield must be removed from only the intended fields.
+
+**Inputs:** field filter, occurrence, subfield code, value match, subfield occurrence, remove empty field
+
+**Behavior:** Removes the first or every matching subfield after field filtering and occurrence selection.
+
+**Preserves:** Other subfields, field identity, and unrelated fields remain unchanged unless empty-field removal is selected.
+
+**Skip behavior:** Missing fields or values are skipped and reported by reason rather than guessed.
+
+**Error behavior:** Control fields, invalid codes, and invalid guided or regular-expression matchers block Preview.
+
+**Before:** `856 40 \$u https://vendor.example/item \$y obsolete`
+
+**After:** `856 40 \$u https://vendor.example/item`
+
+**Related:** `add-subfield`
+
+### Move or retag field
+
+**Purpose:** Change selected fields to a destination tag while retaining their complete contents.
+
+**When to use:** Use when a field needs a new tag but should stay in its current record position.
+
+**Inputs:** field filter, occurrence, destination tag
+
+**Behavior:** Retags only the selected fields; it does not sort or otherwise reorder the record.
+
+**Preserves:** Indicators, ordered subfields, values, and source positions are preserved. Reorder fields is a separate explicit Quick action.
+
+**Skip behavior:** Records without a selected occurrence are skipped and grouped by selector reason.
+
+**Error behavior:** Incompatible control/data tags and invalid destination tags block Preview.
+
+**Before:** `490  \$a Series`
+
+**After:** `830  \$a Series (same source position)`
+
+**Related:** `sort-fields`
+
+### Remove exact duplicate fields
+
+**Purpose:** Remove repeated fields only when their complete MARC identity is exactly equal.
+
+**When to use:** Use when exact duplicates should be reduced while near-duplicates remain for review.
+
+**Inputs:** field filter, keep first or last
+
+**Behavior:** Groups filtered fields by tag, indicators or control value, and ordered subfield code/value pairs, then keeps the chosen copy.
+
+**Preserves:** Near-duplicates, unique fields, and the relative order of surviving fields remain unchanged.
+
+**Skip behavior:** Records with no duplicate group are unchanged; no similar field is treated as a duplicate.
+
+**Error behavior:** Invalid duplicate filters or keep choices block Preview.
+
+**Before:** `035  \$a (OCoLC)123\n035  \$a (OCoLC)123`
+
+**After:** `035  \$a (OCoLC)123`
+
+**Related:** none
+
+### Set indicators
+
+**Purpose:** Set indicator 1, indicator 2, or both on selected data fields.
+
+**When to use:** Use when selected fields need explicit indicator values without changing their data.
+
+**Inputs:** field filter, occurrence, indicator 1, indicator 2
+
+**Behavior:** Writes only the chosen indicator values on fields resolved after filtering and occurrence selection.
+
+**Preserves:** Tags, ordered subfields, values, and unchanged indicators remain intact.
+
+**Skip behavior:** Records with no selected occurrence or no effective change are unchanged and reported accordingly.
+
+**Error behavior:** Control fields, missing indicator choices, or invalid filters block Preview.
+
+**Before:** `245 10 \$a Title`
+
+**After:** `245 00 \$a Title`
+
+**Related:** none
+
+### Swap field occurrences
+
+**Purpose:** Exchange two distinct complete fields with the same tag.
+
+**When to use:** Use when two same-tag fields need their source-order positions exchanged.
+
+**Inputs:** first field filter and occurrence, second field filter and occurrence
+
+**Behavior:** Swaps the complete selected field objects, preserving each field's tag, indicators, control value, and ordered subfields.
+
+**Preserves:** Field contents are untouched; only the two selected source positions change.
+
+**Skip behavior:** Missing sides and selectors resolving to the same field are skipped and grouped by reason.
+
+**Error behavior:** Selectors must be distinct and use the same exact tag; Every is not available for Swap.
+
+**Before:** `070  4 \$a QA76.73.P98\n070  4 \$a QA76.73.P99`
+
+**After:** `070  4 \$a QA76.73.P99\n070  4 \$a QA76.73.P98`
+
+**Related:** none
+
+### Worked examples
+
+To swap two distinguishable 070 fields, choose **Swap field occurrences**, enter tag `070`, and select the first and second occurrences. The complete fields exchange positions; each indicator, value, and ordered subfield stays with its field.
+
+To select one of several 856 fields, enter tag `856`, choose subfield `$u`, use the guided **Contains** match for the vendor text, then choose **Numbered** for the requested matching occurrence. Filtering happens before numbering, so a nonmatching vendor link is not counted.
+
+**Move or retag field** keeps the source position. Use the separate explicit **Reorder fields** Quick action when tag order should be normalized.
+
+Exact duplicate removal compares complete field identity (tag, indicators or control value, and ordered subfields); near-duplicates are retained.
+
+Preview and Apply are recoverable: reset clears preview evidence, stale source or changed selectors disable Apply, and a successful Apply creates the existing history or recoverable file-version evidence.

@@ -36,8 +36,9 @@ def reference_entries(
     merged = []
     for entry in entries:
         combined = copy.deepcopy(entry)
+        palette_entry = palette_by_kind.get(entry["kind"])
         combined["params"] = copy.deepcopy(
-            palette_by_kind[entry["kind"]]["params"]
+            palette_entry["params"] if palette_entry is not None else []
         )
         merged.append(combined)
     return merged
@@ -46,7 +47,11 @@ def reference_entries(
 def render_reference_entry(entry: Mapping[str, Any]) -> None:
     """Render facts for one operation from the shared palette."""
 
-    canonical = operation_reference.REFERENCE_REGISTRY.get(entry["kind"], entry)
+    canonical = (
+        entry
+        if entry.get("source") == "quick"
+        else operation_reference.REFERENCE_REGISTRY.get(entry["kind"], entry)
+    )
     st.markdown("**{0}**".format(canonical["label"]))
     st.caption("Operation kind: `{0}`".format(entry["kind"]))
     st.write(canonical["purpose"])

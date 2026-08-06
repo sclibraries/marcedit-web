@@ -197,7 +197,141 @@ for _palette_entry in task_builder.OPERATIONS_PALETTE:
     REFERENCE_REGISTRY[_kind] = _entry
 
 
-def search_entries(query: str = "") -> list[dict[str, Any]]:
+_QUICK_OVERVIEW = (
+    "Common Quick field changes are one-operation edits: choose one change, read its "
+    "summary, Preview, then Apply the same current preview. Existing fields are "
+    "filtered before the First, Last, Numbered, or Every occurrence is chosen. "
+    "Records missing a requested occurrence are skipped and grouped by reason. "
+    "Guided matching is the normal path; an optional Advanced regular expression "
+    "is available when needed. Preview and Apply are recoverable, and a changed "
+    "selector requires a new Preview."
+)
+
+# Quick changes intentionally have their own registry.  Several labels share a
+# kind with saved-task palette operations, but their selector and occurrence
+# semantics are different and must not change the task-palette contract above.
+QUICK_CHANGE_REFERENCE: dict[str, dict[str, Any]] = {
+    "add-field": {
+        "label": "Add field",
+        "purpose": "Add one explicitly described control or data field.",
+        "when_to_use": "Use when a field should be added once without saving a task.",
+        "inputs": ["destination tag", "indicators", "subfields or control value", "record scope"],
+        "behavior": "Adds the field to every record, or only when its tag or complete identity is absent.",
+        "preserves": "Existing fields, their values, and their source order remain unchanged.",
+        "skip_behavior": "A record is unchanged when its selected add-field scope says the field is already present.",
+        "error_behavior": "Invalid tags, indicators, control values, or subfield rows block Preview.",
+        "example": {"before": "(no 877 field)", "after": "877  \\$m Map"},
+        "stored_representation": "A plain-language field request; it is not a saved task.",
+        "related": [],
+    },
+    "add-subfield": {
+        "label": "Add subfield",
+        "purpose": "Append or prepend one code and value to selected variable fields.",
+        "when_to_use": "Use when existing fields need one explicit subfield added.",
+        "inputs": ["field filter", "occurrence", "subfield code", "subfield value", "position", "repeat policy"],
+        "behavior": "Adds the pair to the fields that pass the filter and then the chosen occurrence.",
+        "preserves": "Field tags, indicators, existing ordered subfields, and unrelated fields remain unchanged.",
+        "skip_behavior": "Records with no matching occurrence are skipped and listed by the selector reason.",
+        "error_behavior": "Control fields, invalid codes, and invalid matcher values block Preview.",
+        "example": {"before": "856 40 \\$u https://vendor.example/item", "after": "856 40 \\$u https://vendor.example/item \\$y Vendor link"},
+        "stored_representation": "A one-operation selection and subfield change, not reusable task code.",
+        "related": ["delete-subfield"],
+    },
+    "copy-field": {
+        "label": "Copy field",
+        "purpose": "Deep-copy selected complete fields to one destination tag.",
+        "when_to_use": "Use when selected fields should also appear under another tag.",
+        "inputs": ["field filter", "occurrence", "destination tag", "destination policy"],
+        "behavior": "Copies only fields resolved after filtering and occurrence selection; choose Append, Skip identical, or Replace all destination fields.",
+        "preserves": "Source fields and complete indicators and subfield order are preserved.",
+        "skip_behavior": "Records without a selected source field are skipped without changing destination fields.",
+        "error_behavior": "Incompatible control/data tags or invalid destination policies block Preview.",
+        "example": {"before": "245 10 \\$a Title", "after": "245 10 \\$a Title\\n246 30 \\$a Title"},
+        "stored_representation": "A bounded field selection and explicit destination policy.",
+        "related": [],
+    },
+    "delete-field": {
+        "label": "Delete field",
+        "purpose": "Remove selected complete fields.",
+        "when_to_use": "Use when only a chosen occurrence or filtered set should be removed.",
+        "inputs": ["field filter", "occurrence"],
+        "behavior": "Removes the fields that pass the filter and then the selected First, Last, Numbered, or Every occurrence.",
+        "preserves": "All non-selected fields and the relative order of remaining fields remain unchanged.",
+        "skip_behavior": "Records with no selected occurrence are skipped and grouped by reason.",
+        "error_behavior": "Invalid tags, filters, occurrence choices, or unsafe matchers block Preview.",
+        "example": {"before": "856 40 \\$u https://old.example/item", "after": "(selected 856 field removed)"},
+        "stored_representation": "A one-time filtered field deletion; tag ranges and wildcards are not inferred.",
+        "related": [],
+    },
+    "delete-subfield": {
+        "label": "Delete subfield",
+        "purpose": "Remove one code from selected variable fields, optionally matching its value.",
+        "when_to_use": "Use when a subfield must be removed from only the intended fields.",
+        "inputs": ["field filter", "occurrence", "subfield code", "value match", "subfield occurrence", "remove empty field"],
+        "behavior": "Removes the first or every matching subfield after field filtering and occurrence selection.",
+        "preserves": "Other subfields, field identity, and unrelated fields remain unchanged unless empty-field removal is selected.",
+        "skip_behavior": "Missing fields or values are skipped and reported by reason rather than guessed.",
+        "error_behavior": "Control fields, invalid codes, and invalid guided or regular-expression matchers block Preview.",
+        "example": {"before": "856 40 \\$u https://vendor.example/item \\$y obsolete", "after": "856 40 \\$u https://vendor.example/item"},
+        "stored_representation": "A bounded one-time subfield selection and removal choice.",
+        "related": ["add-subfield"],
+    },
+    "move-field": {
+        "label": "Move or retag field",
+        "purpose": "Change selected fields to a destination tag while retaining their complete contents.",
+        "when_to_use": "Use when a field needs a new tag but should stay in its current record position.",
+        "inputs": ["field filter", "occurrence", "destination tag"],
+        "behavior": "Retags only the selected fields; it does not sort or otherwise reorder the record.",
+        "preserves": "Indicators, ordered subfields, values, and source positions are preserved. Reorder fields is a separate explicit Quick action.",
+        "skip_behavior": "Records without a selected occurrence are skipped and grouped by selector reason.",
+        "error_behavior": "Incompatible control/data tags and invalid destination tags block Preview.",
+        "example": {"before": "490  \\$a Series", "after": "830  \\$a Series (same source position)"},
+        "stored_representation": "A one-time retag selection; sorting remains an explicit separate operation.",
+        "related": ["sort-fields"],
+    },
+    "remove-duplicate-fields": {
+        "label": "Remove exact duplicate fields",
+        "purpose": "Remove repeated fields only when their complete MARC identity is exactly equal.",
+        "when_to_use": "Use when exact duplicates should be reduced while near-duplicates remain for review.",
+        "inputs": ["field filter", "keep first or last"],
+        "behavior": "Groups filtered fields by tag, indicators or control value, and ordered subfield code/value pairs, then keeps the chosen copy.",
+        "preserves": "Near-duplicates, unique fields, and the relative order of surviving fields remain unchanged.",
+        "skip_behavior": "Records with no duplicate group are unchanged; no similar field is treated as a duplicate.",
+        "error_behavior": "Invalid duplicate filters or keep choices block Preview.",
+        "example": {"before": "035  \\$a (OCoLC)123\\n035  \\$a (OCoLC)123", "after": "035  \\$a (OCoLC)123"},
+        "stored_representation": "An exact-identity cleanup request, not a fuzzy duplicate matcher.",
+        "related": [],
+    },
+    "set-indicators": {
+        "label": "Set indicators",
+        "purpose": "Set indicator 1, indicator 2, or both on selected data fields.",
+        "when_to_use": "Use when selected fields need explicit indicator values without changing their data.",
+        "inputs": ["field filter", "occurrence", "indicator 1", "indicator 2"],
+        "behavior": "Writes only the chosen indicator values on fields resolved after filtering and occurrence selection.",
+        "preserves": "Tags, ordered subfields, values, and unchanged indicators remain intact.",
+        "skip_behavior": "Records with no selected occurrence or no effective change are unchanged and reported accordingly.",
+        "error_behavior": "Control fields, missing indicator choices, or invalid filters block Preview.",
+        "example": {"before": "245 10 \\$a Title", "after": "245 00 \\$a Title"},
+        "stored_representation": "An explicit one-time indicator edit with Leave unchanged and MARC blank choices.",
+        "related": [],
+    },
+    "swap-field-occurrences": {
+        "label": "Swap field occurrences",
+        "purpose": "Exchange two distinct complete fields with the same tag.",
+        "when_to_use": "Use when two same-tag fields need their source-order positions exchanged.",
+        "inputs": ["first field filter and occurrence", "second field filter and occurrence"],
+        "behavior": "Swaps the complete selected field objects, preserving each field's tag, indicators, control value, and ordered subfields.",
+        "preserves": "Field contents are untouched; only the two selected source positions change.",
+        "skip_behavior": "Missing sides and selectors resolving to the same field are skipped and grouped by reason.",
+        "error_behavior": "Selectors must be distinct and use the same exact tag; Every is not available for Swap.",
+        "example": {"before": "070  4 \\$a QA76.73.P98\\n070  4 \\$a QA76.73.P99", "after": "070  4 \\$a QA76.73.P99\\n070  4 \\$a QA76.73.P98"},
+        "stored_representation": "Two explicit one-time selectors; no field contents are reconstructed.",
+        "related": [],
+    },
+}
+
+
+def _search_registry_entries(query: str = "") -> list[dict[str, Any]]:
     needle = query.strip().casefold()
     entries = []
     for kind, entry in REFERENCE_REGISTRY.items():
@@ -217,6 +351,42 @@ def search_entries(query: str = "") -> list[dict[str, Any]]:
     return sorted(entries, key=lambda entry: str(entry["label"]).casefold())
 
 
+def search_quick_entries(query: str = "") -> list[dict[str, Any]]:
+    """Return cataloger-facing Common field changes reference entries."""
+
+    needle = query.strip().casefold()
+    entries = []
+    for kind, entry in QUICK_CHANGE_REFERENCE.items():
+        haystack = " ".join(
+            [
+                kind,
+                str(entry.get("label", "")),
+                str(entry.get("purpose", "")),
+                str(entry.get("when_to_use", "")),
+                str(entry.get("behavior", "")),
+                str(entry.get("preserves", "")),
+                str(entry.get("skip_behavior", "")),
+                str(entry.get("error_behavior", "")),
+                str(entry.get("stored_representation", "")),
+                " ".join(str(item) for item in entry.get("inputs", [])),
+                " ".join(str(item) for item in entry.get("related", [])),
+                _QUICK_OVERVIEW,
+            ]
+        ).casefold()
+        if not needle or needle in haystack:
+            entries.append({"kind": kind, "source": "quick", **entry})
+    return sorted(entries, key=lambda entry: str(entry["label"]).casefold())
+
+
+def search_entries(query: str = "") -> list[dict[str, Any]]:
+    """Search saved-task and Common field changes reference entries."""
+
+    return sorted(
+        _search_registry_entries(query) + search_quick_entries(query),
+        key=lambda entry: (str(entry["label"]).casefold(), entry.get("source", "task")),
+    )
+
+
 def render_markdown() -> str:
     lines = [
         "# Task operation reference",
@@ -224,7 +394,7 @@ def render_markdown() -> str:
         "This guide is generated from the checked-in deterministic operation registry.",
         "",
     ]
-    for entry in search_entries():
+    for entry in _search_registry_entries():
         lines.extend([
             f"## {entry['label']}",
             "",
@@ -253,4 +423,51 @@ def render_markdown() -> str:
             f"**Related:** {', '.join(f'`{item}`' for item in entry['related']) or 'none'}",
             "",
         ])
+    lines.extend([
+        "## Common field changes",
+        "",
+        _QUICK_OVERVIEW,
+        "",
+        "These nine labels are alphabetical. Choose exactly one for each Preview and Apply cycle.",
+        "",
+    ])
+    for entry in search_quick_entries():
+        lines.extend([
+            f"### {entry['label']}",
+            "",
+            f"**Purpose:** {entry['purpose']}",
+            "",
+            f"**When to use:** {entry['when_to_use']}",
+            "",
+            f"**Inputs:** {', '.join(entry['inputs']) or 'none'}",
+            "",
+            f"**Behavior:** {entry['behavior']}",
+            "",
+            f"**Preserves:** {entry['preserves']}",
+            "",
+            f"**Skip behavior:** {entry['skip_behavior']}",
+            "",
+            f"**Error behavior:** {entry['error_behavior']}",
+            "",
+            f"**Before:** `{entry['example']['before']}`",
+            "",
+            f"**After:** `{entry['example']['after']}`",
+            "",
+            f"**Related:** {', '.join(f'`{item}`' for item in entry['related']) or 'none'}",
+            "",
+        ])
+    lines.extend([
+        "### Worked examples",
+        "",
+        "To swap two distinguishable 070 fields, choose **Swap field occurrences**, enter tag `070`, and select the first and second occurrences. The complete fields exchange positions; each indicator, value, and ordered subfield stays with its field.",
+        "",
+        "To select one of several 856 fields, enter tag `856`, choose subfield `$u`, use the guided **Contains** match for the vendor text, then choose **Numbered** for the requested matching occurrence. Filtering happens before numbering, so a nonmatching vendor link is not counted.",
+        "",
+        "**Move or retag field** keeps the source position. Use the separate explicit **Reorder fields** Quick action when tag order should be normalized.",
+        "",
+        "Exact duplicate removal compares complete field identity (tag, indicators or control value, and ordered subfields); near-duplicates are retained.",
+        "",
+        "Preview and Apply are recoverable: reset clears preview evidence, stale source or changed selectors disable Apply, and a successful Apply creates the existing history or recoverable file-version evidence.",
+        "",
+    ])
     return "\n".join(lines).rstrip("\n") + "\n"
