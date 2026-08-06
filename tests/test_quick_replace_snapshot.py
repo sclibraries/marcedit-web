@@ -9,6 +9,31 @@ from types import SimpleNamespace
 import pymarc
 
 from marcedit_web.lib.record_store import RecordStore
+from marcedit_web.render import operation_activity
+
+
+class _RecordingActivity:
+    progress_callback = staticmethod(lambda *_args: None)
+
+    def __init__(self):
+        self.phase_calls = []
+        self.completed = []
+        self.failed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def phase(self, label, message):
+        self.phase_calls.append((label, message))
+
+    def complete(self, label, message):
+        self.completed.append((label, message))
+
+    def fail(self, label, message):
+        self.failed.append((label, message))
 
 
 class _FakeStreamlit:
@@ -66,6 +91,11 @@ def _tasks_render(monkeypatch, fake_st):
     from marcedit_web.render import tasks as tasks_render
 
     monkeypatch.setattr(tasks_render, "st", fake_st)
+    monkeypatch.setattr(
+        operation_activity,
+        "open_activity",
+        lambda *_args, **_kwargs: _RecordingActivity(),
+    )
     return tasks_render
 
 

@@ -1,6 +1,6 @@
 # Task 3 report
 
-Status: DONE_WITH_CONCERNS (Quick batch and Find and replace activity integration implemented).
+Status: DONE_WITH_CONCERNS (Quick batch and Find and replace activity integration implemented; legacy fixture follow-up resolved).
 
 ## Changes
 
@@ -30,12 +30,19 @@ also passed.
 
 - `b77cac2 feat: show quick batch activity progress`
 
+## Follow-up fix
+
+- Updated `tests/test_quick_replace_snapshot.py`'s renderer fixture with the
+  same recording activity context used by the Task 3 lifecycle tests. This
+  keeps the four existing snapshot/adoption assertions focused on request,
+  result, and persistence semantics while supplying the new activity seam.
+- `PYTHONPATH=. pytest -q tests/test_quick_replace_snapshot.py`: **4 passed**.
+- Re-ran the required Task 3 suite: **115 passed**.
+
 ## Concerns
 
 - The first sandboxed commit attempt could not create the worktree index lock
   because `.git` is read-only in the default sandbox; the commit succeeded
   after the required escalation.
-- Older `tests/test_quick_replace_snapshot.py` fakes do not patch the shared
-  activity context and therefore fail when run in the broader legacy suite;
-  the required Task 3/Task 2 command is green. Updating those unrelated test
-  fakes is deferred to the parent integration pass.
+- No known product-semantic concerns remain. The fixture-only follow-up is
+  intentionally limited to test support for the shared activity seam.
