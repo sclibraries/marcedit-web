@@ -17,6 +17,11 @@ Scope:
 - Add a bounded, allowlisted structured-adapter envelope to the existing
   subprocess sandbox so Common field changes never interpolate request values
   into executable task source.
+- Replace the three competing Quick-operation entry points with one
+  alphabetized **Quick operation** dropdown containing Find and replace, all
+  focused field changes, and every existing specialized Quick cleanup.
+- Keep each existing execution engine authoritative after selection; the
+  unified dropdown changes routing and presentation, not MARC semantics.
 
 Success Criteria:
 - Catalogers can identify a field by tag, optional indicators, optional
@@ -40,8 +45,16 @@ Success Criteria:
 - Successful Apply produces the existing recoverable job-file version or
   Quick Load snapshot evidence; validation or write failure produces no
   partial application.
-- Existing specialized Quick operations, Quick find/replace, saved tasks,
-  imports, authorization, and AI behavior remain unchanged.
+- Find and replace, focused field changes, and specialized Quick operations
+  are selected from one alphabetized dropdown with no nested operation
+  dropdowns or always-visible operation form outside it.
+- Switching the selected Quick operation clears stale preview and export state
+  from all three Quick engines while retaining harmless form values.
+- The Common field-change Preview button and stored preview object use
+  distinct Streamlit session keys, preventing widget state from replacing the
+  preview object.
+- Existing Quick execution semantics, saved tasks, imports, authorization,
+  and AI behavior remain unchanged.
 - Table-driven tests cover multiple same-tag fields, selector modes, missing
   occurrences, control/data restrictions, swap ordering, preview/apply
   equivalence, the operation/occurrence compatibility matrix, shared-helper

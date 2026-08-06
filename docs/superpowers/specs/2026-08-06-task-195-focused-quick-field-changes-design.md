@@ -13,25 +13,30 @@ multi-step, reusable, templated, or institution-specific work remains a saved
 task.
 
 The existing specialized Quick operations and Quick find/replace remain
-available and unchanged.
+available through their existing execution engines. Their presentation is
+consolidated with the focused field changes under one operation selector.
 
 ## Cataloger Workflow
 
-Quick changes presents a **Common field changes** group whose operations are
-alphabetized by cataloger-facing label:
+Quick changes presents one alphabetized **Quick operation** dropdown. It is
+the only operation selector on the page and contains:
 
-- Add field
-- Add subfield
-- Copy field
-- Delete field
-- Delete subfield
-- Move or retag field
-- Remove exact duplicate fields
-- Set indicators
-- Swap field occurrences
+- Find and replace;
+- every existing specialized operation: 008 form of item, 040 cleanup, 655
+  genre/form cleanup, 856 URL tools, Leader value, Local 9xx cleanup, OCLC 035
+  cleanup, and Reorder fields by canonical tag order; and
+- every focused field change: Add field, Add subfield, Copy field, Delete
+  field, Delete subfield, Move or retag field, Remove exact duplicate fields,
+  Set indicators, and Swap field occurrences.
 
-The cataloger chooses exactly one operation, completes guided controls, reads
-a plain-language summary, previews the loaded batch, and applies only from a
+The complete list is sorted by its cataloger-facing label, irrespective of
+which execution engine owns an operation. Selecting an entry shows only that
+operation's relevant controls. Find and replace is no longer an always-visible
+form above the dropdown, and specialized operations do not render a second,
+nested selector.
+
+The cataloger chooses exactly one operation, completes its controls, reads a
+plain-language summary, previews the loaded batch, and applies only from a
 current successful preview. Nothing is added to the task library.
 
 The summary names both the selection and the change. For example:
@@ -236,6 +241,35 @@ existing snapshot/history behavior. Audit and export metadata identify the
 operation kind, selected tag, changed/skipped counts, and bounded reason
 counts; they do not store MARC content or raw imported data.
 
+### Unified Selection and Preview Lifecycle
+
+The top-level Quick operation value is presentation state, not part of any
+engine's immutable request. It routes to exactly one of three existing
+boundaries:
+
+- Find and replace continues to build and apply `BatchReplaceRequest` values;
+- focused field changes continue to build and apply
+  `QuickFieldChangeRequest` values through the structured sandbox adapter; and
+- specialized cleanups continue to build and apply `QuickBatchRequest` values.
+
+The routing layer never translates one request type into another. Existing
+validation, preview identity, sandboxing, staged adoption, and audit behavior
+remain owned by the selected engine.
+
+Whenever the selected operation label changes, the page cleans preview
+artifacts and export-ready state for all three Quick engines before rendering
+the new controls. This applies when switching between engines and between two
+operations owned by the same engine. Harmless keyed form values may remain so
+returning to an operation does not force re-entry, but no prior preview may
+become current or applicable under a different selection.
+
+Every widget key is distinct from every stored domain-object key. In
+particular, the focused field-change Preview button uses a dedicated button
+key and never shares `quick_field_change_preview`, which is reserved for the
+`QuickFieldChangePreview` object. This addresses the observed failure where
+Streamlit stored a Boolean button value under the preview-object key and the
+renderer then attempted `preview.error` on that Boolean.
+
 ### Execution Precedent
 
 The feature deliberately combines two existing, tested boundaries:
@@ -276,11 +310,15 @@ no payload value is passed to `exec`.
   envelope and the fixed child-side adapter allowlist; it contains no Quick
   operation semantics.
 - `marcedit_web/render/quick_field_changes.py` owns the new operation and
-  selector controls, session keys, plain-language summaries, preview evidence,
-  and reset behavior.
-- `render/tasks.py` mounts that renderer and passes the existing loaded-file,
-  job-version, audit, and export context; it does not absorb nine more
-  operation renderers.
+  selector controls, distinct widget/domain-object session keys,
+  plain-language summaries, preview evidence, and reset behavior. It accepts
+  the focused operation selected by the parent and does not render a nested
+  operation dropdown.
+- `render/tasks.py` owns the small unified Quick-operation registry and router
+  because the existing Find/Replace and specialized Quick renderers already
+  live there. It passes the selected focused operation and existing
+  loaded-file, job-version, audit, and export context to the dedicated
+  renderer; it does not absorb the focused operation controls or semantics.
 - Existing `transforms` helpers are reused only for the exact semantic subsets
   listed below. The new engine does not call the task compiler, generated
   Python, AI drafting, or external-task migration.
@@ -344,11 +382,17 @@ matrix, including rejected Every-selection for Swap. Equivalence tests cover
 each overlapping helper subset in the component table and prove that focused
 occurrence selection never mutates unselected fields.
 
-Renderer tests prove operation labels are alphabetical, only compatible
-controls appear, summaries describe the exact request, reset clears preview
-state, and every-match warnings are visible. Existing Quick batch, Quick
-find/replace, task-authoring, import, AI, and authorization suites remain
-unchanged and must continue to pass.
+Renderer tests prove the unified registry contains Find and replace, all nine
+focused operations, and all eight specialized operations exactly once; labels
+are alphabetical; only the selected operation's controls appear; no nested
+operation dropdown is rendered; summaries describe the exact request; reset
+clears preview state; and every-match warnings are visible. A stateful
+Streamlit test double writes button values into keyed session state and proves
+that an initial render cannot replace the focused preview object or raise at
+`preview.error`. Operation-switch tests prove prior preview artifacts are
+cleaned and cannot be applied after the switch. Existing execution, task-
+authoring, import, AI, and authorization suites remain unchanged and must
+continue to pass.
 
 ## Non-Goals
 
@@ -357,7 +401,8 @@ unchanged and must continue to pass.
 - Templates or cross-field interpolation.
 - Institution profiles or conditional Leader/material rules.
 - Tag ranges, wildcards, or arbitrary Python.
-- Replacing the existing specialized Quick cleanups or Quick find/replace.
+- Replacing or unifying the three existing Quick execution engines. The
+  dropdown unifies selection and layout only.
 - Adding any Common field change to `OPERATIONS_PALETTE`, the AI draft schema,
   or the Gemini prompt. Quick operations are not saved-task operations.
 - Changing task storage, folder organization, import conversion, AI drafting,
@@ -365,9 +410,10 @@ unchanged and must continue to pass.
 
 ## Rollout and Documentation
 
-The feature is additive. The existing Quick operations render and execute
-through their current paths. The cataloger operation reference gains a Quick
-changes section explaining the one-operation boundary, filter-then-occurrence
-selection, skip behavior, swap examples with two 070 fields, and an 856
-example selected by `$u` content. Browser acceptance exercises both Quick Load
-and a versioned shared-job file before the ticket can be completed.
+The feature preserves the existing Quick execution engines while replacing
+their separate entry-point controls with the unified selector. The cataloger
+operation reference gains a Quick changes section explaining the one-operation
+boundary, filter-then-occurrence selection, skip behavior, swap examples with
+two 070 fields, and an 856 example selected by `$u` content. Browser acceptance
+exercises both Quick Load and a versioned shared-job file before the ticket can
+be completed.
