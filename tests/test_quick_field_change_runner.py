@@ -146,6 +146,91 @@ def test_cleanup_artifact_removes_only_owned_workdir(tmp_path):
     assert not owned.exists()
 
 
+def test_cleanup_artifact_ignores_foreign_matching_prefix_directory(tmp_path):
+    foreign = tmp_path / f"{runner._ARTIFACT_PREFIX}foreign"
+    foreign.mkdir()
+    (foreign / "keep.txt").write_text("do not remove")
+
+    runner.cleanup_artifact(foreign)
+
+    assert foreign.is_dir()
+    assert (foreign / "keep.txt").read_text() == "do not remove"
+
+
+def test_adopt_rejects_foreign_matching_prefix_candidate(tmp_path):
+    store = _store(tmp_path / "store", _record())
+    foreign = tmp_path / f"{runner._ARTIFACT_PREFIX}foreign"
+    foreign.mkdir()
+    output = foreign / "output.mrc"
+    store.write_mrc_to(output)
+    candidate = runner.QuickFieldChangeCandidate(
+        output_path=output,
+        workdir=foreign,
+        changed_count=0,
+        skipped_count=0,
+    )
+
+    with pytest.raises(ValueError, match="not owned"):
+        runner.adopt_candidate_to_store(store, candidate)
+    assert foreign.is_dir()
+    assert output.is_file()
+
+
+def test_apply_candidate_rejects_store_record_count_drift(tmp_path):
+    store = _store(
+        tmp_path / "store",
+        _record(Field(tag="856", indicators=["4", "0"], subfields=[Subfield("u", "one")])),
+    )
+    request = _delete_request()
+    preview = runner.build_preview(store, request)
+    store.delete(0)
+
+    with pytest.raises(ValueError, match="record count"):
+        runner.build_apply_candidate(store, preview, request)
+
+
+def test_apply_candidate_reruns_adapter_and_does_not_mutate_preview(monkeypatch, tmp_path):
+    store = _store(
+        tmp_path / "store",
+        _record(Field(tag="856", indicators=["4", "0"], subfields=[Subfield("u", "one")])),
+    )
+    request = _delete_request()
+    preview = runner.build_preview(store, request)
+    assert preview.output_path is not None
+    preview_output = preview.output_path
+    preview_output.write_bytes(b"sentinel preview artifact")
+    preview_counts = (
+        preview.changed_count,
+        preview.unchanged_count,
+        preview.skipped_count,
+        preview.fields_affected,
+        preview.subfields_affected,
+    )
+    calls = 0
+    real_run = sandbox.run_tasks_subprocess
+
+    def count_runs(tasks, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_run(list(tasks), *args, **kwargs)
+
+    monkeypatch.setattr(sandbox, "run_tasks_subprocess", count_runs)
+    candidate = runner.build_apply_candidate(store, preview, request)
+
+    assert calls == 1
+    assert candidate.output_path != preview_output
+    assert candidate.output_path.is_file()
+    assert RecordStore.from_path(candidate.output_path).get(0).get("856") is None
+    assert preview_output.read_bytes() == b"sentinel preview artifact"
+    assert preview_counts == (
+        preview.changed_count,
+        preview.unchanged_count,
+        preview.skipped_count,
+        preview.fields_affected,
+        preview.subfields_affected,
+    )
+
+
 def test_preview_passes_empty_body_and_allowlisted_adapter(monkeypatch, tmp_path):
     store = _store(
         tmp_path / "store",

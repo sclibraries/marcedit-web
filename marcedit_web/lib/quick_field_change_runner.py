@@ -11,6 +11,7 @@ the caller decides when that candidate should be adopted.
 from __future__ import annotations
 
 import json
+import secrets
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -25,6 +26,8 @@ from .quick_field_changes import (
 
 
 _ARTIFACT_PREFIX = "marcedit-web-quick-field-change-"
+_OWNERSHIP_MARKER = ".quick-field-change-owner.json"
+_OWNERSHIP_KIND = "marcedit-web.quick-field-change.artifact.v1"
 _MAX_ERROR_CHARS = 1024
 _MAX_ERROR_BYTES = 2048
 _REQUIRED_TOTAL_KEYS = (
@@ -34,6 +37,11 @@ _REQUIRED_TOTAL_KEYS = (
     "fields_affected",
     "subfields_affected",
 )
+
+# A marker alone is not an authority: a caller could copy one into a
+# similarly named directory.  Keep the random token in this process too, so
+# only workdirs created by this runner can be cleaned up or adopted.
+_OWNED_ARTIFACTS: dict[Path, str] = {}
 
 
 @dataclass
@@ -273,7 +281,50 @@ def _run_adapter(
 
 
 def _new_workdir() -> Path:
-    return Path(tempfile.mkdtemp(prefix=_ARTIFACT_PREFIX))
+    workdir = Path(tempfile.mkdtemp(prefix=_ARTIFACT_PREFIX)).resolve()
+    token = secrets.token_hex(32)
+    marker = {
+        "kind": _OWNERSHIP_KIND,
+        "token": token,
+        "workdir": str(workdir),
+    }
+    try:
+        (workdir / _OWNERSHIP_MARKER).write_text(
+            json.dumps(marker, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+    except Exception:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise
+    _OWNED_ARTIFACTS[workdir] = token
+    return workdir
+
+
+def _artifact_owned(workdir: Path) -> bool:
+    """Return whether ``workdir`` is a live artifact created by this runner."""
+
+    try:
+        if workdir.is_symlink():
+            return False
+        resolved = workdir.resolve(strict=True)
+        if not resolved.is_dir() or not resolved.name.startswith(_ARTIFACT_PREFIX):
+            return False
+        expected_token = _OWNED_ARTIFACTS.get(resolved)
+        if expected_token is None:
+            return False
+        marker_path = resolved / _OWNERSHIP_MARKER
+        if marker_path.is_symlink() or not marker_path.is_file():
+            return False
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        return (
+            isinstance(marker, dict)
+            and marker.get("kind") == _OWNERSHIP_KIND
+            and marker.get("workdir") == str(resolved)
+            and isinstance(marker.get("token"), str)
+            and secrets.compare_digest(marker["token"], expected_token)
+        )
+    except (OSError, UnicodeError, TypeError, ValueError):
+        return False
 
 
 def _preview_base(
@@ -329,7 +380,7 @@ def build_preview(
     try:
         outcome = _run_adapter(store, request, workdir, progress=progress)
     except Exception as exc:  # noqa: BLE001 - keep preview error-state
-        shutil.rmtree(workdir, ignore_errors=True)
+        cleanup_artifact(workdir)
         preview.workdir = None
         preview.error = _bounded_error(f"Could not run sandbox adapter: {exc}")
         return preview
@@ -364,6 +415,8 @@ def _assert_preview_current(
         raise ValueError("Quick field change request changed since preview.")
     if preview.error:
         raise ValueError(f"Preview is in error state: {preview.error}")
+    if store.count() != preview.record_count:
+        raise ValueError("Loaded batch record count changed since preview.")
     if preview.store_id != id(store) or preview.store_revision != store.revision:
         raise ValueError("Loaded batch changed since preview.")
     if (
@@ -421,17 +474,18 @@ def build_apply_candidate(
             skipped_count=outcome.skipped_count,
         )
     except Exception:
-        shutil.rmtree(workdir, ignore_errors=True)
+        cleanup_artifact(workdir)
         raise
 
 
 def _owned_output(candidate: QuickFieldChangeCandidate) -> Path:
     workdir = Path(candidate.workdir)
     output = Path(candidate.output_path)
-    if not workdir.name.startswith(_ARTIFACT_PREFIX):
+    if not _artifact_owned(workdir):
         raise ValueError("Candidate workspace is not owned by Quick field changes.")
     try:
-        if output.resolve().parent != workdir.resolve():
+        resolved_workdir = workdir.resolve(strict=True)
+        if output.resolve().parent != resolved_workdir:
             raise ValueError("Candidate output is outside its workspace.")
     except OSError as exc:
         raise ValueError("Candidate output could not be resolved.") from exc
@@ -448,7 +502,11 @@ def adopt_candidate_to_store(store, candidate: QuickFieldChangeCandidate) -> int
 
 
 def cleanup_artifact(artifact: object | None) -> None:
-    """Remove only a runner-owned preview/candidate workspace."""
+    """Remove only a runner-owned preview/candidate workspace.
+
+    A basename prefix is only a naming convention, not ownership.  The
+    marker and in-process token are both required before recursive removal.
+    """
 
     if artifact is None:
         return
@@ -456,9 +514,13 @@ def cleanup_artifact(artifact: object | None) -> None:
     if workdir is None:
         return
     path = Path(workdir)
-    if not path.name.startswith(_ARTIFACT_PREFIX):
+    if not _artifact_owned(path):
         return
-    shutil.rmtree(path, ignore_errors=True)
+    resolved = path.resolve()
+    try:
+        shutil.rmtree(resolved, ignore_errors=True)
+    finally:
+        _OWNED_ARTIFACTS.pop(resolved, None)
 
 
 __all__ = [
