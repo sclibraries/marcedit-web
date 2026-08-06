@@ -26,7 +26,6 @@ from marcedit_web.lib import transforms
 
 
 KEY_PREFIX = "quick_field_change_"
-K_OPERATION = KEY_PREFIX + "operation"
 K_PREVIEW = KEY_PREFIX + "preview"
 K_RESET = KEY_PREFIX + "reset"
 K_PREVIEW_BUTTON = KEY_PREFIX + "preview_button"
@@ -699,6 +698,7 @@ def _clear_state() -> None:
 def render_common_field_changes(
     store,
     *,
+    operation_kind: str,
     job_file_id: int | None = None,
     job_file_version_id: int | None = None,
     on_apply: Callable[[object, QuickFieldChangeRequest], object],
@@ -710,8 +710,10 @@ def render_common_field_changes(
         _clear_state()
         return
 
-    selected_label = _choice("Operation", EXPECTED_LABELS, key=K_OPERATION)
-    kind = OPERATION_KINDS[selected_label]
+    if operation_kind not in OPERATION_KINDS.values():
+        st.error("This Quick field operation is not available.")
+        return
+    kind = operation_kind
     request, controls = _render_request(kind)
     st.caption(_summary(request))
 

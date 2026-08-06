@@ -92,23 +92,12 @@ class StatefulButtonFake(FakeStreamlit):
         return pressed
 
 
-EXPECTED_LABELS = [
-    "Add field",
-    "Add subfield",
-    "Copy field",
-    "Delete field",
-    "Delete subfield",
-    "Move or retag field",
-    "Remove exact duplicate fields",
-    "Set indicators",
-    "Swap field occurrences",
-]
-
-
 def _render(monkeypatch, fake, *, store=object(), on_apply=None):
     monkeypatch.setattr(renderer, "st", fake)
+    selected_label = fake.selections.get("Operation", "Add field")
     renderer.render_common_field_changes(
         store,
+        operation_kind=renderer.OPERATION_KINDS[selected_label],
         job_file_id=None,
         job_file_version_id=None,
         on_apply=on_apply or (lambda *_args: None),
@@ -128,8 +117,7 @@ def test_preview_button_cannot_replace_the_preview_object(monkeypatch):
 def test_operation_labels_are_alphabetical(monkeypatch):
     fake = FakeStreamlit()
     _render(monkeypatch, fake)
-    operation = next(row for row in fake.widgets if row[0] == "selectbox" and row[1] == "Operation")
-    assert operation[2] == EXPECTED_LABELS
+    assert not any(row[1] == "Operation" for row in fake.widgets)
 
 
 @pytest.mark.parametrize(

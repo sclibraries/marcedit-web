@@ -34,6 +34,22 @@ class _FakeStreamlit:
         self.rerun_called = True
 
 
+class _QuickRouterFake:
+    def __init__(self, selected, *, session_state=None):
+        self.selected = selected
+        self.session_state = dict(session_state or {})
+        self.errors = []
+
+    def selectbox(self, label, *, options, format_func, key, **_kwargs):
+        assert label == "Quick operation"
+        assert self.selected in options
+        self.session_state[key] = self.selected
+        return self.selected
+
+    def error(self, message):
+        self.errors.append(str(message))
+
+
 def _record() -> pymarc.Record:
     record = pymarc.Record()
     record.leader = pymarc.Leader("00000nam a2200000 a 4500")
@@ -84,13 +100,53 @@ def _candidate(tmp_path):
     )
 
 
-def test_quick_ops_mounts_common_field_changes_between_existing_quick_flows(
-    monkeypatch,
-):
+EXPECTED_QUICK_LABELS = (
+    "008 form of item",
+    "040 cleanup",
+    "655 genre/form cleanup",
+    "856 URL tools",
+    "Add field",
+    "Add subfield",
+    "Copy field",
+    "Delete field",
+    "Delete subfield",
+    "Find and replace",
+    "Leader value",
+    "Local 9xx cleanup",
+    "Move or retag field",
+    "OCLC 035 cleanup",
+    "Remove exact duplicate fields",
+    "Reorder fields by canonical tag order",
+    "Set indicators",
+    "Swap field occurrences",
+)
+
+
+def test_quick_operation_registry_is_complete_unique_and_alphabetical():
+    from marcedit_web.render import tasks as tasks_render
+
+    entries = tasks_render._quick_operation_entries()
+    assert tuple(label for _identifier, label in entries) == EXPECTED_QUICK_LABELS
+    assert len({identifier for identifier, _label in entries}) == 18
+
+
+@pytest.mark.parametrize(
+    ("selected", "expected"),
+    [
+        ("find-replace", ["find"]),
+        ("field:delete-field", ["field", "field-export"]),
+        ("batch:035-oclc", ["batch"]),
+    ],
+)
+def test_quick_router_renders_only_the_selected_engine(monkeypatch, selected, expected):
     from marcedit_web.render import tasks as tasks_render
 
     calls = []
+    fake_st = _QuickRouterFake(selected)
+    monkeypatch.setattr(tasks_render, "st", fake_st)
     monkeypatch.setattr(tasks_render.session, "has_upload", lambda: True)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: object())
+    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: False)
     monkeypatch.setattr(
         tasks_render, "_render_quick_find_replace", lambda: calls.append("find")
     )
@@ -100,17 +156,90 @@ def test_quick_ops_mounts_common_field_changes_between_existing_quick_flows(
         lambda *args, **kwargs: calls.append(("field", kwargs)),
     )
     monkeypatch.setattr(
-        tasks_render, "_render_quick_batch_operations", lambda: calls.append("batch")
+        tasks_render,
+        "_render_quick_field_change_export",
+        lambda: calls.append("field-export"),
     )
-    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: False)
+    monkeypatch.setattr(
+        tasks_render,
+        "_render_quick_batch_operations",
+        lambda kind: calls.append("batch"),
+    )
 
     tasks_render._render_quick_ops_mode()
 
-    assert calls[0] == "find"
-    assert calls[1][0] == "field"
-    assert calls[1][1]["job_file_id"] is None
-    assert calls[1][1]["job_file_version_id"] is None
-    assert calls[2] == "batch"
+    actual = [call[0] if isinstance(call, tuple) else call for call in calls]
+    assert actual == expected
+
+
+def test_switching_quick_operation_cleans_all_preview_and_export_state(monkeypatch):
+    from marcedit_web.render import tasks as tasks_render
+
+    events = []
+    find_preview = object()
+    field_preview = object()
+    batch_preview = object()
+    field_export = {"path": "/tmp/field-export", "temporary": False}
+    batch_export = {"path": "/tmp/batch-export", "temporary": False}
+    fake_st = _QuickRouterFake(
+        "field:add-field",
+        session_state={
+            tasks_render._K_QUICK_OPERATION_ACTIVE: "find-replace",
+            tasks_render._K_BR_PREVIEW: find_preview,
+            tasks_render._K_QFC_PREVIEW: field_preview,
+            tasks_render._K_QB_PREVIEW: batch_preview,
+            tasks_render._K_QFC_EXPORT: field_export,
+            tasks_render._K_QB_EXPORT: batch_export,
+            "br_tag": "035",
+            "qb_040_agency": "MNS",
+        },
+    )
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    monkeypatch.setattr(tasks_render.session, "has_upload", lambda: True)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: object())
+    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: False)
+    monkeypatch.setattr(
+        tasks_render.batch_replace,
+        "cleanup_preview",
+        lambda value: events.append(("find", value)),
+    )
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "cleanup_artifact",
+        lambda value: events.append(("field", value)),
+    )
+    monkeypatch.setattr(
+        tasks_render.quick_batch,
+        "cleanup_preview",
+        lambda value: events.append(("batch", value)),
+    )
+    exports = []
+    monkeypatch.setattr(
+        tasks_render,
+        "_cleanup_disk_backed_export",
+        lambda value: exports.append(value),
+    )
+    monkeypatch.setattr(
+        tasks_render.quick_field_changes_render,
+        "render_common_field_changes",
+        lambda *args, **kwargs: None,
+    )
+
+    tasks_render._render_quick_ops_mode()
+
+    assert events == [
+        ("find", find_preview),
+        ("field", field_preview),
+        ("batch", batch_preview),
+    ]
+    assert exports == [field_export, batch_export]
+    assert tasks_render._K_BR_PREVIEW not in fake_st.session_state
+    assert tasks_render._K_QFC_PREVIEW not in fake_st.session_state
+    assert tasks_render._K_QB_PREVIEW not in fake_st.session_state
+    assert tasks_render._K_QFC_EXPORT not in fake_st.session_state
+    assert tasks_render._K_QB_EXPORT not in fake_st.session_state
+    assert fake_st.session_state["br_tag"] == "035"
+    assert fake_st.session_state["qb_040_agency"] == "MNS"
 
 
 def test_job_file_quick_field_change_creates_recoverable_version(

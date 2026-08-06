@@ -223,6 +223,8 @@ K_WORKSPACE_LOCATION = "tasks_workspace_location"
 K_WORKSPACE_OWN_WRITE = "tasks_workspace_own_write"
 K_WORKSPACE_VIEW_WIDGET = "tasks_workspace_view"
 K_RUN_MODE_WIDGET = "tasks_run_mode"
+_K_QUICK_OPERATION_SELECTOR = "quick_operation_selector"
+_K_QUICK_OPERATION_ACTIVE = "quick_operation_active"
 
 
 def _materialized_dir(user: str) -> Path:
@@ -1435,25 +1437,57 @@ def _render_import_workspace(
 
 
 def _render_quick_ops_mode() -> None:
-    """One-shot find/replace and canned batch operations."""
+    """Render one selected one-shot Quick operation."""
     if not session.has_upload():
         st.info(
             "Upload a `.mrc` file on the **Home** page to use quick "
             "operations."
         )
         return
-    _render_quick_find_replace()
-    quick_field_changes_render.render_common_field_changes(
-        session.current_store(),
-        job_file_id=(st.session_state.get("job_file_id")
-                     if _uses_job_file_versions() else None),
-        job_file_version_id=(st.session_state.get("job_file_version_id")
-                             if _uses_job_file_versions() else None),
-        on_apply=_apply_quick_field_change_preview,
-        preview_builder=_build_quick_field_change_preview,
+    entries = _quick_operation_entries()
+    labels = {identifier: label for identifier, label in entries}
+    selected = st.selectbox(
+        "Quick operation",
+        options=[identifier for identifier, _label in entries],
+        format_func=labels.get,
+        key=_K_QUICK_OPERATION_SELECTOR,
     )
-    _render_quick_field_change_export()
-    _render_quick_batch_operations()
+    previous = st.session_state.get(_K_QUICK_OPERATION_ACTIVE)
+    if selected != previous:
+        _clear_quick_operation_state()
+        st.session_state[_K_QUICK_OPERATION_ACTIVE] = selected
+
+    if selected == "find-replace":
+        _render_quick_find_replace()
+    elif selected.startswith("field:"):
+        quick_field_changes_render.render_common_field_changes(
+            session.current_store(),
+            operation_kind=selected[len("field:"):],
+            job_file_id=(st.session_state.get("job_file_id")
+                         if _uses_job_file_versions() else None),
+            job_file_version_id=(st.session_state.get("job_file_version_id")
+                                 if _uses_job_file_versions() else None),
+            on_apply=_apply_quick_field_change_preview,
+            preview_builder=_build_quick_field_change_preview,
+        )
+        _render_quick_field_change_export()
+    elif selected.startswith("batch:"):
+        _render_quick_batch_operations(selected[len("batch:"):])
+    else:
+        st.error("This Quick operation is not available. Choose another operation.")
+
+
+def _quick_operation_entries() -> tuple[tuple[str, str], ...]:
+    entries = [("find-replace", "Find and replace")]
+    entries.extend(
+        (f"field:{kind}", label)
+        for label, kind in quick_field_changes_render.OPERATION_KINDS.items()
+    )
+    entries.extend(
+        (f"batch:{kind}", label)
+        for kind, label in _QB_OPERATION_LABELS.items()
+    )
+    return tuple(sorted(entries, key=lambda item: item[1].casefold()))
 
 
 def _build_quick_field_change_preview(store, request, **kwargs):
@@ -4313,6 +4347,19 @@ _K_QFC_EXPORT = "quick_field_change_export"
 _K_QFC_DOWNLOAD_READY = "quick_field_change_download_ready"
 
 
+def _clear_quick_operation_state() -> None:
+    """Clear preview/export evidence while preserving operation form values."""
+    batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
+    quick_field_change_runner.cleanup_artifact(
+        st.session_state.pop(_K_QFC_PREVIEW, None)
+    )
+    quick_batch.cleanup_preview(st.session_state.pop(_K_QB_PREVIEW, None))
+    _cleanup_disk_backed_export(st.session_state.pop(_K_QFC_EXPORT, None))
+    _cleanup_disk_backed_export(st.session_state.pop(_K_QB_EXPORT, None))
+    st.session_state.pop(_K_QFC_DOWNLOAD_READY, None)
+    st.session_state.pop(K_QB_DOWNLOAD_READY, None)
+
+
 def _quick_field_change_label(request) -> str:
     """Return bounded metadata without selector values or MARC content."""
     kind = str(getattr(request, "kind", "")).strip()
@@ -4534,9 +4581,13 @@ _QB_856_ACTION_LABELS = {
 }
 
 
-def _render_quick_batch_operations() -> None:
+def _render_quick_batch_operations(kind: str) -> None:
     """Render one-shot canned MARC cleanup operations."""
     if not session.has_upload():
+        return
+
+    if kind not in _QB_OPERATION_LABELS:
+        st.error("This Quick batch operation is not available.")
         return
 
     st.divider()
@@ -4544,12 +4595,6 @@ def _render_quick_batch_operations() -> None:
         st.caption(
             "Run a structured cleanup across the loaded batch. Preview first; "
             "nothing is saved to your task list."
-        )
-        kind = st.selectbox(
-            "Operation",
-            options=list(_QB_OPERATION_LABELS),
-            format_func=lambda value: _QB_OPERATION_LABELS.get(value, value),
-            key="qb_kind",
         )
         request = _quick_batch_request_from_widgets(kind)
 
