@@ -214,14 +214,13 @@ _set_limits(args.cpu_seconds)
 
 import pymarc
 from marcedit_web.lib import transforms  # standard helpers in scope
-from marcedit_web.lib import quick_field_changes
 
 
 # Structured adapters are intentionally dispatched through this literal map.
 # Do not derive a callable from request data with globals(), getattr(), or a
 # module path: the request may select only the fixed adapter named here.
 _ADAPTER_PREPARERS = {
-    "quick-field-change": quick_field_changes.prepare_quick_field_change_adapter,
+    "quick-field-change": None,
 }
 
 
@@ -316,8 +315,16 @@ def _prepare_tasks(tasks):
             if not isinstance(adapter, str) or adapter not in _ADAPTER_PREPARERS:
                 raise ValueError("structured adapter is not allowlisted")
             _validate_adapter_payload_size(payload)
+            if adapter == "quick-field-change":
+                from marcedit_web.lib import quick_field_changes
+
+                preparer = quick_field_changes.prepare_quick_field_change_adapter
+            else:
+                preparer = _ADAPTER_PREPARERS[adapter]
+            if preparer is None:
+                raise ValueError("structured adapter is not available")
             prepared_adapters.append(
-                _ADAPTER_PREPARERS[adapter](payload)
+                preparer(payload)
             )
         else:
             if payload is not None:
@@ -576,22 +583,6 @@ def run_tasks_subprocess(
                 payload = None
             else:
                 payload = _canonical_adapter_payload(task_spec.adapter_payload)
-            # Validate request shape in the parent without preparing or
-            # matching fields. Raw regular expressions therefore compile only
-            # inside the child adapter boundary.
-            if adapter == "quick-field-change":
-                from marcedit_web.lib import quick_field_changes
-
-                try:
-                    request = quick_field_changes.request_from_payload(payload)
-                except (TypeError, ValueError) as exc:
-                    raise ValueError(f"adapter operation payload is invalid: {exc}") from exc
-                request_errors = quick_field_changes.validate_request(request)
-                if request_errors:
-                    raise ValueError(
-                        "adapter operation payload is invalid: "
-                        + "; ".join(request_errors)
-                    )
         else:
             if task_spec.adapter_payload is not None:
                 raise ValueError("adapter payload requires an adapter")

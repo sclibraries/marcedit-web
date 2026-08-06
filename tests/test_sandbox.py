@@ -185,15 +185,6 @@ def test_structured_adapter_aggregates_skips_and_bounded_reasons(one_record_byte
         ),
         (
             TaskSpec(
-                name="malformed",
-                body="",
-                adapter="quick-field-change",
-                adapter_payload={"kind": "unknown"},
-            ),
-            "operation",
-        ),
-        (
-            TaskSpec(
                 name="oversized",
                 body="",
                 adapter="quick-field-change",
@@ -206,6 +197,19 @@ def test_structured_adapter_aggregates_skips_and_bounded_reasons(one_record_byte
 def test_structured_adapter_rejects_invalid_envelopes(one_record_bytes, spec, message):
     with pytest.raises(ValueError, match=message):
         run_tasks_subprocess([spec], one_record_bytes)
+
+
+def test_structured_adapter_parent_defers_operation_validation_to_child(one_record_bytes):
+    result = run_tasks_subprocess(
+        [TaskSpec(
+            name="malformed",
+            body="",
+            adapter="quick-field-change",
+            adapter_payload={"kind": "unknown"},
+        )],
+        one_record_bytes,
+    )
+    assert result.returncode != 0
 
 
 def _run_forged_child_task(tmp_path, one_record_bytes, task):
@@ -320,7 +324,7 @@ def test_parent_does_not_compile_raw_regex_adapter_in_process(one_record_bytes, 
 
 
 def test_structured_adapter_error_preserves_original_record(one_record_bytes):
-    payload = request_to_payload(
+    invalid_payload = request_to_payload(
         QuickFieldChangeRequest(
             "delete-field",
             FieldSelector(
@@ -335,7 +339,20 @@ def test_structured_adapter_error_preserves_original_record(one_record_bytes):
         )
     )
     result = run_tasks_subprocess(
-        [TaskSpec(name="raw-regex", body="", adapter="quick-field-change", adapter_payload=payload)],
+        [
+            TaskSpec(
+                name="delete-first",
+                body="",
+                adapter="quick-field-change",
+                adapter_payload=_delete_245_payload(),
+            ),
+            TaskSpec(
+                name="raw-regex-fails-after-mutation",
+                body="",
+                adapter="quick-field-change",
+                adapter_payload=invalid_payload,
+            ),
+        ],
         one_record_bytes,
     )
     assert result.returncode == 0
