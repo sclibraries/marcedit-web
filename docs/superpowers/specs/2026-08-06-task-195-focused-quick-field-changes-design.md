@@ -66,6 +66,31 @@ The selector is a pure library component with no Streamlit, database, session,
 or file dependency, so validation, preview, and application use identical
 selection semantics.
 
+### Operation and Occurrence Compatibility
+
+Target filters and occurrence choice are orthogonal except where this table
+states otherwise. The renderer derives its occurrence choices from this table;
+it does not infer support from whichever controls happen to be visible.
+
+| Operation | First | Last | Numbered | Every | No occurrence selector |
+| --- | --- | --- | --- | --- | --- |
+| Add field | — | — | — | — | Required; record scope is explicit |
+| Add subfield | Yes | Yes | Yes | Yes | — |
+| Copy field | Yes | Yes | Yes | Yes | — |
+| Delete field | Yes | Yes | Yes | Yes | — |
+| Delete subfield | Yes | Yes | Yes | Yes | — |
+| Move or retag field | Yes | Yes | Yes | Yes | — |
+| Remove exact duplicate fields | — | — | — | — | Required; all filtered fields form the candidate set |
+| Set indicators | Yes | Yes | Yes | Yes | — |
+| Swap field occurrences | Yes | Yes | Yes | No | Two single-field selectors are required |
+
+Swap's two selectors share only the exact tag. Their indicator filters,
+subfield filters, value modes, case choices, and occurrences may differ. This
+allows a cataloger to distinguish two same-tag fields by content as well as by
+position. Canonically identical complete selector definitions are invalid;
+different selectors that happen to resolve to the same field in one record
+produce the bounded same-field skip reason.
+
 ### Advanced Regular Expressions
 
 Guided matching is the default. A collapsed **Advanced: regular expression**
@@ -73,11 +98,18 @@ choice changes only the optional subfield-value matcher to raw regex. It is
 never required for ordinary selection.
 
 Raw regex requests reuse the existing bounded canonical-request and sandbox
-validation contract. They must not compile or execute in the Streamlit
-process. Syntax errors, validation timeouts, cancellations, oversized
+execution contract. They never compile or execute in the Streamlit process.
+Syntax errors, validation timeouts, cancellations, oversized
 requests, and sandbox failures block Preview with bounded cataloger-facing
 errors. Apply additionally requires a current successful preview of the exact
 canonical request and source revision.
+
+This safety boundary applies to the complete Common field changes request, not
+only to its regex matcher. Preview preparation and Apply preparation both call
+the same fixed quick-change adapter in the subprocess. The adapter deserializes
+the canonical request and invokes the same one-record transformation entry
+point. It does not compile a task, accept generated Python, or dispatch through
+the saved-task operation palette.
 
 ## Operation Semantics
 
@@ -199,19 +231,82 @@ existing snapshot/history behavior. Audit and export metadata identify the
 operation kind, selected tag, changed/skipped counts, and bounded reason
 counts; they do not store MARC content or raw imported data.
 
+### Execution Precedent
+
+The feature deliberately combines two existing, tested boundaries:
+
+- it follows `quick_batch.py` for immutable request/preview/result values,
+  source and job-version identity, stale-preview rejection, and staged
+  adoption; and
+- it follows `batch_replace.py` for bounded subprocess transformation of MARC
+  input before the parent process accepts an output artifact.
+
+Unlike `batch_replace.py`, it does not translate the request into a
+`task_builder.Operation` and does not call `render_ops_to_python`. The child
+invokes a fixed adapter whose only variable input is the validated canonical
+request. Both Preview and Apply use that adapter; Apply reruns it against the
+current complete source and verifies source identity and output record count
+before adoption.
+
+The sandbox request envelope gains a mutually exclusive structured-adapter
+mode: an allowlisted adapter identifier plus a JSON value. Existing task-body
+execution remains unchanged. The child rejects an unknown adapter, a request
+that supplies both adapter data and a task body, or a payload that fails the
+adapter's validation. The `quick-field-change` adapter is selected by a fixed
+allowlist in the child; no operation name is resolved as a Python symbol and
+no payload value is passed to `exec`.
+
 ## Component Boundaries
 
 - `marcedit_web/lib/quick_field_selector.py` owns immutable selector values,
   normalization, validation, field resolution, and plain-language selection
   summaries.
 - `marcedit_web/lib/quick_field_changes.py` owns immutable operation requests,
-  operation validation, one-record transformation, change/skip results, batch
-  Preview, and Apply.
-- `render/tasks.py` owns only Streamlit controls, session keys, summaries,
-  preview rendering, and calls into the engine.
-- Existing `transforms` helpers are reused only when their semantics match the
-  approved operation exactly. The new engine does not call the task compiler,
-  generated Python, AI drafting, or external-task migration.
+  operation validation, one-record transformation, and change/skip results. It
+  has no Streamlit dependency.
+- `marcedit_web/lib/quick_field_change_runner.py` owns canonical request
+  serialization, the fixed sandbox adapter call, batch Preview and Apply,
+  staged artifacts, stale-state checks, and bounded subprocess diagnostics.
+- `marcedit_web/lib/sandbox.py` owns the generic mutually exclusive adapter
+  envelope and the fixed child-side adapter allowlist; it contains no Quick
+  operation semantics.
+- `marcedit_web/render/quick_field_changes.py` owns the new operation and
+  selector controls, session keys, plain-language summaries, preview evidence,
+  and reset behavior.
+- `render/tasks.py` mounts that renderer and passes the existing loaded-file,
+  job-version, audit, and export context; it does not absorb nine more
+  operation renderers.
+- Existing `transforms` helpers are reused only for the exact semantic subsets
+  listed below. The new engine does not call the task compiler, generated
+  Python, AI drafting, or external-task migration.
+
+The operation request is serialized as bounded canonical JSON in the
+structured-adapter envelope. No user value is interpolated as executable
+source. The child adapter validates the deserialized value again before
+calling the one-record transformation.
+
+### Existing Semantic Equivalents
+
+Selector-aware behavior remains owned by the new engine. Existing helpers are
+called only for these equivalent subsets, and each shared subset receives an
+equivalence test against the corresponding saved-task operation:
+
+| Quick operation | Existing helper | Exact shared subset |
+| --- | --- | --- |
+| Add field | `make_field`, `add_field_if_absent` | Data-field construction and data-field skip-if-identical only; control-field construction and record scope remain Quick-owned |
+| Add subfield | `add_subfield_to_fields` | Every occurrence with no field filter; focused subsets use the same subfield insertion primitive directly |
+| Copy field | `copy_field` | Every occurrence with no field filter and Append destination policy |
+| Delete field | `delete_tags`, `delete_fields_matching_predicate` | All-fields exact-tag deletion or predicate identity only; occurrence resolution remains Quick-owned |
+| Delete subfield | `delete_subfields`, `delete_subfields_matching_value` | Every subfield of a code, plus Exact/Contains/raw-regex value subsets; Starts with, Ends with, and first-subfield selection remain Quick-owned |
+| Move or retag field | `move_field` | Complete-field retag semantics for the all-fields, unfiltered subset |
+| Set indicators | `set_indicators` | Indicator replacement for the all-fields, unfiltered subset |
+| Remove exact duplicate fields | None | New complete-field identity and stable-order semantics |
+| Swap field occurrences | None | New identity-based position exchange semantics |
+
+Where a helper only accepts a whole tag, the engine must not call it after
+resolving a smaller occurrence subset. It performs the same primitive mutation
+on the resolved field objects and the equivalence test pins the overlapping
+result. This avoids widening First, Last, or Numbered into Every.
 
 Selector logic remains independent from rendering, and Preview and Apply share
 one transformation entry point.
@@ -231,9 +326,18 @@ complete-field identity and stable source order.
 Batch tests prove Preview/Apply equivalence, changed/skipped counts, stale
 store and stale job-version rejection, cleanup of preview artifacts, atomic
 candidate adoption, job-file version creation, Quick Load snapshot behavior,
-audit metadata, and bounded representative output. Raw regex tests cover
-syntax errors, oversized requests, timeout/cancellation, sandbox failure, and
-the current-preview submission gate.
+audit metadata, output record-count verification, and bounded representative
+output. Raw regex tests prove the expression never compiles or executes in the
+Streamlit process and cover syntax errors, oversized requests,
+timeout/cancellation, sandbox failure, and the current-preview submission gate.
+Sandbox contract tests prove adapter/body mutual exclusion, unknown-adapter
+rejection, second validation in the child, and unchanged legacy task-body
+execution.
+
+Table-driven compatibility tests cover every cell in the operation/occurrence
+matrix, including rejected Every-selection for Swap. Equivalence tests cover
+each overlapping helper subset in the component table and prove that focused
+occurrence selection never mutates unselected fields.
 
 Renderer tests prove operation labels are alphabetical, only compatible
 controls appear, summaries describe the exact request, reset clears preview
@@ -249,6 +353,8 @@ unchanged and must continue to pass.
 - Institution profiles or conditional Leader/material rules.
 - Tag ranges, wildcards, or arbitrary Python.
 - Replacing the existing specialized Quick cleanups or Quick find/replace.
+- Adding any Common field change to `OPERATIONS_PALETTE`, the AI draft schema,
+  or the Gemini prompt. Quick operations are not saved-task operations.
 - Changing task storage, folder organization, import conversion, AI drafting,
   authentication, deployment, worker, or durable-processing behavior.
 
