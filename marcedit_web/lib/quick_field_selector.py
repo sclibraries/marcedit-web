@@ -74,10 +74,11 @@ def _validate_indicator_filter(value: object, label: str) -> list[str]:
         errors.append(f"{label} mode must be any, blank, or exact")
     if not isinstance(value.value, str):
         errors.append(f"{label} value must be text")
-    elif value.mode in {"any", "blank"} and value.value:
-        errors.append(f"{label} value must be empty for {value.mode}")
-    elif value.mode == "exact" and len(value.value) != 1:
-        errors.append(f"{label} exact value must be exactly one character")
+    elif isinstance(value.mode, str):
+        if value.mode in {"any", "blank"} and value.value:
+            errors.append(f"{label} value must be empty for {value.mode}")
+        elif value.mode == "exact" and len(value.value) != 1:
+            errors.append(f"{label} exact value must be exactly one character")
     return errors
 
 

@@ -91,6 +91,18 @@ def test_indicator_filters_select_data_fields(mode, value, expected_indexes):
     assert tuple(record.fields.index(field) for field in result) == expected_indexes
 
 
+@pytest.mark.parametrize("mode", [[], {}])
+def test_indicator_validation_rejects_unhashable_modes_without_raising(mode):
+    field_filter = FieldFilter(
+        tag="856",
+        ind1=IndicatorFilter(mode=mode),
+    )
+
+    errors = validate_field_filter(field_filter)
+
+    assert any("indicator 1 mode" in error for error in errors)
+
+
 @pytest.mark.parametrize(
     ("match_mode", "match_value", "ignore_case", "expected"),
     [
