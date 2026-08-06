@@ -44,7 +44,12 @@ class _FakeStreamlit:
     def radio(self, label, options, horizontal=False, key=None,
               label_visibility=None, **kwargs):
         self.radios.append(
-            {"label": label, "options": tuple(options), "key": key}
+            {
+                "label": label,
+                "options": tuple(options),
+                "key": key,
+                "kwargs": kwargs,
+            }
         )
         value = self.session_state.get(key)
         if value is None:
@@ -802,6 +807,38 @@ def test_shared_collaborator_cannot_edit_task_name(monkeypatch):
     assert fake_st.text_inputs[0]["kwargs"]["disabled"] is True
 
 
+def test_shared_collaborator_cannot_change_visibility(monkeypatch):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    monkeypatch.setattr(
+        tasks_render.session, "current_user_id", lambda: "editor@smith.edu"
+    )
+    # A prior Create draft may have left the keyed radio on a private value.
+    # Opening this shared task must rehydrate the widget before it is rendered.
+    fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY_INPUT] = "private"
+    tasks_render._open_editor_for_existing_row(
+        {
+            "owner_email": "owner@smith.edu",
+            "name": "shared-task",
+            "description": "",
+            "body": "pass\n",
+            "visibility": "shared",
+        },
+        is_admin=False,
+    )
+    monkeypatch.setattr(tasks_render, "_render_form_editor", lambda: None)
+
+    tasks_render._render_editor(Path("/unused"), is_admin=False)
+
+    visibility = next(
+        item for item in fake_st.radios if item["label"] == "Visibility"
+    )
+    assert visibility["kwargs"]["disabled"] is True
+    assert "owner" in visibility["kwargs"]["help"]
+    assert fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY_INPUT] == "shared"
+    assert fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY] == "shared"
+
+
 def test_selected_folder_keeps_all_visible_as_no_visibility_filter(monkeypatch):
     """Selecting Unfiled must show its tasks when Visibility is All visible."""
 
@@ -913,12 +950,14 @@ def test_discard_is_the_only_routine_create_draft_cleanup(monkeypatch):
     fake_st.session_state[tasks_render.K_EDITOR_OPEN] = True
     fake_st.session_state[tasks_render.K_EDITOR_NAME] = "working"
     fake_st.session_state[tasks_render.K_EDITOR_OPS] = [{"kind": "delete-tag"}]
+    fake_st.session_state[tasks_render.K_EDITOR_VISIBILITY_INPUT] = "shared"
 
     tasks_render._discard_create_draft()
 
     assert fake_st.session_state[tasks_render.K_EDITOR_OPEN] is False
     assert fake_st.session_state[tasks_render.K_EDITOR_NAME] == ""
     assert fake_st.session_state[tasks_render.K_EDITOR_OPS] == []
+    assert tasks_render.K_EDITOR_VISIBILITY_INPUT not in fake_st.session_state
 
 
 def test_new_build_field_defaults_are_structured(monkeypatch):

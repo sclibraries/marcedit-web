@@ -114,6 +114,33 @@ def test_shared_native_task_rename_is_owner_only():
     assert task_db.get_task("owner@example.edu", "renamed-by-collaborator") is None
 
 
+def test_shared_native_task_collaborator_cannot_make_task_private():
+    definition = _definition("delete-and-sort.json")
+    created = task_db.save_native_task(
+        owner="owner@example.edu",
+        definition={**definition, "name": "shared-native"},
+        visibility="shared",
+    )
+
+    with pytest.raises(task_db.NativeTaskConflict, match="not authorized"):
+        task_db.save_native_task(
+            owner="owner@example.edu",
+            actor="editor@example.edu",
+            task_id=created["id"],
+            definition={
+                **definition,
+                "name": "shared-native",
+                "description": "must remain shared",
+            },
+            visibility="private",
+            expected_revision=created["revision"],
+        )
+
+    unchanged = task_db.get_task("owner@example.edu", "shared-native")
+    assert unchanged["visibility"] == "shared"
+    assert unchanged["revision"] == created["revision"]
+
+
 def test_editor_operations_can_round_trip_to_native_definition():
     definition = _definition("build-field.json")
     operations = [

@@ -146,6 +146,7 @@ K_EDITOR_PRESERVE_BODY = "tasks_editor_preserve_body"
 K_EDITOR_VISIBILITY = "tasks_editor_visibility"
 K_EDITOR_NAME_INPUT = "tasks_editor_name_input"
 K_EDITOR_DESCRIPTION_INPUT = "tasks_editor_description_input"
+K_EDITOR_VISIBILITY_INPUT = "tasks_editor_visibility_radio"
 K_EDITOR_FROM_AI_DRAFT = "tasks_editor_from_ai_draft"
 K_EDITOR_AI_DRAFT_REVIEW = "tasks_editor_ai_draft_review"
 K_EDITOR_IMPORT_SUMMARY = "tasks_editor_import_summary"
@@ -2256,6 +2257,7 @@ def _discard_create_draft(*, select_view: str | None = "create") -> None:
         (K_EDITOR_AI_DRAFT_REVIEW, None),
     ):
         st.session_state[key] = value
+    st.session_state.pop(K_EDITOR_VISIBILITY_INPUT, None)
     for key in (
         K_EDITOR_NAME_INPUT,
         K_EDITOR_DESCRIPTION_INPUT,
@@ -2300,6 +2302,7 @@ def _open_editor_for_new() -> None:
     st.session_state[K_EDITOR_ORIGINAL_OWNER] = None
     st.session_state[K_EDITOR_PRESERVE_BODY] = False
     st.session_state[K_EDITOR_VISIBILITY] = "private"
+    st.session_state[K_EDITOR_VISIBILITY_INPUT] = "private"
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
     for key in (
@@ -2339,6 +2342,7 @@ def _open_editor_for_existing_row(row: dict, is_admin: bool) -> None:
         row.get("owner_email") or session.current_user_id()
     )
     st.session_state[K_EDITOR_VISIBILITY] = row["visibility"]
+    st.session_state[K_EDITOR_VISIBILITY_INPUT] = row["visibility"]
     st.session_state[K_EDITOR_FROM_AI_DRAFT] = False
     st.session_state[K_EDITOR_AI_DRAFT_REVIEW] = None
     for key in (
@@ -2958,17 +2962,25 @@ def _render_editor(tasks_dir: Path, is_admin: bool) -> None:
     )
 
     vis_default = st.session_state.get(K_EDITOR_VISIBILITY, "private")
+    visibility_help = (
+        "**Shared** visibility is fixed while you edit a task owned by another "
+        "cataloger. You can edit its content, but only the owner can rename, "
+        "share, unshare, or delete it."
+        if collaborator_edit
+        else (
+            "**Private** — only you see this task. "
+            "**Shared** — every signed-in user can see, run, and edit its "
+            "content; only the owner can rename, share, unshare, or delete it."
+        )
+    )
     st.session_state[K_EDITOR_VISIBILITY] = st.radio(
         "Visibility",
         options=["private", "shared"],
         index=0 if vis_default == "private" else 1,
         horizontal=True,
-        key="tasks_editor_visibility_radio",
-        help=(
-            "**Private** — only you see this task. "
-            "**Shared** — every signed-in user can see and run it; "
-            "only you can edit or delete."
-        ),
+        key=K_EDITOR_VISIBILITY_INPUT,
+        disabled=collaborator_edit,
+        help=visibility_help,
     )
 
     if st.session_state[K_EDITOR_MODE] == "form":

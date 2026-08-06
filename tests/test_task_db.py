@@ -126,6 +126,27 @@ def test_shared_task_rename_is_owner_only():
     assert task_db.get_task("owner@example.edu", "renamed-by-collaborator") is None
 
 
+def test_shared_task_collaborator_cannot_make_task_private():
+    _save("owner@example.edu", "shared-task", visibility="shared")
+    original = task_db.get_task("owner@example.edu", "shared-task")
+
+    with pytest.raises(ValueError, match="not authorized"):
+        task_db.save_task(
+            owner="owner@example.edu",
+            actor="editor@example.edu",
+            name="shared-task",
+            description="must remain shared",
+            body="pass\n",
+            visibility="private",
+            task_id=original["id"],
+            expected_revision=original["revision"],
+        )
+
+    unchanged = task_db.get_task("owner@example.edu", "shared-task")
+    assert unchanged["visibility"] == "shared"
+    assert unchanged["revision"] == original["revision"]
+
+
 def test_private_task_edit_rejects_non_owner_actor():
     _save("owner@example.edu", "private-task")
     original = task_db.get_task("owner@example.edu", "private-task")
