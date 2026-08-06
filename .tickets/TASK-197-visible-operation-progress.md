@@ -10,6 +10,9 @@ Scope:
   operations.
 - Preserve operation semantics, sandbox boundaries, and existing completion
   and error handling.
+- Retain only a bounded serializable completion summary in Streamlit session
+  state so Quick-path reruns can show the final status; do not add database or
+  file persistence.
 
 Success Criteria:
 - A cataloger sees a clear in-page activity message while a long operation is
