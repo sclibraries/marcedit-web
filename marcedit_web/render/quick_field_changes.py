@@ -525,7 +525,7 @@ def _selector_summary(selector: FieldSelector | None, *, include_occurrence: boo
         )
         if selector.occurrence.mode == "numbered":
             occurrence += f" #{selector.occurrence.number}"
-        parts.append(occurrence.lower())
+        parts.append(occurrence)
     return ", ".join(parts)
 
 

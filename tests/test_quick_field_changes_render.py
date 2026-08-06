@@ -359,5 +359,5 @@ def test_summary_includes_selection_and_operation_parameters():
     )
     summary = renderer._summary(request)
     assert "245" in summary and "$a contains 'Title'" in summary
-    assert "numbered matching field #2" in summary
+    assert "Numbered matching field #2" in summary
     assert "246" in summary and "replace all" in summary
