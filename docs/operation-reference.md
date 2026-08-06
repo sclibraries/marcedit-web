@@ -841,7 +841,7 @@ This guide is generated from the checked-in deterministic operation registry.
 
 ## Common field changes
 
-Common Quick field changes are one-operation edits: choose one change, read its summary, Preview, then Apply the same current preview. Existing fields are filtered before the First, Last, Numbered, or Every occurrence is chosen. Records missing a requested occurrence are skipped and grouped by reason. Guided matching is the normal path; an optional Advanced regular expression is available when needed. Preview and Apply are recoverable, and a changed selector requires a new Preview.
+Tasks → Quick changes uses one **Quick operation** dropdown. It combines Find and replace, the nine Common field changes below, and the existing specialized Quick cleanups. Each choice is a one-operation edit: read its summary, Preview, then Apply the same current preview. Only the selected operation's controls are shown. Existing fields are filtered before the First, Last, Numbered, or Every occurrence is chosen. Records missing a requested occurrence are skipped and grouped by reason. Guided matching is the normal path; an optional Advanced regular expression is available when needed. Preview and Apply are recoverable, and a changed operation requires a new Preview; harmless form values remain available when you return to an operation.
 
 These nine labels are alphabetical. Choose exactly one for each Preview and Apply cycle.
 

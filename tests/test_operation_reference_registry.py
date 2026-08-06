@@ -96,7 +96,9 @@ def test_quick_change_reference_search_and_markdown_cover_cataloger_contract():
 
     markdown = operation_reference.render_markdown()
     for phrase in (
+        "Quick operation",
         "one-operation",
+        "only the selected operation",
         "filtered before",
         "First, Last, Numbered, or Every",
         "skipped and grouped by reason",
