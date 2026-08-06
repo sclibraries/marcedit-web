@@ -64,4 +64,17 @@ Success Criteria:
 - The new controls live in a dedicated Quick field changes renderer;
   `render/tasks.py` only mounts it and supplies existing file/version context.
 
-Status: In-Progress
+Completion evidence:
+- Commits: `811790e`, `c7c59ff`, `7edce66`, `e1e2880`, `ee5a249`.
+- Authoritative Docker suite: 2,751 passed, 5 skipped, 0 failed.
+- Focused Quick and reference suites: 107 passed, 0 failed.
+- Authenticated browser verification on `localhost:8501` as
+  `roconnell@smith.edu`: one alphabetized Quick operation selector; selecting
+  Delete field and Find and replace showed only the selected controls; no
+  `preview.error` crash occurred. The two expected host-config/health 404
+  console requests appeared during direct `/Tasks` navigation, with no
+  application errors.
+- Code review: no Critical or Important findings; the one Minor expander
+  mismatch was resolved in `ee5a249`.
+
+Status: Completed
