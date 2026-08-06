@@ -55,7 +55,9 @@ snapshot, job-file-version, and export boundaries remain authoritative.
 
 Add a small renderer-facing helper, `marcedit_web/render/operation_activity.py`,
 with a context-managed activity object. The helper owns the `st.status` panel,
-an optional `st.progress` bar, and a status-message placeholder. Its interface
+an optional `st.progress` bar, and a status-message placeholder. On entry it
+writes the supplied initial phase as `"{phase}…"`; callers then replace that
+text with a bounded phase description. Its interface
 supports:
 
 - starting with an operation label and initial phase;

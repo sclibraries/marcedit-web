@@ -1,6 +1,7 @@
 Title: Make long-running operation progress visible in-page
 
 Design: [Visible operation progress](../docs/superpowers/specs/2026-08-06-visible-operation-progress-design.md)
+Plan: [Visible operation progress implementation](../docs/superpowers/plans/2026-08-06-visible-operation-progress.md)
 
 Scope:
 - Replace spinner-only feedback for long Quick operations with a visible
