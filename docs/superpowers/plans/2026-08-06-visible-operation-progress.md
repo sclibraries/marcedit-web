@@ -315,12 +315,13 @@ git commit -m "feat: show quick batch activity progress"
 ### Task 4: Consolidate saved-task run status
 
 **Files:**
-- Modify: `marcedit_web/render/tasks.py` around `_submit_queued_run`
+- Modify: `marcedit_web/render/tasks.py` around `_execute_synchronous_run`
 - Modify: `tests/test_tasks_export.py`
 - Modify: `tests/test_synchronous_task_runner.py` for the saved-task renderer status fake
 
 **Interfaces:**
-- Replaces the local `st.status("Running tasks…")` lifecycle with
+- Replaces the local `st.status("Running tasks…")` lifecycle in
+  `_execute_synchronous_run` with
   `operation_activity.open_activity("saved-task-run", "Running tasks…", phase="Preparing", total=store.count())`.
 - Keeps the existing `synchronous_task_runner.run_tasks` call, timeout/error labels, output parsing, and result evidence unchanged.
 

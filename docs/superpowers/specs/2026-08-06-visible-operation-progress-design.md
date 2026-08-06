@@ -94,9 +94,9 @@ phase-only feedback: preparing the matching subset, previewing in the sandbox,
 and finalizing the preview or apply result. Adding a new matcher callback is
 out of scope.
 
-Saved-task runs retain their current messages and sandbox calls but use the
-same helper lifecycle, so the visible treatment is consistent across task and
-Quick workflows.
+Saved-task runs in `_execute_synchronous_run` retain their current messages
+and sandbox calls but use the same helper lifecycle, so the visible treatment
+is consistent across task and Quick workflows.
 
 ## Error and rerun behavior
 
