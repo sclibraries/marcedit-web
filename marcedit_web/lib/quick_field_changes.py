@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import copy
+import json
 import re
 from typing import Any
 
@@ -56,6 +57,8 @@ _RECORD_SCOPES = frozenset({"every", "tag_absent", "identical_absent"})
 _DESTINATION_POLICIES = frozenset({"append", "skip_identical", "replace_all"})
 _SUBFIELD_OCCURRENCES = frozenset({"first", "every"})
 _KEEP_DUPLICATES = frozenset({"first", "last"})
+MAX_ADAPTER_PAYLOAD_CHARS = 65_536
+MAX_ADAPTER_PAYLOAD_BYTES = 131_072
 
 
 @dataclass(frozen=True)
@@ -136,7 +139,7 @@ def _supported(value: object, choices: frozenset[str]) -> bool:
     return isinstance(value, str) and value in choices
 
 
-def validate_request(request: object) -> tuple[str, ...]:
+def _validate_request_shape(request: object) -> tuple[str, ...]:
     """Return all cataloger-facing request errors without touching a record."""
 
     if not isinstance(request, QuickFieldChangeRequest):
@@ -273,6 +276,43 @@ def validate_request(request: object) -> tuple[str, ...]:
     return tuple(errors)
 
 
+def _request_payload_size_error(request: QuickFieldChangeRequest) -> str | None:
+    """Return a bounded canonical-payload error without executing a matcher."""
+
+    try:
+        encoded = json.dumps(
+            request_to_payload(request),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if len(encoded) > MAX_ADAPTER_PAYLOAD_CHARS:
+        return (
+            "Quick field change request exceeds the maximum of "
+            f"{MAX_ADAPTER_PAYLOAD_CHARS:,} characters."
+        )
+    if len(encoded.encode("utf-8")) > MAX_ADAPTER_PAYLOAD_BYTES:
+        return (
+            "Quick field change request exceeds the maximum of "
+            f"{MAX_ADAPTER_PAYLOAD_BYTES:,} bytes."
+        )
+    return None
+
+
+def validate_request(request: object) -> tuple[str, ...]:
+    """Return shape and canonical-payload errors before any mutation."""
+
+    errors = list(_validate_request_shape(request))
+    if isinstance(request, QuickFieldChangeRequest):
+        payload_error = _request_payload_size_error(request)
+        if payload_error:
+            errors.append(payload_error)
+    return tuple(errors)
+
+
 def _validate_subfield_code(code: object, *, required: bool) -> list[str]:
     if not isinstance(code, str) or (required and not code):
         return ["subfield code is required"]
@@ -333,6 +373,31 @@ def request_to_payload(request: QuickFieldChangeRequest) -> dict[str, object]:
         "remove_empty_field": request.remove_empty_field,
         "keep_duplicate": request.keep_duplicate,
     }
+
+
+def canonical_request_json(request: QuickFieldChangeRequest) -> str:
+    """Serialize one request using the fixed bounded adapter contract."""
+
+    if not isinstance(request, QuickFieldChangeRequest):
+        raise ValueError("request must be a QuickFieldChangeRequest")
+    encoded = json.dumps(
+        request_to_payload(request),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    if len(encoded) > MAX_ADAPTER_PAYLOAD_CHARS:
+        raise ValueError(
+            "Quick field change request exceeds the maximum of "
+            f"{MAX_ADAPTER_PAYLOAD_CHARS:,} characters."
+        )
+    if len(encoded.encode("utf-8")) > MAX_ADAPTER_PAYLOAD_BYTES:
+        raise ValueError(
+            "Quick field change request exceeds the maximum of "
+            f"{MAX_ADAPTER_PAYLOAD_BYTES:,} bytes."
+        )
+    return encoded
 
 
 def _indicator_from_payload(value: object, label: str) -> IndicatorFilter:
@@ -595,10 +660,15 @@ def _apply_copy_field(record: Record, request: QuickFieldChangeRequest) -> Recor
     policy = request.destination_policy
     if policy == "replace_all":
         old_count = len(record.get_fields(destination))
+        before = record.as_marc()
         record.fields[:] = [field for field in record.fields if field.tag != destination]
         for candidate in candidates:
             record.add_ordered_field(candidate)
-        return RecordChangeResult(bool(candidates or old_count), fields_affected=len(candidates) + old_count)
+        changed = record.as_marc() != before
+        return RecordChangeResult(
+            changed,
+            fields_affected=(len(candidates) + old_count) if changed else 0,
+        )
     added = 0
     for candidate in candidates:
         if policy == "skip_identical" and any(
@@ -665,10 +735,12 @@ def _apply_swap(record: Record, request: QuickFieldChangeRequest) -> RecordChang
     first_field, second_field = first[0], second[0]
     if first_field is second_field:
         return _skip("swap-same-field")
+    before = record.as_marc()
     first_index = next(i for i, field in enumerate(record.fields) if field is first_field)
     second_index = next(i for i, field in enumerate(record.fields) if field is second_field)
     record.fields[first_index], record.fields[second_index] = record.fields[second_index], record.fields[first_index]
-    return RecordChangeResult(True, fields_affected=2)
+    changed = record.as_marc() != before
+    return RecordChangeResult(changed, fields_affected=2 if changed else 0)
 
 
 def _apply_remove_duplicates(record: Record, request: QuickFieldChangeRequest) -> RecordChangeResult:
@@ -721,11 +793,43 @@ def apply_quick_field_change(record: Record, request: QuickFieldChangeRequest) -
     return _apply_remove_duplicates(record, request)
 
 
-def prepare_quick_field_change_adapter(payload: object):
+def _validate_raw_regex_syntax(request: QuickFieldChangeRequest) -> None:
+    """Validate raw selector expressions at the child adapter boundary.
+
+    This helper is called only while preparing the sandbox adapter.  Keeping
+    it out of :func:`validate_request` ensures Streamlit never compiles user
+    expressions, while preparation still rejects invalid syntax before an
+    empty input can make the per-record matcher path unreachable.
+    """
+
+    filters = []
+    for selector in (request.selector, request.second_selector):
+        if selector is not None:
+            filters.append(selector.field_filter)
+    if request.duplicate_filter is not None:
+        filters.append(request.duplicate_filter)
+    for field_filter in filters:
+        if field_filter.match_mode != "raw_regex":
+            continue
+        flags = re.IGNORECASE if field_filter.ignore_case else 0
+        try:
+            re.compile(field_filter.match_value, flags)
+        except (re.error, RecursionError, MemoryError) as exc:
+            raise ValueError(
+                "raw regular expression is invalid: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+
+def prepare_quick_field_change_adapter(
+    payload: object, *, validate_regex: bool = True
+):
     """Prepare the fixed one-record adapter from a JSON-compatible payload."""
 
     request = request_from_payload(payload)
     errors = validate_request(request)
     if errors:
         raise ValueError("; ".join(errors))
+    if validate_regex:
+        _validate_raw_regex_syntax(request)
     return lambda record: asdict(apply_quick_field_change(record, request))

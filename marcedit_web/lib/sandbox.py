@@ -219,10 +219,12 @@ from marcedit_web.lib import transforms  # standard helpers in scope
 # Structured adapters are intentionally dispatched through this literal map.
 # Do not derive a callable from request data with globals(), getattr(), or a
 # module path: the request may select only the fixed adapter named here.
-def _prepare_quick_field_change(payload):
+def _prepare_quick_field_change(payload, validate_regex=True):
     from marcedit_web.lib import quick_field_changes
 
-    return quick_field_changes.prepare_quick_field_change_adapter(payload)
+    return quick_field_changes.prepare_quick_field_change_adapter(
+        payload, validate_regex=validate_regex
+    )
 
 
 _ADAPTER_PREPARERS = {
@@ -307,7 +309,7 @@ def _validate_adapter_payload_size(payload):
         raise ValueError("adapter payload exceeds the maximum byte size")
 
 
-def _prepare_tasks(tasks):
+def _prepare_tasks(tasks, *, validate_regex=True):
     prepared_adapters = []
     for task in tasks:
         if not isinstance(task, dict):
@@ -322,7 +324,9 @@ def _prepare_tasks(tasks):
                 raise ValueError("structured adapter is not allowlisted")
             _validate_adapter_payload_size(payload)
             prepared_adapters.append(
-                _ADAPTER_PREPARERS[adapter](payload)
+                _ADAPTER_PREPARERS[adapter](
+                    payload, validate_regex=validate_regex
+                )
             )
         else:
             if payload is not None:
@@ -335,7 +339,38 @@ def main():
     with open(args.tasks) as f:
         tasks = json.load(f)
 
-    prepared_adapters = _prepare_tasks(tasks)
+    try:
+        prepared_adapters = _prepare_tasks(
+            tasks,
+            # An empty input has no per-record boundary at which to compile
+            # raw expressions, so validate the request before iteration. On
+            # non-empty inputs the existing per-record error path preserves
+            # original records while retaining legacy sandbox semantics.
+            validate_regex=os.path.getsize(args.input) == 0,
+        )
+    except Exception as exc:
+        # Request-level adapter failures (including raw-regex syntax errors)
+        # must remain bounded and cataloger-readable even when the input file
+        # has no records to drive the normal per-record error path.
+        message = _bounded_text(
+            "%s: %s" % (type(exc).__name__, exc),
+            args.max_message_chars,
+            args.max_message_bytes,
+        )
+        with open(args.errors, "w") as error_file:
+            json.dump({
+                "error_count": 1,
+                "errors": [{
+                    "index": 0,
+                    "code": "adapter-validation-failed",
+                    "task": None,
+                    "message": message,
+                }],
+                "captured_results": [],
+                "partner_totals": {},
+                "adapter_totals": {},
+            }, error_file)
+        raise
 
     errors = []
     error_count = 0

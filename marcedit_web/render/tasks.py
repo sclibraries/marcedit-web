@@ -1450,9 +1450,24 @@ def _render_quick_ops_mode() -> None:
         job_file_version_id=(st.session_state.get("job_file_version_id")
                              if _uses_job_file_versions() else None),
         on_apply=_apply_quick_field_change_preview,
+        preview_builder=_build_quick_field_change_preview,
     )
     _render_quick_field_change_export()
     _render_quick_batch_operations()
+
+
+def _build_quick_field_change_preview(store, request, **kwargs):
+    """Build Common field previews under the shared batch admission gate."""
+
+    with _batch_operation(
+        "quick-field-change", phase="preview", store=store
+    ) as measurement:
+        preview = quick_field_change_runner.build_preview(
+            store, request, **kwargs
+        )
+        if preview.error:
+            measurement.mark_error("PreviewError")
+        return preview
 
 
 def _folder_children(
@@ -4299,11 +4314,17 @@ _K_QFC_DOWNLOAD_READY = "quick_field_change_download_ready"
 
 
 def _quick_field_change_label(request) -> str:
-    """Return the bounded, plain-language operation description."""
-    try:
-        return quick_field_changes_render._summary(request)[:1024]
-    except (AttributeError, TypeError):
-        return str(getattr(request, "kind", "Common field change"))[:1024]
+    """Return bounded metadata without selector values or MARC content."""
+    kind = str(getattr(request, "kind", "")).strip()
+    label = next(
+        (
+            name
+            for name, operation_kind in quick_field_changes_render.OPERATION_KINDS.items()
+            if operation_kind == kind
+        ),
+        "Common field change",
+    )
+    return f"Common field change: {label}"[:128]
 
 
 def _quick_field_change_summary(preview, candidate) -> dict[str, Any]:
@@ -4337,13 +4358,20 @@ def _apply_quick_field_change_preview(preview, current_request) -> None:
     )
     candidate = None
     try:
-        candidate = quick_field_change_runner.build_apply_candidate(
-            store,
-            preview,
-            current_request,
-            job_file_id=job_file_id,
-            job_file_version_id=job_file_version_id,
-        )
+        with _batch_operation(
+            "quick-field-change", phase="apply", store=store
+        ) as measurement:
+            try:
+                candidate = quick_field_change_runner.build_apply_candidate(
+                    store,
+                    preview,
+                    current_request,
+                    job_file_id=job_file_id,
+                    job_file_version_id=job_file_version_id,
+                )
+            except Exception:
+                measurement.mark_error("ApplyError")
+                raise
         label = _quick_field_change_label(current_request)
         summary = _quick_field_change_summary(preview, candidate)
         export_filename = _export_filename(

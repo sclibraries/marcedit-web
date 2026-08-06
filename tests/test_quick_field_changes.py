@@ -174,6 +174,24 @@ def test_copy_is_deep_and_replace_all_is_source_safe():
     assert absent.get_fields("956")[0] is destination
 
 
+def test_copy_replace_all_identical_destination_is_unchanged():
+    source = _field("856", "4", "0", ("u", "same"))
+    destination = _field("956", "4", "0", ("u", "same"))
+    record = _record(source, destination)
+    request = QuickFieldChangeRequest(
+        "copy-field",
+        _selector("856"),
+        destination_tag="956",
+        destination_policy="replace_all",
+    )
+
+    result = apply_quick_field_change(record, request)
+
+    assert result.changed is False
+    assert result.fields_affected == 0
+    assert [field.tag for field in record.fields] == ["856", "956"]
+
+
 def test_move_retags_selected_object_in_place_and_preserves_position():
     source = _field("856", "4", "0", ("u", "one"))
     middle = _field("245", "1", "0", ("a", "title"))
@@ -206,6 +224,22 @@ def test_swap_uses_two_filters_and_skips_same_object():
     assert record.fields == [second, first]
     same = QuickFieldChangeRequest("swap-field-occurrences", _selector("070"), _selector("070", mode="last"))
     assert apply_quick_field_change(_record(first), same).skipped
+
+
+def test_swap_distinct_identical_fields_is_unchanged():
+    first = _field("070", " ", " ", ("a", "same"))
+    second = _field("070", " ", " ", ("a", "same"))
+    record = _record(first, second)
+    request = QuickFieldChangeRequest(
+        "swap-field-occurrences",
+        _selector("070", mode="first"),
+        _selector("070", mode="last"),
+    )
+
+    result = apply_quick_field_change(record, request)
+
+    assert result.changed is False
+    assert result.fields_affected == 0
 
 
 def test_remove_exact_duplicates_keeps_stable_first_or_last():

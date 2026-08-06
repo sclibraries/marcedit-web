@@ -126,7 +126,11 @@ def validate_field_filter(field_filter: object) -> tuple[str, ...]:
             errors.append("match value must be at most 1,024 characters")
         if len(field_filter.match_value.encode("utf-8")) > _MAX_MATCH_BYTES:
             errors.append("match value must be at most 2,048 bytes")
-        if code and field_filter.match_value == "":
+        if (
+            code
+            and field_filter.match_value == ""
+            and field_filter.match_mode != "raw_regex"
+        ):
             errors.append(
                 "match value must be nonempty when a subfield code is selected"
             )

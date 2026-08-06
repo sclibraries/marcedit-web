@@ -9,7 +9,6 @@ processed in this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
@@ -185,13 +184,22 @@ def _match_controls(prefix: str, *, allow_subfield: bool) -> tuple[str, str, str
 
 
 def _canonical_request_json(request: QuickFieldChangeRequest) -> str:
-    return json.dumps(
-        quick_field_changes.request_to_payload(request),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
+    return quick_field_changes.canonical_request_json(request)
+
+
+def _request_validation_error(request: QuickFieldChangeRequest) -> str | None:
+    """Validate every request shape before Preview can launch."""
+
+    errors = list(quick_field_changes.validate_request(request))
+    if not errors:
+        try:
+            _canonical_request_json(request)
+        except (TypeError, ValueError, OverflowError) as exc:
+            errors.append(str(exc))
+    if not errors:
+        return None
+    text = "; ".join(str(error) for error in errors)
+    return text.encode("utf-8", "replace")[:2048].decode("utf-8", "ignore")[:1024]
 
 
 def _matcher_bound_error(request: QuickFieldChangeRequest) -> str | None:
@@ -301,6 +309,7 @@ def _render_subfields(prefix: str) -> tuple[tuple[str, str], ...]:
         value = _text(
             f"Subfield value{suffix}",
             key=_widget_key(f"{prefix}_value_{index}"),
+            max_chars=_MAX_MATCH_CHARS,
         )
         if code:
             rows.append((code.strip().lower(), value))
@@ -334,6 +343,7 @@ def _render_add_field() -> QuickFieldChangeRequest:
         control_value = _text(
             "Control field value",
             key=_widget_key("add_control_value"),
+            max_chars=_MAX_MATCH_CHARS,
         )
         indicators = (None, None)
         subfields: tuple[tuple[str, str], ...] = ()
@@ -447,6 +457,7 @@ def _render_request(kind: str) -> tuple[QuickFieldChangeRequest, tuple[_Selector
         kwargs["subfield_value"] = _text(
             "Subfield value",
             key=_widget_key("add_subfield_value"),
+            max_chars=_MAX_MATCH_CHARS,
         )
         kwargs["position"] = {
             "Append": "append",
@@ -514,7 +525,11 @@ def _selector_summary(selector: FieldSelector | None, *, include_occurrence: boo
         elif criterion.mode == "exact":
             parts.append(f"indicator {position} '{criterion.value}'")
     if field_filter.subfield_code:
-        mode = _MATCH_MODE_LABELS.get(field_filter.match_mode, field_filter.match_mode)
+        mode = (
+            "Regular expression"
+            if field_filter.match_mode == "raw_regex"
+            else _MATCH_MODE_LABELS.get(field_filter.match_mode, field_filter.match_mode)
+        )
         value = field_filter.match_value
         parts.append(f"${field_filter.subfield_code} {mode.lower()} '{value}'")
         if field_filter.ignore_case:
@@ -684,6 +699,7 @@ def render_common_field_changes(
     job_file_id: int | None = None,
     job_file_version_id: int | None = None,
     on_apply: Callable[[object, QuickFieldChangeRequest], object],
+    preview_builder: Callable[..., object] | None = None,
 ) -> None:
     """Render one preview-first Common field change operation."""
 
@@ -699,21 +715,17 @@ def render_common_field_changes(
     if any(control.selector.occurrence.mode == "every" for control in controls):
         st.warning("Every-match may change multiple fields (a multi-field change) in one record.")
 
-    request_error = _matcher_bound_error(request)
+    request_error = _request_validation_error(request)
     if (
-        request_error is None
-        and kind in {"add-subfield", "delete-subfield"}
+        kind in {"add-subfield", "delete-subfield"}
         and any(control.is_control for control in controls)
     ):
         request_error = "Control fields cannot receive subfield changes."
-    if (
-        request_error is None
-        and kind == "set-indicators"
+    elif (
+        kind == "set-indicators"
         and any(control.is_control for control in controls)
     ):
         request_error = "Control fields cannot have indicators."
-    if request_error:
-        st.error(request_error)
 
     preview_disabled = store is None or request_error is not None
     if st.button("Preview", key=K_PREVIEW_BUTTON, disabled=preview_disabled) and not preview_disabled:
@@ -728,7 +740,8 @@ def render_common_field_changes(
                 error="No loaded file is available to preview.",
             )
         else:
-            preview = quick_field_change_runner.build_preview(
+            builder = preview_builder or quick_field_change_runner.build_preview
+            preview = builder(
                 store,
                 request,
                 job_file_id=job_file_id,
@@ -746,17 +759,16 @@ def render_common_field_changes(
     )
     if preview is not None and preview.error is not None:
         st.error(preview.error)
-    elif request_error:
-        pass
     elif preview is not None and not current:
         st.info("This preview is stale. Preview the current request again before applying.")
+    elif request_error:
+        st.error(request_error)
     elif preview is not None:
         _render_preview_evidence(preview)
 
     if (
-        st.button("Apply preview", key=K_APPLY_BUTTON, disabled=not current or request_error is not None)
+        st.button("Apply preview", key=K_APPLY_BUTTON, disabled=not current)
         and current
-        and request_error is None
     ):
         on_apply(preview, request)
 

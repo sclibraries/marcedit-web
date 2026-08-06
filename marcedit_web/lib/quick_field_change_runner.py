@@ -21,6 +21,7 @@ from typing import Callable
 from . import sandbox, task_diff
 from .quick_field_changes import (
     QuickFieldChangeRequest,
+    canonical_request_json,
     request_to_payload,
 )
 
@@ -94,14 +95,7 @@ class _RunOutcome:
 
 def _canonical_request_json(request: QuickFieldChangeRequest) -> str:
     """Return the bounded, deterministic request identity used by Preview."""
-
-    return json.dumps(
-        request_to_payload(request),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
+    return canonical_request_json(request)
 
 
 def _bounded_error(value: object) -> str:
@@ -143,18 +137,18 @@ def _sandbox_error(result: sandbox.SandboxResult) -> str | None:
         return "Sandbox run was cancelled."
     if result.timed_out:
         return "Sandbox exceeded the maximum processing time."
-    if result.returncode != 0:
-        detail = (result.stderr or "").strip()
-        suffix = f": {detail[:400]}" if detail else ""
-        return _bounded_error(
-            f"Sandbox exited with code {result.returncode}{suffix}"
-        )
     if result.error_count:
         first = result.errors[0] if result.errors else {}
         message = first.get("message", "child adapter error")
         if result.error_count > 1:
             message = f"{message} ({result.error_count} errors)"
         return _bounded_error(f"Sandbox reported an adapter error: {message}")
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        suffix = f": {detail[:400]}" if detail else ""
+        return _bounded_error(
+            f"Sandbox exited with code {result.returncode}{suffix}"
+        )
     return None
 
 
@@ -430,6 +424,8 @@ def _assert_preview_current(
         raise ValueError("Quick field change request changed since preview.")
     if preview.error:
         raise ValueError(f"Preview is in error state: {preview.error}")
+    if not artifact_is_owned(preview):
+        raise ValueError("Preview artifact is not owned by Quick field changes.")
     if store.count() != preview.record_count:
         raise ValueError("Loaded batch record count changed since preview.")
     if preview.store_id != id(store) or preview.store_revision != store.revision:

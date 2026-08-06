@@ -309,6 +309,43 @@ def test_raw_regex_changes_filter_mode_without_renderer_compilation(monkeypatch)
     assert captured[0].selector.field_filter.match_mode == "raw_regex"
 
 
+def test_renderer_blocks_invalid_request_shape_before_preview(monkeypatch):
+    fake = FakeStreamlit(
+        selections={"Operation": "Delete field", "Field tag": "bad"},
+        pressed={renderer.K_PREVIEW_BUTTON},
+    )
+    calls = []
+    monkeypatch.setattr(
+        renderer.quick_field_change_runner,
+        "build_preview",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    _render(monkeypatch, fake)
+
+    assert calls == []
+    assert any("three ASCII digits" in error for error in fake.errors)
+
+
+def test_raw_regex_summary_uses_cataloger_language():
+    request = QuickFieldChangeRequest(
+        "delete-field",
+        FieldSelector(
+            FieldFilter(
+                "245",
+                subfield_code="a",
+                match_mode="raw_regex",
+                match_value="^Title",
+            )
+        ),
+    )
+
+    summary = renderer._summary(request)
+
+    assert "regular expression" in summary.lower()
+    assert "raw_regex" not in summary
+
+
 def test_apply_requires_owned_preview_artifact(monkeypatch):
     store = SimpleNamespace(revision=0)
     request = QuickFieldChangeRequest(

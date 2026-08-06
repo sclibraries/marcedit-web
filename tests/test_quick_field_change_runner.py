@@ -90,6 +90,19 @@ def test_apply_candidate_requires_current_request_and_keeps_store_unchanged(tmp_
     assert store.get(0).get("856") is not None
 
 
+def test_apply_candidate_requires_runner_owned_preview(monkeypatch, tmp_path):
+    store = _store(
+        tmp_path / "store",
+        _record(Field(tag="856", indicators=["4", "0"], subfields=[Subfield("u", "one")])),
+    )
+    request = _delete_request()
+    preview = runner.build_preview(store, request)
+    monkeypatch.setattr(runner, "artifact_is_owned", lambda _value: False)
+
+    with pytest.raises(ValueError, match="owned"):
+        runner.build_apply_candidate(store, preview, request)
+
+
 def test_apply_candidate_reruns_and_adopt_is_atomic(tmp_path):
     store = _store(
         tmp_path / "store",
@@ -321,3 +334,47 @@ def test_apply_candidate_rejects_output_cardinality_mismatch(monkeypatch, tmp_pa
     monkeypatch.setattr(sandbox, "run_tasks_subprocess", fake_run)
     with pytest.raises(ValueError, match="mismatched batch"):
         runner.build_apply_candidate(store, preview, request)
+
+
+def test_preview_rejects_oversized_canonical_adapter_payload_before_launch(
+    monkeypatch, tmp_path,
+):
+    store = _store(tmp_path / "store", _record())
+    request = QuickFieldChangeRequest(
+        "add-field",
+        destination_tag="245",
+        ind1="1",
+        ind2="0",
+        subfields=tuple(("a", "x" * 1_000) for _ in range(100)),
+    )
+    monkeypatch.setattr(
+        sandbox,
+        "run_tasks_subprocess",
+        lambda *_args, **_kwargs: pytest.fail("oversized request reached sandbox"),
+    )
+
+    preview = runner.build_preview(store, request)
+
+    assert preview.error is not None
+    assert "request" in preview.error.lower()
+    assert "character" in preview.error.lower() or "byte" in preview.error.lower()
+
+
+def test_invalid_raw_regex_blocks_preview_for_empty_store(tmp_path):
+    store = RecordStore.from_bytes(b"", tmp_dir=tmp_path / "empty")
+    request = QuickFieldChangeRequest(
+        "delete-field",
+        FieldSelector(
+            FieldFilter(
+                "245",
+                subfield_code="a",
+                match_mode="raw_regex",
+                match_value="[",
+            )
+        ),
+    )
+
+    preview = runner.build_preview(store, request)
+
+    assert preview.error is not None
+    assert "regular expression" in preview.error.lower()

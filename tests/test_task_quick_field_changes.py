@@ -159,6 +159,115 @@ def test_job_file_quick_field_change_creates_recoverable_version(
     assert fake_st.rerun_called
 
 
+def test_persisted_quick_field_label_excludes_raw_selector_values(monkeypatch):
+    from marcedit_web.render import tasks as tasks_render
+    from marcedit_web.lib.quick_field_selector import FieldFilter, FieldSelector
+
+    request = QuickFieldChangeRequest(
+        "delete-field",
+        FieldSelector(
+            FieldFilter(
+                "245",
+                subfield_code="a",
+                match_mode="contains",
+                match_value="secret cataloger value",
+            )
+        ),
+    )
+
+    label = tasks_render._quick_field_change_label(request)
+
+    assert "secret cataloger value" not in label
+    assert "$a" not in label
+    assert len(label) <= 128
+    assert "Delete field" in label
+
+
+def test_common_field_apply_uses_batch_admission_telemetry(monkeypatch, tmp_path):
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    preview = _preview(store)
+    candidate = _candidate(tmp_path)
+    phases = []
+
+    class _Measure:
+        def mark_error(self, value):
+            phases.append(("error", value))
+
+    class _BatchContext:
+        def __enter__(self):
+            return _Measure()
+
+        def __exit__(self, *_args):
+            return False
+
+    def batch_operation(operation, *, phase, store):
+        phases.append((operation, phase))
+        return _BatchContext()
+
+    monkeypatch.setattr(tasks_render, "_batch_operation", batch_operation)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(tasks_render.session, "current_user_id", lambda: "cat@example.edu")
+    monkeypatch.setattr(tasks_render.session, "current_filename", lambda: "quick-field.mrc")
+    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: False)
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "build_apply_candidate",
+        lambda *args, **kwargs: candidate,
+    )
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "adopt_candidate_to_store",
+        lambda *_args: 1,
+    )
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **_kwargs: {"id": 1, "job_id": 1, "kind": "quick-field-change"},
+    )
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *_args, **_kwargs: None)
+
+    tasks_render._apply_quick_field_change_preview(preview, preview.request)
+
+    assert ("quick-field-change", "apply") in phases
+
+
+def test_common_field_preview_uses_batch_admission_telemetry(monkeypatch, tmp_path):
+    from marcedit_web.render import tasks as tasks_render
+
+    store = _store(tmp_path)
+    request = QuickFieldChangeRequest(kind="swap-field-occurrences")
+    preview = _preview(store)
+    phases = []
+
+    class _Measure:
+        def mark_error(self, value):
+            phases.append(("error", value))
+
+    class _BatchContext:
+        def __enter__(self):
+            return _Measure()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        tasks_render,
+        "_batch_operation",
+        lambda operation, *, phase, store: phases.append((operation, phase))
+        or _BatchContext(),
+    )
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "build_preview",
+        lambda *_args, **_kwargs: preview,
+    )
+
+    assert tasks_render._build_quick_field_change_preview(store, request) is preview
+    assert ("quick-field-change", "preview") in phases
+
+
 def test_quick_load_quick_field_change_stages_snapshot_and_export(
     monkeypatch, tmp_path,
 ):
