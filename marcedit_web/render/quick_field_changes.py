@@ -29,7 +29,7 @@ KEY_PREFIX = "quick_field_change_"
 K_OPERATION = KEY_PREFIX + "operation"
 K_PREVIEW = KEY_PREFIX + "preview"
 K_RESET = KEY_PREFIX + "reset"
-K_PREVIEW_BUTTON = KEY_PREFIX + "preview"
+K_PREVIEW_BUTTON = KEY_PREFIX + "preview_button"
 K_APPLY_BUTTON = KEY_PREFIX + "apply"
 
 EXPECTED_LABELS = [

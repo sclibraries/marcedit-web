@@ -85,6 +85,13 @@ class FakeStreamlit:
         return None
 
 
+class StatefulButtonFake(FakeStreamlit):
+    def button(self, label, *, key, **kwargs):
+        pressed = super().button(label, key=key, **kwargs)
+        self.session_state[key] = pressed
+        return pressed
+
+
 EXPECTED_LABELS = [
     "Add field",
     "Add subfield",
@@ -106,6 +113,16 @@ def _render(monkeypatch, fake, *, store=object(), on_apply=None):
         job_file_version_id=None,
         on_apply=on_apply or (lambda *_args: None),
     )
+
+
+def test_preview_button_cannot_replace_the_preview_object(monkeypatch):
+    fake = StatefulButtonFake()
+
+    _render(monkeypatch, fake)
+
+    assert renderer.K_PREVIEW != renderer.K_PREVIEW_BUTTON
+    assert fake.session_state[renderer.K_PREVIEW_BUTTON] is False
+    assert renderer.K_PREVIEW not in fake.session_state
 
 
 def test_operation_labels_are_alphabetical(monkeypatch):
