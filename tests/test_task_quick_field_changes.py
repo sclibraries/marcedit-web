@@ -11,6 +11,68 @@ import pytest
 from marcedit_web.lib.record_store import RecordStore
 from marcedit_web.lib.quick_field_changes import QuickFieldChangeRequest
 from marcedit_web.lib.quick_field_change_runner import QuickFieldChangePreview
+from marcedit_web.render import operation_activity
+
+
+class _RecordingActivity:
+    def __init__(self, operation_id, events=None):
+        self.operation_id = operation_id
+        self.phase_calls = []
+        self.progress_calls = []
+        self.completed = []
+        self.failed = []
+        self.events = events if events is not None else []
+        self.progress_callback = self._progress
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def phase(self, label, message):
+        self.phase_calls.append((label, message))
+
+    def _progress(self, processed, total):
+        self.progress_calls.append((processed, total))
+
+    def complete(self, label, message):
+        self.events.append("complete")
+        self.completed.append((label, message))
+
+    def fail(self, label, message):
+        self.failed.append((label, message))
+
+
+class _RecordingActivityFactory:
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.activities = []
+
+    def __call__(self, operation_id, label, *, phase, total=None):
+        activity = _RecordingActivity(operation_id, self.events)
+        activity.phase_calls.append((phase, label))
+        self.activities.append(activity)
+        return activity
+
+
+class _QuietActivity:
+    progress_callback = staticmethod(lambda *_args: None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def phase(self, *_args):
+        return None
+
+    def complete(self, *_args):
+        return None
+
+    def fail(self, *_args):
+        return None
 
 
 class _FakeStreamlit:
@@ -50,6 +112,15 @@ class _QuickRouterFake:
         self.errors.append(str(message))
 
 
+class _CollapsedStatus:
+    def __init__(self, owner, label, expanded):
+        self.owner = owner
+        self.owner.status_calls.append((label, expanded))
+
+    def update(self, **kwargs):
+        self.owner.status_updates.append(kwargs)
+
+
 def _record() -> pymarc.Record:
     record = pymarc.Record()
     record.leader = pymarc.Leader("00000nam a2200000 a 4500")
@@ -69,6 +140,11 @@ def _tasks_render(monkeypatch, fake_st):
     from marcedit_web.render import tasks as tasks_render
 
     monkeypatch.setattr(tasks_render, "st", fake_st)
+    monkeypatch.setattr(
+        operation_activity,
+        "open_activity",
+        lambda *_args, **_kwargs: _QuietActivity(),
+    )
     return tasks_render
 
 
@@ -242,6 +318,50 @@ def test_switching_quick_operation_cleans_all_preview_and_export_state(monkeypat
     assert fake_st.session_state["qb_040_agency"] == "MNS"
 
 
+def test_quick_operation_rerun_summary_is_collapsed_and_cleared_on_switch(monkeypatch):
+    from marcedit_web.render import tasks as tasks_render
+
+    fake_st = _QuickRouterFake("field:add-field", session_state={
+        tasks_render._K_QUICK_OPERATION_ACTIVE: "field:add-field",
+        tasks_render._K_QFC_PREVIEW: object(),
+        operation_activity.COMPLETION_KEY: {
+            "operation_id": "quick-field-change-apply",
+            "state": "complete",
+            "label": "Common field change applied",
+            "message": "Applied Common field change to 1 record(s).",
+        },
+    })
+    fake_st.status_calls = []
+    fake_st.status_updates = []
+    fake_st.status = lambda label, *, expanded: _CollapsedStatus(
+        fake_st, label, expanded
+    )
+    fake_st.write = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(tasks_render, "st", fake_st)
+    monkeypatch.setattr(operation_activity, "st", fake_st)
+    monkeypatch.setattr(tasks_render.session, "has_upload", lambda: True)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: object())
+    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: False)
+    monkeypatch.setattr(
+        tasks_render.quick_field_changes_render,
+        "render_common_field_changes",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(tasks_render, "_render_quick_field_change_export", lambda: None)
+    monkeypatch.setattr(tasks_render.quick_field_change_runner, "cleanup_artifact", lambda *_args: None)
+
+    tasks_render._render_quick_ops_mode()
+
+    assert fake_st.status_updates[-1]["expanded"] is False
+    fake_st.selected = "batch:035-oclc"
+    monkeypatch.setattr(tasks_render, "_render_quick_batch_operations", lambda *_args: None)
+
+    tasks_render._render_quick_ops_mode()
+
+    assert operation_activity.COMPLETION_KEY not in fake_st.session_state
+    assert tasks_render._K_QFC_PREVIEW not in fake_st.session_state
+
+
 def test_job_file_quick_field_change_creates_recoverable_version(
     monkeypatch, tmp_path,
 ):
@@ -365,6 +485,11 @@ def test_common_field_apply_uses_batch_admission_telemetry(monkeypatch, tmp_path
 def test_common_field_preview_uses_batch_admission_telemetry(monkeypatch, tmp_path):
     from marcedit_web.render import tasks as tasks_render
 
+    monkeypatch.setattr(
+        operation_activity,
+        "open_activity",
+        lambda *_args, **_kwargs: _QuietActivity(),
+    )
     store = _store(tmp_path)
     request = QuickFieldChangeRequest(kind="swap-field-occurrences")
     preview = _preview(store)
@@ -395,6 +520,81 @@ def test_common_field_preview_uses_batch_admission_telemetry(monkeypatch, tmp_pa
 
     assert tasks_render._build_quick_field_change_preview(store, request) is preview
     assert ("quick-field-change", "preview") in phases
+
+
+def test_common_field_preview_reports_activity_and_runner_progress(
+    monkeypatch, tmp_path,
+):
+    tasks_render = _tasks_render(monkeypatch, _FakeStreamlit())
+    store = _store(tmp_path)
+    request = QuickFieldChangeRequest(kind="swap-field-occurrences")
+    preview = _preview(store)
+    factory = _RecordingActivityFactory()
+    captured = []
+    monkeypatch.setattr(operation_activity, "open_activity", factory)
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "build_preview",
+        lambda *args, **kwargs: captured.append(kwargs["progress"]) or preview,
+    )
+
+    result = tasks_render._build_quick_field_change_preview(store, request)
+
+    assert result is preview
+    assert callable(captured[0])
+    assert factory.activities[0].progress_callback is captured[0]
+    assert factory.activities[0].completed == [
+        ("Preview ready", "Review the Common field change preview below.")
+    ]
+    assert factory.activities[0].failed == []
+
+
+def test_common_field_apply_reports_activity_before_existing_rerun(
+    monkeypatch, tmp_path,
+):
+    events = []
+    fake_st = _FakeStreamlit()
+    tasks_render = _tasks_render(monkeypatch, fake_st)
+    store = _store(tmp_path)
+    preview = _preview(store)
+    candidate = _candidate(tmp_path)
+    factory = _RecordingActivityFactory(events)
+    captured = []
+    monkeypatch.setattr(operation_activity, "open_activity", factory)
+    monkeypatch.setattr(tasks_render.session, "current_store", lambda: store)
+    monkeypatch.setattr(tasks_render.session, "current_user_id", lambda: "cat@example.edu")
+    monkeypatch.setattr(tasks_render.session, "current_filename", lambda: "quick-field.mrc")
+    monkeypatch.setattr(tasks_render, "_uses_job_file_versions", lambda: False)
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "build_apply_candidate",
+        lambda *args, **kwargs: captured.append(kwargs["progress"]) or candidate,
+    )
+    monkeypatch.setattr(
+        tasks_render.quick_field_change_runner,
+        "adopt_candidate_to_store",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        tasks_render.snapshot_actions,
+        "record_job_snapshot",
+        lambda **_kwargs: {"id": 1, "job_id": 1, "kind": "quick-field-change"},
+    )
+    monkeypatch.setattr(tasks_render, "audit_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tasks_render.quick_field_change_runner, "cleanup_artifact", lambda *_args: None)
+
+    original_rerun = fake_st.rerun
+    def rerun():
+        events.append("rerun")
+        original_rerun()
+    fake_st.rerun = rerun
+
+    tasks_render._apply_quick_field_change_preview(preview, preview.request)
+
+    assert callable(captured[0])
+    assert factory.activities[0].progress_callback is captured[0]
+    assert factory.activities[0].completed
+    assert events.index("complete") < events.index("rerun")
 
 
 def test_quick_load_quick_field_change_stages_snapshot_and_export(

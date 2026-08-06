@@ -85,6 +85,7 @@ from marcedit_web.lib.task_workspace_navigation import (
 from marcedit_web.render.batch_status import loaded_batch_status
 from marcedit_web.render import task_authoring as task_authoring_render
 from marcedit_web.render import (
+    operation_activity,
     quick_field_changes as quick_field_changes_render,
     task_operation_cards,
     task_operation_dialog,
@@ -1460,6 +1461,8 @@ def _render_quick_ops_mode() -> None:
     if selected == "find-replace":
         _render_quick_find_replace()
     elif selected.startswith("field:"):
+        operation_activity.render_completion("quick-field-change-preview")
+        operation_activity.render_completion("quick-field-change-apply")
         quick_field_changes_render.render_common_field_changes(
             session.current_store(),
             operation_kind=selected[len("field:"):],
@@ -1493,15 +1496,31 @@ def _quick_operation_entries() -> tuple[tuple[str, str], ...]:
 def _build_quick_field_change_preview(store, request, **kwargs):
     """Build Common field previews under the shared batch admission gate."""
 
-    with _batch_operation(
-        "quick-field-change", phase="preview", store=store
-    ) as measurement:
-        preview = quick_field_change_runner.build_preview(
-            store, request, **kwargs
-        )
-        if preview.error:
-            measurement.mark_error("PreviewError")
-        return preview
+    with operation_activity.open_activity(
+        "quick-field-change-preview",
+        "Quick field change preview",
+        phase="Preparing",
+        total=store.count(),
+    ) as activity:
+        activity.phase("Previewing", "Building a Common field change preview…")
+        with _batch_operation(
+            "quick-field-change", phase="preview", store=store
+        ) as measurement:
+            preview = quick_field_change_runner.build_preview(
+                store,
+                request,
+                progress=activity.progress_callback,
+                **kwargs,
+            )
+            if preview.error:
+                measurement.mark_error("PreviewError")
+                activity.fail("Preview failed", preview.error)
+            else:
+                activity.complete(
+                    "Preview ready",
+                    "Review the Common field change preview below.",
+                )
+            return preview
 
 
 def _folder_children(
@@ -4349,6 +4368,7 @@ _K_QFC_DOWNLOAD_READY = "quick_field_change_download_ready"
 
 def _clear_quick_operation_state() -> None:
     """Clear preview/export evidence while preserving operation form values."""
+    operation_activity.clear_completion()
     batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
     quick_field_change_runner.cleanup_artifact(
         st.session_state.pop(_K_QFC_PREVIEW, None)
@@ -4404,112 +4424,122 @@ def _apply_quick_field_change_preview(preview, current_request) -> None:
         else None
     )
     candidate = None
-    try:
-        with _batch_operation(
-            "quick-field-change", phase="apply", store=store
-        ) as measurement:
-            try:
-                candidate = quick_field_change_runner.build_apply_candidate(
-                    store,
-                    preview,
-                    current_request,
-                    job_file_id=job_file_id,
-                    job_file_version_id=job_file_version_id,
-                )
-            except Exception:
-                measurement.mark_error("ApplyError")
-                raise
-        label = _quick_field_change_label(current_request)
-        summary = _quick_field_change_summary(preview, candidate)
-        export_filename = _export_filename(
-            session.current_filename(), "quickfieldchange"
-        )
-        snapshot = None
-        version = None
-
-        if _uses_job_file_versions():
-            version = session.adopt_current_candidate(
-                candidate_path=candidate.output_path,
-                source_kind="quick-field-change",
-                label=label,
-                summary=summary,
-            )
-            export_source = session.current_store().path
-        else:
-            with snapshot_actions.staged_store_path(store) as before_path:
-                quick_field_change_runner.adopt_candidate_to_store(
-                    store, candidate
-                )
+    with operation_activity.open_activity(
+        "quick-field-change-apply",
+        "Quick field change apply",
+        phase="Preparing",
+        total=store.count(),
+    ) as activity:
+        activity.phase("Applying", "Rechecking the Common field change preview…")
+        try:
+            with _batch_operation(
+                "quick-field-change", phase="apply", store=store
+            ) as measurement:
                 try:
-                    snapshot = snapshot_actions.record_job_snapshot(
-                        job_id=st.session_state.get("current_job_id"),
-                        user_email=session.current_user_id(),
-                        kind="quick-field-change",
-                        label=label,
-                        before_path=before_path,
-                        after_path=store.path,
-                        summary={**summary, "export_filename": export_filename},
+                    candidate = quick_field_change_runner.build_apply_candidate(
+                        store,
+                        preview,
+                        current_request,
+                        job_file_id=job_file_id,
+                        job_file_version_id=job_file_version_id,
+                        progress=activity.progress_callback,
                     )
-                except Exception:  # noqa: BLE001 — history is best-effort
-                    logger.exception("quick field change snapshot failed")
-                    st.warning(
-                        "Change applied, but recording the history snapshot failed."
-                    )
-            export_source = store.path
-    except (
-        ValueError,
-        RuntimeError,
-        OSError,
-        job_files.JobFileError,
-        collaboration.CollaborationError,
-    ) as exc:
-        st.error(str(exc))
-        return
-    finally:
-        if candidate is not None:
-            quick_field_change_runner.cleanup_artifact(candidate)
+                except Exception:
+                    measurement.mark_error("ApplyError")
+                    raise
+            label = _quick_field_change_label(current_request)
+            summary = _quick_field_change_summary(preview, candidate)
+            export_filename = _export_filename(
+                session.current_filename(), "quickfieldchange"
+            )
+            snapshot = None
+            version = None
 
-    user = session.current_user_id()
-    if snapshot is not None:
+            if _uses_job_file_versions():
+                version = session.adopt_current_candidate(
+                    candidate_path=candidate.output_path,
+                    source_kind="quick-field-change",
+                    label=label,
+                    summary=summary,
+                )
+                export_source = session.current_store().path
+            else:
+                with snapshot_actions.staged_store_path(store) as before_path:
+                    quick_field_change_runner.adopt_candidate_to_store(
+                        store, candidate
+                    )
+                    try:
+                        snapshot = snapshot_actions.record_job_snapshot(
+                            job_id=st.session_state.get("current_job_id"),
+                            user_email=session.current_user_id(),
+                            kind="quick-field-change",
+                            label=label,
+                            before_path=before_path,
+                            after_path=store.path,
+                            summary={**summary, "export_filename": export_filename},
+                        )
+                    except Exception:  # noqa: BLE001 — history is best-effort
+                        logger.exception("quick field change snapshot failed")
+                        st.warning(
+                            "Change applied, but recording the history snapshot failed."
+                        )
+                export_source = store.path
+        except (
+            ValueError,
+            RuntimeError,
+            OSError,
+            job_files.JobFileError,
+            collaboration.CollaborationError,
+        ) as exc:
+            activity.fail("Quick field change failed", str(exc))
+            st.error(str(exc))
+            return
+        finally:
+            if candidate is not None:
+                quick_field_change_runner.cleanup_artifact(candidate)
+
+        user = session.current_user_id()
+        if snapshot is not None:
+            audit_event(
+                "job-snapshot-created",
+                user=user,
+                snapshot_id=snapshot["id"],
+                job_id=snapshot["job_id"],
+                snapshot_kind=snapshot["kind"],
+            )
         audit_event(
-            "job-snapshot-created",
+            "quick-field-change-applied",
             user=user,
-            snapshot_id=snapshot["id"],
-            job_id=snapshot["job_id"],
-            snapshot_kind=snapshot["kind"],
+            filename=session.current_filename(),
+            operation_kind=summary["operation_kind"],
+            changed_count=summary["changed_count"],
+            skipped_count=summary["skipped_count"],
+            reason_counts=summary["reason_counts"],
         )
-    audit_event(
-        "quick-field-change-applied",
-        user=user,
-        filename=session.current_filename(),
-        operation_kind=summary["operation_kind"],
-        changed_count=summary["changed_count"],
-        skipped_count=summary["skipped_count"],
-        reason_counts=summary["reason_counts"],
-    )
 
-    st.session_state["issues_cache"] = {}
-    quick_field_change_runner.cleanup_artifact(
-        st.session_state.pop(_K_QFC_PREVIEW, None)
-    )
-    batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
-    quick_batch.cleanup_preview(st.session_state.pop(_K_QB_PREVIEW, None))
-    st.session_state.pop(_K_QFC_DOWNLOAD_READY, None)
-    _cleanup_disk_backed_export(st.session_state.get(_K_QFC_EXPORT))
-    _cleanup_disk_backed_export(st.session_state.pop(_K_QB_EXPORT, None))
-    st.session_state.pop(K_QB_DOWNLOAD_READY, None)
-    st.session_state[_K_QFC_EXPORT] = _disk_backed_export(
-        filename=export_filename,
-        source_path=export_source,
-        snapshot=snapshot,
-        job_file_version=version,
-        prefix="marcedit-web-quick-field-change-",
-    )
-    message = f"Applied Common field change to {summary['changed_count']} record(s)"
-    if version is not None:
-        message += f" as version {version['version_number']}"
-    st.success(message + ".")
-    st.rerun()
+        st.session_state["issues_cache"] = {}
+        quick_field_change_runner.cleanup_artifact(
+            st.session_state.pop(_K_QFC_PREVIEW, None)
+        )
+        batch_replace.cleanup_preview(st.session_state.pop(_K_BR_PREVIEW, None))
+        quick_batch.cleanup_preview(st.session_state.pop(_K_QB_PREVIEW, None))
+        st.session_state.pop(_K_QFC_DOWNLOAD_READY, None)
+        _cleanup_disk_backed_export(st.session_state.get(_K_QFC_EXPORT))
+        _cleanup_disk_backed_export(st.session_state.pop(_K_QB_EXPORT, None))
+        st.session_state.pop(K_QB_DOWNLOAD_READY, None)
+        st.session_state[_K_QFC_EXPORT] = _disk_backed_export(
+            filename=export_filename,
+            source_path=export_source,
+            snapshot=snapshot,
+            job_file_version=version,
+            prefix="marcedit-web-quick-field-change-",
+        )
+        message = f"Applied Common field change to {summary['changed_count']} record(s)"
+        if version is not None:
+            message += f" as version {version['version_number']}"
+        activity.complete("Common field change applied", message + ".")
+        st.success(message + ".")
+        st.rerun()
 
 
 def _render_quick_field_change_export() -> None:
