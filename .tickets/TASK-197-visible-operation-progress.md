@@ -25,7 +25,7 @@ Success Criteria:
 - Tests cover status lifecycle and progress updates without requiring a
   browser.
 
-Status: In-Progress
+Status: Completed
 
 Implementation and verification checkpoint (2026-08-07):
 - Shared activity helper, focused Quick operations, Quick batch/Find and
@@ -40,9 +40,10 @@ Implementation and verification checkpoint (2026-08-07):
   HTTP 200.
 - Final-review findings were fixed and scoped re-reviewed; no Critical or
   Important findings remain.
-- Authenticated browser acceptance remains pending because the browser-control
-  runtime was unavailable in this environment. Do not mark Completed until an
-  authenticated cataloger verifies the expanded activity panel, collapsed
-  rerun completion, error state, and operation-switch cleanup.
+- Authenticated cataloger acceptance was confirmed by the user on 2026-08-07:
+  the revised activity treatment is substantially clearer and the release is
+  approved for the production-safe branch. Automated browser control was not
+  available to capture a screenshot, so this user acceptance is the browser
+  evidence for the completion gate.
 - Implementation commits: c5c3588, d2a26c0, be2088a, b77cac2, 78903bd,
   c42fe10, cc47112, 77e6b0b, 95461d6, 619c742.
