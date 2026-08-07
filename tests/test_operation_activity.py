@@ -260,6 +260,17 @@ def test_unknown_total_reports_progress_unavailable(monkeypatch):
     assert fake.progress.created == []
 
 
+def test_unknown_callback_total_reports_progress_unavailable(monkeypatch):
+    fake = FakeStreamlit()
+    monkeypatch.setattr(operation_activity, "st", fake)
+    with operation_activity.open_activity(
+        "find-preview", "Find and replace", phase="Preparing", total=10
+    ) as activity:
+        activity.progress_callback(1, None)
+
+    assert fake.messages[-1] == "Progress unavailable — processing records…"
+
+
 def test_failure_collapses_status_and_stores_error_summary(monkeypatch):
     fake = FakeStreamlit()
     monkeypatch.setattr(operation_activity, "st", fake)

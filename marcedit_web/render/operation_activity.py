@@ -63,9 +63,9 @@ class ActivityHandle:
             )
         )
 
-    def progress_callback(self, processed: int, total: int) -> None:
+    def progress_callback(self, processed: int, total: int | None) -> None:
         """Render throttled record progress while preserving the old cadence."""
-        if self._progress is None or total <= 0:
+        if self._progress is None or total is None or total <= 0:
             if not self._progress_unavailable_rendered:
                 self._message.write(_PROGRESS_UNAVAILABLE)
                 self._progress_unavailable_rendered = True
