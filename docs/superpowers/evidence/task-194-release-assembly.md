@@ -108,3 +108,9 @@ Before Gate 0 continues, the release history must record `1793e459` as an
 ancestor without changing the verified application tree. Production may then
 rename its clean local branch to `main` without changing files, capture the
 runtime on that branch and SHA, and use the lineage-driven fast-forward deploy.
+
+The first live capture identified `/home/www/html/marcedit-web` and
+`marcedit-web.service` correctly but failed closed on the pymarc version probe.
+Production has pymarc 5.3.1, which imports correctly but does not expose
+`pymarc.__version__`. The probe now uses Python distribution metadata while
+still importing pymarc, with a regression test for that exact runtime shape.

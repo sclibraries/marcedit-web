@@ -137,7 +137,14 @@ def capture_lineage(root: Path, *, runner: Runner = _run) -> dict[str, Any]:
     dependency_commands: dict[str, Sequence[str]] = {
         "python": [python, "--version"],
         "streamlit": [python, "-c", "import streamlit; print(streamlit.__version__)"],
-        "pymarc": [python, "-c", "import pymarc; print(pymarc.__version__)"],
+        "pymarc": [
+            python,
+            "-c",
+            (
+                "import importlib.metadata, pymarc; "
+                "print(importlib.metadata.version('pymarc'))"
+            ),
+        ],
         "pip_inventory": [python, "-m", "pip", "list", "--format=json"],
         "python_sqlite": [python, "-c", "import sqlite3; print(sqlite3.sqlite_version)"],
         "sqlite_cli": ["sqlite3", "--version"],

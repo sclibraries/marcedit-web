@@ -123,6 +123,48 @@ def test_capture_lineage_uses_the_discovered_unit_and_runtime_python(tmp_path):
     assert result["units"]["selected_unit"] == "marcedit-web-private.service"
 
 
+def test_capture_uses_distribution_metadata_when_pymarc_has_no_version_attribute(
+    tmp_path,
+):
+    """pymarc 5.3 imports successfully without exposing ``__version__``."""
+
+    def runner(command):
+        if list(command[:3]) == [
+            "systemctl", "list-unit-files", "marcedit-web*.service"
+        ]:
+            return {
+                "returncode": 0,
+                "stdout": "marcedit-web.service enabled\n",
+                "stderr": "",
+            }
+        if list(command[:2]) == ["systemctl", "show"]:
+            return {
+                "returncode": 0,
+                "stdout": (
+                    "ActiveState=active\n"
+                    "ExecStart={ path=/opt/marcedit/.venv/bin/streamlit ; "
+                    "argv[]=/opt/marcedit/.venv/bin/streamlit }\n"
+                    "WorkingDirectory=/opt/marcedit\n"
+                ),
+                "stderr": "",
+            }
+        script = command[2] if len(command) == 3 and command[1] == "-c" else ""
+        if "pymarc.__version__" in script:
+            return {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "AttributeError: module 'pymarc' has no attribute '__version__'",
+            }
+        if "importlib.metadata" in script and "pymarc" in script:
+            return {"returncode": 0, "stdout": "5.3.1\n", "stderr": ""}
+        return {"returncode": 0, "stdout": "captured", "stderr": ""}
+
+    result = task_194_runtime.capture_lineage(tmp_path, runner=runner)
+
+    assert result["dependencies"]["pymarc"]["status"] == "ok"
+    assert result["dependencies"]["pymarc"]["stdout"] == "5.3.1\n"
+
+
 def test_capture_lineage_does_not_infer_python_when_execstart_is_unparseable(
     tmp_path,
 ):
