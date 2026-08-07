@@ -141,3 +141,10 @@ The deploy command itself exited nonzero because its one-shot curl ran before
 Streamlit had bound port 8501; the service became healthy without intervention.
 Future deployments use curl's bounded connection-refused retry for up to 45
 seconds rather than reporting this normal restart interval as a failure.
+
+Production then fast-forwarded the deployment-tooling-only readiness fix and
+finished clean on `main` at `1dfc10c540afe9e5fb7b2da9ccac200eefb7b277`.
+The local health endpoint returned `ok`, and authenticated live application
+verification was confirmed by the cataloger. TASK-194 is complete; no
+ITS-managed service, sudoers, proxy, authentication, or filesystem
+configuration was changed.

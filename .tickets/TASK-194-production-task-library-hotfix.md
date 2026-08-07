@@ -44,42 +44,26 @@ Success Criteria:
 - The final branch, database backup procedure, release SHA, and rollback SHA
   receive user approval before any push or production action.
 
-Planning Gate: Blocked pending current production runtime-lineage capture
+Planning Gate: Satisfied by the approved live runtime-lineage capture
 
-Implementation checkpoint:
-- Read-only runtime-lineage capture is available and refuses to select a unit
-  when more than one matching service is active; no fresh production capture
-  has been approved.
-- SQLite backup verification now records integrity, schema, user_version,
-  row counts, and source/backup hashes.
-- The deploy entry point is now lineage-driven, preserves dependency and
-  dialog-contract checks, and supports a no-mutation dry run. It refuses dirty
-  or branch-drifted checkouts, unsafe release inputs, incompatible Python or
-  SQLite versions, and missing noninteractive sudo capability. It never starts
-  a worker or invents a unit.
-- Gate 0 now fails closed when the selected unit does not report the captured
-  repository as its working directory.
-- Gate 0 now fails closed when `ExecStart` cannot identify the runtime Python;
-  it never probes a guessed repository venv. It also rejects malformed dialog
-  signature captures while allowing the documented pre-upgrade path.
-- The deploy sequence verifies the approved release SHA immediately after the
-  pull, and schema-v17 reports duplicate root folders before creating indexes.
-- The synchronous sandbox now treats unsupported host rlimits and relative
-  source-checkout `PYTHONPATH` entries as portability conditions rather than
-  launcher failures; Linux limits remain enforced where supported.
-- Release assembly and any non-dry deployment remain blocked until Gate 0
-  identifies the live unit, paths, dependency versions, and database.
-- The current review worktree still contains Operations-era navigation and
-  queue submission inherited from main; the production release branch must be
-  assembled from the captured production SHA and remove that topology before
-  it can satisfy the synchronous-only boundary.
-- The review worktree now routes saved-task execution through a synchronous
-  sandbox runner, hides the Operations page and notification bell, and guards
-  the Operations script itself. Focused sync-only, navigation, partner, folder,
-  runtime, deployment, backup, and migration tests pass. The authoritative
-  Python 3.9 hotfix Compose run now passes with 2,515 tests passed and 18
-  explicit environment/corpus skips. This is still not a production release:
-  Gate 0 capture, exact-lineage assembly, and authenticated browser
-  verification remain outstanding.
+Completion checkpoint:
+- Production lineage was reconciled from rollback SHA `1793e459`; the tested
+  candidate retained the exact verified application tree while recording the
+  live production commit as an ancestor.
+- Gate 0 identified `/home/www/html/marcedit-web`, Python 3.9, pymarc 5.3.1,
+  Streamlit 1.50.0, SQLite with partial-index support, the production database,
+  `marcedit-web.service`, and the existing suffixless sudo restart target.
+- The database and audit backup was created and independently verified at
+  `/home/marcedit/backups/marcedit-web/2026-08-07-ac4182b` before schema health
+  ran.
+- Production is on `main` at `1dfc10c`, the checkout is clean, the existing
+  service is active, and the local health endpoint returns `ok`.
+- Saved tasks remain synchronous; durable Operations navigation,
+  notifications, and worker lifecycle are not exposed by this release.
+- The authoritative hotfix-only Python 3.9 Docker run passed with 2,762 tests,
+  19 explicit environment/repository/corpus skips, and no failures. Final
+  deployment-contract verification passed with 60 tests.
+- Authenticated live browser verification was confirmed by the cataloger on
+  2026-08-07. No ITS-managed configuration was changed.
 
-Status: In-Progress
+Status: Completed
