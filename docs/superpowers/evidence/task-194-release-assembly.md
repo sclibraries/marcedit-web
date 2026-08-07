@@ -114,3 +114,9 @@ The first live capture identified `/home/www/html/marcedit-web` and
 Production has pymarc 5.3.1, which imports correctly but does not expose
 `pymarc.__version__`. The probe now uses Python distribution metadata while
 still importing pymarc, with a regression test for that exact runtime shape.
+
+The first deployment dry run then rejected Streamlit 1.50's valid annotated
+dialog signature because the validator expected the captured string to end at
+`)`. Python 3.9 renders the return annotation after that character. The
+validator now accepts an optional return annotation while retaining the
+existing missing- and malformed-signature rejection tests.

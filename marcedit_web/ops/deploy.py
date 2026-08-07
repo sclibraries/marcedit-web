@@ -39,7 +39,7 @@ class CommandResult:
 _UNIT_NAME = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 _BRANCH_NAME = re.compile(r"^[A-Za-z0-9._/-]+$")
 _VERSION = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
-_DIALOG_SIGNATURE = re.compile(r"^\(.*\)$", re.DOTALL)
+_DIALOG_SIGNATURE = re.compile(r"^\(.*\)(?:\s*->\s*.+)?$", re.DOTALL)
 _MIN_CAPTURE_STREAMLIT = (1, 37, 0)
 
 

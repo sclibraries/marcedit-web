@@ -118,6 +118,25 @@ def test_validate_lineage_allows_upgradeable_streamlit_before_restart(tmp_path):
     assert config.unit == "catalog.service"
 
 
+def test_validate_lineage_accepts_annotated_streamlit_dialog_signature(tmp_path):
+    """Python 3.9 renders Streamlit 1.50's return annotation after ``)``."""
+    lineage = _lineage(tmp_path)
+    lineage["dialog"]["stdout"] = (
+        "(title: 'F | str', *, width: 'DialogWidth' = 'small', "
+        "dismissible: 'bool' = True, on_dismiss: \"Literal['ignore', "
+        "'rerun'] | WidgetCallback\" = 'ignore') -> "
+        "'F | Callable[[F], F]'\n"
+    )
+
+    config = deploy.validate_lineage(
+        lineage,
+        approved_branch="release-hotfix",
+        approved_release_sha="b" * 40,
+    )
+
+    assert config.unit == "catalog.service"
+
+
 @pytest.mark.parametrize("branch", ["--danger", "release hotfix"])
 def test_validate_lineage_rejects_unsafe_branch_names(tmp_path, branch):
     with pytest.raises(deploy.DeploymentError, match="branch"):
