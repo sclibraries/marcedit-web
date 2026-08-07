@@ -21,7 +21,7 @@ Status: COMPLETE (final-review findings addressed).
 
 `PYTHONPATH=. pytest -q tests/test_operation_activity.py tests/test_tasks_export.py tests/test_synchronous_task_runner.py tests/test_quick_batch_render.py tests/test_quick_replace_snapshot.py`
 
-Result: **53 passed**, 5 existing deprecation warnings.
+Result: **54 passed**, 5 existing deprecation warnings.
 
 `python3 -m compileall -q marcedit_web` and `git diff --check` passed.
 
