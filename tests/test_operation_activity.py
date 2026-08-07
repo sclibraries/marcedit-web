@@ -9,15 +9,37 @@ class FakeStatus:
     def __init__(self, owner: "FakeStatusFactory") -> None:
         self.owner = owner
         self.updates: list[dict[str, Any]] = []
+        self.messages: list[str] = []
+        self.progress_bars: list[FakeProgress] = []
+        self.placeholders: list[FakePlaceholder] = []
 
     def update(self, **kwargs: Any) -> None:
         self.updates.append(kwargs)
+
+    def write(self, value: str) -> None:
+        self.messages.append(value)
+        self.owner.owner.messages.append(value)
+
+    def markdown(self, value: str) -> None:
+        self.messages.append(value)
+
+    def progress(self, value: float = 0.0) -> "FakeProgress":
+        progress = FakeProgress(self.owner.owner.progress)
+        self.progress_bars.append(progress)
+        self.owner.owner.progress.values.append(value)
+        return progress
+
+    def empty(self) -> "FakePlaceholder":
+        placeholder = FakePlaceholder(self.owner.owner)
+        self.placeholders.append(placeholder)
+        return placeholder
 
 
 class FakeStatusFactory:
     def __init__(self) -> None:
         self.created: list[tuple[str, bool]] = []
         self._status: FakeStatus | None = None
+        self.owner: FakeStreamlit | None = None
 
     def __call__(self, label: str, *, expanded: bool) -> FakeStatus:
         self.created.append((label, expanded))
@@ -42,11 +64,15 @@ class FakeProgress:
     def progress(self, value: float) -> None:
         self.owner.values.append(value)
 
+    def empty(self) -> None:
+        self.owner.cleared += 1
+
 
 class FakeProgressFactory:
     def __init__(self) -> None:
         self.created: list[FakeProgress] = []
         self.values: list[float] = []
+        self.cleared = 0
 
     def __call__(self, value: float = 0.0) -> FakeProgress:
         progress = FakeProgress(self)
@@ -59,7 +85,11 @@ class FakePlaceholder:
     def __init__(self, owner: "FakeStreamlit") -> None:
         self.owner = owner
         self.values: list[str] = []
+        self.cleared = 0
         self._replaced_initial = False
+
+    def empty(self) -> None:
+        self.cleared += 1
 
     def write(self, value: str) -> None:
         self.values.append(value)
@@ -82,6 +112,7 @@ class FakeStreamlit:
     def __init__(self, session_state: dict[str, Any] | None = None) -> None:
         self.session_state = session_state if session_state is not None else {}
         self.status = FakeStatusFactory()
+        self.status.owner = self
         self.progress = FakeProgressFactory()
         self.messages: list[str] = []
 
@@ -106,7 +137,8 @@ def test_activity_starts_expanded_and_finishes_collapsed(monkeypatch):
         activity.complete("Preview ready", "Review the changes below.")
 
     assert fake.status.created == [("Quick field change", True)]
-    assert fake.messages[0] == "Preparing…"
+    assert fake.status.status.messages[0] == "Preparing…"
+    assert fake.status.status.placeholders
     assert fake.status.updates[-1] == {
         "label": "Preview ready",
         "state": "complete",
@@ -118,6 +150,55 @@ def test_activity_starts_expanded_and_finishes_collapsed(monkeypatch):
         "label": "Preview ready",
         "message": "Review the changes below.",
     }
+
+
+def test_activity_content_is_attached_to_status_container(monkeypatch):
+    fake = FakeStreamlit()
+    monkeypatch.setattr(operation_activity, "st", fake)
+
+    with operation_activity.open_activity(
+        "quick-batch-preview", "Quick batch", phase="Preparing", total=10
+    ) as activity:
+        activity.phase("Previewing", "Running in the sandbox")
+        activity.progress_callback(1, 10)
+
+    status = fake.status.status
+    assert "Preparing…" in status.messages
+    assert "Running in the sandbox" in status.placeholders[0].values
+    assert status.progress_bars
+    assert fake.status.status.placeholders
+
+
+def test_completion_summary_is_bounded_and_does_not_retain_exception_text(monkeypatch):
+    fake = FakeStreamlit()
+    monkeypatch.setattr(operation_activity, "st", fake)
+    secret = "private traceback details" * 100
+
+    with operation_activity.open_activity(
+        "find-preview", "Find and replace", phase="Preparing"
+    ) as activity:
+        activity.fail("L" * 10000, RuntimeError(secret))
+
+    summary = fake.session_state[operation_activity.COMPLETION_KEY]
+    assert len(summary["label"]) == operation_activity.MAX_LABEL_LENGTH
+    assert len(summary["message"]) <= operation_activity.MAX_MESSAGE_LENGTH
+    assert secret not in summary["message"]
+    assert all(isinstance(summary[key], str) for key in ("label", "message"))
+
+
+def test_finish_clears_transient_progress_and_message_placeholders(monkeypatch):
+    fake = FakeStreamlit()
+    monkeypatch.setattr(operation_activity, "st", fake)
+
+    with operation_activity.open_activity(
+        "quick-batch-preview", "Quick batch", phase="Preparing", total=10
+    ) as activity:
+        activity.progress_callback(1, 10)
+        activity.complete("Done", "Finished")
+
+    status = fake.status.status
+    assert status.placeholders[0].cleared == 1
+    assert fake.progress.cleared == 1
 
 
 def test_progress_uses_existing_first_boundary_and_throttle(monkeypatch):

@@ -322,7 +322,9 @@ git commit -m "feat: show quick batch activity progress"
 **Interfaces:**
 - Replaces the local `st.status("Running tasks…")` lifecycle in
   `_execute_synchronous_run` with
-  `operation_activity.open_activity("saved-task-run", "Running tasks…", phase="Preparing", total=store.count())`.
+  `operation_activity.open_activity("saved-task-run", "Running tasks…", phase="Preparing", total=None)`;
+  saved-task runs have no progress callback, so the panel explicitly reports
+  that progress is unavailable instead of showing a misleading zero bar.
 - Keeps the existing `synchronous_task_runner.run_tasks` call, timeout/error labels, output parsing, and result evidence unchanged.
 
 - [ ] **Step 1: Add a status-helper integration assertion**

@@ -3624,9 +3624,9 @@ def _execute_synchronous_run(selection: list[str], tasks_dir: Path) -> None:
         "saved-task-run",
         "Running tasks…",
         phase="Preparing",
-        total=store.count(),
+        total=None,
     ) as activity:
-        st.write(f"Reading **{store.count():,}** records from upload")
+        activity.write(f"Reading **{store.count():,}** records from upload")
         store.write_mrc_to(input_path)
         activity.phase(
             "Sandbox execution",

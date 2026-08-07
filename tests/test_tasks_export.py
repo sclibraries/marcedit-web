@@ -33,6 +33,9 @@ class _RecordingActivity(_Spinner):
     def phase(self, label, message):
         self.phase_calls.append((label, message))
 
+    def write(self, message):
+        return None
+
     def complete(self, label, message):
         self.completed.append((label, message))
 
@@ -560,7 +563,7 @@ def test_saved_task_run_reports_shared_activity_without_changing_result(
     tasks_render._execute_synchronous_run(["cleanup"], tmp_path)
 
     assert activity_factory.calls == [
-        ("saved-task-run", "Running tasks…", "Preparing", 3)
+        ("saved-task-run", "Running tasks…", "Preparing", None)
     ]
     assert runner_calls[0][1][0] == tasks_render.sandbox.TaskSpec(
         name="cleanup", body="pass\n", imports=[]
