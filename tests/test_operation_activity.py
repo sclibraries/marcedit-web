@@ -199,6 +199,7 @@ def test_finish_clears_transient_progress_and_message_placeholders(monkeypatch):
     status = fake.status.status
     assert status.placeholders[0].cleared == 1
     assert fake.progress.cleared == 1
+    assert status.messages[-1] == "Finished"
 
 
 def test_progress_uses_existing_first_boundary_and_throttle(monkeypatch):

@@ -105,6 +105,7 @@ class ActivityHandle:
         self._message.empty()
         if self._progress is not None:
             self._progress.empty()
+        self._status.write(bounded_message)
         st.session_state[COMPLETION_KEY] = {
             "operation_id": self.operation_id,
             "state": state,
