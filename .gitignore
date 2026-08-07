@@ -56,6 +56,9 @@ data/tasks/shared/
 # Runtime audit logs (JSONL, one file per UTC day)
 data/audit/
 
+# Undo/provenance snapshots generated while catalogers edit job files.
+data/snapshots/
+
 # SQLite database (TASK-049) — runtime state, never version-controlled.
 # Covers the main file + WAL/SHM side-files.
 data/*.db
