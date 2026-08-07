@@ -237,6 +237,20 @@ def test_render_commands_uses_captured_unit_and_has_no_worker_lifecycle(tmp_path
     assert "pip install -r " + str(config.root / "requirements.txt") in rendered
     assert "marcedit_web.ops.backup create " + str(tmp_path / "backup") in rendered
     assert f"MARCEDIT_WEB_DB_PATH={config.database}" in rendered
+    assert commands[-1] == (
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--retry",
+        "30",
+        "--retry-connrefused",
+        "--retry-delay",
+        "1",
+        "--retry-max-time",
+        "45",
+        "http://127.0.0.1:8501/marcedit-web/_stcore/health",
+    )
 
 
 def test_apply_preflight_rejects_a_dirty_or_different_branch(tmp_path):

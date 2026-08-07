@@ -127,3 +127,17 @@ equivalent systemctl target `marcedit-web`. Sudoers matches command arguments
 exactly even though systemd accepts either spelling. Deployment now retains
 the canonical captured unit for validation and emits the exact authorized
 restart target; no sudoers change is required.
+
+## Production deployment — 2026-08-07
+
+Production fast-forwarded from rollback SHA `1793e459` to application SHA
+`ac4182b`. Dependencies and the Streamlit dialog contract verified, the
+database/audit backup was created at
+`/home/marcedit/backups/marcedit-web/2026-08-07-ac4182b`, schema health
+returned `ok`, and `marcedit-web` restarted successfully. The checkout was
+clean at the approved SHA and the local health endpoint returned `ok`.
+
+The deploy command itself exited nonzero because its one-shot curl ran before
+Streamlit had bound port 8501; the service became healthy without intervention.
+Future deployments use curl's bounded connection-refused retry for up to 45
+seconds rather than reporting this normal restart interval as a failure.

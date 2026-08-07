@@ -290,7 +290,20 @@ def render_commands(
             "marcedit_web.ops.health",
         ),
         ("sudo", "/bin/systemctl", "restart", config.restart_target),
-        ("curl", "-fs", health_url),
+        (
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--retry",
+            "30",
+            "--retry-connrefused",
+            "--retry-delay",
+            "1",
+            "--retry-max-time",
+            "45",
+            health_url,
+        ),
     )
 
 
