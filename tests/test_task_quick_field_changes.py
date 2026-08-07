@@ -120,6 +120,9 @@ class _CollapsedStatus:
     def update(self, **kwargs):
         self.owner.status_updates.append(kwargs)
 
+    def write(self, message):
+        self.owner.status_messages.append(str(message))
+
 
 def _record() -> pymarc.Record:
     record = pymarc.Record()
@@ -333,6 +336,7 @@ def test_quick_operation_rerun_summary_is_collapsed_and_cleared_on_switch(monkey
     })
     fake_st.status_calls = []
     fake_st.status_updates = []
+    fake_st.status_messages = []
     fake_st.status = lambda label, *, expanded: _CollapsedStatus(
         fake_st, label, expanded
     )
@@ -353,6 +357,7 @@ def test_quick_operation_rerun_summary_is_collapsed_and_cleared_on_switch(monkey
     tasks_render._render_quick_ops_mode()
 
     assert fake_st.status_updates[-1]["expanded"] is False
+    assert fake_st.status_messages[-1] == "Applied Common field change to 1 record(s)."
     fake_st.selected = "batch:035-oclc"
     monkeypatch.setattr(tasks_render, "_render_quick_batch_operations", lambda *_args: None)
 
