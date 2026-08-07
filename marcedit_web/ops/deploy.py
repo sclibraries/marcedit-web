@@ -23,6 +23,7 @@ class DeploymentConfig:
     python: Path
     branch: str
     unit: str
+    restart_target: str
     database: Path
     audit_dir: Path
     source_sha: str
@@ -70,6 +71,17 @@ def _environment_value(stdout: str, key: str) -> str:
     environment = _unit_property(stdout, "Environment")
     match = re.search(rf"(?:^|[\s;]){re.escape(key)}=([^;\s\n]+)", environment)
     return match.group(1).strip('"') if match else ""
+
+
+def _authorized_restart_target(stdout: str, unit: str) -> str | None:
+    candidates = (unit, unit.removesuffix(".service"))
+    for candidate in candidates:
+        command = re.escape(
+            f"NOPASSWD: /bin/systemctl restart {candidate}"
+        )
+        if re.search(rf"(?:^|\s){command}(?:\s|$)", stdout):
+            return candidate
+    return None
 
 
 def _runtime_python(exec_start: str) -> Path:
@@ -211,16 +223,18 @@ def validate_lineage(
         raise DeploymentError("captured Streamlit dialog contract is missing")
 
     sudo = lineage.get("sudo")
-    if (
-        not _result_ok(sudo)
-        or f"NOPASSWD: /bin/systemctl restart {unit}" not in _result_stdout(sudo)
-    ):
+    restart_target = (
+        _authorized_restart_target(_result_stdout(sudo), unit)
+        if _result_ok(sudo) else None
+    )
+    if restart_target is None:
         raise DeploymentError("service user lacks a NOPASSWD rule for the captured unit")
     return DeploymentConfig(
         root=root,
         python=python,
         branch=approved_branch,
         unit=unit,
+        restart_target=restart_target,
         database=database,
         audit_dir=audit_dir,
         source_sha=source_sha.lower(),
@@ -275,7 +289,7 @@ def render_commands(
             "-m",
             "marcedit_web.ops.health",
         ),
-        ("sudo", "/bin/systemctl", "restart", config.unit),
+        ("sudo", "/bin/systemctl", "restart", config.restart_target),
         ("curl", "-fs", health_url),
     )
 

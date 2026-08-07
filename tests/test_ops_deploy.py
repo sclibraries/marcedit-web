@@ -174,7 +174,30 @@ def test_validate_lineage_requires_python39_sqlite_partial_index_and_nopasswd(tm
             lineage,
             approved_branch="release-hotfix",
             approved_release_sha="b" * 40,
+        )
+
+
+def test_validate_lineage_uses_suffixless_unit_authorized_by_sudoers(tmp_path):
+    """Production sudoers authorizes ``catalog`` for ``catalog.service``."""
+    lineage = _lineage(tmp_path)
+    lineage["sudo"]["stdout"] = (
+        "    (root) NOPASSWD: /bin/systemctl restart catalog\n"
     )
+
+    config = deploy.validate_lineage(
+        lineage,
+        approved_branch="release-hotfix",
+        approved_release_sha="b" * 40,
+    )
+    commands = deploy.render_commands(
+        config,
+        backup_dir=tmp_path / "backup",
+        health_url="http://127.0.0.1:8501/health",
+    )
+
+    assert config.unit == "catalog.service"
+    assert ("sudo", "/bin/systemctl", "restart", "catalog") in commands
+
 
 def test_validate_lineage_requires_captured_working_directory(tmp_path):
     lineage = _lineage(tmp_path)

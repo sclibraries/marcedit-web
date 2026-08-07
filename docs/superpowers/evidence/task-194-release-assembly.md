@@ -120,3 +120,10 @@ dialog signature because the validator expected the captured string to end at
 `)`. Python 3.9 renders the return annotation after that character. The
 validator now accepts an optional return annotation while retaining the
 existing missing- and malformed-signature rejection tests.
+
+The second dry run failed closed because systemd reported the canonical unit
+`marcedit-web.service` while the installed sudoers rule authorizes the
+equivalent systemctl target `marcedit-web`. Sudoers matches command arguments
+exactly even though systemd accepts either spelling. Deployment now retains
+the canonical captured unit for validation and emits the exact authorized
+restart target; no sudoers change is required.
