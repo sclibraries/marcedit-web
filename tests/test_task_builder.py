@@ -443,6 +443,7 @@ def test_replace_field_subfield_and_indicators_palette_exposes_regex_options():
             "label": "Treat match value as regex",
             "type": "bool",
             "default": False,
+            "help": "Replace each regex match while retaining unmatched text.",
         },
         {
             "name": "ignore_case",

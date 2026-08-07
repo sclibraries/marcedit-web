@@ -78,3 +78,33 @@ the live production branch, SHA, service unit, working directory, runtime,
 SQLite version, database path, and sudo capability before the deploy script is
 run. The production rollback SHA and verified backup destination must be
 approved at that time. The remote `main` branch was not modified.
+
+## Production-lineage reconciliation — 2026-08-07
+
+The clean production checkout was confirmed on branch
+`legacy-hotfix-production-fixes` at
+`1793e4594bcfd5bd85ca9e95200964107dc66085`. That commit and the initial
+release candidate diverged after common ancestor `134bc169`; production was
+therefore not switched or pulled.
+
+The legacy-only behavior was audited against the current implementation. The
+current schema, workspace, and authorization tests supersede obsolete private
+UI names and schema-v12 assertions while preserving shared-task editing,
+production SQLite job files, job counts, and MARC-order warnings. The audit
+found one real compatibility gap: the production regex operation preserved
+unmatched subfield text, while the candidate replaced the complete subfield.
+The candidate now restores the production contract, including capture
+references and validation before mutation.
+
+Verification after remediation:
+
+- Current compatibility and authorization group: 374 passed.
+- Hotfix-only Python 3.9 Docker topology: 2,762 passed, 19 explicit
+  environment/repository/corpus skips, 0 failed.
+- Repository ignore contract: passed against the real checkout; skipped
+  loudly only in the built image where `.gitignore` is absent by design.
+
+Before Gate 0 continues, the release history must record `1793e459` as an
+ancestor without changing the verified application tree. Production may then
+rename its clean local branch to `main` without changing files, capture the
+runtime on that branch and SHA, and use the lineage-driven fast-forward deploy.

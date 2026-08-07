@@ -616,7 +616,7 @@ def _record_with_035a(value: str) -> pymarc.Record:
     return record
 
 
-def test_replace_field_subfield_and_indicators_regex_searches_full_value():
+def test_replace_field_subfield_and_indicators_regex_preserves_unmatched_text():
     record = _record_with_035a("prefix-TFeba123-suffix")
 
     transforms.replace_field_subfield_and_indicators(
@@ -626,7 +626,7 @@ def test_replace_field_subfield_and_indicators_regex_searches_full_value():
 
     field = record.get_fields("035")[0]
     assert list(field.indicators) == [" ", "9"]
-    assert field.get_subfields("a") == ["(SCTFEBA)"]
+    assert field.get_subfields("a") == ["prefix-(SCTFEBA)-suffix"]
 
 
 def test_replace_field_subfield_and_indicators_regex_is_case_sensitive_by_default():
@@ -652,7 +652,19 @@ def test_replace_field_subfield_and_indicators_regex_can_ignore_case():
 
     field = record.get_fields("035")[0]
     assert list(field.indicators) == [" ", "9"]
-    assert field.get_subfields("a") == ["(SCTFEBA)"]
+    assert field.get_subfields("a") == ["prefix-(SCTFEBA)-suffix"]
+
+
+def test_replace_field_subfield_and_indicators_regex_expands_capture_references():
+    record = _record_with_035a("TFeba9780020306634")
+
+    transforms.replace_field_subfield_and_indicators(
+        record, "035", " ", " ", "a", r"TFeba(\d+)",
+        " ", "9", "a", r"(SCTFEBA)\1", regex=True,
+    )
+
+    field = record.get_fields("035")[0]
+    assert field.get_subfields("a") == ["(SCTFEBA)9780020306634"]
 
 
 def test_replace_field_subfield_and_indicators_exact_default_does_not_search():
@@ -689,6 +701,19 @@ def test_replace_field_subfield_and_indicators_invalid_regex_does_not_mutate():
         transforms.replace_field_subfield_and_indicators(
             record, "035", " ", " ", "a", "(",
             " ", "9", "a", "replacement", regex=True,
+        )
+
+    assert record.as_marc() == before
+
+
+def test_replace_field_subfield_and_indicators_invalid_reference_does_not_mutate():
+    record = _record_with_035a("TFeba123")
+    before = record.as_marc()
+
+    with pytest.raises(re.error):
+        transforms.replace_field_subfield_and_indicators(
+            record, "035", " ", " ", "a", r"TFeba\d+",
+            " ", "9", "a", r"replacement-\9", regex=True,
         )
 
     assert record.as_marc() == before
