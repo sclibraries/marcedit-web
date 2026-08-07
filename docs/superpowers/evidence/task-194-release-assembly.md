@@ -55,3 +55,26 @@ modules are retained as inert code or removed from the release diff.
   complete: 2,515 passed, 18 explicit skips, 0 failed; production runtime
    capture remains open.
 4. Obtain release and rollback SHA approval before push or deployment.
+
+## Production-safe release branch checkpoint — 2026-08-07
+
+The reviewed application candidate was published without changing `main`:
+
+- Remote branch: `release/task-library-hotfix-2026-08-07`
+- Reviewed application SHA: `fa4998282e1e80a7776351f2c540983adc9d4d57`
+- Runtime boundary: durable Operations disabled, Operations navigation and
+  notifications hidden, saved tasks executed synchronously in the sandbox,
+  and no worker required.
+- ITS boundary: no systemd, sudoers, Apache/proxy, OAuth, production-directory,
+  or service-installation change is included in the deployment request.
+- Focused production-boundary suite: 198 passed.
+- Hotfix-only Docker topology: 2,760 passed and 18 explicit environment/corpus
+  skips, with no failures.
+- Authenticated cataloger browser acceptance for the visible activity changes
+  was confirmed on 2026-08-07.
+
+This push is a release candidate, not a deployment. Gate 0 must still capture
+the live production branch, SHA, service unit, working directory, runtime,
+SQLite version, database path, and sudo capability before the deploy script is
+run. The production rollback SHA and verified backup destination must be
+approved at that time. The remote `main` branch was not modified.
