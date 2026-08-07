@@ -8,26 +8,30 @@ import subprocess
 from marcedit_web.lib import task_194_runtime
 
 
-def test_runtime_snapshots_do_not_dirty_a_deployment_checkout(tmp_path):
-    """Generated undo snapshots must not block the clean-checkout deploy gate."""
+def test_runtime_job_artifacts_do_not_dirty_a_deployment_checkout(tmp_path):
+    """Generated job state must not block the clean-checkout deploy gate."""
     root = Path(__file__).parents[1]
     shutil.copy2(root / ".gitignore", tmp_path / ".gitignore")
-    snapshot = tmp_path / "data" / "snapshots" / "job-1" / "before.mrc"
-    snapshot.parent.mkdir(parents=True)
-    snapshot.write_bytes(b"runtime state")
+    runtime_paths = (
+        tmp_path / "data" / "snapshots" / "job-1" / "before.mrc",
+        tmp_path / "data" / "job-files" / "1" / "versions" / "v000001.mrc",
+    )
+    for runtime_path in runtime_paths:
+        runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_path.write_bytes(b"runtime state")
     subprocess.run(
         ["git", "init", "--quiet"],
         cwd=tmp_path,
         check=True,
     )
 
-    result = subprocess.run(
-        ["git", "check-ignore", "--quiet", "data/snapshots/job-1/before.mrc"],
-        cwd=tmp_path,
-        check=False,
-    )
-
-    assert result.returncode == 0
+    for runtime_path in runtime_paths:
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", str(runtime_path.relative_to(tmp_path))],
+            cwd=tmp_path,
+            check=False,
+        )
+        assert result.returncode == 0, runtime_path
 
 
 def test_capture_plan_is_read_only_and_records_required_runtime_domains(tmp_path):
