@@ -26,3 +26,23 @@ Success Criteria:
   browser.
 
 Status: In-Progress
+
+Implementation and verification checkpoint (2026-08-07):
+- Shared activity helper, focused Quick operations, Quick batch/Find and
+  replace, and saved-task runs are implemented and independently reviewed.
+- Focused regression suite: 159 passed, 5 existing datetime deprecation
+  warnings.
+- Authoritative Docker suite: 2773 passed, 5 skipped. Skips are the two
+  Docker Compose inspection checks that require the Docker CLI inside the
+  test container and the unavailable institutional corpus; synthetic fixtures
+  remain authoritative.
+- Read-only HTTP smoke check against the mounted local container returned
+  HTTP 200.
+- Final-review findings were fixed and scoped re-reviewed; no Critical or
+  Important findings remain.
+- Authenticated browser acceptance remains pending because the browser-control
+  runtime was unavailable in this environment. Do not mark Completed until an
+  authenticated cataloger verifies the expanded activity panel, collapsed
+  rerun completion, error state, and operation-switch cleanup.
+- Implementation commits: c5c3588, d2a26c0, be2088a, b77cac2, 78903bd,
+  c42fe10, cc47112, 77e6b0b, 95461d6, 619c742.
