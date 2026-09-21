@@ -1,6 +1,6 @@
 Title: Accept MRK uploads and fix MARC Tools binary downloads
 
-Status: In-Progress
+Status: Completed
 
 Scope:
 - Fix undefined stamp in MARC Tools downloads.
@@ -45,3 +45,16 @@ Deployment checkpoint:
   its default three-second limit. This was a test-runner timeout, not the previous
   undefined-stamp exception. Increased that test's execution allowance to 15
   seconds; pending rerun. No application timeout or behavior was changed.
+
+Completion:
+- Production smoke rerun: 22 passed, no skips (60 unrelated tests deselected),
+  in 1.90 seconds. Checkout clean; marcedit-web.service active; HTTP health ok.
+- Production checkout is d1ab66e on task-253-mrk-upload, tracking its origin
+  branch. Application code is identical to tested release 1634873; follow-up
+  changes only the test allowance and ticket evidence. Origin/main is unchanged.
+- The original three-second smoke timeout is superseded by this passing rerun.
+  No authenticated live-browser upload was performed; the actual source file,
+  automated widget rendering, persistence, and production-runtime tests were
+  verified separately. The full repository test suite was not run.
+- Review complete; no outstanding code findings. Original artemis2.mrk retained
+  and verified artemis2.mrc supplied in the user's project root.
