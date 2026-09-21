@@ -34,3 +34,14 @@ Implementation and review — 2026-09-21:
 - Supplied artemis2.mrk converted to artemis2.mrc (one record, 3,555 bytes), with
   every parsed field equal after binary reread. Both files remain outside Git.
 - Production deployment pending. Rollback source is b227046; no data migration.
+
+Deployment checkpoint:
+- Published reviewed release 1634873 to the verified production repository and
+  deployed via the existing lineage-driven script on branch task-253-mrk-upload.
+- Backup verified at /home/marcedit/backups/marcedit-web/2026-09-21-task-253.
+  Dependency checks found the existing packages satisfied the requirements.
+  Schema health and post-restart HTTP health returned ok; the unit is active.
+- First production-environment smoke run: 21 passed and one AppTest timed out at
+  its default three-second limit. This was a test-runner timeout, not the previous
+  undefined-stamp exception. Increased that test's execution allowance to 15
+  seconds; pending rerun. No application timeout or behavior was changed.

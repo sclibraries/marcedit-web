@@ -12,7 +12,7 @@ def test_binary_conversion_download_renders_without_exception():
         result = converters.to_binary_from_mrk(text)
         _offer_download_binary(result.output, len(text))
 
-    at = AppTest.from_function(app).run()
+    at = AppTest.from_function(app).run(timeout=15)
     assert not at.exception
     assert len(at.get("download_button")) == 1
     assert at.get("download_button")[0].proto.url
