@@ -397,7 +397,7 @@ def _offer_download_binary(blob: bytes, source_bytes: int) -> None:
         data=blob,
         file_name=fname,
         mime="application/marc",
-        key=f"tools_dl_mrc_{stamp}",
+        key="tools_dl_mrc",
     )
 
 

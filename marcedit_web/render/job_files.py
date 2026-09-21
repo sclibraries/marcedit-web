@@ -494,7 +494,8 @@ def render_attach_file(
     summary_key = f"{key_prefix}_summary"
     uploaded = st.file_uploader(
         "Attach MARC file",
-        type=["mrc", "marc"],
+        type=["mrc", "marc", "mrk"],
+        help="Binary MARC21 or UTF-8 .mrk text. MRK files are converted to MRC.",
         accept_multiple_files=False,
         key=f"{key_prefix}_upload_{st.session_state.get(nonce_key, 0)}",
     )

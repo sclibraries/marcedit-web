@@ -7,9 +7,10 @@ representation stays consistent with the inline editor's contract
 (MarcEdit-style ``$`` subfield delimiter, ``\\`` for blank control
 field bytes).
 
-All converters operate on in-memory bytes / strings — the Marc Tools
-page hands the result to ``st.download_button``. No streaming;
-uploads are bounded by the per-feature quotas in :mod:`quotas`.
+Marc Tools converters operate on in-memory bytes / strings and hand the
+result to ``st.download_button``. Upload ingestion uses
+``write_binary_from_mrk`` to stage binary output one record at a time.
+Uploads are bounded by the per-feature quotas in :mod:`quotas`.
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ import csv
 import io
 import re
 from dataclasses import dataclass, field
-from typing import Iterator
+from itertools import chain
+from typing import BinaryIO, Iterator, TextIO
 
 import pymarc
 from pymarc import marcxml
@@ -117,6 +119,49 @@ def to_binary_from_mrk(text: str) -> ConversionResult:
         malformed_count=malformed,
         line_errors=line_errors,
     )
+
+
+def write_binary_from_mrk(source: TextIO, target: BinaryIO, *, max_bytes: int) -> int:
+    """Convert one record at a time; reject diagnostics instead of losing fields.
+
+    The caller owns both streams and discards the staged output on any error.
+    Unlike the interactive converter, upload ingestion must accept the entire
+    file cleanly before replacing a cataloger's loaded batch.
+    """
+    lines: list[str] = []
+    start_line = 1
+    count = 0
+    output_bytes = 0
+    for line_no, line in enumerate(chain(source, ["\n"]), start=1):
+        if line.strip():
+            if lines and line.upper().startswith("=LDR  "):
+                raise ValueError(
+                    f"MRK line {line_no}: Separate records with a blank line."
+                )
+            if not lines:
+                start_line = line_no
+            lines.append(line)
+            continue
+        if not lines:
+            continue
+        parsed, errors = mrk_parser.parse_mrk("".join(lines))
+        for record in parsed:
+            errors.extend(record.errors)
+        if errors:
+            error = min(errors, key=lambda item: item.line_no)
+            raise ValueError(
+                f"MRK line {start_line + error.line_no - 1}: {error.message}"
+            )
+        blob = _write_binary([record.record for record in parsed])
+        output_bytes += len(blob)
+        if output_bytes > max_bytes:
+            raise ValueError("Converted MARC exceeds the available upload size limit.")
+        target.write(blob)
+        count += len(parsed)
+        lines.clear()
+    if not count:
+        raise ValueError("No records found in the MRK file.")
+    return count
 
 
 # ---------------------------------------------------------------------------

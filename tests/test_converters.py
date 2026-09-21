@@ -14,6 +14,42 @@ from marcedit_web.lib import converters
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "sample.mrc"
 
 
+def test_streamed_mrk_preserves_multiple_records_without_whole_file_read():
+    class LinesOnly(io.StringIO):
+        def read(self, *args):
+            raise AssertionError("MRK uploads must be processed record by record")
+
+    text = (
+        "=LDR  00000nam a2200000 a 4500\n=001  first\n\n"
+        "=LDR  00000nam a2200000 a 4500\n=001  second\n"
+    )
+    output = io.BytesIO()
+    count = converters.write_binary_from_mrk(LinesOnly(text), output, max_bytes=1000)
+    assert count == 2
+    assert [r["001"].data for r in pymarc.MARCReader(output.getvalue())] == [
+        "first", "second"
+    ]
+
+
+def test_streamed_mrk_reports_absolute_error_line():
+    text = (
+        "=LDR  00000nam a2200000 a 4500\n=001  first\n\n"
+        "=LDR  00000nam a2200000 a 4500\nINVALID\n"
+    )
+    with pytest.raises(ValueError, match="line 5"):
+        converters.write_binary_from_mrk(io.StringIO(text), io.BytesIO(), max_bytes=1000)
+
+
+def test_streamed_mrk_never_merges_records_with_missing_separator():
+    """A missing blank line must not silently combine two bibliographic records."""
+    text = (
+        "=LDR  00000nam a2200000 a 4500\n=001  first\n"
+        "=LDR  00000nam a2200000 a 4500\n=001  second\n"
+    )
+    with pytest.raises(ValueError, match="line 3"):
+        converters.write_binary_from_mrk(io.StringIO(text), io.BytesIO(), max_bytes=1000)
+
+
 @pytest.fixture
 def fixture_bytes() -> bytes:
     return FIXTURE.read_bytes()

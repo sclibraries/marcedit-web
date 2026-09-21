@@ -26,6 +26,7 @@ so it can run independently of the rest of the app state.
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import shutil
@@ -37,7 +38,7 @@ from typing import Any, Optional
 
 from pymarc import Record
 
-from . import job_files, jobs, quotas, runmode, upload_persistence
+from . import converters, job_files, jobs, quotas, runmode, upload_persistence
 from .audit import audit_event
 from .identity import ANONYMOUS, current_user, is_anonymous, is_prod
 from .record_store import RecordStore
@@ -421,15 +422,54 @@ def handle_upload(
             selected_job_id,
         )
 
-    store = RecordStore.from_file(
-        uploaded_file,
-        tmp_dir=store_dir,
-        filename=uploaded_file.name,
-    )
+    filename = uploaded_file.name
+    if Path(filename).suffix.lower() == ".mrk":
+        filename = str(Path(filename).with_suffix(".mrc"))
+        available_bytes = min(
+            cap,
+            quotas.max_upload_bytes(),
+            quotas.max_session_bytes() - st.session_state.get("upload_bytes_total", 0),
+        )
+        uploaded_file.seek(0)
+        text = io.TextIOWrapper(uploaded_file, encoding="utf-8-sig")
+        try:
+            with tempfile.TemporaryFile() as binary:
+                converters.write_binary_from_mrk(
+                    text, binary, max_bytes=available_bytes,
+                )
+                size = binary.tell()
+                new_total = max(
+                    new_total,
+                    quotas.check_session_aggregate(
+                        st.session_state.get("upload_bytes_total", 0), size,
+                    ),
+                )
+                store = RecordStore.from_file(
+                    binary, tmp_dir=store_dir, filename=filename,
+                )
+        except (ValueError, quotas.QuotaExceeded) as exc:
+            message = (
+                "MRK files must use UTF-8 encoding. Save the file as UTF-8 and retry."
+                if isinstance(exc, UnicodeDecodeError) else str(exc)
+            )
+            return {
+                "filename": uploaded_file.name,
+                "total": 0,
+                "malformed": 0,
+                "error": message,
+            }
+        finally:
+            text.detach()
+    else:
+        store = RecordStore.from_file(
+            uploaded_file,
+            tmp_dir=store_dir,
+            filename=filename,
+        )
     if not is_anonymous(user):
         upload = upload_persistence.record_upload(
             user=user,
-            filename=uploaded_file.name,
+            filename=filename,
             file_path=store.path,
             record_count=store.count(),
             file_bytes=size,
@@ -473,7 +513,7 @@ def handle_upload(
         malformed=store.malformed_count(),
     )
     return {
-        "filename": uploaded_file.name,
+        "filename": filename,
         "total": store.count(),
         "malformed": store.malformed_count(),
     }

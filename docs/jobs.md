@@ -7,7 +7,7 @@ item.
 
 ## Quick start
 
-1. Create or open a job and attach one or more related `.mrc` files.
+1. Create or open a job and attach one or more related `.mrc` or `.mrk` files.
 2. Check out one file before changing it. Only one cataloger edits that file at
    a time.
 3. Run edits or tasks, review the result, and create a retained export for the
@@ -45,6 +45,14 @@ Open the job and use **Attach MARC file**. Attaching a later delivery creates a
 second file in the same job; it does not replace the earlier file. Owners and
 editors can attach files. Viewers can inspect files but cannot attach or change
 them.
+
+Quick Load and job attachments accept binary MARC (`.mrc`, `.marc`) and UTF-8
+mnemonic text (`.mrk`, with or without a byte-order mark). MRK records must be
+separated by blank lines. The application converts accepted MRK files to `.mrc`
+for editing, storage, and downloads. For example, `vendor.mrk` loads as
+`vendor.mrc`; your local source file is unchanged. If the MRK has parsing errors,
+the upload is rejected with a line number and the previously loaded batch stays
+available. Both source and converted sizes must fit the upload limits.
 
 ## Check out, edit, and return a file
 

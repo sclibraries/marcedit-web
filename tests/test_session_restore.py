@@ -76,6 +76,106 @@ class _FakeUpload(io.BytesIO):
         self.size = len(data)
 
 
+_MRK_UPLOAD = (
+    "=LDR  00000nam a2200000 a 4500\n"
+    "=001  vendor-1\n"
+    "=245  10$aCafé catalogue\n"
+    "=856  40$uhttps://example.org/one\n"
+    "=856  42$uhttps://example.org/two\n"
+)
+
+
+@pytest.mark.parametrize("job_backed", [False, True])
+def test_mrk_upload_is_binary_and_survives_refresh(fake_st, job_backed):
+    """Catalogers can use mnemonic files wherever binary batches are accepted."""
+    st = fake_st()
+    user = "alice@example.edu"
+    st.session_state["user"] = user
+    job_id = jobs.create_job(user, "MRK delivery")["id"] if job_backed else None
+    upload = _FakeUpload("vendor.MRK", b"\xef\xbb\xbf" + _MRK_UPLOAD.encode("utf-8"))
+
+    summary = session.handle_upload(upload, job_id=job_id)
+
+    assert summary.get("error") is None
+    assert summary["total"] == 1
+    assert summary["filename"] == "vendor.mrc"
+    store = st.session_state["store"]
+    records = list(pymarc.MARCReader(store.path.read_bytes()))
+    assert len(records) == 1 and records[0] is not None
+    assert records[0]["245"]["a"] == "Café catalogue"
+    assert [field["u"] for field in records[0].get_fields("856")] == [
+        "https://example.org/one", "https://example.org/two"
+    ]
+    row = upload_persistence.get_active_upload(user)
+    assert row["file_bytes"] == store.path.stat().st_size
+    assert row["filename"] == "vendor.mrc"
+    assert not upload.closed
+
+    st.session_state.clear()
+    st.session_state["user"] = user
+    session.restore_active_upload()
+    restored = st.session_state["store"]
+    assert restored.get(0)["001"].data == "vendor-1"
+    assert restored.get(0)["245"]["a"] == "Café catalogue"
+
+
+@pytest.mark.parametrize("invalid", [
+    b"", b"not mnemonic MARC", (_MRK_UPLOAD + "\nBAD LINE\n").encode(),
+    b"=001  missing-leader\n", b"=LDR  short\n=001  broken\n",
+    _MRK_UPLOAD.encode() + b"\xff",
+])
+def test_invalid_mrk_does_not_replace_loaded_work(fake_st, invalid, record):
+    st = fake_st()
+    st.session_state["user"] = "alice@example.edu"
+    original = session.handle_upload(_FakeUpload("good.mrc", _serialize([record])))
+    before = dict(st.session_state)
+    row = upload_persistence.get_active_upload("alice@example.edu")
+
+    result = session.handle_upload(_FakeUpload("bad.mrk", invalid))
+
+    assert result.get("error"), original
+    assert st.session_state == before
+    assert upload_persistence.get_active_upload("alice@example.edu")["id"] == row["id"]
+
+
+def test_mrk_binary_expansion_respects_upload_limit(fake_st, monkeypatch):
+    st = fake_st()
+    st.session_state["user"] = "anonymous"
+    raw = ("=LDR  00000nam a2200000 a 4500\n" + "=001  x\n" * 20).encode()
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_UPLOAD_BYTES", str(len(raw)))
+    result = session.handle_upload(_FakeUpload("expanded.mrk", raw))
+    assert result.get("error")
+    assert not session.has_upload()
+
+
+def test_mrk_source_limit_rejects_before_reading(fake_st, monkeypatch):
+    st = fake_st()
+    st.session_state["user"] = "anonymous"
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_UPLOAD_BYTES", "10")
+
+    class UnreadableUpload(_FakeUpload):
+        def read(self, *args):
+            raise AssertionError("Rejected uploads must not be read")
+
+        def read1(self, *args):
+            raise AssertionError("Rejected uploads must not be decoded")
+
+    result = session.handle_upload(UnreadableUpload("large.mrk", _MRK_UPLOAD.encode()))
+    assert result.get("error")
+    assert not session.has_upload()
+
+
+def test_mrk_output_respects_remaining_session_quota(fake_st, monkeypatch):
+    st = fake_st()
+    st.session_state.update(user="anonymous", upload_bytes_total=100)
+    raw = ("=LDR  00000nam a2200000 a 4500\n" + "=001  x\n" * 20).encode()
+    monkeypatch.setenv("MARCEDIT_WEB_MAX_SESSION_BYTES", str(100 + len(raw)))
+    result = session.handle_upload(_FakeUpload("expanded.mrk", raw))
+    assert result.get("error")
+    assert st.session_state["upload_bytes_total"] == 100
+    assert not session.has_upload()
+
+
 # ---------------------------------------------------------------------------
 # handle_upload — persists for OAuth, not for anonymous
 # ---------------------------------------------------------------------------
