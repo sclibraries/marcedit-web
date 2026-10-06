@@ -1,6 +1,6 @@
 Title: Fix missing download helper in saved-task run results
 
-Status: In-Progress
+Status: Completed
 
 Workspace: existing clean `.worktrees/task-253-mrk-upload`, baseline de040fc.
 
@@ -25,7 +25,7 @@ Completion — 2026-10-06:
 - Initial runs without PYTHONPATH had subprocess package-import failures (focused: 5 failed/138 passed; full: 79 failed/2,722 passed/1 skipped); corrected environment results above supersede those runs.
 - Independent read-only code review found no issues or import cycle; reviewer independently passed the new test. Simplification review retained the minimal one-line production fix. `git diff --check` passed.
 - Validation used local Python 3.14 / Streamlit 1.57; production Python 3.9 / Streamlit 1.50 was not exercised. Browser download transport was not tested.
-- Changes are local and uncommitted in the existing production worktree. No deployment performed.
+- Initial implementation was local and uncommitted; see integration evidence below. No deployment performed.
 
 Baseline-reproduced full-suite failures:
 - tests/test_operation_runner.py::test_heartbeat_ownership_failure_propagates_and_cleans_attempt
@@ -40,3 +40,8 @@ Baseline-reproduced full-suite failures:
 Integration — 2026-10-06:
 - User requested merge and push. Apply only TASK-254 to current origin/main (b227046), excluding the earlier MRK-upload release commits.
 - Revalidate the integrated tree and push main after verification; production deployment is outside this request.
+
+- Integrated fix commit: 2d9d26a, based on origin/main b227046.
+- Full integrated-tree validation: 2,776 passed, the same eight documented baseline failures, one corpus skip, and 4,297 warnings. No new failures. Regression test passed as part of this run.
+- Exact integration diff reviewed: only helper import, regression test, and this ticket. `git diff --check origin/main..HEAD` passed.
+- Ready for the user-authorized fast-forward push to origin/main. No production deployment performed.
