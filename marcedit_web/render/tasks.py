@@ -83,6 +83,7 @@ from marcedit_web.lib.task_workspace_navigation import (
     parse_tasks_query,
 )
 from marcedit_web.render.batch_status import loaded_batch_status
+from marcedit_web.render.history import _offer_history_download
 from marcedit_web.render import task_authoring as task_authoring_render
 from marcedit_web.render import (
     operation_activity,
