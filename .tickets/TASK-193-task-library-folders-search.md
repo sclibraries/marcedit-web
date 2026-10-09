@@ -92,4 +92,6 @@ Task 6 verification (2026-08-05):
 - Authenticated browser acceptance and final code review are not available in
   this worktree, so this ticket remains In-Progress.
 
-Status: In-Progress
+Status: Completed
+
+Triage (TASK-258, 2026-10-09): Folders, search and URL navigation in main (lib/task_library.py, d93fddf); deployed and browser-verified via TASK-194.

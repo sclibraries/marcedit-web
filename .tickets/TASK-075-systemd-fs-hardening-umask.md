@@ -1,6 +1,7 @@
 # TASK-075 — Add systemd hardening directives and a restrictive umask
 
 **Status:** Todo
+**Milestone:** M4
 **Priority:** Tier 1 — Hardening (defense-in-depth)
 **Source:** Deep code audit 2026-06-17 — findings S5 (LOW) + S6 (LOW)
 

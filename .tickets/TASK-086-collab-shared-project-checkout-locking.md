@@ -1,6 +1,6 @@
 # TASK-086 — Collaboration epic: shared project + record check-out/locking
 
-**Status:** Todo
+**Status:** Obsolete
 **Priority:** Tier 4 — Collaboration (future-state epic; split during planning)
 **Collaboration:** The shared-environment feature itself
 **Source:** User decision 2026-06-17 — shared project + record check-out/locking
@@ -46,3 +46,5 @@ Sub-tickets:
 3. Sharing respects the access list; provenance shows who changed what.
 4. Behaviour matches the TASK-085 ADR; focused tests and the Docker test suite
    pass before completion.
+
+Triage (TASK-258, 2026-10-09): Superseded by TASK-151 per-job-file checkout; sub-tickets 093-095 completed; presence remains as TASK-097.

@@ -1,6 +1,7 @@
 # TASK-076 — AST allowlist for non-admin and imported task bodies
 
 **Status:** Todo
+**Milestone:** M3
 **Priority:** Tier 1 — Hardening (makes a trust guarantee code-enforced)
 **Source:** Deep code audit 2026-06-17 — horizon hardening (codegen trust boundary)
 

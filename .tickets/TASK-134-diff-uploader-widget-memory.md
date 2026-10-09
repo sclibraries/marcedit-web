@@ -99,3 +99,4 @@ Success Criteria:
   review has no unresolved Critical or Important findings.
 
 Status: Todo (requirements revised 2026-07-21 after cross-ticket review)
+Milestone: M2

@@ -1,6 +1,7 @@
 # TASK-103 — Canned cataloger record actions
 
 **Status:** Todo
+**Milestone:** M2
 **Priority:** Tier 4 — Cataloger editing UX
 **Source:** User request 2026-06-30 — routine record changes should not require
 building a custom task each time

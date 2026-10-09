@@ -47,4 +47,6 @@ Implementation checkpoint:
   2,515 tests passed and 18 explicit environment/corpus skips; no failures
   were hidden by the review topology.
 
-Status: In-Progress
+Status: Completed
+
+Triage (TASK-258, 2026-10-09): Shipped via TASK-194; remaining 546 corpus blockers are listed with next actions in docs/partner-task-corpus-report.md. Further conversions are new tickets.

@@ -1,6 +1,7 @@
 # TASK-079 — Document the load-bearing security contracts
 
 **Status:** Todo
+**Milestone:** M3
 **Priority:** Tier 2 — Documentation (security-relevant)
 **Source:** Deep code audit 2026-06-17 — docs findings (11 high)
 

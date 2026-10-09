@@ -1,6 +1,7 @@
 # TASK-078 — Consolidate duplicated MARC primitives (DRY)
 
-**Status:** Decomposed (2026-06-18) — split into sub-tickets after investigation showed 8 independent consolidations of varying risk:
+**Status:** Todo
+**Milestone:** M3
 - **078a** — OCLC-035 unify (behavior-changing; in progress)
 - **078b** — single identity-read accessor (pairs with TASK-073)
 - **078c** — mechanical/identical batch (`_is_control_tag`, `_record_issue`, 9× `_stamped_filename` → 1 helper, session-state key constants)
@@ -38,3 +39,5 @@ owners, removing the "fix one copy, miss the other" hazard.
    Rules 2–3).
 3. Focused tests and the Docker test suite pass; add a test where consolidation
    resolves a real divergence (e.g. OCLC-035 semantics).
+
+Triage (TASK-258, 2026-10-09): 078a/b/c done. Remaining = the never-ticketed "078d" divergent-semantics consolidations (record identifier, control_value, subfield-replace codegen in marcedit_import vs task_builder, MRK subfield parsing). Needs re-planning before Ready.

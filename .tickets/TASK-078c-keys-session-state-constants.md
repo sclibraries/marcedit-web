@@ -1,6 +1,7 @@
 # TASK-078c-keys — Session-state key constants
 
 **Status:** Todo (deferred from TASK-078c)
+**Milestone:** M3
 **Parent:** TASK-078 (DRY consolidation)
 **Priority:** Tier 2 — Quality (low value, high churn — do opportunistically)
 

@@ -1,6 +1,7 @@
 # TASK-097 — Shared job presence indicators
 
 **Status:** Todo
+**Milestone:** M5
 **Priority:** Tier 4 — Collaboration
 **Parent:** TASK-086
 **Depends on:** TASK-093

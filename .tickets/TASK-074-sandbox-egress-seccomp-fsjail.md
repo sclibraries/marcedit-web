@@ -1,6 +1,7 @@
 # TASK-074 — Bound the sandbox: block egress, add seccomp, read-only FS jail
 
 **Status:** Todo
+**Milestone:** M4
 **Priority:** Tier 1 — Hardening (defense-in-depth)
 **Source:** Deep code audit 2026-06-17 — horizon hardening (egress/seccomp/fs-jail)
 

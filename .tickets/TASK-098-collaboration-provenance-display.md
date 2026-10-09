@@ -1,6 +1,7 @@
 # TASK-098 — Collaboration provenance display
 
 **Status:** Todo
+**Milestone:** M3
 **Priority:** Tier 4 — Collaboration
 **Parent:** TASK-086
 **Depends on:** TASK-082, TASK-093

@@ -14,6 +14,7 @@ Success Criteria:
 - Service survives a subsequent overnight period.
 
 Status: In-Progress
+Milestone: M0
 
 Update 2026-07-09: service survived the night of 07-08→07-09. NOTE: no fix
 was deployed before that night, so survival means the trigger (heavy

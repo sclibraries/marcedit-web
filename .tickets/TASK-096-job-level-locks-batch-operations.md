@@ -1,6 +1,6 @@
 # TASK-096 — Job-level locks for batch-wide operations
 
-**Status:** Todo
+**Status:** Obsolete
 **Priority:** Tier 4 — Collaboration
 **Parent:** TASK-086
 **Depends on:** TASK-094
@@ -24,3 +24,5 @@ Protect full-batch mutations with job-level locks.
 2. Active record locks block job-level operations.
 3. Active job locks block record-level saves.
 4. Focused tests and Docker suite pass before completion.
+
+Triage (TASK-258, 2026-10-09): Superseded by TASK-151; collaboration.acquire_job_lock is now only called from tests (dead-API removal can fold into TASK-080).

@@ -58,7 +58,7 @@ Success Criteria:
 - Intent-focused RED/GREEN tests, complete Docker verification, and review
   pass before completion.
 
-Status: In-Progress (2026-08-03 remediation)
+Status: Completed
 
 Prior implementation evidence:
 - Added deterministic import provenance binding by attaching per-operation digests and
@@ -130,3 +130,5 @@ Post-checkpoint importer regression (2026-08-03):
 Design: [Example-task import completeness design](../docs/superpowers/specs/2026-08-02-task-190-example-task-import-completeness-design.md)
 
 Plan: [Example-task import completeness implementation plan](../docs/superpowers/plans/2026-08-02-task-190-example-task-import-completeness.md)
+
+Triage (TASK-258, 2026-10-09): Shipped to production via TASK-194; corpus audit 293/297 converted, 4 intentional blockers.

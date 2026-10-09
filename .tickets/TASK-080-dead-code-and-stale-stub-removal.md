@@ -1,6 +1,7 @@
 # TASK-080 — Remove dead code and the stale Workspace diff stub
 
 **Status:** Todo
+**Milestone:** M3
 **Priority:** Tier 2 — Quality (clarity)
 **Source:** Deep code audit 2026-06-17 — quality findings (dead code / naming)
 

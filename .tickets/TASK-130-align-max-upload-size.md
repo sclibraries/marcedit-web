@@ -39,4 +39,5 @@ Success Criteria:
   maximum of 2,147,483,648 bytes.
 
 Status: In-Progress (help text fixed; remaining work is the single-authority
+Milestone: M0
 code change plus the production `.env` verification)

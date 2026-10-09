@@ -1,6 +1,7 @@
 # TASK-058 — CI/CD pipeline + native-Python deploy at libtools2/marcedit-web
 
 **Status:** Todo
+**Milestone:** M4
 **Stage:** Production deploy pathway for v3.x onward.
 
 ## Title
