@@ -45,3 +45,5 @@ Integration — 2026-10-06:
 - Full integrated-tree validation: 2,776 passed, the same eight documented baseline failures, one corpus skip, and 4,297 warnings. No new failures. Regression test passed as part of this run.
 - Exact integration diff reviewed: only helper import, regression test, and this ticket. `git diff --check origin/main..HEAD` passed.
 - Ready for the user-authorized fast-forward push to origin/main. No production deployment performed.
+
+- Push confirmed: origin/main advanced from b227046 to ab82922 (includes fix 2d9d26a). Integration worktree clean. Original local main checkout preserved because it contains unrelated untracked work.
