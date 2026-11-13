@@ -190,11 +190,11 @@ if start_path == _START_PATH_QUICK:
         _set_current_job(default_job["id"])
 
     uploaded = st.file_uploader(
-        "Choose a .mrc file",
-        type=["mrc", "marc"],
+        "Choose a .mrc or .mrk file",
+        type=["mrc", "marc", "mrk"],
         accept_multiple_files=False,
         help=(
-            "Binary MARC21. Upload limit is "
+            "Binary MARC21 or UTF-8 mnemonic text. MRK files are converted to MRC. Upload limit is "
             f"{session.max_upload_bytes() // (1024 * 1024)} MB. "
             "Large files may take a moment to parse."
         ),
@@ -332,6 +332,6 @@ if session.has_upload():
 
 else:
     st.info(
-        "Upload a `.mrc` file above to begin. Nothing persists across "
+        "Upload a `.mrc` or `.mrk` file above to begin. Nothing persists across "
         "sessions — closing the tab discards everything."
     )

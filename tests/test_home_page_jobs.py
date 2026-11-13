@@ -358,6 +358,24 @@ def test_quick_load_uses_default_personal_job(monkeypatch):
     assert state["current_job_id"] == default["id"]
 
 
+@pytest.mark.parametrize("start_path", ["Quick Load", "Job Workspace"])
+def test_home_upload_picker_accepts_mrk(monkeypatch, start_path):
+    """Both entry paths must let catalogers select their mnemonic delivery."""
+    accepted_types = []
+    fake_st = _FakeStreamlit(
+        session_state=_SessionState({"home_start_path": start_path}),
+        create_clicked=False,
+    )
+
+    def picker(*args, **kwargs):
+        accepted_types.extend(kwargs["type"])
+        return None
+
+    monkeypatch.setattr(fake_st, "file_uploader", picker)
+    _run_home(monkeypatch, fake_st)
+    assert {"mrc", "marc", "mrk"} <= set(accepted_types)
+
+
 def test_quick_load_resets_selected_shared_job_to_default(monkeypatch):
     """Quick Load must attach uploads to the personal default even after shared work."""
     default = jobs.ensure_default_job("cataloger@example.edu")

@@ -1,0 +1,60 @@
+Title: Accept MRK uploads and fix MARC Tools binary downloads
+
+Status: Completed
+
+Scope:
+- Fix undefined stamp in MARC Tools downloads.
+- Accept MRK through Quick Load and job attachments using existing parser and binary persistence.
+- Convert and verify the supplied artemis2.mrk; preserve the source.
+- Target production Streamlit baseline b227046 in this isolated worktree.
+
+Success Criteria:
+- Test-first regressions cover downloads, MRK loading/restoration, malformed input, and quotas.
+- Existing MRC behavior passes relevant tests and code review.
+- Supplied file converts with verified records/fields; deployment status is explicit.
+
+Implementation and review — 2026-09-21:
+- Confirmed production and origin/main at clean b227046; active unit is
+  marcedit-web.service, running as marcedit. No infrastructure or schema changes.
+- Reproduced 12 upload/download failures, including the exact undefined-stamp
+  traceback. Two streaming-conversion tests also failed before implementation.
+- Added record-at-a-time UTF-8/BOM MRK conversion with staged output, explicit
+  parser errors, source/output byte limits, and existing binary persistence.
+- Quick Load and shared job attachment pickers accept MRK; stored files and
+  downloads use .mrc names. Binary upload streaming remains unchanged.
+- Review found missing record separators could silently merge records in the
+  existing parser. A regression failed first; upload conversion now rejects this
+  case with its source line. Interactive converter behavior is otherwise retained.
+- Focused Python 3.9.25 / Streamlit 1.50 suite: 229 passed, no skips. Covers parser,
+  conversion, upload, refresh, job-file workflows, and quotas. Full repository suite
+  and a live authenticated browser upload have not been run.
+- Source review checked all modified call paths, staged-file lifetime, state
+  preservation on errors, UTF-8 fields, filename/storage size consistency, and
+  unchanged MRC behavior. git diff --check passes.
+- Supplied artemis2.mrk converted to artemis2.mrc (one record, 3,555 bytes), with
+  every parsed field equal after binary reread. Both files remain outside Git.
+- Production deployment pending. Rollback source is b227046; no data migration.
+
+Deployment checkpoint:
+- Published reviewed release 1634873 to the verified production repository and
+  deployed via the existing lineage-driven script on branch task-253-mrk-upload.
+- Backup verified at /home/marcedit/backups/marcedit-web/2026-09-21-task-253.
+  Dependency checks found the existing packages satisfied the requirements.
+  Schema health and post-restart HTTP health returned ok; the unit is active.
+- First production-environment smoke run: 21 passed and one AppTest timed out at
+  its default three-second limit. This was a test-runner timeout, not the previous
+  undefined-stamp exception. Increased that test's execution allowance to 15
+  seconds; pending rerun. No application timeout or behavior was changed.
+
+Completion:
+- Production smoke rerun: 22 passed, no skips (60 unrelated tests deselected),
+  in 1.90 seconds. Checkout clean; marcedit-web.service active; HTTP health ok.
+- Production checkout is d1ab66e on task-253-mrk-upload, tracking its origin
+  branch. Application code is identical to tested release 1634873; follow-up
+  changes only the test allowance and ticket evidence. Origin/main is unchanged.
+- The original three-second smoke timeout is superseded by this passing rerun.
+  No authenticated live-browser upload was performed; the actual source file,
+  automated widget rendering, persistence, and production-runtime tests were
+  verified separately. The full repository test suite was not run.
+- Review complete; no outstanding code findings. Original artemis2.mrk retained
+  and verified artemis2.mrc supplied in the user's project root.
