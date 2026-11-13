@@ -10,7 +10,8 @@ are the source of truth.
 1. **M0 — Production integrity**
    Keep what is deployed correct and recoverable. Main matches
    production since 2026-11-13 (TASK-260). Next: production writes
-   (TASK-255) and the 13 tests already failing on main. TASK-117 and TASK-130 need one ITS session, for host
+   (TASK-255, closed 2026-11-13: no longer occurs) and the 13 tests
+   already failing on main (TASK-262). TASK-117 and TASK-130 need one ITS session, for host
    RAM and cgroup facts and the production `.env` upload cap.
 2. **M1 — Workflow**
    The orchestrator/implementer loop and backlog tooling. Done:
@@ -54,7 +55,6 @@ are the source of truth.
 | --- | --- | --- | --- |
 | [TASK-117-overnight-service-death](.tickets/TASK-117-overnight-service-death.md) | Diagnose overnight marcedit-web service death on libtools2 | In-Progress |  |
 | [TASK-130-align-max-upload-size](.tickets/TASK-130-align-max-upload-size.md) | Align Streamlit maxUploadSize with the app upload cap | In-Progress |  |
-| [TASK-255-production-readonly-database](.tickets/TASK-255-production-readonly-database.md) | Diagnose production SQLite readonly error after TASK-254 deployment | In-Progress |  |
 | [TASK-256-routledge-proxy-condition](.tickets/TASK-256-routledge-proxy-condition.md) | Determine conditional Smith proxy handling for Routledge task | In-Progress |  |
 
 ### M1 — Workflow
@@ -82,6 +82,7 @@ are the source of truth.
 | [TASK-098-collaboration-provenance-display](.tickets/TASK-098-collaboration-provenance-display.md) | TASK-098 — Collaboration provenance display | Todo |  |
 | [TASK-144-history-interactive-test-coverage](.tickets/TASK-144-history-interactive-test-coverage.md) | History page interactive test-coverage gaps | Todo |  |
 | [TASK-145-restore-upload-row-provenance](.tickets/TASK-145-restore-upload-row-provenance.md) | Snapshot restore creates a new upload row per restore | Todo |  |
+| [TASK-262-delete-stale-failing-tests](.tickets/TASK-262-delete-stale-failing-tests.md) | Delete the 13 stale failing tests so the suite runs green | Ready | S |
 
 ### M4 — Host hardening (needs ITS)
 
