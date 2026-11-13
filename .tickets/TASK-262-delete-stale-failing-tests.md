@@ -1,6 +1,6 @@
 Title: Delete the 13 stale failing tests so the suite runs green
 
-Status: Ready
+Status: In-Progress
 Size: S
 Tier: small — deletes tests only; no application behavior changes
 Milestone: M3 — Code health
