@@ -1,6 +1,6 @@
 Title: Merge deployed TASK-253 commits into main before the next deploy
 
-Status: Blocked
+Status: Completed
 Size: S
 Milestone: M0
 
@@ -26,5 +26,7 @@ Success Criteria:
 - `git merge-base --is-ancestor de040fc main` succeeds.
 - Docker suite passes on merged main, including tests/test_marc_tools_download.py.
 
-Blocked on:
-- Human approval to merge.
+Resolution — 2026-11-13:
+- Owner OK given. Merged `task-253-mrk-upload` (1634873, d1ab66e, de040fc, 5a626d3) into main as 38d1c66; `git merge-base --is-ancestor de040fc main` succeeds.
+- Conflict in the TASK-254 ticket resolved to main's version, a superset of the branch copy. The untracked local TASK-253 ticket was a shorter summary of the branch copy and was set aside, not committed.
+- Docker suite on 38d1c66: 2768 passed, 35 skipped, 13 tracked failures identical to the pre-existing set on 27d0e96 (tests/test_operations_render.py, tests/test_product_identity.py); tests/test_marc_tools_download.py passes. Host deploy tests 45 passed.

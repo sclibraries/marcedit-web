@@ -1,6 +1,6 @@
 Title: Adopt the codex-worker-kit (lean flow, 2026-11-06)
 
-Status: In-Review
+Status: Completed
 Size: M
 Tier: small — agent rules and run tooling only; no application behavior change
 Milestone: M1

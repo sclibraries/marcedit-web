@@ -1,6 +1,6 @@
 Title: Generate the ROADMAP.md backlog from ticket files
 
-Status: In-Review
+Status: Completed
 Milestone: M1
 Size: S
 Base: the local `main` commit that adds this ticket
@@ -80,7 +80,7 @@ Plan:
 - (S — none)
 
 Handoff:
-- (implementer fills in)
+- Head d4b4de8, merged into main as a72d2fd (owner OK 2026-11-13). Host deploy tests 45 passed; Docker suite 13 failures, all pre-existing on base 27d0e96. Private handoff: coordination repo handoffs/TASK-259.md.
 
 Review:
-- (orchestrator fills in)
+- All seven acceptance tests met by named tests; scope 3 files; no bloat worth a round. Notes: ticket titles containing `|` would break a table row; the 13 pre-existing Docker failures need their own ticket.
