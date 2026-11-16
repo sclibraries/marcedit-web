@@ -11,6 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends git
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
