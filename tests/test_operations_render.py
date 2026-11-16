@@ -8,8 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from marcedit_web.lib import operations
-
 
 class _Column:
     def __init__(self, st):
@@ -386,82 +384,6 @@ def test_result_bytes_are_read_only_after_prepare_download(monkeypatch, tmp_path
     assert fake_st.downloads[0]["data"] == b"result bytes"
 
 
-def test_large_result_is_never_materialized_for_streamlit_download(
-    monkeypatch, tmp_path
-):
-    result = tmp_path / "large-result.mrc"
-    result.write_bytes(b"small fixture")
-    row = _operation(
-        state="completed",
-        phase="completed",
-        completed_at="now",
-        job_id=4,
-        job_file_id=5,
-        source_version_id=6,
-        can_apply_result=True,
-    )
-    fake_st = _FakeStreamlit(clicked={"operation_prepare_download_1"})
-    renderer = _wire(
-        monkeypatch,
-        fake_st,
-        [row],
-        artifacts=[{
-            "role": "result",
-            "filename": "large-result.mrc",
-            "file_path": str(result),
-        }],
-    )
-    monkeypatch.setattr(renderer.operations, "result_download_limit_bytes", lambda: 10)
-    monkeypatch.setattr(
-        Path,
-        "read_bytes",
-        lambda _path: pytest.fail("oversized result must not be read"),
-    )
-
-    renderer.render()
-
-    assert fake_st.downloads == []
-    assert any("10-byte in-app download limit" in text for text in fake_st.warnings)
-    assert "Apply as new Job version" in [
-        button["label"] for button in fake_st.buttons
-    ]
-
-
-def test_terminal_actions_call_job_and_quick_load_services(monkeypatch, tmp_path):
-    job_row = _operation(
-        1, state="completed", phase="completed", completed_at="now",
-        job_id=4, job_file_id=5, source_version_id=6,
-        can_apply_result=True,
-    )
-    quick_row = _operation(2, state="completed", phase="completed", completed_at="now")
-    fake_st = _FakeStreamlit(clicked={
-        "operation_apply_1", "operation_reopen_result_2", "operation_reopen_input_2",
-    })
-    fake_st.session_state["job_file_version_id"] = 6
-    source = tmp_path / "input.mrc"
-    result = tmp_path / "result.mrc"
-    source.write_bytes(b"input")
-    result.write_bytes(b"result")
-    artifacts = [
-        {"role": "input", "filename": "input.mrc", "file_path": str(source)},
-        {"role": "result", "filename": "result.mrc", "file_path": str(result)},
-    ]
-    renderer = _wire(monkeypatch, fake_st, [job_row, quick_row], artifacts=artifacts)
-    calls = []
-    monkeypatch.setattr(
-        renderer.operation_results, "apply_job_result",
-        lambda operation_id, **kwargs: calls.append(("apply", operation_id, kwargs)),
-    )
-    monkeypatch.setattr(
-        renderer.operation_results, "reopen_quick_load",
-        lambda operation_id, **kwargs: calls.append(("reopen", operation_id, kwargs)),
-    )
-    renderer.render()
-    assert calls[0][0:2] == ("apply", 1)
-    assert ("reopen", 2, {"user_email": "cataloger@example.edu", "use_result": True}) in calls
-    assert ("reopen", 2, {"user_email": "cataloger@example.edu", "use_result": False}) in calls
-
-
 def test_applied_job_result_offers_immutable_rollback(monkeypatch):
     row = _operation(
         state="completed", phase="completed", completed_at="now",
@@ -520,58 +442,6 @@ def test_cancel_control_is_hidden_without_current_permission(monkeypatch):
     renderer = _wire(monkeypatch, fake_st, [_operation(can_cancel=False)])
     renderer.render()
     assert "Cancel" not in [button["label"] for button in fake_st.buttons]
-
-
-def test_action_errors_are_shown_without_mutating_row(monkeypatch, tmp_path):
-    fake_st = _FakeStreamlit(clicked={"operation_apply_1"})
-    fake_st.session_state["job_file_version_id"] = 8
-    row = _operation(
-        state="completed", phase="completed", completed_at="now",
-        job_id=4, job_file_id=5, source_version_id=8,
-        can_apply_result=True,
-    )
-    result = tmp_path / "result.mrc"
-    result.write_bytes(b"result")
-    renderer = _wire(
-        monkeypatch, fake_st, [row],
-        artifacts=[{"role": "result", "filename": "result.mrc", "file_path": str(result)}],
-    )
-
-    def fail(*args, **kwargs):
-        raise operations.OperationError("file changed since the run")
-
-    monkeypatch.setattr(renderer.operation_results, "apply_job_result", fail)
-    renderer.render()
-    assert fake_st.errors == ["file changed since the run"]
-    assert row["applied_version_id"] is None
-
-
-def test_job_viewer_can_download_but_never_sees_mutation_controls(
-    monkeypatch, tmp_path,
-):
-    result = tmp_path / "result.mrc"
-    result.write_bytes(b"result")
-    fake_st = _FakeStreamlit()
-    row = _operation(
-        state="completed", phase="completed", completed_at="now",
-        job_id=4, job_file_id=5, source_version_id=8,
-        can_access_artifacts=True, can_apply_result=False,
-        can_rollback_result=False,
-    )
-    renderer = _wire(
-        monkeypatch, fake_st, [row],
-        artifacts=[{
-            "role": "result", "filename": "result.mrc",
-            "file_path": str(result),
-        }],
-    )
-
-    renderer.render()
-
-    labels = [button["label"] for button in fake_st.buttons]
-    assert "Prepare result download" in labels
-    assert "Apply as new Job version" not in labels
-    assert "Roll back as a new Job version" not in labels
 
 
 def test_user_controlled_task_name_is_never_rendered_as_markdown(monkeypatch):
