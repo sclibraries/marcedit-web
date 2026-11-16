@@ -18,4 +18,4 @@ jobs:
           pip install -e . --no-deps
 
       - name: Run tests
-        run: pytest -ra
+        run: python -m pytest -ra
