@@ -1,6 +1,6 @@
 Title: Run CI's Python 3.9 tests in a python:3.9-slim container
 
-Status: In-Review
+Status: Completed
 Size: S
 Tier: small — CI configuration only; no application behavior changes
 Milestone: M3 — Code health
@@ -41,7 +41,7 @@ Verification:
   and report the pass/fail/skip counts.
 
 Handoff:
-- (orchestrator fills in after the check)
+- Head 298f896 (one fix round), merged into main (owner OK 2026-11-16). Workflow steps in python:3.9-slim: 2794 passed, 5 skipped, 1 failed (git missing in the image). Private handoffs: TASK-263.md, TASK-263-fr1.md.
 
 Review:
-- (orchestrator fills in)
+- Container and `python -m pytest` met. One test needs a `git` executable; at the fix-round limit the owner chose merge now, with git installed in TASK-264.
