@@ -82,7 +82,6 @@ are the source of truth.
 | [TASK-098-collaboration-provenance-display](.tickets/TASK-098-collaboration-provenance-display.md) | TASK-098 — Collaboration provenance display | Todo |  |
 | [TASK-144-history-interactive-test-coverage](.tickets/TASK-144-history-interactive-test-coverage.md) | History page interactive test-coverage gaps | Todo |  |
 | [TASK-145-restore-upload-row-provenance](.tickets/TASK-145-restore-upload-row-provenance.md) | Snapshot restore creates a new upload row per restore | Todo |  |
-| [TASK-262-delete-stale-failing-tests](.tickets/TASK-262-delete-stale-failing-tests.md) | Delete the 13 stale failing tests so the suite runs green | Ready | S |
 
 ### M4 — Host hardening (needs ITS)
 

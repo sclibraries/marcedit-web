@@ -1,6 +1,6 @@
 Title: Delete the 13 stale failing tests so the suite runs green
 
-Status: In-Review
+Status: Completed
 Size: S
 Tier: small — deletes tests only; no application behavior changes
 Milestone: M3 — Code health
@@ -59,7 +59,7 @@ Plan:
 - (S: none)
 
 Handoff:
-- (orchestrator fills in after the check)
+- Head 70ab02f, merged into main (owner OK 2026-11-16). Docker suite 2765 passed, 35 skipped, 0 failed; host deploy tests 45 passed. Private handoff: coordination repo handoffs/TASK-262.md.
 
 Review:
-- (orchestrator fills in)
+- Only the 13 named tests and one import they left unused were deleted; no other change. No fix round.
