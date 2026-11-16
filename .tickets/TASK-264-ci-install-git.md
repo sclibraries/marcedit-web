@@ -1,6 +1,6 @@
 Title: Install git in CI's python:3.9-slim job
 
-Status: Ready
+Status: In-Progress
 Size: S
 Tier: small — CI configuration only; no application behavior changes
 Milestone: M3 — Code health
