@@ -1,6 +1,6 @@
 Title: Install git in CI's python:3.9-slim job
 
-Status: In-Review
+Status: Completed
 Size: S
 Tier: small — CI configuration only; no application behavior changes
 Milestone: M3 — Code health
@@ -32,7 +32,7 @@ Verification:
   and report the pass/fail/skip counts.
 
 Handoff:
-- (orchestrator fills in after the check)
+- Head fcf2650, merged into main (owner OK 2026-11-16). Workflow steps in python:3.9-slim: 2795 passed, 0 failed, 5 skipped.
 
 Review:
-- (orchestrator fills in)
+- One 3-line workflow step; no bloat; no fix round.
