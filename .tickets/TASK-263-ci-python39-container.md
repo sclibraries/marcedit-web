@@ -1,6 +1,6 @@
 Title: Run CI's Python 3.9 tests in a python:3.9-slim container
 
-Status: Ready
+Status: In-Progress
 Size: S
 Tier: small — CI configuration only; no application behavior changes
 Milestone: M3 — Code health
