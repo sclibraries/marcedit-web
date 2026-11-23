@@ -228,19 +228,75 @@ def migration_blocker_errors(op: Mapping[str, Any]) -> tuple[str, ...]:
 def assert_runnable_operations(
     operations: Sequence[Mapping[str, Any]],
 ) -> None:
-    """Reject invalid or unresolved structured migration blockers."""
+    """Reject imported placeholders and unresolved migration blockers."""
 
     blockers = migration_blockers(operations)
     for blocker in blockers:
         errors = migration_blocker_errors(blocker)
         if errors:
             raise ValueError("Invalid migration blocker: {0}".format(errors[0]))
-    if not blockers:
-        return
-    noun = "instruction" if len(blockers) == 1 else "instructions"
-    raise ValueError(
-        "Resolve {0} imported {1} before previewing or running this task."
-        .format(len(blockers), noun)
+    if blockers:
+        noun = "instruction" if len(blockers) == 1 else "instructions"
+        raise ValueError(
+            "Resolve {0} imported {1} before previewing or running this task."
+            .format(len(blockers), noun)
+        )
+
+    placeholders = _untranslated_custom_placeholders(operations)
+    if placeholders:
+        noun = "instruction" if len(placeholders) == 1 else "instructions"
+        shown = placeholders[:5]
+        details = "; ".join(shown)
+        remaining = len(placeholders) - len(shown)
+        if remaining:
+            details += "; {0} more".format(remaining)
+        raise ValueError(
+            "Resolve {0} untranslated MarcEdit {1} before previewing or "
+            "running this task: {2}.".format(
+                len(placeholders), noun, details
+            )
+        )
+
+
+def _untranslated_custom_placeholders(
+    operations: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    """Return TODO texts from inert custom operations, in operation order."""
+
+    placeholders = []
+    for operation in operations:
+        if (
+            not isinstance(operation, Mapping)
+            or operation.get("kind") != "custom"
+        ):
+            continue
+        params = operation.get("params")
+        if not isinstance(params, Mapping):
+            continue
+        code = params.get("code")
+        if not isinstance(code, str):
+            continue
+
+        lines = code.splitlines()
+        todo_texts = [
+            line.lstrip()[len("# TODO:") :].strip()
+            for line in lines
+            if line.lstrip().startswith("# TODO:")
+        ]
+        if not todo_texts:
+            continue
+        if any(not _is_inert_custom_line(line) for line in lines):
+            continue
+        placeholders.append(todo_texts[0])
+    return tuple(placeholders)
+
+
+def _is_inert_custom_line(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        not stripped
+        or line.lstrip().startswith("#")
+        or re.fullmatch(r"pass(?:\s*#.*)?", stripped) is not None
     )
 
 

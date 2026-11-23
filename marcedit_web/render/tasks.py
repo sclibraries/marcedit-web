@@ -3581,10 +3581,8 @@ def _execute_synchronous_run(selection: list[str], tasks_dir: Path) -> None:
             parsed["body"]
         )
         if preflight_issues:
-            st.error(
-                f"Task `{name}` cannot run until this saved instruction is "
-                f"resolved: {preflight_issues[0]}"
-            )
+            st.error(f"Task `{name}` cannot run until this saved instruction is resolved:")
+            st.code(preflight_issues[0], language="text", wrap_lines=True)
             return
         parsed_ops = task_builder.parse_ops_from_source(parsed["body"])
         if parsed_ops["form_editable"]:
