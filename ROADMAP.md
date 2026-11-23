@@ -16,14 +16,17 @@ are the source of truth.
 2. **M1 — Workflow**
    The orchestrator/implementer loop and backlog tooling. Done:
    TASK-259 (first Codex build) and TASK-258.
-3. **M2 — Cataloger value and speed**
-   Per TASK-252: stay on Streamlit and spend effort on measured workflow
-   speed and feedback rather than new infrastructure. Proposed, not yet
-   ticketed:
-   - Measure the slow morning refresh (auth, connection, first render)
-     before guessing a cause.
-   - Stop Workspace from running hidden tabs (Report walks every record).
-   - Show progress while a refreshed session restores its batch.
+3. **M2 — Cataloger value and speed: the rewrite**
+   React frontend, Flask API and open-marc-tasks replace Streamlit and the
+   generated-Python tasks in one switchover (owner, 2026-11-23; ADRs 0001
+   to 0004; supersedes TASK-252). Streamlit gets only production fixes.
+   Order: R0 engine work, parity list and baselines; R1 skeleton, sign-in
+   and second service; R2 jobs and files; R3 worker runs; R4 task builder
+   and import; R5 profiles, checks and review (checkpoint: two real
+   batches must be clearly better, or stop and re-plan); R6 quick edit;
+   R7 diff, dedupe, conversions, reports; R8 build-by-example and task
+   assistant; R9 rehearsals and switchover; R10 delete Streamlit. Tickets
+   are written milestone by milestone.
 4. **M3 — Code health**
    Low-risk Codex work: dead code, docstrings, tests, the supply-chain
    lockfile. TASK-098 and TASK-145 are close-out reviews that may need
@@ -32,18 +35,18 @@ are the source of truth.
    systemd hardening, sandbox confinement, memory limits, and large-batch
    acceptance evidence on libtools2.
 6. **M5 — Parked: durable operations**
-   Blocked on one decision: re-enable the durable queue and worker
-   (`runmode.DURABLE_OPERATIONS_ENABLED`) or redesign these features to
-   run synchronously. TASK-252 argues against the large-file epic
-   (TASK-162 to TASK-166) unless 2 GiB Diff is a proven need. TASK-097
-   (presence) needs a separate yes/no.
+   Decided for the rewrite: the worker runs tasks and whole-batch
+   validation only (ADR 0002, milestone R3). It stays off in Streamlit.
+   TASK-252 argues against the large-file epic (TASK-162 to TASK-166)
+   unless 2 GiB Diff is a proven need. TASK-097 (presence) needs a
+   separate yes/no.
 
 ## Unmerged branches
 
 | Branch | State | Plan |
 |---|---|---|
 | `task-134-confinement-fix` | Full TASK-134 work, about 300 commits behind | Port when TASK-134 is planned |
-| `task-198-decoupled-workspace` | Streamlit-replacement prototype | Kept isolated per TASK-252 |
+| `task-198-decoupled-workspace` | Streamlit-replacement prototype | Mined by explicit ticket, not merged (ADR 0001) |
 | `task-173-infrastructure-release-envelope` | Release-staging work, stale since 2026-07 | Decide: revive or archive |
 
 ## Backlog
@@ -61,8 +64,9 @@ are the source of truth.
 
 | Ticket | Title | Status | Size |
 | --- | --- | --- | --- |
+| [TASK-266-rewrite-adrs-roadmap](.tickets/TASK-266-rewrite-adrs-roadmap.md) | Record the rewrite ADRs and roadmap | In-Review | S |
 
-### M2 — Cataloger value and speed
+### M2 — Cataloger value and speed: the rewrite
 
 | Ticket | Title | Status | Size |
 | --- | --- | --- | --- |
