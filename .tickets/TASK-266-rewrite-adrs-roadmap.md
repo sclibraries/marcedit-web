@@ -1,6 +1,6 @@
 Title: Record the rewrite ADRs and roadmap
 
-Status: In-Review
+Status: Completed
 Size: S
 Tier: small — documentation only
 Milestone: M1 — Workflow
@@ -25,4 +25,4 @@ Handoff:
 - (none; written by the orchestrator)
 
 Review:
-- (owner)
+- Owner OK 2026-11-23 (6243782). `scripts/backlog.py --check ROADMAP.md` passes.

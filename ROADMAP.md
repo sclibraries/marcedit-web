@@ -64,7 +64,6 @@ are the source of truth.
 
 | Ticket | Title | Status | Size |
 | --- | --- | --- | --- |
-| [TASK-266-rewrite-adrs-roadmap](.tickets/TASK-266-rewrite-adrs-roadmap.md) | Record the rewrite ADRs and roadmap | In-Review | S |
 
 ### M2 — Cataloger value and speed: the rewrite
 
