@@ -1,6 +1,6 @@
 Title: Refuse to run saved tasks that contain untranslated MarcEdit placeholders
 
-Status: In-Review
+Status: Completed
 Size: S
 Tier: normal — changes which saved tasks can run
 Milestone: M0
@@ -55,7 +55,10 @@ Verification:
   "Verification commands").
 
 Handoff:
-- (orchestrator fills in after the check)
+- Head 8953b8c. Full suite 2,772 passed, 0 failed, 35 skipped (environmental); host deploy-file
+  45 passed. Private handoffs: TASK-265.md and TASK-265-fr1.md. One fix round.
 
 Review:
-- (orchestrator fills in)
+- Checked 2026-11-23: a task from the old importer is refused and reopens; the message reads
+  correctly (a standalone page, not the full app). `render/tasks.py` was added by the fix round.
+  Other preview errors may still format `$`. Owner OK 8953b8c, 2026-11-23.
