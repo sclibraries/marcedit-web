@@ -26,3 +26,13 @@ Closed — 2026-11-13:
 - If it recurs, reopen and first run, as the service user:
   `sudo -u marcedit /var/www/html/marcedit-web/.venv/bin/python -m marcedit_web.ops.health`
   then collect ownership and modes of `data/`, `marcedit.db`, `-wal` and `-shm`.
+
+Recurred — 2026-11-23, cause found and repaired:
+- A read-only query (`mode=ro`) run on the production database as `roconnell`
+  left `marcedit.db-wal` (0 bytes) and `marcedit.db-shm` owned by `roconnell`,
+  mode 0644, so the service user could not write. Reproduced in a container.
+- Repair (owner, no root, nothing deleted): `setfacl -m u:marcedit:rw` on both
+  files; the owner reports the site works.
+- Rule: query production with `sudo -u marcedit` and `mode=ro&immutable=1`,
+  which creates no helper files, or query a copy. The October cause is still
+  unproven; a health probe or query run as another user would explain it.
