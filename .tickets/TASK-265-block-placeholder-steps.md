@@ -1,6 +1,6 @@
 Title: Refuse to run saved tasks that contain untranslated MarcEdit placeholders
 
-Status: Ready
+Status: In-Progress
 Size: S
 Tier: normal — changes which saved tasks can run
 Milestone: M0

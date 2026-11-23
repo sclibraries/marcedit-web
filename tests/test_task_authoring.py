@@ -147,6 +147,79 @@ def test_handwritten_body_without_operation_markers_remains_runnable():
     )
 
 
+@pytest.mark.parametrize(
+    ("codes", "add_blocker", "message_parts"),
+    [
+        (
+            ["# TODO: build field 650"],
+            False,
+            ("1 untranslated MarcEdit instruction", "build field 650"),
+        ),
+        (
+            [
+                "# TODO: build field 650\n"
+                "# SOURCE: ADD 650\n"
+                "pass"
+            ],
+            False,
+            ("1 untranslated MarcEdit instruction", "build field 650"),
+        ),
+        (
+            [
+                "# TODO: first",
+                "# TODO: second",
+                "# TODO: third",
+                "# TODO: fourth",
+                "# TODO: fifth",
+                "# TODO: sixth",
+            ],
+            False,
+            (
+                "6 untranslated MarcEdit instructions",
+                "first",
+                "second",
+                "third",
+                "fourth",
+                "fifth",
+                "1 more",
+            ),
+        ),
+        (
+            ["# TODO: review\nrecord['650'].add_field(field)"],
+            False,
+            None,
+        ),
+        (["# historical comment"], False, None),
+        ([None, 7], False, None),
+        (
+            ["# TODO: build field 650"],
+            True,
+            ("Resolve 1 imported instruction",),
+        ),
+    ],
+)
+def test_custom_todo_placeholders_block_only_inert_custom_operations(
+    codes, add_blocker, message_parts
+):
+    operations = [
+        {"kind": "custom", "params": {"code": code}}
+        for code in codes
+    ]
+    if add_blocker:
+        operations.append(_migration_blocker())
+
+    if message_parts is None:
+        task_authoring.assert_runnable_operations(operations)
+        return
+
+    with pytest.raises(ValueError) as exc_info:
+        task_authoring.assert_runnable_operations(operations)
+    for part in message_parts:
+        assert part in str(exc_info.value)
+    if len(codes) > 5 and not add_blocker:
+        assert "sixth" not in str(exc_info.value)
+
+
 def test_inline_comment_operation_marker_is_parsed():
     body = 'pass; # OP: delete-tag {"tag":"029"}'
 
@@ -660,8 +733,10 @@ def test_submission_preflight_composes_add_build_and_empty_find_issues():
         ]
     )
     issues = task_authoring.submission_preflight_issues(body)
-    assert len(issues) == 1
-    assert "empty Find" in issues[0]
+    assert len(issues) == 2
+    assert "untranslated MarcEdit instruction" in issues[0]
+    assert "buildnewfield template 'x'" in issues[0]
+    assert "empty Find" in issues[1]
 
 
 def test_preflight_does_not_pattern_match_arbitrary_python_source():
