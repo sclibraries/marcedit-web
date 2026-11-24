@@ -12,7 +12,7 @@ import pytest
 from waitress import create_server
 
 from marcedit_web.api import create_app
-from marcedit_web.lib import db
+from marcedit_web.lib import authz, db
 
 
 STORAGE_SETTINGS = (
@@ -24,19 +24,6 @@ STORAGE_SETTINGS = (
     "MARCEDIT_WEB_OPERATIONS_ROOT",
     "MARCEDIT_WEB_SNAPSHOTS_ROOT",
 )
-
-
-def configure_dev(monkeypatch, data_root, public_url="http://localhost:8080/marcedit-next/"):
-    for name in STORAGE_SETTINGS:
-        monkeypatch.setenv(name, "")
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("MARCEDIT_WEB_DATA_ROOT", str(data_root))
-    monkeypatch.setenv("MARCEDIT_WEB_PUBLIC_URL", public_url)
-    monkeypatch.setenv("MARCEDIT_WEB_DEV_USER", "1")
-    monkeypatch.delenv("MARCEDIT_WEB_PROD", raising=False)
-    monkeypatch.delenv("MARCEDIT_WEB_PROXY_SECRET", raising=False)
-    monkeypatch.setenv("MARCEDIT_WEB_MODE", "private")
-    monkeypatch.delenv("MARCEDIT_WEB_PORT", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -57,15 +44,18 @@ def configure_dev(monkeypatch, data_root, public_url="http://localhost:8080/marc
         "dev-user-production-on",
         "dev-user-secret",
         "dev-user-public-url",
+        "dev-user-invalid-email",
         "public-mode",
         "neither-mode",
         "storage-outside-root",
         "storage-symlink-outside-root",
     ],
 )
-def test_invalid_configuration_refuses_startup(broken_setting, monkeypatch, tmp_path):
+def test_invalid_configuration_refuses_startup(
+    broken_setting, monkeypatch, tmp_path, configure_dev
+):
     data_root = tmp_path / "data"
-    configure_dev(monkeypatch, data_root)
+    configure_dev(data_root)
 
     if broken_setting == "data-root-missing":
         monkeypatch.delenv("MARCEDIT_WEB_DATA_ROOT")
@@ -99,6 +89,8 @@ def test_invalid_configuration_refuses_startup(broken_setting, monkeypatch, tmp_
         monkeypatch.setenv("MARCEDIT_WEB_PROXY_SECRET", "x" * 64)
     elif broken_setting == "dev-user-public-url":
         monkeypatch.setenv("MARCEDIT_WEB_PUBLIC_URL", "http://catalog.example.invalid/marcedit-next/")
+    elif broken_setting == "dev-user-invalid-email":
+        monkeypatch.setenv("MARCEDIT_WEB_DEV_USER", "not-an-email")
     elif broken_setting == "public-mode":
         monkeypatch.setenv("MARCEDIT_WEB_MODE", "public")
     elif broken_setting == "neither-mode":
@@ -118,9 +110,10 @@ def test_invalid_configuration_refuses_startup(broken_setting, monkeypatch, tmp_
 
 
 @pytest.mark.parametrize("prod_value", ["1", "true", "yes", "on"])
-def test_real_mode_accepts_identity_production_values(prod_value, monkeypatch, tmp_path):
+def test_real_mode_accepts_identity_production_values(
+    prod_value, monkeypatch, tmp_path, configure_dev
+):
     configure_dev(
-        monkeypatch,
         tmp_path / "data",
         public_url="https://catalog.example.invalid/marcedit-next/",
     )
@@ -131,9 +124,11 @@ def test_real_mode_accepts_identity_production_values(prod_value, monkeypatch, t
     assert create_app().config["API_URL_PREFIX"] == "/marcedit-next/"
 
 
-def test_newer_schema_refuses_before_migration_or_data_change(monkeypatch, tmp_path):
+def test_newer_schema_refuses_before_migration_or_data_change(
+    monkeypatch, tmp_path, configure_dev
+):
     data_root = tmp_path / "data"
-    configure_dev(monkeypatch, data_root)
+    configure_dev(data_root)
     database = data_root / "marcedit.db"
     database.parent.mkdir(parents=True)
     with sqlite3.connect(database) as connection:
@@ -155,9 +150,11 @@ def test_newer_schema_refuses_before_migration_or_data_change(monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize("database_state", ["missing", "wrong-version"])
-def test_health_is_read_only_and_requires_current_schema(database_state, monkeypatch, tmp_path):
+def test_health_is_read_only_and_requires_current_schema(
+    database_state, monkeypatch, tmp_path, configure_dev
+):
     data_root = tmp_path / "data"
-    configure_dev(monkeypatch, data_root)
+    configure_dev(data_root)
     app = create_app()
     database = data_root / "marcedit.db"
 
@@ -182,9 +179,11 @@ def test_health_is_read_only_and_requires_current_schema(database_state, monkeyp
             assert connection.execute("SELECT value FROM sentinel").fetchone() == ("synthetic",)
 
 
-def test_waitress_serves_health_under_configured_url_prefix(monkeypatch, tmp_path):
+def test_waitress_serves_health_under_configured_url_prefix(
+    monkeypatch, tmp_path, configure_dev
+):
     data_root = tmp_path / "data"
-    configure_dev(monkeypatch, data_root)
+    configure_dev(data_root)
     monkeypatch.setenv("MARCEDIT_WEB_PORT", "8123")
     app = create_app()
     assert app.config["API_PORT"] == 8123
@@ -224,9 +223,12 @@ def test_waitress_serves_health_under_configured_url_prefix(monkeypatch, tmp_pat
         assert not thread.is_alive()
 
 
-def test_unexpected_error_is_plain_and_all_responses_are_hardened(monkeypatch, tmp_path):
-    configure_dev(monkeypatch, tmp_path / "data")
+def test_unexpected_error_is_plain_and_all_responses_are_hardened(
+    monkeypatch, tmp_path, configure_dev, caplog
+):
+    configure_dev(tmp_path / "data")
     app = create_app()
+    authz.approve_user("api-test@example.invalid", by="test")
 
     @app.get("/api/v1/boom")
     def boom():
@@ -242,6 +244,8 @@ def test_unexpected_error_is_plain_and_all_responses_are_hardened(monkeypatch, t
     }
     assert b"/synthetic/private/path" not in response.data
     assert b"Traceback" not in response.data
+    assert "Traceback" in caplog.text
+    assert "/synthetic/private/path" in caplog.text
     assert response.headers["X-MarcEdit-Api"] == "1"
     assert response.headers["Cache-Control"] == "no-store"
     assert response.headers["Content-Security-Policy"] == (
@@ -268,7 +272,7 @@ sys.meta_path.insert(0, NoStreamlit())
 with tempfile.TemporaryDirectory() as data_root:
     os.environ["MARCEDIT_WEB_DATA_ROOT"] = data_root
     os.environ["MARCEDIT_WEB_PUBLIC_URL"] = "http://localhost:8080/marcedit-next/"
-    os.environ["MARCEDIT_WEB_DEV_USER"] = "1"
+    os.environ["MARCEDIT_WEB_DEV_USER"] = "api-test@example.invalid"
     os.environ["MARCEDIT_WEB_MODE"] = "private"
     for name in (
         "MARCEDIT_WEB_PROD",

@@ -73,25 +73,24 @@ def authorize(email: str) -> Decision:
         return Decision(outcome, role)
 
     now = _now()
-    if _is_allowed_domain(domain_of(email)):
-        with db.connect() as conn:
-            conn.execute(
-                "INSERT INTO users(email, role, status, created_at,"
-                " approved_at, approved_by)"
-                " VALUES (?, 'cataloger', 'approved', ?, ?, '__domain__')",
-                (email, now, now),
-            )
-        audit_event("auth.approved", user=email)
-        return Decision("approved", "cataloger")
-
+    allowed = _is_allowed_domain(domain_of(email))
+    outcome = "approved" if allowed else "pending"
     with db.connect() as conn:
-        conn.execute(
-            "INSERT INTO users(email, role, status, created_at)"
-            " VALUES (?, 'cataloger', 'pending', ?)",
-            (email, now),
+        inserted = conn.execute(
+            "INSERT INTO users(email, role, status, created_at,"
+            " approved_at, approved_by) VALUES (?, 'cataloger', ?, ?, ?, ?)"
+            " ON CONFLICT(email) DO NOTHING",
+            (email, outcome, now, now if allowed else None,
+             "__domain__" if allowed else None),
         )
-    audit_event("auth.pending", user=email)
-    return Decision("pending")
+        # Another request may have provisioned or revoked this account after
+        # our first lookup. Keep that row and return its authoritative decision.
+        row = conn.execute(
+            "SELECT status, role FROM users WHERE email=?", (email,)
+        ).fetchone()
+    if inserted.rowcount:
+        audit_event("auth." + outcome, user=email)
+    return Decision(row["status"], row["role"] if row["status"] == "approved" else None)
 
 
 _VALID_ROLES = ("admin", "cataloger")

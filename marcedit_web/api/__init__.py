@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 import re
 import sqlite3
+from typing import Optional
 from urllib.parse import urlsplit
 
 from flask import Flask, jsonify
 from werkzeug.exceptions import HTTPException
 
+from marcedit_web.api import access, me
 from marcedit_web.lib import db, identity, runmode
 
 
@@ -25,6 +28,7 @@ _STORAGE_PATHS = {
     "MARCEDIT_WEB_SNAPSHOTS_ROOT": "snapshots",
 }
 _PLACEHOLDERS = ("replace", "placeholder", "paste-secret", "changeme")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,7 @@ class Settings:
     origin: str
     url_prefix: str
     port: int
+    dev_user: Optional[str]
 
 
 def _refuse(message: str) -> None:
@@ -124,10 +129,12 @@ def load_settings() -> Settings:
     raw_url = os.environ.get("MARCEDIT_WEB_PUBLIC_URL", "")
     parsed, origin, url_prefix = _url(raw_url)
     secret = identity.proxy_secret()
-    dev_value = os.environ.get("MARCEDIT_WEB_DEV_USER", "")
-    if dev_value not in ("", "0", "1"):
-        _refuse("MARCEDIT_WEB_DEV_USER must be 1 or 0.")
-    dev_user = dev_value == "1"
+    dev_value = os.environ.get("MARCEDIT_WEB_DEV_USER", "").strip()
+    if dev_value not in ("", "0") and not re.fullmatch(
+        r"[^@\s]+@[^@\s]+\.[^@\s]+", dev_value
+    ):
+        _refuse("MARCEDIT_WEB_DEV_USER must be an email address or 0.")
+    dev_user = dev_value.lower() if dev_value not in ("", "0") else None
 
     if dev_user:
         if identity.is_prod() or secret:
@@ -158,6 +165,7 @@ def load_settings() -> Settings:
         origin=origin,
         url_prefix=url_prefix,
         port=port,
+        dev_user=dev_user,
     )
 
 
@@ -213,7 +221,13 @@ def create_app() -> Flask:
 
     @app.errorhandler(Exception)
     def unexpected_error(exception):
+        logger.exception("Unhandled API exception")
         return _error("internal-error", "An unexpected error occurred.", 500)
+
+    @app.before_request
+    def enforce_api_access():
+        failure = access.check_request(settings)
+        return _error(*failure) if failure is not None else None
 
     @app.get("/api/v1/health")
     def health():
@@ -223,5 +237,7 @@ def create_app() -> Flask:
             current = None
         healthy = current == db.SCHEMA_VERSION
         return jsonify({"ok": healthy}), 200 if healthy else 503
+
+    app.add_url_rule("/api/v1/me", endpoint="me", view_func=me.get_me, methods=["GET"])
 
     return app
