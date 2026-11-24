@@ -44,6 +44,7 @@ Browser ──► Apache + mod_shib (libtools2.smith.edu/marcedit-web)
 ```
 marcedit_web/
   App.py      entrypoint: page config, navigation, access gate
+  api/        independent Flask API service (not in production yet)
   views/      page scripts registered by App.py (not auto-discovered)
   render/     Streamlit UI for each workflow
   lib/        deterministic logic, storage, security; testable without Streamlit
@@ -51,8 +52,8 @@ marcedit_web/
   schemas/    JSON Schemas and compiler contracts
 ```
 
-Dependency direction: `views → render → lib`. `ops → lib`.
-`lib` never imports `render` or `views`.
+Dependency direction: `views → render → lib`, `ops → lib`, and
+`api → lib`. `lib` never imports `api`, `render`, or `views`.
 
 - **views/** should be shims (`session.init_page()` then
   `render.<x>.render()`). Known exceptions that hold real logic:

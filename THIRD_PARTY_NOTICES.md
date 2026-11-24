@@ -11,10 +11,13 @@ the license metadata supplied by upstream.
 | [pymarc](https://github.com/pymarc/pymarc) | BSD-2-Clause | https://github.com/pymarc/pymarc |
 | [streamlit-ace](https://github.com/okld/streamlit-ace) | MIT | https://github.com/okld/streamlit-ace |
 | [Authlib](https://github.com/authlib/authlib) | BSD-3-Clause | https://github.com/authlib/authlib |
+| [Flask](https://github.com/pallets/flask) | BSD-3-Clause | https://github.com/pallets/flask |
 | [pytest](https://github.com/pytest-dev/pytest) | MIT | https://github.com/pytest-dev/pytest |
 | [jsonschema](https://github.com/python-jsonschema/jsonschema) | MIT | https://github.com/python-jsonschema/jsonschema |
+| [waitress](https://github.com/Pylons/waitress) | ZPL-2.1 | https://github.com/Pylons/waitress |
 
-These notices cover direct dependencies installed from `requirements.txt`.
+These notices cover direct dependencies installed from `requirements.txt`
+and `requirements-api.txt`.
 Transitive dependencies retain the license metadata supplied in their
 installed distributions.
 
