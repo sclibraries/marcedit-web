@@ -65,13 +65,16 @@ def test_repository_has_smith_mit_license():
 def test_direct_runtime_dependency_notices_are_present():
     notices = _source("THIRD_PARTY_NOTICES.md")
     requirements = _source("requirements.txt")
+    api_requirements = _source("requirements-api.txt")
     expected = {
         "Streamlit": "Apache-2.0",
         "pymarc": "BSD-2-Clause",
         "streamlit-ace": "MIT",
         "Authlib": "BSD-3-Clause",
+        "Flask": "BSD-3-Clause",
         "pytest": "MIT",
         "jsonschema": "MIT",
+        "waitress": "ZPL-2.1",
     }
 
     for project, license_id in expected.items():
@@ -85,7 +88,7 @@ def test_direct_runtime_dependency_notices_are_present():
     )
     declared = {
         re.match(r"[A-Za-z0-9_.-]+", line).group(0)
-        for raw_line in requirements.splitlines()
+        for raw_line in requirements.splitlines() + api_requirements.splitlines()
         if (line := raw_line.strip()) and not line.startswith("#")
     }
     assert {name.lower() for name in declared} == {

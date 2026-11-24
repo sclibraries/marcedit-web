@@ -18,7 +18,22 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -r requirements-api.txt
           pip install -e . --no-deps
 
       - name: Run tests
         run: python -m pytest -ra
+
+  api:
+    runs-on: ubuntu-latest
+    container: python:3.9-slim
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install API dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements-api.txt "pytest>=8,<9"
+
+      - name: Run API tests
+        run: python -m pytest -ra tests/api
