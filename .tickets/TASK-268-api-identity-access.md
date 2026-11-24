@@ -1,6 +1,6 @@
 Title: API request identity and access rules
 
-Status: Todo
+Status: Ready
 Size: M
 Tier: major — auth
 Milestone: M2 — R1
@@ -15,7 +15,10 @@ Scope:
 - `identity.proxy_user(headers)`: lowercased `X-MarcEdit-User`, only with a
   valid attestation. `current_user` behaves as before.
 - Access checks for every `/api/v1` route except `/health`, the Origin and
-  `X-MarcEdit-Request` checks, `GET /api/v1/me`, `MARCEDIT_WEB_DEV_USER`.
+  `X-MarcEdit-Request` checks, `GET /api/v1/me`.
+- `MARCEDIT_WEB_DEV_USER` holds the email to act as (TASK-267 made it 1 or 0).
+- An unexpected error is written to the service log with its traceback; the
+  answer stays plain (TASK-267 left nothing in the log).
 - `authz.authorize`: the first-visit insert tolerates another request having
   inserted the row, and returns that row's decision (port the prototype's).
 - Schemas for `/me` and the error answer; request-body checking.
@@ -44,6 +47,9 @@ Acceptance tests:
 - Two first requests at once for one person both succeed, with one row and one
   provisioning audit event (threads, real database file); a person revoked
   between lookup and insert stays revoked.
+- A development identity acts as its email, and one that isn't an email
+  address refuses to start.
+- An unexpected error's traceback is in the log and not in the answer.
 - Streamlit's own sign-in behaves as before (existing identity and authz tests,
   unchanged).
 
