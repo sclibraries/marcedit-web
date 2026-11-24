@@ -1,6 +1,6 @@
 Title: Flask API: configuration, startup and health
 
-Status: In-Review
+Status: Completed
 Size: M
 Tier: major — new dependencies
 Milestone: M2 — R1
@@ -63,7 +63,9 @@ Plan:
 4. CI, Dockerfile, ARCHITECTURE.md.
 
 Handoff:
--
+- Head 7fe1ab6, merged into main (owner OK 2026-11-24). Image suite 2,801 passed, 35 skipped (files not in the test
+  image); API without Streamlit 29 passed; host deploy tests 45 passed.
 
 Review:
--
+- One fix round: the API tests left storage settings in the environment for later tests.
+- To TASK-268: log unexpected errors; `MARCEDIT_WEB_DEV_USER` becomes the email.

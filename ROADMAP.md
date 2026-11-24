@@ -71,7 +71,6 @@ are the source of truth.
 | --- | --- | --- | --- |
 | [TASK-103-canned-cataloger-record-actions](.tickets/TASK-103-canned-cataloger-record-actions.md) | TASK-103 — Canned cataloger record actions | Todo |  |
 | [TASK-134-diff-uploader-widget-memory](.tickets/TASK-134-diff-uploader-widget-memory.md) | Release Diff page uploader widget memory after ingest | Todo |  |
-| [TASK-267-flask-api-startup](.tickets/TASK-267-flask-api-startup.md) | Flask API: configuration, startup and health | Ready | M |
 | [TASK-268-api-identity-access](.tickets/TASK-268-api-identity-access.md) | API request identity and access rules | Todo | M |
 | [TASK-269-admin-api](.tickets/TASK-269-admin-api.md) | Admin API | Todo | M |
 | [TASK-270-react-shell](.tickets/TASK-270-react-shell.md) | React shell, served by Flask | Todo | M |
