@@ -28,6 +28,7 @@ STORAGE_SETTINGS = (
 
 def configure_dev(monkeypatch, data_root, public_url="http://localhost:8080/marcedit-next/"):
     for name in STORAGE_SETTINGS:
+        monkeypatch.setenv(name, "")
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("MARCEDIT_WEB_DATA_ROOT", str(data_root))
     monkeypatch.setenv("MARCEDIT_WEB_PUBLIC_URL", public_url)
