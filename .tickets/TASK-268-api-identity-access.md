@@ -1,6 +1,6 @@
 Title: API request identity and access rules
 
-Status: In-Review
+Status: Completed
 Size: M
 Tier: major — auth
 Milestone: M2 — R1
@@ -67,7 +67,10 @@ Plan:
 4. `/me`, schemas.
 
 Handoff:
--
+- Head 35d1d51, merged into main (owner OK 2026-11-24). Image suite 2,824 passed, 35 skipped (files not in the test
+  image); API without Streamlit 52 passed.
 
 Review:
--
+- No fix round. Twenty raw requests to a real server without a valid identity reached no route; each of eight rules,
+  disabled in turn, fails a test.
+- To TASK-269: request-body checking (no route here has a body) and dropping `version` from `/me`.
