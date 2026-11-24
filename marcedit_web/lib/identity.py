@@ -78,6 +78,19 @@ def _attestation_ok(headers: Mapping[str, str]) -> bool:
     return hmac.compare_digest(supplied.encode("utf-8"), secret.encode("utf-8"))
 
 
+def proxy_user(headers: Mapping[str, str]) -> str:
+    """Return the attested API identity from ``X-MarcEdit-User``.
+
+    Unlike ``current_user``, this resolver never consults Streamlit or
+    legacy identity headers. An absent identity or invalid attestation is
+    anonymous.
+    """
+    if not _attestation_ok(headers):
+        return ANONYMOUS
+    email = (_header(headers, "X-MarcEdit-User") or "").strip().lower()
+    return email or ANONYMOUS
+
+
 def is_prod() -> bool:
     """True when the app is running in production-auth mode.
 

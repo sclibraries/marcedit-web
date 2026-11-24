@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Smith Metadata Studio API identity",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["email", "outcome", "role", "version"],
+  "properties": {
+    "email": {"type": "string", "format": "email"},
+    "outcome": {"enum": ["approved", "pending", "revoked"]},
+    "role": {
+      "oneOf": [
+        {"enum": ["admin", "cataloger"]},
+        {"type": "null"}
+      ]
+    },
+    "version": {"const": 1}
+  }
+}
